@@ -203,6 +203,19 @@ fn decode_hex(value: &str) -> Result<Vec<u8>, Box<dyn Error>> {
         .collect()
 }
 
+fn decoded_string(token: &Value) -> Result<Option<Vec<u8>>, Box<dyn Error>> {
+    match token.get("decoded").and_then(Value::as_bool) {
+        Some(true) => Ok(Some(decode_hex(
+            token
+                .get("decoded_hex")
+                .and_then(Value::as_str)
+                .ok_or("decoded string bytes")?,
+        )?)),
+        Some(false) => Ok(None),
+        None => Err("missing string decoding outcome".into()),
+    }
+}
+
 fn recorded_cases() -> Result<Vec<Value>, Box<dyn Error>> {
     let record = upstream_root()?
         .parent()
@@ -324,10 +337,16 @@ fn vendored_runtime_parser_cases_match_acceptance() -> TestResult {
                 semantics.errors()
             ));
         } else if upstream_ok {
-            let ast = case
-                .get("ast")
-                .and_then(Value::as_str)
-                .ok_or("recorded AST")?;
+            let complete_ast = format!(
+                "[{},{}]",
+                case.get("ast")
+                    .and_then(Value::as_str)
+                    .ok_or("recorded AST")?,
+                case.get("ast_supplement")
+                    .and_then(Value::as_str)
+                    .ok_or("recorded AST supplement")?
+            );
+            let ast = complete_ast.as_str();
             for (upstream, instar_kind) in [
                 ("AstExprBinary", K::BinaryExpression),
                 ("AstExprCall", K::CallExpression),
@@ -349,12 +368,7 @@ fn vendored_runtime_parser_cases_match_acceptance() -> TestResult {
                 let upstream_count = ast_nodes(ast, upstream);
                 let instar_count = syntax
                     .descendants()
-                    .filter(|node| {
-                        node.kind() == instar_kind
-                            && !node
-                                .ancestors()
-                                .any(|ancestor| ancestor.kind() == K::AttributeArguments)
-                    })
+                    .filter(|node| node.kind() == instar_kind)
                     .count();
                 if upstream_count != instar_count {
                     ast_differences.push(format!(
@@ -479,12 +493,7 @@ fn vendored_runtime_parser_cases_match_acceptance() -> TestResult {
                 .map(|(_, declaration)| declaration.name.as_str())
                 .collect();
             instar_bindings.sort_unstable();
-            let conditional_bindings = case
-                .get("features")
-                .and_then(|features| features.get("DebugLuauIfLocalSyntax"))
-                .and_then(Value::as_bool)
-                == Some(true);
-            if !conditional_bindings && upstream_bindings != instar_bindings {
+            if upstream_bindings != instar_bindings {
                 ast_differences.push(format!(
                     "#{index} bindings: upstream={upstream_bindings:?}, instar={instar_bindings:?}, source={input:?}"
                 ));
@@ -598,16 +607,55 @@ fn vendored_conformance_files_match_acceptance() -> TestResult {
     Ok(())
 }
 
-fn oracle_token_kind(kind: u64) -> Option<K> {
-    match kind {
-        1..=265 | 270..=277 => Some(K::Symbol),
-        269 | 278 | 279 => Some(K::String),
-        280 => Some(K::Number),
-        281 => Some(K::Identifier),
-        282 | 283 => Some(K::Comment),
-        291..=311 => Some(K::Keyword),
-        _ => None,
-    }
+fn oracle_token_kinds(kind: u64, spelling: &str) -> Option<Vec<K>> {
+    let single = match kind {
+        1..=255 => {
+            if b"+-*/%^#=<>~(){}[];:,.?|&@!".contains(&u8::try_from(kind).ok()?) {
+                K::Symbol
+            } else {
+                K::Invalid
+            }
+        }
+        257..=265 | 270..=277 => K::Symbol,
+        269 | 278 | 279 => K::String,
+        280 => {
+            if instar_core::syntax::number_value(spelling).is_some() {
+                K::Number
+            } else {
+                K::Invalid
+            }
+        }
+        281 => K::Identifier,
+        282 | 283 | 287 => K::Comment,
+        284 => return Some(vec![K::Symbol, K::Identifier]),
+        285 => return Some(vec![K::Symbol, K::Symbol]),
+        288 | 290 => K::Invalid,
+        286 if !spelling.starts_with(['`', '}']) => K::Invalid,
+        266..=268 | 286 | 289 => {
+            let mut kinds = Vec::new();
+            if spelling.starts_with('`') {
+                kinds.push(K::InterpolationStart);
+            } else if spelling.starts_with('}') {
+                kinds.push(K::InterpolationClose);
+            }
+            // Broken interpolation lexemes stop before the failed delimiter.
+            let closed = matches!(kind, 266..=268);
+            if spelling.len() > 1 + usize::from(closed) {
+                kinds.push(K::InterpolationText);
+            }
+            if closed {
+                kinds.push(if kind == 268 {
+                    K::InterpolationEnd
+                } else {
+                    K::InterpolationOpen
+                });
+            }
+            return Some(kinds);
+        }
+        291..=311 => K::Keyword,
+        _ => return None,
+    };
+    Some(vec![single])
 }
 
 fn token_ranges_refine(upstream: &[(u32, u32)], instar: &[(u32, u32)], source: &str) -> bool {
@@ -716,20 +764,26 @@ fn vendored_runtime_lexer_cases_match_tokens_and_literals() -> TestResult {
             .iter()
             .zip(&upstream_ranges)
             .all(|(token, range)| {
-                let Some(expected) = token
-                    .get("type")
-                    .and_then(Value::as_u64)
-                    .and_then(oracle_token_kind)
-                else {
-                    return true;
-                };
-                tokens.iter().any(|candidate| {
-                    candidate.kind() == expected
-                        && (
-                            u32::from(candidate.text_range().start()),
-                            u32::from(candidate.text_range().end()),
-                        ) == *range
-                })
+                if token.get("type").and_then(Value::as_u64).is_some_and(|kind| matches!(kind, 286..=290))
+                    && !instar.errors().iter().any(|error| {
+                        u32::from(error.range.start()) <= range.1
+                            && range.0 <= u32::from(error.range.end())
+                    }) {
+                    differences.push(format!("#{index} broken upstream token without an Instar diagnostic at {range:?}"));
+                    return false;
+                }
+                let expected = token.get("type").and_then(Value::as_u64)
+                    .and_then(|kind| oracle_token_kinds(kind, &input[range.0 as usize..range.1 as usize]));
+                let actual: Vec<_> = tokens.iter().filter(|candidate| {
+                    u32::from(candidate.text_range().start()) >= range.0
+                        && u32::from(candidate.text_range().end()) <= range.1
+                }).map(rowan::SyntaxToken::kind).collect();
+                if expected.as_ref() == Some(&actual) {
+                    true
+                } else {
+                    differences.push(format!("#{index} token category {:?} at {range:?}: expected={expected:?}, actual={actual:?}", token.get("type")));
+                    false
+                }
             });
 
         let upstream_strings: Result<Vec<_>, Box<dyn Error>> = upstream
@@ -743,17 +797,12 @@ fn vendored_runtime_lexer_cases_match_tokens_and_literals() -> TestResult {
                     Some(269 | 278 | 279)
                 )
             })
-            .filter_map(|token| {
-                token
-                    .get("decoded_hex")
-                    .and_then(Value::as_str)
-                    .map(decode_hex)
-            })
+            .map(decoded_string)
             .collect();
         let instar_strings: Vec<_> = tokens
             .iter()
             .filter(|token| token.kind() == K::String)
-            .filter_map(|token| instar_core::syntax::string_bytes(&instar, token).ok())
+            .map(|token| instar_core::syntax::string_bytes(&instar, token).ok())
             .collect();
         if !boundaries_match || !categories_match || upstream_strings? != instar_strings {
             differences.push(format!(
@@ -771,6 +820,41 @@ fn vendored_runtime_lexer_cases_match_tokens_and_literals() -> TestResult {
             .take(20)
             .collect::<Vec<_>>()
             .join("\n")
+    );
+    Ok(())
+}
+
+#[test]
+fn oracle_comparisons_fail_closed() -> TestResult {
+    assert_eq!(oracle_token_kinds(256, ""), None);
+    assert_eq!(oracle_token_kinds(312, ""), None);
+    assert!(decoded_string(&serde_json::json!({})).is_err());
+    assert!(decoded_string(&serde_json::json!({"decoded": true})).is_err());
+    assert_eq!(
+        decoded_string(&serde_json::json!({"decoded": false}))?,
+        None
+    );
+    assert_eq!(
+        decoded_string(&serde_json::json!({"decoded": true, "decoded_hex": ""}))?,
+        Some(Vec::new())
+    );
+    let parsed = instar_parse("return '\\xGG'")?;
+    let token = parsed
+        .syntax()
+        .descendants_with_tokens()
+        .filter_map(rowan::NodeOrToken::into_token)
+        .find(|token| token.kind() == K::String)
+        .ok_or("string")?;
+    let upstream = oracle(&["lex", "all"], "return '\\xGG'")?;
+    let upstream = upstream["tokens"]
+        .as_array()
+        .ok_or("tokens")?
+        .iter()
+        .find(|token| token["type"].as_u64() == Some(279))
+        .ok_or("upstream string")?;
+    assert_eq!(
+        instar_core::syntax::string_bytes(&parsed, &token).ok(),
+        decoded_string(upstream)?
     );
     Ok(())
 }
@@ -794,8 +878,8 @@ fn original_byte_literals_match_upstream() -> TestResult {
             .as_array()
             .ok_or("tokens")?
             .iter()
-            .filter_map(|token| token["decoded_hex"].as_str())
-            .map(decode_hex)
+            .filter(|token| matches!(token["type"].as_u64(), Some(269 | 278 | 279)))
+            .map(decoded_string)
             .collect();
         let actual: Result<Vec<_>, _> = parsed
             .syntax()
@@ -804,7 +888,7 @@ fn original_byte_literals_match_upstream() -> TestResult {
             .filter(|token| token.kind() == K::String)
             .map(|token| instar_core::syntax::string_bytes(&parsed, &token))
             .collect();
-        assert_eq!(actual?, expected?);
+        assert_eq!(actual?.into_iter().map(Some).collect::<Vec<_>>(), expected?);
     }
     Ok(())
 }

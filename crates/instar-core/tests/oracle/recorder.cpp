@@ -92,6 +92,53 @@ std::string recordPath() {
 #endif
 }
 
+// AstJsonEncoder omits attribute arguments and complete conditional-local data.
+struct AstSupplement : Luau::AstVisitor {
+  std::string json = "[";
+  bool first = true;
+
+  void append(const std::string &value) {
+    if (!first)
+      json += ',';
+    first = false;
+    json += value;
+  }
+
+  bool visit(Luau::AstStatIf *node) override {
+    if (auto *local = node->conditionLocal) {
+      const auto &at = local->location;
+      std::string span = std::to_string(at.begin.line) + "," +
+                         std::to_string(at.begin.column) + " - " +
+                         std::to_string(at.end.line) + "," +
+                         std::to_string(at.end.column);
+      append("{\"name\":" + jsonString(local->name.value) +
+             ",\"type\":\"AstLocal\",\"location\":" + jsonString(span) + "}");
+    }
+    return true;
+  }
+
+  void attributes(const Luau::AstArray<Luau::AstAttr *> &values) {
+    for (auto *attribute : values)
+      for (auto *argument : attribute->args) {
+        append(Luau::toJson(argument));
+        argument->visit(this);
+      }
+  }
+
+  bool visit(Luau::AstExprFunction *node) override {
+    attributes(node->attributes);
+    return true;
+  }
+  bool visit(Luau::AstStatDeclareFunction *node) override {
+    attributes(node->attributes);
+    return true;
+  }
+  bool visit(Luau::AstTypeFunction *node) override {
+    attributes(node->attributes);
+    return true;
+  }
+};
+
 void record(const char *source, size_t size, const Luau::ParseOptions &options,
             const Luau::ParseResult &result) {
   const std::string path = recordPath();
@@ -130,9 +177,12 @@ void record(const char *source, size_t size, const Luau::ParseOptions &options,
            << ",\"message\":" << jsonString(error.getMessage()) << '}';
   }
   output << "],\"ast\":";
-  if (result.errors.empty())
+  if (result.errors.empty()) {
     output << jsonString(Luau::toJson(result.root, result.commentLocations));
-  else
+    AstSupplement supplement;
+    result.root->visit(&supplement);
+    output << ",\"ast_supplement\":" << jsonString(supplement.json + "]");
+  } else
     output << "null";
   output << "}\n";
 }

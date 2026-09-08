@@ -140,6 +140,7 @@ int lex(std::string_view profile, const std::string &source) {
                  token->type == Luau::Lexeme::InterpStringEnd ||
                  token->type == Luau::Lexeme::InterpStringSimple)
         decoded = Luau::Lexer::fixupQuotedString(value);
+      std::cout << ",\"decoded\":" << (decoded ? "true" : "false");
       if (decoded)
         std::cout << ",\"decoded_hex\":\"" << hexString(value) << '\"';
     }
