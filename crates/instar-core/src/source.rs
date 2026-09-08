@@ -1,6 +1,7 @@
 //! Immutable source revisions and editor-owned overlays over original disk bytes.
 
 use std::{
+    borrow::Cow,
     collections::BTreeMap,
     fs, io,
     path::{Path, PathBuf},
@@ -31,7 +32,7 @@ pub struct Source {
     path: PathBuf,
     revision: u64,
     bytes: Box<[u8]>,
-    lines: Option<LineIndex>,
+    lines: LineIndex,
 }
 
 /// Source acquisition, revision and coordinate failures.
@@ -67,7 +68,7 @@ impl Source {
         if u32::try_from(bytes.len()).map_or(true, |len| len == u32::MAX) {
             return Err(SourceError::Capacity);
         }
-        let lines = str::from_utf8(&bytes).ok().map(LineIndex::new);
+        let lines = LineIndex::new(&syntax_text(&bytes));
         let revision = REVISION
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                 value.checked_add(1)
@@ -117,31 +118,28 @@ impl Source {
             .ok_or(SourceError::Range)
     }
 
-    fn index(&self) -> Result<&LineIndex, SourceError> {
-        self.text()?;
-        self.lines.as_ref().ok_or(SourceError::Range)
+    pub(crate) fn syntax_text(&self) -> Cow<'_, str> {
+        syntax_text(&self.bytes)
     }
 
     /// Convert a byte boundary to a zero-based line and encoded column.
     /// LF separates lines; CRLF terminators are excluded from text columns.
     ///
     /// # Errors
-    /// Rejects non-UTF-8 sources, interior character/newline positions and invalid offsets.
+    /// Rejects interior character/newline positions and invalid offsets.
+    /// Each malformed UTF-8 byte counts as one column unit.
     pub fn position(
         &self,
         offset: TextSize,
         encoding: PositionEncoding,
     ) -> Result<LineCol, SourceError> {
-        let index = self.index()?;
+        let index = &self.lines;
         let position = index.try_line_col(offset).ok_or(SourceError::Range)?;
         let line = index.line(position.line).ok_or(SourceError::Range)?;
-        let content = self
-            .text()?
-            .get(usize::from(line.start())..usize::from(line.end()))
-            .ok_or(SourceError::Range)?;
+        let content = self.slice(line)?;
         let content = content
-            .strip_suffix('\n')
-            .map_or(content, |text| text.strip_suffix('\r').unwrap_or(text));
+            .strip_suffix(b"\n")
+            .map_or(content, |text| text.strip_suffix(b"\r").unwrap_or(text));
         if usize::try_from(position.col).map_err(|_| SourceError::Range)? > content.len() {
             return Err(SourceError::Range);
         }
@@ -160,13 +158,14 @@ impl Source {
     /// Convert a zero-based encoded position to an original byte boundary.
     ///
     /// # Errors
-    /// Rejects invalid lines, columns, surrogate interiors and byte-only sources.
+    /// Rejects invalid lines, columns and surrogate interiors.
+    /// Each malformed UTF-8 byte counts as one column unit.
     pub fn offset(
         &self,
         position: LineCol,
         encoding: PositionEncoding,
     ) -> Result<TextSize, SourceError> {
-        let index = self.index()?;
+        let index = &self.lines;
         let utf8 = match encoding {
             PositionEncoding::Utf8 => position,
             PositionEncoding::Utf16 | PositionEncoding::Utf32 => index
@@ -192,6 +191,29 @@ impl Source {
         }
         Ok(offset)
     }
+}
+
+// Same-length stand-in: preserve valid UTF-8 and replace each malformed
+// byte with SUB. This is tree/position storage only; original bytes own semantics.
+fn syntax_text(bytes: &[u8]) -> Cow<'_, str> {
+    let error = match str::from_utf8(bytes) {
+        Ok(text) => return Cow::Borrowed(text),
+        Err(error) => error,
+    };
+    let mut view = bytes.to_vec();
+    let mut at = error.valid_up_to();
+    loop {
+        match str::from_utf8(&view[at..]) {
+            Ok(_) => break,
+            Err(error) => {
+                at += error.valid_up_to();
+                let end = at + error.error_len().unwrap_or(view.len() - at);
+                view[at..end].fill(0x1a);
+                at = end;
+            }
+        }
+    }
+    Cow::Owned(String::from_utf8(view).expect("malformed bytes replaced"))
 }
 
 #[derive(Debug)]

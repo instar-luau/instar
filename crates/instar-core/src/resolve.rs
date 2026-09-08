@@ -166,7 +166,7 @@ impl<'project> Resolver<'project> {
         };
         let argument = unparenthesized(argument);
         if argument.kind() == K::LiteralExpression {
-            return match literal(&argument) {
+            return match literal(&argument, facts.parse()) {
                 Ok(path) => self.path(sources, facts.parse().source(), &path),
                 Err(outcome) => Ok(outcome),
             };
@@ -496,14 +496,14 @@ fn unparenthesized(node: &SyntaxNode) -> SyntaxNode {
     node
 }
 
-fn literal(node: &SyntaxNode) -> Result<String, Resolution> {
+fn literal(node: &SyntaxNode, parse: &Parse) -> Result<String, Resolution> {
     let token = node
         .children_with_tokens()
         .filter_map(rowan::NodeOrToken::into_token)
         .find(|token| token.kind() == K::String)
         .ok_or(Resolution::Dynamic)?;
-    let bytes =
-        string_bytes(&token).map_err(|_| Resolution::Unsupported("malformed require string"))?;
+    let bytes = string_bytes(parse, &token)
+        .map_err(|_| Resolution::Unsupported("malformed require string"))?;
     String::from_utf8(bytes).map_err(|_| Resolution::Unsupported("require string is not UTF-8"))
 }
 
@@ -649,7 +649,7 @@ impl RobloxMap {
                 let field = if node.kind() == K::FieldExpression {
                     name(&field).ok_or(Resolution::Dynamic)?
                 } else {
-                    literal(&unparenthesized(&field))?
+                    literal(&unparenthesized(&field), facts.parse())?
                 };
                 if field == "Parent" {
                     self.nodes[parent]
@@ -672,7 +672,10 @@ impl RobloxMap {
                 let args = parts.next().ok_or(Resolution::Dynamic)?;
                 let args = args.children().next().ok_or(Resolution::Dynamic)?;
                 let mut args = args.children();
-                let argument = literal(&unparenthesized(&args.next().ok_or(Resolution::Dynamic)?))?;
+                let argument = literal(
+                    &unparenthesized(&args.next().ok_or(Resolution::Dynamic)?),
+                    facts.parse(),
+                )?;
                 if args.next().is_some() {
                     return Err(Resolution::Dynamic);
                 }
