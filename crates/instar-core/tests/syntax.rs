@@ -1,4 +1,4 @@
-use std::{error::Error, fs, sync::Arc};
+use std::{collections::BTreeSet, error::Error, fs, path::Path, sync::Arc};
 
 use instar_core::{
     source::SourceStore,
@@ -29,6 +29,139 @@ fn lossless(parsed: &Parse, text: &str) -> TestResult {
         end = u32::from(range.end());
     }
     assert_eq!(usize::try_from(end)?, text.len());
+    Ok(())
+}
+
+#[test]
+fn syntax_limits_are_local_and_comments_are_not_false_errors() -> TestResult {
+    for text in ["--[[closed]]", "--[ordinary line comment"] {
+        let parsed = parse(text)?;
+        assert!(
+            parsed.errors().is_empty(),
+            "{text:?}: {:?}",
+            parsed.errors()
+        );
+        lossless(&parsed, text)?;
+    }
+    let broken = parse("--[[unfinished")?;
+    assert_ne!(broken.errors(), []);
+    assert!(
+        broken
+            .errors()
+            .iter()
+            .any(|error| error.message.contains("comment"))
+    );
+    lossless(&broken, "--[[unfinished")?;
+    let source = SourceStore::default().open(
+        Path::new("limit-local.luau"),
+        1,
+        "local a: number?; local b: string?",
+    )?;
+    let parsed = Parse::with_options(
+        source,
+        ParseOptions {
+            features: BTreeSet::new(),
+            recursion_limit: None,
+            type_length_limit: Some(1),
+            error_limit: None,
+        },
+    )?;
+    assert!(
+        parsed.errors().is_empty(),
+        "per-type length leaked across annotations: {:?}",
+        parsed.errors()
+    );
+    lossless(&parsed, "local a: number?; local b: string?")?;
+    let below = parse("function f(): () -> () -> () end")?;
+    assert!(
+        below.errors().is_empty(),
+        "below-limit recursion rejected: {:?}",
+        below.errors()
+    );
+    let source = SourceStore::default().open(
+        Path::new("recursion-limit.luau"),
+        1,
+        "function f(): () -> () -> () -> () end",
+    )?;
+    let above = Parse::with_options(
+        source,
+        ParseOptions {
+            features: BTreeSet::new(),
+            recursion_limit: Some(2),
+            type_length_limit: None,
+            error_limit: None,
+        },
+    )?;
+    assert!(
+        above
+            .errors()
+            .iter()
+            .any(|error| error.message.contains("recursion"))
+    );
+    let branch_source = SourceStore::default().open(
+        Path::new("branch-limit.luau"),
+        1,
+        "if true then elseif true then elseif true then end",
+    )?;
+    let branch = Parse::with_options(
+        branch_source,
+        ParseOptions {
+            features: BTreeSet::new(),
+            recursion_limit: Some(2),
+            type_length_limit: None,
+            error_limit: None,
+        },
+    )?;
+    assert!(
+        branch
+            .errors()
+            .iter()
+            .any(|error| error.message.contains("recursion"))
+    );
+    lossless(&above, "function f(): () -> () -> () -> () end")
+}
+
+#[test]
+fn syntax_limits_replay_upstream_defaults_and_overrides() -> TestResult {
+    let source =
+        SourceStore::default().open(Path::new("limits.luau"), 1, "local x = (((((1)))))")?;
+    let parse = Parse::with_options(
+        source,
+        ParseOptions {
+            features: BTreeSet::new(),
+            recursion_limit: Some(2),
+            type_length_limit: Some(2),
+            error_limit: Some(1),
+        },
+    )?;
+    assert!(parse.errors().len() <= 1);
+    assert!(
+        parse
+            .errors()
+            .iter()
+            .any(|error| error.message.contains("limit"))
+    );
+    lossless(&parse, "local x = (((((1)))))")
+}
+
+#[test]
+fn syntax_diagnostics_preserve_upstream_delimiter_coordinates() -> TestResult {
+    for (source, message) in [
+        (
+            "return (1",
+            "Expected ')' (to close '(' at column 8), got <eof>",
+        ),
+        (
+            "return (1\n",
+            "Expected ')' (to close '(' at line 1), got <eof>",
+        ),
+        ("return 0b123", "Malformed number"),
+    ] {
+        let parsed = parse(source)?;
+        assert_eq!(parsed.errors().len(), 1, "{source}: {:?}", parsed.errors());
+        assert_eq!(parsed.errors()[0].message, message);
+        lossless(&parsed, source)?;
+    }
     Ok(())
 }
 
@@ -257,7 +390,7 @@ fn syntax_prefix_recovery_and_nesting_limit_terminate() -> TestResult {
         parsed
             .errors()
             .iter()
-            .any(|error| error.message.contains("nesting limit"))
+            .any(|error| error.message.contains("recursion limit"))
     );
     lossless(&parsed, &nested)
 }
@@ -367,6 +500,9 @@ fn enabled(text: &str) -> Result<Parse, Box<dyn Error>> {
     Ok(Parse::with_options(
         source,
         ParseOptions {
+            recursion_limit: None,
+            type_length_limit: None,
+            error_limit: None,
             features: [
                 Feature::Classes,
                 Feature::ConditionalBindings,
@@ -592,6 +728,9 @@ fn feature_availability_does_not_discard_structure() -> TestResult {
     let parsed = Parse::with_options(
         source,
         ParseOptions {
+            recursion_limit: None,
+            type_length_limit: None,
+            error_limit: None,
             features: [Feature::Classes].into_iter().collect(),
         },
     )?;

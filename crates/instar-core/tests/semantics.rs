@@ -183,6 +183,9 @@ fn enabled(text: &str) -> Result<Semantics, Box<dyn Error>> {
     let parse = Parse::with_options(
         source,
         ParseOptions {
+            recursion_limit: None,
+            type_length_limit: None,
+            error_limit: None,
             features: [
                 Feature::Classes,
                 Feature::ConditionalBindings,
