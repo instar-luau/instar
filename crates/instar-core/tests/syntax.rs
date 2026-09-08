@@ -271,13 +271,61 @@ fn syntax_preserves_upstream_interpolation_fixture() -> TestResult {
 }
 
 #[test]
-fn syntax_rejects_non_utf8_without_replacing_bytes() -> TestResult {
+fn syntax_reports_invalid_identifier_bytes_without_replacing_source() -> TestResult {
     let root = tempfile::tempdir()?;
     let path = root.path().join("invalid.luau");
     fs::write(&path, [0xff, b'a'])?;
     let source = SourceStore::default().read(&path)?;
-    assert!(Parse::new(Arc::clone(&source)).is_err());
+    assert_ne!(Parse::new(Arc::clone(&source))?.errors(), []);
     assert_eq!(source.bytes(), &[0xff, b'a']);
+    Ok(())
+}
+
+#[test]
+fn byte_literals_and_fragments_retain_original_values() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let path = root.path().join("bytes.luau");
+    let prefix = b"--!\xff\n";
+    let body = b"return '\xff', [=[\r\n\xfe\r\nx]=], `\xfd{1}\xfc`, '\x1a'";
+    let bytes = [prefix.as_slice(), body.as_slice()].concat();
+    fs::write(&path, &bytes)?;
+    let source = SourceStore::default().read(&path)?;
+    for parsed in [
+        Parse::new(Arc::clone(&source))?,
+        Parse::fragment(
+            Arc::clone(&source),
+            text_size::TextRange::new(prefix.len().try_into()?, bytes.len().try_into()?),
+            ParseOptions::default(),
+            instar_core::syntax::EntryPoint::Module,
+        )?,
+    ] {
+        assert!(parsed.errors().is_empty(), "{:?}", parsed.errors());
+        assert_eq!(parsed.source().bytes(), bytes);
+        assert_eq!(
+            usize::from(parsed.syntax().text_range().len()),
+            usize::from(parsed.extent().len())
+        );
+        let values: Result<Vec<_>, _> = parsed
+            .syntax()
+            .descendants_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+            .filter(|token| matches!(token.kind(), K::String | K::InterpolationText))
+            .map(|token| string_bytes(&parsed, &token))
+            .collect();
+        assert_eq!(
+            values?,
+            [
+                b"\xff".to_vec(),
+                b"\xfe\nx".to_vec(),
+                b"\xfd".to_vec(),
+                b"\xfc".to_vec(),
+                b"\x1a".to_vec()
+            ]
+        );
+        if parsed.extent().start() == 0.into() {
+            assert_eq!(parsed.hot_comments()[0].text, b"\xff");
+        }
+    }
     Ok(())
 }
 
@@ -297,7 +345,7 @@ fn syntax_string_decoding_matches_luau_byte_rules() -> TestResult {
             .filter_map(rowan::NodeOrToken::into_token)
             .find(|token| token.kind() == K::String)
             .ok_or("string token")?;
-        assert_eq!(string_bytes(&token)?, expected);
+        assert_eq!(string_bytes(&parsed, &token)?, expected);
         assert_eq!(token.text(), text);
     }
     for text in [r"'\999'", r"'\x0g'", r"'\u{}'", r"'\u{110000}'"] {
@@ -309,7 +357,7 @@ fn syntax_string_decoding_matches_luau_byte_rules() -> TestResult {
             .filter_map(rowan::NodeOrToken::into_token)
             .find(|token| token.kind() == K::String)
             .ok_or("string token")?;
-        assert!(string_bytes(&token).is_err());
+        assert!(string_bytes(&parsed, &token).is_err());
     }
     Ok(())
 }
@@ -594,8 +642,8 @@ fn literal_metadata_vertical_space_and_constant_backticks() -> TestResult {
         .filter_map(rowan::NodeOrToken::into_token)
         .filter(|token| token.kind() == K::String)
         .collect();
-    assert_eq!(string_bytes(&tokens[0])?, b"constant");
-    assert_eq!(string_bytes(&tokens[1])?, b"x");
+    assert_eq!(string_bytes(&parsed, &tokens[0])?, b"constant");
+    assert_eq!(string_bytes(&parsed, &tokens[1])?, b"x");
     Ok(())
 }
 
@@ -604,7 +652,7 @@ fn entry_points_fragments_hotcomments_and_statement_extents() -> TestResult {
     let parsed = parse("--!strict  \nlocal x = 1; --!after\nreturn x")?;
     assert_eq!(parsed.hot_comments().len(), 2);
     assert!(parsed.hot_comments()[0].header);
-    assert_eq!(parsed.hot_comments()[0].text, "strict");
+    assert_eq!(parsed.hot_comments()[0].text, b"strict");
     assert!(!parsed.hot_comments()[1].header);
     assert!(
         parsed

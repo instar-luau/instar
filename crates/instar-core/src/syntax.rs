@@ -105,7 +105,7 @@ pub struct FeatureUse {
 pub struct HotComment {
     pub range: TextRange,
     pub header: bool,
-    pub text: String,
+    pub text: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -144,7 +144,7 @@ impl Parse {
 
     /// Parse a complete module, expression or type against one source revision.
     /// # Errors
-    /// Rejects non-UTF-8 source.
+    /// Rejects source ranges that cannot be represented.
     pub fn entry(
         source: Arc<Source>,
         options: ParseOptions,
@@ -164,20 +164,25 @@ impl Parse {
         options: ParseOptions,
         entry: EntryPoint,
     ) -> Result<Self, SourceError> {
-        let text = source
-            .text()?
+        let view = source.syntax_text();
+        let text = view
             .get(usize::from(extent.start())..usize::from(extent.end()))
             .ok_or(SourceError::Range)?;
-        let (tokens, errors) = lex(text);
+        let bytes = source.slice(extent)?;
+        let (tokens, errors) = lex(bytes, text);
         let mut header = extent.start() == TextSize::from(0);
         let mut hot_comments = Vec::new();
         for token in &tokens {
             if token.kind == SyntaxKind::Comment {
-                if let Some(comment) = text[token.start..token.end].strip_prefix("--!") {
+                if let Some(comment) = bytes[token.start..token.end].strip_prefix(b"--!") {
                     hot_comments.push(HotComment {
                         range: range(token.start, token.end),
                         header,
-                        text: comment.trim_end_matches(is_space_char).to_owned(),
+                        text: comment[..comment
+                            .iter()
+                            .rposition(|byte| !is_space(*byte))
+                            .map_or(0, |end| end + 1)]
+                            .to_vec(),
                     });
                 }
             } else if !token.kind.is_trivia() {
@@ -186,6 +191,7 @@ impl Parse {
         }
         let mut parser = Parser {
             text,
+            bytes,
             tokens,
             pos: 0,
             builder: GreenNodeBuilder::new(),
@@ -227,6 +233,7 @@ impl Parse {
         for comment in &mut hot_comments {
             comment.range += extent.start();
         }
+        drop(view);
         Ok(Self {
             source,
             green,
@@ -243,6 +250,8 @@ impl Parse {
         &self.source
     }
 
+    /// UTF-8 tree view. Malformed source bytes occupy same-length SUB placeholders.
+    /// Read original contents through `source().slice(source_range(token.text_range()))`.
     #[must_use]
     pub fn syntax(&self) -> SyntaxNode {
         SyntaxNode::new_root(self.green.clone())
@@ -281,44 +290,52 @@ impl Parse {
     }
 }
 
-/// Decode a string token using Luau's byte-string rules. Raw syntax remains unchanged.
+/// Decode a token from its owning parse using original source bytes and Luau's rules.
 ///
 /// # Errors
 /// Rejects non-string tokens and malformed escapes. Bytes need not be UTF-8.
-pub fn string_bytes(token: &SyntaxToken) -> Result<Vec<u8>, StringLiteralError> {
+pub fn string_bytes(parse: &Parse, token: &SyntaxToken) -> Result<Vec<u8>, StringLiteralError> {
     if !matches!(
         token.kind(),
         SyntaxKind::String | SyntaxKind::InterpolationText
     ) {
         return Err(StringLiteralError);
     }
-    let text = token.text();
+    let text = parse
+        .source
+        .slice(parse.source_range(token.text_range()))
+        .map_err(|_| StringLiteralError)?;
     if token.kind() == SyntaxKind::InterpolationText {
         return quoted_bytes(text);
     }
     decode_string(text)
 }
 
-fn decode_string(text: &str) -> Result<Vec<u8>, StringLiteralError> {
-    if text.as_bytes().contains(&0) {
+fn decode_string(text: &[u8]) -> Result<Vec<u8>, StringLiteralError> {
+    if text.contains(&0) {
         return Err(StringLiteralError);
     }
-    if let Some((equals, start)) = long_open(text.as_bytes(), 0) {
-        if long_end(text.as_bytes(), start, equals) != Some(text.len()) {
+    if let Some((equals, start)) = long_open(text, 0) {
+        if long_end(text, start, equals) != Some(text.len()) {
             return Err(StringLiteralError);
         }
         let body = text
             .get(start..text.len().checked_sub(start).ok_or(StringLiteralError)?)
             .ok_or(StringLiteralError)?;
         let body = body
-            .strip_prefix("\r\n")
-            .or_else(|| body.strip_prefix('\n'))
+            .strip_prefix(b"\r\n")
+            .or_else(|| body.strip_prefix(b"\n"))
             .unwrap_or(body);
-        return Ok(body.replace("\r\n", "\n").into_bytes());
+        let mut output = Vec::new();
+        let mut input = body.iter().copied().peekable();
+        while let Some(byte) = input.next() {
+            if byte != b'\r' || input.peek() != Some(&b'\n') {
+                output.push(byte);
+            }
+        }
+        return Ok(output);
     }
-    if !matches!(text.as_bytes().first(), Some(b'\'' | b'"' | b'`'))
-        || text.as_bytes().first() != text.as_bytes().last()
-    {
+    if !matches!(text.first(), Some(b'\'' | b'"' | b'`')) || text.first() != text.last() {
         return Err(StringLiteralError);
     }
     let body = text
@@ -331,8 +348,8 @@ fn decode_string(text: &str) -> Result<Vec<u8>, StringLiteralError> {
 #[error("malformed Luau string literal")]
 pub struct StringLiteralError;
 
-fn quoted_bytes(body: &str) -> Result<Vec<u8>, StringLiteralError> {
-    let mut input = body.bytes().peekable();
+fn quoted_bytes(body: &[u8]) -> Result<Vec<u8>, StringLiteralError> {
+    let mut input = body.iter().copied().peekable();
     let mut output = Vec::new();
     while let Some(byte) = input.next() {
         if byte != b'\\' {
@@ -496,9 +513,6 @@ fn escape(bytes: &[u8], mut pos: usize) -> usize {
 fn is_space(byte: u8) -> bool {
     byte.is_ascii_whitespace() || byte == 11
 }
-fn is_space_char(character: char) -> bool {
-    character.is_ascii() && is_space(u8::try_from(u32::from(character)).expect("ASCII"))
-}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum NumberValue {
@@ -600,9 +614,8 @@ enum InterpolationMode {
     clippy::too_many_lines,
     reason = "lexical dispatch keeps mode transitions together"
 )]
-fn lex(text: &str) -> (Vec<Token>, Vec<ParseError>) {
+fn lex(bytes: &[u8], text: &str) -> (Vec<Token>, Vec<ParseError>) {
     use SyntaxKind as K;
-    let bytes = text.as_bytes();
     let mut tokens = Vec::new();
     let mut errors = Vec::new();
     let mut modes = Vec::new();
@@ -828,6 +841,7 @@ fn lex(text: &str) -> (Vec<Token>, Vec<ParseError>) {
 
 struct Parser<'a> {
     text: &'a str,
+    bytes: &'a [u8],
     tokens: Vec<Token>,
     pos: usize,
     builder: GreenNodeBuilder<'static>,
@@ -2004,7 +2018,7 @@ impl Parser<'_> {
             );
             if string_key {
                 if let Some(token) = self.current() {
-                    let body = &self.text[token.start..token.end];
+                    let body = &self.bytes[token.start..token.end];
                     if decode_string(body).is_ok_and(|bytes| bytes.contains(&0)) {
                         self.error("property name cannot contain NUL");
                     }
@@ -2204,7 +2218,7 @@ impl Parser<'_> {
     fn literal(&mut self) {
         if let Some(token) = self.current() {
             if token.kind == SyntaxKind::String
-                && decode_string(&self.text[token.start..token.end]).is_err()
+                && decode_string(&self.bytes[token.start..token.end]).is_err()
             {
                 self.error("malformed string escape or literal");
             }
@@ -2341,7 +2355,8 @@ impl Parser<'_> {
         self.bump();
         while !self.eof() && self.kind() != Some(K::InterpolationEnd) {
             if self.kind() == Some(K::InterpolationText) {
-                if quoted_bytes(self.nth(0)).is_err() {
+                let token = self.current().expect("interpolation text");
+                if quoted_bytes(&self.bytes[token.start..token.end]).is_err() {
                     self.error("malformed interpolation escape");
                 }
                 self.bump();

@@ -17,6 +17,40 @@ fn facts(store: &mut SourceStore, path: &Path, text: &str) -> Result<Semantics, 
 }
 
 #[test]
+fn require_decodes_original_bytes_in_fragments() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let project = Project::load(root.path())?;
+    let mut store = SourceStore::default();
+    let resolver = Resolver::new(&project, &mut store)?;
+    let path = root.path().join("main.luau");
+    let prefix = b"--\xff\n";
+    let bytes = [
+        prefix.as_slice(),
+        b"return require('./\xff'), require('./dep')",
+    ]
+    .concat();
+    fs::write(&path, &bytes)?;
+    let source = store.read(&path)?;
+    let parse = Parse::fragment(
+        source,
+        text_size::TextRange::new(prefix.len().try_into()?, bytes.len().try_into()?),
+        ParseOptions::default(),
+        EntryPoint::Module,
+    )?;
+    let facts = Semantics::new(parse);
+    assert!(facts.is_complete());
+    assert!(matches!(
+        resolver.resolve(&mut store, &facts, 0)?,
+        Resolution::Unsupported("require string is not UTF-8")
+    ));
+    let dep = store.open(&root.path().join("dep.luau"), 1, "return 1")?;
+    assert!(
+        matches!(resolver.resolve(&mut store, &facts, 1)?, Resolution::Resolved(source) if Arc::ptr_eq(&source, &dep))
+    );
+    Ok(())
+}
+
+#[test]
 fn candidates_preserve_ambiguity_missing_and_virtual_overlays() -> TestResult {
     let root = tempfile::tempdir()?;
     let project = Project::load(root.path())?;

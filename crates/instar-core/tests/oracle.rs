@@ -14,7 +14,7 @@ use instar_core::{
     project::Project,
     resolve::{Resolution, Resolver},
     semantics::{DeclarationKind, Namespace, Semantics},
-    source::{SourceError, SourceStore},
+    source::SourceStore,
     syntax::{Feature, Parse, ParseOptions, SyntaxKind as K},
 };
 use serde_json::Value;
@@ -23,7 +23,7 @@ type TestResult = Result<(), Box<dyn Error>>;
 
 static RECORDING: AtomicUsize = AtomicUsize::new(0);
 
-fn oracle(arguments: &[&str], input: &str) -> Result<Value, Box<dyn Error>> {
+fn oracle(arguments: &[&str], input: impl AsRef<[u8]>) -> Result<Value, Box<dyn Error>> {
     let mut child = Command::new(env!("INSTAR_UPSTREAM_ORACLE"))
         .args(arguments)
         .stdin(Stdio::piped())
@@ -34,7 +34,7 @@ fn oracle(arguments: &[&str], input: &str) -> Result<Value, Box<dyn Error>> {
         .stdin
         .take()
         .ok_or("oracle stdin")?
-        .write_all(input.as_bytes())?;
+        .write_all(input.as_ref())?;
     let output = child.wait_with_output()?;
     if !output.status.success() {
         return Err(format!(
@@ -62,12 +62,17 @@ fn all_features() -> ParseOptions {
     }
 }
 
-fn instar_parse_with(text: &str, options: ParseOptions) -> Result<Parse, Box<dyn Error>> {
-    let source = SourceStore::default().open(Path::new("upstream-oracle.luau"), 1, text)?;
+fn instar_parse_with(
+    text: impl AsRef<[u8]>,
+    options: ParseOptions,
+) -> Result<Parse, Box<dyn Error>> {
+    let mut file = tempfile::NamedTempFile::new()?;
+    file.write_all(text.as_ref())?;
+    let source = SourceStore::default().read(file.path())?;
     Ok(Parse::with_options(source, options)?)
 }
 
-fn instar_parse(text: &str) -> Result<Parse, Box<dyn Error>> {
+fn instar_parse(text: impl AsRef<[u8]>) -> Result<Parse, Box<dyn Error>> {
     instar_parse_with(text, all_features())
 }
 
@@ -295,14 +300,9 @@ fn vendored_runtime_parser_cases_match_acceptance() -> TestResult {
             .get("errors")
             .and_then(Value::as_array)
             .is_some_and(Vec::is_empty);
-        let Ok(input) = std::str::from_utf8(&bytes) else {
-            assert!(
-                !upstream_ok,
-                "upstream accepted a byte-only source at #{index}"
-            );
-            continue;
-        };
-        let instar = instar_parse_with(input, recorded_options(case)?)?;
+        let instar = instar_parse_with(&bytes, recorded_options(case)?)?;
+        let view = instar.syntax().to_string();
+        let input = view.as_str();
         let syntax_errors = format!("{:?}", instar.errors());
         let syntax = instar.syntax().clone();
         let mut instar_ranges: Vec<_> = instar
@@ -567,25 +567,14 @@ fn vendored_conformance_files_match_acceptance() -> TestResult {
     paths.sort();
     assert_ne!(paths.len(), 0);
     let mut differences = Vec::new();
-    let mut non_utf8 = Vec::new();
     for path in &paths {
         let bytes = fs::read(path)?;
-        let Ok(input) = std::str::from_utf8(&bytes) else {
-            let source = SourceStore::default().read(path)?;
-            assert!(
-                matches!(source.text(), Err(SourceError::Encoding(_))),
-                "{}",
-                path.display()
-            );
-            non_utf8.push(path.file_name().ok_or("fixture file name")?.to_owned());
-            continue;
-        };
-        let upstream = oracle(&["parse", "all"], input)?;
+        let upstream = oracle(&["parse", "all"], &bytes)?;
         let upstream_ok = upstream
             .get("errors")
             .and_then(Value::as_array)
             .is_some_and(Vec::is_empty);
-        let instar = instar_parse(input)?;
+        let instar = instar_parse(&bytes)?;
         if upstream_ok != instar.errors().is_empty() {
             differences.push(format!(
                 "{}: upstream={upstream_ok}, instar={:?}",
@@ -594,11 +583,7 @@ fn vendored_conformance_files_match_acceptance() -> TestResult {
             ));
         }
     }
-    assert_eq!(
-        non_utf8,
-        ["literals.luau", "pm.luau", "sort.luau"].map(std::ffi::OsString::from),
-        "vendored byte-oriented fixture inventory changed"
-    );
+
     assert!(
         differences.is_empty(),
         "{} conformance acceptance differences across {} files:\n{}",
@@ -682,18 +667,17 @@ fn vendored_runtime_lexer_cases_match_tokens_and_literals() -> TestResult {
                 .and_then(Value::as_str)
                 .ok_or("recorded lexer source")?,
         )?;
-        let Ok(input) = std::str::from_utf8(&bytes) else {
-            continue;
-        };
+        let instar = instar_parse(&bytes)?;
+        let view = instar.syntax().to_string();
+        let input = view.as_str();
         let profile = if case.get("integer").and_then(Value::as_bool) == Some(true) {
             "all"
         } else {
             "default"
         };
-        let upstream = oracle(&["lex", profile], input)?;
+        let upstream = oracle(&["lex", profile], &bytes)?;
         let upstream_ranges =
             oracle_ranges(&upstream, input).ok_or("invalid lexer oracle response")?;
-        let instar = instar_parse(input)?;
         let tokens: Vec<_> = instar
             .syntax()
             .descendants_with_tokens()
@@ -769,7 +753,7 @@ fn vendored_runtime_lexer_cases_match_tokens_and_literals() -> TestResult {
         let instar_strings: Vec<_> = tokens
             .iter()
             .filter(|token| token.kind() == K::String)
-            .filter_map(|token| instar_core::syntax::string_bytes(token).ok())
+            .filter_map(|token| instar_core::syntax::string_bytes(&instar, token).ok())
             .collect();
         if !boundaries_match || !categories_match || upstream_strings? != instar_strings {
             differences.push(format!(
@@ -788,6 +772,40 @@ fn vendored_runtime_lexer_cases_match_tokens_and_literals() -> TestResult {
             .collect::<Vec<_>>()
             .join("\n")
     );
+    Ok(())
+}
+
+#[test]
+fn original_byte_literals_match_upstream() -> TestResult {
+    for input in [
+        b"return '\xff', [[\xfe]], `\xfd`".as_slice(),
+        b"--\xff\nreturn '\xe2\x82'".as_slice(),
+        b"local \xff = 1".as_slice(),
+    ] {
+        let upstream = oracle(&["parse", "all"], input)?;
+        let parsed = instar_parse(input)?;
+        assert_eq!(parsed.source().bytes(), input);
+        assert_eq!(
+            parsed.errors().is_empty(),
+            upstream["errors"].as_array().ok_or("errors")?.is_empty()
+        );
+        let upstream = oracle(&["lex", "all"], input)?;
+        let expected: Result<Vec<_>, _> = upstream["tokens"]
+            .as_array()
+            .ok_or("tokens")?
+            .iter()
+            .filter_map(|token| token["decoded_hex"].as_str())
+            .map(decode_hex)
+            .collect();
+        let actual: Result<Vec<_>, _> = parsed
+            .syntax()
+            .descendants_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+            .filter(|token| token.kind() == K::String)
+            .map(|token| instar_core::syntax::string_bytes(&parsed, &token))
+            .collect();
+        assert_eq!(actual?, expected?);
+    }
     Ok(())
 }
 
@@ -932,7 +950,7 @@ fn vendored_require_fixture_sites_match() -> TestResult {
             }) else {
                 continue;
             };
-            let request = instar_core::syntax::string_bytes(&token)?;
+            let request = instar_core::syntax::string_bytes(semantics.parse(), &token)?;
             let request = std::str::from_utf8(&request)?;
             assert_eq!(
                 resolution_status(&resolver.resolve(&mut store, &semantics, index)?),

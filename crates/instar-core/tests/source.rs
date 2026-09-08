@@ -55,6 +55,37 @@ fn editor_revisions_override_disk_until_closed() -> TestResult {
 }
 
 #[test]
+fn malformed_bytes_have_stable_position_units() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let path = root.path().join("positions.luau");
+    let bytes = ["é😀".as_bytes(), b"\xff\xe2\x82\r\nx"].concat();
+    fs::write(&path, &bytes)?;
+    let source = SourceStore::default().read(&path)?;
+    for (offset, column) in [(0, 0), (2, 1), (6, 3), (7, 4), (8, 5), (9, 6)] {
+        let position = LineCol {
+            line: 0,
+            col: column,
+        };
+        assert_eq!(
+            source.position(offset.into(), PositionEncoding::Utf16)?,
+            position
+        );
+        assert_eq!(
+            source.offset(position, PositionEncoding::Utf16)?,
+            offset.into()
+        );
+    }
+    assert!(source.position(1.into(), PositionEncoding::Utf16).is_err());
+    assert!(source.position(10.into(), PositionEncoding::Utf16).is_err());
+    assert_eq!(
+        source.position(11.into(), PositionEncoding::Utf16)?,
+        LineCol { line: 1, col: 0 }
+    );
+    assert_eq!(source.bytes(), bytes);
+    Ok(())
+}
+
+#[test]
 fn disk_bytes_and_old_snapshots_remain_exact() -> TestResult {
     let root = tempfile::tempdir()?;
     let path = root.path().join("bytes.luau");
@@ -67,10 +98,13 @@ fn disk_bytes_and_old_snapshots_remain_exact() -> TestResult {
     let source = store.read(&path)?;
     assert_eq!(source.bytes(), b"return '\xff'");
     assert!(matches!(source.text(), Err(SourceError::Encoding(_))));
-    assert!(
-        source
-            .position(TextSize::from(0), PositionEncoding::Utf8)
-            .is_err()
+    assert_eq!(
+        source.position(TextSize::from(9), PositionEncoding::Utf16)?,
+        LineCol { line: 0, col: 9 }
+    );
+    assert_eq!(
+        source.offset(LineCol { line: 0, col: 9 }, PositionEncoding::Utf16)?,
+        TextSize::from(9)
     );
     assert_eq!(source.slice(TextRange::new(8.into(), 9.into()))?, &[255]);
     assert!(source.slice(TextRange::new(0.into(), 100.into())).is_err());

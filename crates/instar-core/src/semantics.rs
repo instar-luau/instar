@@ -732,7 +732,10 @@ impl Builder {
                     let string = child(&field, K::LiteralExpression).is_some_and(|node| {
                         node.children_with_tokens()
                             .filter_map(rowan::NodeOrToken::into_token)
-                            .any(|token| token.kind() == K::String && string_bytes(&token).is_ok())
+                            .any(|token| {
+                                token.kind() == K::String
+                                    && string_bytes(&self.facts.parse, &token).is_ok()
+                            })
                     });
                     if !name.is_some_and(|name| matches!(name.text(), "use" | "reason")) || !string
                     {
