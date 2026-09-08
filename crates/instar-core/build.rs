@@ -11,13 +11,14 @@ fn main() {
         .parent()
         .and_then(|path| path.parent())
         .expect("workspace root");
-    let output = workspace.join("target/upstream-oracle");
+    let output = workspace.join("target/oracle");
     let vendor = workspace.join("vendor/luau");
 
     println!("cargo:rerun-if-changed=tests/oracle/CMakeLists.txt");
     println!("cargo:rerun-if-changed=tests/oracle/oracle.cpp");
     println!("cargo:rerun-if-changed=tests/oracle/recorder.cpp");
     println!("cargo:rerun-if-changed=tests/oracle/recorder.h");
+    println!("cargo:rerun-if-changed=tests/oracle/encoder.inc");
     println!("cargo:rerun-if-changed={}", vendor.join("Ast").display());
     println!(
         "cargo:rerun-if-changed={}",
@@ -47,21 +48,18 @@ fn main() {
         .expect("clangd compile flags");
 
     let executable = destination.join("bin").join(if cfg!(windows) {
-        "instar-upstream-oracle.exe"
+        "instar-oracle.exe"
     } else {
-        "instar-upstream-oracle"
+        "instar-oracle"
     });
-    println!(
-        "cargo:rustc-env=INSTAR_UPSTREAM_ORACLE={}",
-        executable.display()
-    );
+    println!("cargo:rustc-env=INSTAR_ORACLE={}", executable.display());
     let parser_tests = destination.join("bin").join(if cfg!(windows) {
-        "instar-upstream-parser-tests.exe"
+        "instar-parser-tests.exe"
     } else {
-        "instar-upstream-parser-tests"
+        "instar-parser-tests"
     });
     println!(
-        "cargo:rustc-env=INSTAR_UPSTREAM_PARSER_TESTS={}",
+        "cargo:rustc-env=INSTAR_PARSER_TESTS={}",
         parser_tests.display()
     );
 }

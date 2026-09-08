@@ -4,10 +4,12 @@
 #include "Luau/Common.h"
 #include "Luau/Parser.h"
 
+#include <atomic>
 #include <cstdlib>
 #include <fstream>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace {
 
@@ -139,14 +141,38 @@ struct AstSupplement : Luau::AstVisitor {
   }
 };
 
-void record(const char *source, size_t size, const Luau::ParseOptions &options,
-            const Luau::ParseResult &result) {
+std::atomic<std::uint64_t> invocationCounter{0};
+thread_local std::vector<std::uint64_t> activeParses;
+
+} // namespace
+
+std::uint64_t instarParseBegin() {
+  const auto id = ++invocationCounter;
+  activeParses.push_back(id);
+  const auto path = recordPath();
+  if (!path.empty()) {
+    std::ofstream output(path, std::ios::app | std::ios::binary);
+    output << "{\"mode\":\"parse_begin\",\"id\":" << id << "}\n";
+  }
+  return id;
+}
+
+void instarRecordParsed(std::uint64_t invocation, const char *source,
+                        size_t size, const Luau::ParseOptions &options,
+                        Luau::AstNode *root,
+                        const std::vector<Luau::ParseError> &errors,
+                        const std::vector<Luau::Comment> &comments,
+                        const char *entry) {
+  if (activeParses.empty() || activeParses.back() != invocation)
+    std::abort();
+  activeParses.pop_back();
   const std::string path = recordPath();
   if (path.empty())
     return;
 
   std::ofstream output(path, std::ios::app | std::ios::binary);
-  output << "{\"mode\":\"parse\",\"source_hex\":\""
+  output << "{\"mode\":\"parse\",\"id\":" << invocation
+         << ",\"entry\":" << jsonString(entry) << ",\"source_hex\":\""
          << hex(std::string_view(source, size)) << "\",\"features\":{";
   output << "\"declarations\":"
          << (options.allowDeclarationSyntax ? "true" : "false");
@@ -169,49 +195,34 @@ void record(const char *source, size_t size, const Luau::ParseOptions &options,
     output << jsonString(name) << ':' << integer(name);
   }
   output << "},\"errors\":[";
-  for (size_t index = 0; index < result.errors.size(); ++index) {
+  for (size_t index = 0; index < errors.size(); ++index) {
     if (index)
       output << ',';
-    const Luau::ParseError &error = result.errors[index];
+    const Luau::ParseError &error = errors[index];
     output << "{\"location\":" << location(error.getLocation())
            << ",\"message\":" << jsonString(error.getMessage()) << '}';
   }
   output << "],\"ast\":";
-  if (result.errors.empty()) {
-    output << jsonString(Luau::toJson(result.root, result.commentLocations));
+  if (errors.empty()) {
+    output << jsonString(Luau::toJson(root, comments));
     AstSupplement supplement;
-    result.root->visit(&supplement);
+    root->visit(&supplement);
     output << ",\"ast_supplement\":" << jsonString(supplement.json + "]");
   } else
     output << "null";
   output << "}\n";
 }
 
-void recordLex(const char *source, size_t size) {
+void instarRecordLex(const char *source, size_t size, Luau::Position start) {
   const std::string path = recordPath();
   if (path.empty())
     return;
   std::ofstream output(path, std::ios::app | std::ios::binary);
-  output << "{\"mode\":\"lex\",\"source_hex\":\""
+  output << "{\"mode\":"
+         << jsonString(activeParses.empty() ? "lex" : "parser_lex")
+         << ",\"parent\":" << (activeParses.empty() ? 0 : activeParses.back())
+         << ",\"start\":" << position(start) << ",\"source_hex\":\""
          << hex(std::string_view(source, size))
          << "\",\"integer\":" << (flag("LuauIntegerType2") ? "true" : "false")
          << "}\n";
-}
-
-} // namespace
-
-InstarRecordingLexer::InstarRecordingLexer(const char *source, size_t size,
-                                           Luau::AstNameTable &names)
-    : Luau::Lexer(source, size, names) {
-  recordLex(source, size);
-}
-
-Luau::ParseResult instarOracleParse(const char *source, size_t size,
-                                    Luau::AstNameTable &names,
-                                    Luau::Allocator &allocator,
-                                    Luau::ParseOptions options) {
-  Luau::ParseResult result =
-      Luau::Parser::parse(source, size, names, allocator, options);
-  record(source, size, options, result);
-  return result;
 }

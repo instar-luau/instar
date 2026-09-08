@@ -1,2 +1,2 @@
 CompileFlags:
-  CompilationDatabase: ../../../../target/upstream-oracle
+  CompilationDatabase: ../../../../target/oracle
