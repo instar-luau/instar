@@ -8,6 +8,9 @@ license.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+oracle = []
+
 [dependencies]
 ignore = "0.4.33"
 jsonc-parser = "0.27.1"
@@ -35,6 +38,9 @@ assert_cmd = "2.2.2"
 eyre = "0.6.14"
 fs-err = { version = "3.3.1", features = ["expose_original_error"] }
 tempfile = "3.27.0"
+
+[build-dependencies]
+cmake = "0.1.58"
 
 [lints]
 workspace = true
