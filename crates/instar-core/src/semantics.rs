@@ -239,7 +239,17 @@ struct Builder {
 
 impl Builder {
     fn error(&mut self, node: &SyntaxNode, message: &str) {
-        let range = self.facts.parse.source_range(node.text_range());
+        let mut tokens = node
+            .descendants_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+            .filter(|token| !token.kind().is_trivia());
+        let span = tokens.next().map_or(node.text_range(), |first| {
+            TextRange::new(
+                first.text_range().start(),
+                tokens.last().unwrap_or(first).text_range().end(),
+            )
+        });
+        let range = self.facts.parse.source_range(span);
         if !self
             .facts
             .errors
@@ -391,13 +401,42 @@ impl Builder {
                 && access != Access::Read
                 && self.facts.declarations[id].is_const
             {
-                self.error(node, "constant binding cannot be reassigned");
+                let declaration = &self.facts.declarations[id];
+                let message = if declaration.kind == DeclarationKind::Class {
+                    let line = self
+                        .facts
+                        .parse
+                        .source()
+                        .position(
+                            declaration.range.start(),
+                            crate::source::PositionEncoding::Utf8,
+                        )
+                        .expect("declaration boundary")
+                        .line
+                        + 1;
+                    format!(
+                        "'{}' refers to a class and cannot be used as a variable name (defined on line {line})",
+                        token.text()
+                    )
+                } else {
+                    format!(
+                        "Variable '{}' is constant and may not be reassigned",
+                        token.text()
+                    )
+                };
+                self.error(node, &message);
             }
             if namespace == Namespace::Value
                 && let Some(boundary) = self.ancestor(scope, ScopeKind::TypeFunction)
                 && !self.is_within(self.facts.declarations[id].scope, boundary)
             {
-                self.error(node, "type function cannot reference outer runtime locals");
+                self.error(
+                    node,
+                    &format!(
+                        "Type function cannot reference outer local '{}'",
+                        token.text()
+                    ),
+                );
             }
         }
         if let Some(declaration) = declaration.filter(|id| {
@@ -580,11 +619,14 @@ impl Builder {
             .map(|(_, declaration)| (declaration.name.clone(), declaration.range))
             .collect();
         if !declarations.is_empty() && self.module_return.is_some() {
-            self.error(node, "value exports conflict with module return");
+            self.error(
+                node,
+                "Exporting values is not compatible with top-level return (export/return conflict)",
+            );
         }
         for (name, range) in declarations {
-            if self.exports.insert(name, range).is_some() {
-                self.error(node, "duplicate exported name");
+            if self.exports.insert(name.clone(), range).is_some() {
+                self.error(node, &format!("Duplicate exported identifier '{name}'"));
             }
         }
     }
@@ -594,8 +636,15 @@ impl Builder {
             if identifier(&name)
                 .and_then(|name| self.lookup(scope, Namespace::Type, name.text()))
                 .is_some_and(|id| self.facts.declarations[id].kind == DeclarationKind::Class)
+                && let Some(token) = identifier(&name)
             {
-                self.error(&name, "duplicate class declaration");
+                self.error(
+                    &name,
+                    &format!(
+                        "A class named '{}' has already been declared in this module",
+                        token.text()
+                    ),
+                );
             }
             self.declare(&name, scope, DeclarationKind::Class, Namespace::Value);
             self.declare(&name, scope, DeclarationKind::Class, Namespace::Type);
@@ -614,7 +663,10 @@ impl Builder {
                         .insert(name.text().to_owned(), name.text_range())
                         .is_some()
                     {
-                        self.error(&name_node, "duplicate class member");
+                        self.error(
+                            &name_node,
+                            &format!("Duplicate class member '{}'", name.text()),
+                        );
                     }
                     let method = member.kind() == K::ClassMethod;
                     let permitted = [
@@ -636,11 +688,25 @@ impl Builder {
                         "__len",
                         "__idiv",
                     ];
-                    if name.text() == "new"
-                        || (name.text().starts_with("__")
-                            && (!method || !permitted.contains(&name.text())))
-                    {
-                        self.error(&name_node, "reserved class member name");
+                    if name.text() == "new" {
+                        self.error(&name_node, if method {
+                            "Class methods cannot be named 'new'.  Name it '__init' to define a constructor."
+                        } else {
+                            "Class properties cannot be named 'new'. Define a method named '__init' to define a constructor."
+                        });
+                    } else if name.text().starts_with("__") {
+                        if !method {
+                            self.error(&name_node, "Class properties cannot start with '__'");
+                        } else if ["__index", "__newindex", "__mode", "__metatable", "__type"]
+                            .contains(&name.text())
+                        {
+                            self.error(
+                                &name_node,
+                                &format!("Classes cannot define '{}' as a metamethod", name.text()),
+                            );
+                        } else if !permitted.contains(&name.text()) {
+                            self.error(&name_node, &format!("Cannot use '{}' as a method name: names starting with '__' are reserved", name.text()));
+                        }
                     }
                 }
                 if let Some(body) = child(&member, K::FunctionBody) {
@@ -816,7 +882,7 @@ impl Builder {
                     {
                         self.module_return = Some(self.facts.parse.source_range(node.text_range()));
                         if !self.exports.is_empty() {
-                            self.error(node, "module return conflicts with value exports");
+                            self.error(node, "Exporting values is not compatible with top-level return (export/return conflict)");
                         }
                     }
                     self.children(node, scope);
