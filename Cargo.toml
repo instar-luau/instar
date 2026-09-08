@@ -1,0 +1,24 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+repository = "https://github.com/instar-luau/instar"
+license = "MIT"
+keywords = ["formatter", "linter", "luau", "luaux", "roblox"]
+categories = ["compilers", "development-tools"]
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+
+[workspace.lints.rust]
+deprecated_safe = { level = "deny", priority = -1 }
+let_underscore = { level = "deny", priority = -1 }
+rust_2018_idioms = { level = "deny", priority = -1 }
+unsafe_code = "deny"
+unused = { level = "deny", priority = -1 }
+warnings = { level = "deny", priority = -1 }
