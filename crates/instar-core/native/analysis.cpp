@@ -158,7 +158,7 @@ extern "C" void instar_analyze(void *context, Read read, Resolve resolve,
     configurations.strict = strict;
     Luau::FrontendOptions options;
     options.runLintChecks = true;
-    options.retainFullTypeGraphs = annotations;
+    options.retainFullTypeGraphs = true;
 
     Luau::Frontend frontend(oldSolver ? Luau::SolverMode::Old
                                       : Luau::SolverMode::New,

@@ -342,6 +342,61 @@ fn native_analysis_uses_unsaved_modules_and_refreshes_between_operations() -> Te
 }
 
 #[test]
+fn native_analysis_preserves_dependency_types_for_diagnostics() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path();
+    let mut sources = SourceStore::default();
+    let main = root.join("main.luau");
+
+    sources.open(
+        &root.join("dependency.luau"),
+        1,
+        "local function create<Value>(value: Value): {read: () -> Value}\nreturn {read = function() return value end}\nend\nreturn create",
+    )?;
+
+    sources.open(
+        &root.join("forward.luau"),
+        1,
+        "return require('./dependency')",
+    )?;
+
+    sources.open(
+        &main,
+        1,
+        "local create = require('./forward')\nlocal value: string = create(1).read()\nreturn value",
+    )?;
+
+    let report = analysis::analyze(
+        &mut Resolver::new(&mut sources),
+        std::slice::from_ref(&main),
+        &Options {
+            strict: true,
+            ..Options::default()
+        },
+    )?;
+
+    assert!(report.annotations.is_empty());
+    assert_eq!(report.diagnostics.len(), 1);
+    let diagnostic = &report.diagnostics[0];
+    assert_eq!(diagnostic.path, main);
+    assert_eq!(diagnostic.line, 1);
+
+    assert!(
+        diagnostic.message.contains("number"),
+        "{}",
+        diagnostic.message
+    );
+
+    assert!(
+        diagnostic.message.contains("string"),
+        "{}",
+        diagnostic.message
+    );
+
+    Ok(())
+}
+
+#[test]
 fn native_analysis_reports_dependency_lint_errors() -> TestResult {
     let directory = tempfile::tempdir()?;
     let root = directory.path();
