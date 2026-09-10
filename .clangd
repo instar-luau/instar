@@ -7,5 +7,6 @@ CompileFlags:
     - -I../../../vendor/luau/Ast/include
     - -I../../../vendor/luau/CLI/include
     - -I../../../vendor/luau/Common/include
+    - -I../../../vendor/luau/Compiler/include
     - -I../../../vendor/luau/Config/include
     - -I../../../vendor/luau/VM/include
