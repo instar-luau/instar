@@ -156,6 +156,39 @@ impl<'store> Resolver<'store> {
         Ok(&self.configurations[directory])
     }
 
+    pub(crate) fn definitions(&mut self, from: &Path) -> io::Result<Vec<PathBuf>> {
+        let directory = from
+            .parent()
+            .ok_or_else(|| io::Error::other("module has no parent"))?;
+
+        let mut definitions = Vec::new();
+
+        for ancestor in directory.ancestors().collect::<Vec<_>>().into_iter().rev() {
+            let path = ancestor.join("instar.toml");
+
+            let Some(contents) = self.contents(&path)? else {
+                continue;
+            };
+
+            let contents = std::str::from_utf8(contents).map_err(io::Error::other)?;
+
+            let configuration = InstarConfig::parse(contents)
+                .map_err(|error| io::Error::other(format!("{}: {error}", path.display())))?;
+
+            if let Some(configured) = configuration.definitions {
+                definitions = configured
+                    .into_iter()
+                    .map(|path| absolute(&ancestor.join(path)).map_err(io::Error::other))
+                    .collect::<io::Result<Vec<_>>>()?;
+            }
+        }
+
+        let mut seen = std::collections::BTreeSet::new();
+        definitions.retain(|path| seen.insert(path.clone()));
+
+        Ok(definitions)
+    }
+
     fn project_aliases(&mut self, directory: &Path) -> io::Result<&BTreeMap<String, Alias>> {
         if !self.aliases.contains_key(directory) {
             let mut aliases = BTreeMap::new();
@@ -163,7 +196,6 @@ impl<'store> Resolver<'store> {
             let path = directory.join("instar.toml");
 
             if let Some(contents) = self.contents(&path)? {
-
                 let contents = std::str::from_utf8(contents)
                     .map_err(|error| io::Error::other(format!("{}: {error}", path.display())))?;
 
@@ -200,7 +232,6 @@ impl<'store> Resolver<'store> {
                         )));
                     }
                 }
-
             }
 
             self.aliases.insert(directory.to_owned(), aliases);
@@ -221,16 +252,19 @@ impl<'store> Resolver<'store> {
                 return Ok(Some(alias.clone()));
             }
 
-            if let Some(alias) = self.configurations[directory].iter().find_map(|configuration| {
-                if configuration.path.parent() != Some(ancestor) {
-                    return None;
-                }
+            if let Some(alias) = self.configurations[directory]
+                .iter()
+                .find_map(|configuration| {
+                    if configuration.path.parent() != Some(ancestor) {
+                        return None;
+                    }
 
-                Some(Alias {
-                    configuration: configuration.path.clone(),
-                    value: configuration.aliases.get(name)?.clone(),
+                    Some(Alias {
+                        configuration: configuration.path.clone(),
+                        value: configuration.aliases.get(name)?.clone(),
+                    })
                 })
-            }) {
+            {
                 return Ok(Some(alias));
             }
         }
