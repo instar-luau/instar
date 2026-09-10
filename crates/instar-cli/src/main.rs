@@ -1,3 +1,5 @@
+mod analyze;
+
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
@@ -11,7 +13,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    Analyze,
+    /// Analyze files and directories with pinned Luau.
+    Analyze(analyze::Analyze),
     Format,
     Lint {
         #[arg(long)]
@@ -23,7 +26,15 @@ enum Command {
 
 fn main() -> ExitCode {
     let command = match Cli::parse().command {
-        Command::Analyze => "analyze",
+        Command::Analyze(arguments) => {
+            return match arguments.run() {
+                Ok(status) => status,
+                Err(error) => {
+                    eprintln!("analyze: {error}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
         Command::Format => "format",
         Command::Lint { fix: false } => "lint",
         Command::Lint { fix: true } => "lint --fix",

@@ -1,4 +1,5 @@
 [tools]
+"aqua:Kitware/CMake" = "latest"
 "aqua:tombi-toml/tombi" = "latest"
 "npm:oxfmt" = "latest"
 rust = { version = "nightly", profile = "minimal", components = ["rust-analyzer", "rustfmt", "clippy"] }
