@@ -1,23 +1,17 @@
 use std::{
-    collections::BTreeSet,
-    fs,
-    io::{self, Read, Write},
-    path::{Path, PathBuf},
+    io::{self, Write},
     process::ExitCode,
 };
 
 use clap::Args;
-use instar_core::{analysis, resolution::Resolver, source::SourceStore};
+use instar_core::{analysis, resolution::Resolver};
+
+use crate::input::Input;
 
 #[derive(Args)]
 pub struct Analyze {
-    /// Files or directories to analyze; '-' reads original bytes from stdin.
-    #[arg(required = true)]
-    files: Vec<PathBuf>,
-
-    /// Module filename for stdin, used for relative imports and configuration.
-    #[arg(long)]
-    filename: Option<PathBuf>,
+    #[command(flatten)]
+    input: Input,
 
     /// Override the default checking mode for files without a mode directive.
     #[arg(long, value_parser = ["strict"])]
@@ -34,79 +28,13 @@ pub struct Analyze {
 
 impl Analyze {
     pub fn run(self) -> io::Result<ExitCode> {
-        let mut sources = SourceStore::default();
-        let mut modules = Vec::new();
-        let mut directories = BTreeSet::new();
-        let mut pending = self.files;
-        let mut stdin = None;
+        let mut input = self.input.load()?;
 
-        if self.filename.is_some() && !pending.iter().any(|path| path == Path::new("-")) {
-            return Err(io::Error::other("--filename requires '-' input"));
-        }
-
-        while let Some(path) = pending.pop() {
-            if path == Path::new("-") {
-                if stdin.is_none() {
-                    let mut bytes = Vec::new();
-                    io::stdin().lock().read_to_end(&mut bytes)?;
-
-                    let path = self
-                        .filename
-                        .clone()
-                        .unwrap_or_else(|| PathBuf::from("stdin"));
-
-                    let source = sources
-                        .open_bytes(&path, 0, bytes)
-                        .map_err(io::Error::other)?;
-
-                    modules.push(source.path().to_owned());
-                    stdin = Some(source);
-                }
-
-                continue;
-            }
-
-            let metadata = fs::metadata(&path).map_err(|error| {
-                io::Error::new(error.kind(), format!("{}: {error}", path.display()))
-            })?;
-
-            if metadata.is_file() {
-                let source = sources.read(&path).map_err(io::Error::other)?;
-                modules.push(source.path().to_owned());
-            } else if metadata.is_dir() {
-                if !directories.insert(fs::canonicalize(&path)?) {
-                    continue;
-                }
-
-                let mut children = Vec::new();
-
-                for entry in fs::read_dir(&path)? {
-                    let entry = entry?;
-                    let path = entry.path();
-
-                    let metadata = fs::metadata(&path).map_err(|error| {
-                        io::Error::new(error.kind(), format!("{}: {error}", path.display()))
-                    })?;
-
-                    if metadata.is_dir()
-                        || matches!(
-                            path.extension().and_then(|extension| extension.to_str()),
-                            Some("lua" | "luau")
-                        )
-                    {
-                        children.push(path);
-                    }
-                }
-
-                children.sort();
-                pending.extend(children.into_iter().rev());
-            } else {
-                return Err(io::Error::other(format!(
-                    "{}: expected a file or directory",
-                    path.display()
-                )));
-            }
-        }
+        let modules = input
+            .sources
+            .iter()
+            .map(|source| source.path().to_owned())
+            .collect::<Vec<_>>();
 
         let options = analysis::Options {
             strict: self.mode.is_some(),
@@ -114,7 +42,7 @@ impl Analyze {
             annotations: self.annotate,
         };
 
-        let report = analysis::analyze(&mut Resolver::new(&mut sources), &modules, &options)?;
+        let report = analysis::analyze(&mut Resolver::new(&mut input.store), &modules, &options)?;
 
         for diagnostic in &report.diagnostics {
             eprintln!(
