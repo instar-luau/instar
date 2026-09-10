@@ -2277,6 +2277,19 @@ fn every_type_layout_is_idempotent_and_parses() {
 }
 
 #[test]
+fn external_type_declarations_preserve_their_syntax() {
+    for source in [
+        "declare extern type Record with\nend\n",
+        "declare extern type Record with\n\tread Value: boolean\n\tfunction Apply(self, ...: any): ()\nend\n",
+        "declare extern type Entry extends Record with\n\tValue: number\nend\n",
+    ] {
+        let output = formatted(source);
+        assert_eq!(output, source);
+        assert_eq!(formatted(&output), output);
+    }
+}
+
+#[test]
 fn a_class_formats_one_member_per_line() {
     let source = "open class Animal\n\tpublic species: string\n\tfunction speak(self)\n\t\treturn \"...\"\n\tend\nend\n";
 

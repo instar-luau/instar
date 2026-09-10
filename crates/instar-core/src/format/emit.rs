@@ -660,7 +660,7 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
             ]),
 
             Parts::ClassDeclaration { class } => {
-                Document::sequence([Document::text("declare "), self.node(class)?])
+                Document::sequence([Document::text("declare extern "), self.node(class)?])
             }
 
             Parts::Class {
@@ -668,13 +668,20 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
                 extends,
                 members,
             } => Document::sequence([
-                Document::text(if self.text(view).starts_with("open") {
+                Document::text(if self.text(view).starts_with("type") {
+                    "type "
+                } else if self.text(view).starts_with("open") {
                     "open class "
                 } else {
                     "class "
                 }),
                 self.node(name)?,
                 self.optional(extends)?,
+                Document::text(if self.text(view).starts_with("type") {
+                    " with"
+                } else {
+                    ""
+                }),
                 Document::sequence(
                     members
                         .map(|member| Ok(Document::sequence([Document::Hard, self.node(member)?])))
