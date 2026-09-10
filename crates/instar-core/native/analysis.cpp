@@ -1,17 +1,20 @@
+#include "Luau/AstQuery.h"
 #include "Luau/BuiltinDefinitions.h"
 #include "Luau/Config.h"
 #include "Luau/Error.h"
 #include "Luau/FileResolver.h"
 #include "Luau/Flags.h"
 #include "Luau/Frontend.h"
-#include "Luau/PrettyPrinter.h"
+#include "Luau/Parser.h"
+#include "Luau/ToString.h"
 #include "Luau/TypeArena.h"
-#include "Luau/TypeAttach.h"
 
 #include <map>
 #include <mutex>
 #include <set>
 #include <string>
+#include <type_traits>
+#include <vector>
 
 extern "C" {
 struct Bytes {
@@ -136,6 +139,121 @@ extern "C" void instar_aliases(Bytes source, void *context, Alias alias,
   }
 }
 
+struct Annotations : Luau::AstVisitor {
+  Luau::Module &module;
+  std::vector<size_t> lines{0};
+  std::map<size_t, std::string> insertions;
+  Luau::ToStringOptions options;
+
+  Annotations(Luau::Module &module, const std::string &source)
+      : module(module) {
+    for (size_t index = 0; index < source.size(); ++index)
+      if (source[index] == '\n')
+        lines.push_back(index + 1);
+  }
+
+  template <typename Type>
+  void insert(Luau::Position position, Type type, const Luau::ScopePtr &scope) {
+    options.scope = scope;
+    auto result = Luau::toStringDetailed(type, options);
+
+    if (result.invalid || result.error || result.cycle || result.truncated)
+      return;
+
+    std::string annotation = result.name;
+
+    if constexpr (std::is_same_v<Type, Luau::TypePackId>)
+      if (annotation != "()")
+        annotation = "(" + annotation + ")";
+
+    std::string declaration = "type Annotation = ";
+
+    if constexpr (std::is_same_v<Type, Luau::TypePackId>)
+      declaration += "() -> ";
+
+    declaration += annotation;
+
+    Luau::Allocator allocator;
+    Luau::AstNameTable names(allocator);
+
+    auto parsed = Luau::Parser::parse(declaration.data(), declaration.size(),
+                                      names, allocator);
+
+    if (!parsed.errors.empty())
+      return;
+
+    insertions.emplace(lines.at(position.line) + position.column,
+                       ": " + annotation);
+  }
+
+  void local(Luau::AstLocal *value) {
+    if (value->annotation)
+      return;
+
+    if (auto scope = Luau::findScopeAtPosition(module, value->location.begin))
+      if (auto type = scope->lookup(value))
+        insert(value->location.end, *type, scope);
+  }
+
+  bool visit(Luau::AstStatLocal *statement) override {
+    for (auto *value : statement->vars)
+      local(value);
+
+    return true;
+  }
+
+  bool visit(Luau::AstStatFor *statement) override {
+    local(statement->var);
+
+    return true;
+  }
+
+  bool visit(Luau::AstStatForIn *statement) override {
+    for (auto *value : statement->vars)
+      local(value);
+
+    return true;
+  }
+
+  bool visit(Luau::AstExprFunction *function) override {
+    if (function->argLocation && function->generics.size == 0 &&
+        function->genericPacks.size == 0)
+      if (auto type = module.astTypes.find(function))
+        if (auto signature =
+                Luau::get<Luau::FunctionType>(Luau::follow(*type))) {
+          std::string generics;
+
+          auto generic = [&](const auto &type) {
+            if (!generics.empty())
+              generics += ", ";
+
+            generics += Luau::toString(type, options);
+          };
+
+          for (auto type : signature->generics)
+            generic(type);
+
+          for (auto type : signature->genericPacks)
+            generic(type);
+
+          if (!generics.empty())
+            insertions.emplace(lines.at(function->argLocation->begin.line) +
+                                   function->argLocation->begin.column,
+                               "<" + generics + ">");
+        }
+
+    for (auto *argument : function->args)
+      local(argument);
+
+    if (!function->returnAnnotation && function->argLocation)
+      if (auto scope =
+              Luau::findScopeAtPosition(module, function->body->location.begin))
+        insert(function->argLocation->end, scope->returnType, scope);
+
+    return true;
+  }
+};
+
 extern "C" void instar_analyze(void *context, Read read, Resolve resolve,
                                Configuration configuration, Report report,
                                Annotate annotate, const Bytes *modules,
@@ -254,10 +372,15 @@ extern "C" void instar_analyze(void *context, Read read, Resolve resolve,
         auto module = frontend.moduleResolver.getModule(name);
 
         if (source && module) {
-          Luau::attachTypeData(*source, *module);
+          std::string contents = text(read(context, bytes(name)));
+          Annotations annotation(*module, contents);
+          source->root->visit(&annotation);
 
-          annotate(context, bytes(name),
-                   bytes(Luau::prettyPrintWithTypes(*source->root)));
+          for (auto iterator = annotation.insertions.rbegin();
+               iterator != annotation.insertions.rend(); ++iterator)
+            contents.insert(iterator->first, iterator->second);
+
+          annotate(context, bytes(name), bytes(contents));
         }
       }
     }

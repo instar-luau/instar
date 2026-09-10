@@ -227,6 +227,72 @@ fn resolves_unicode_module_paths() {
 }
 
 #[test]
+fn annotations_preserve_source_and_produce_checkable_types() {
+    let source = "-- retained\r\nlocal function pair(first, second) return first, second end\r\nlocal function finish() end\r\nfinish()\r\nlocal value = 2 -- retained too\r\nlocal text: string = '雪'\r\nreturn pair(value, text)\r\n";
+
+    for solver in ["new", "old"] {
+        let assertion = Command::new(assert_cmd::cargo::cargo_bin!("instar"))
+            .args([
+                "analyze", "--mode", "strict", "--solver", solver, "--annotate", "-",
+            ])
+            .write_stdin(source)
+            .assert()
+            .success()
+            .stderr("");
+
+        let output = &assertion.get_output().stdout;
+        let text = String::from_utf8_lossy(output);
+        assert!(text.starts_with("-- retained\r\n"), "{text}");
+
+        assert!(
+            text.contains("local value: number = 2 -- retained too\r\n"),
+            "{text}"
+        );
+
+        assert!(text.contains("local text: string = '雪'\r\n"), "{text}");
+        assert!(text.contains("finish(): ()"), "{text}");
+        assert!(text.contains("pair<"), "{text}");
+
+        Command::new(assert_cmd::cargo::cargo_bin!("instar"))
+            .args(["analyze", "--mode", "strict", "--solver", solver, "-"])
+            .write_stdin(output.clone())
+            .assert()
+            .success()
+            .stderr("");
+    }
+}
+
+#[test]
+fn annotations_handle_recursive_types_and_analysis_errors() {
+    for source in [
+        "type Node = {value: number, next: Node?}\nlocal function read(node: Node)\nlocal next = node.next\nreturn next\nend\nreturn read",
+        "local value = missing\nreturn value",
+    ] {
+        let assertion = Command::new(assert_cmd::cargo::cargo_bin!("instar"))
+            .args(["analyze", "--mode", "strict", "--annotate", "-"])
+            .write_stdin(source)
+            .assert();
+
+        let output = assertion.get_output();
+        assert!(matches!(output.status.code(), Some(0 | 1)));
+        assert_ne!(output.stdout, [] as [u8; 0]);
+        let diagnostics = String::from_utf8_lossy(&output.stderr);
+        assert!(!diagnostics.contains("native analysis"), "{diagnostics}");
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(!text.contains("*error-type*"), "{text}");
+
+        let checked = Command::new(assert_cmd::cargo::cargo_bin!("instar"))
+            .args(["analyze", "--mode", "strict", "-"])
+            .write_stdin(output.stdout.clone())
+            .assert();
+
+        let diagnostics = String::from_utf8_lossy(&checked.get_output().stderr);
+        assert!(!diagnostics.contains("SyntaxError"), "{diagnostics}");
+        assert_eq!(checked.get_output().status.code(), output.status.code());
+    }
+}
+
+#[test]
 fn runs_from_a_relocated_binary_and_supports_upstream_options() {
     let directory = tempfile::tempdir().unwrap();
 
