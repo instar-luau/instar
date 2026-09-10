@@ -116,12 +116,12 @@ impl<'store> Resolver<'store> {
             .parent()
             .ok_or_else(|| io::Error::other("module has no parent directory"))?;
 
-        self.project_aliases(directory)?;
-
         if !self.configurations.contains_key(directory) {
             let mut configurations = Vec::new();
 
             for ancestor in directory.ancestors().collect::<Vec<_>>().into_iter().rev() {
+                self.project_aliases(ancestor)?;
+
                 let executable = ancestor.join(".config.luau");
 
                 if self.contents(&executable)?.is_some() {
@@ -160,12 +160,9 @@ impl<'store> Resolver<'store> {
         if !self.aliases.contains_key(directory) {
             let mut aliases = BTreeMap::new();
 
-            for ancestor in directory.ancestors() {
-                let path = ancestor.join("instar.toml");
+            let path = directory.join("instar.toml");
 
-                let Some(contents) = self.contents(&path)? else {
-                    continue;
-                };
+            if let Some(contents) = self.contents(&path)? {
 
                 let contents = std::str::from_utf8(contents)
                     .map_err(|error| io::Error::other(format!("{}: {error}", path.display())))?;
@@ -204,7 +201,6 @@ impl<'store> Resolver<'store> {
                     }
                 }
 
-                break;
             }
 
             self.aliases.insert(directory.to_owned(), aliases);
@@ -218,20 +214,28 @@ impl<'store> Resolver<'store> {
             .parent()
             .ok_or_else(|| io::Error::other("module has no parent directory"))?;
 
-        if let Some(alias) = self.project_aliases(directory)?.get(name) {
-            return Ok(Some(alias.clone()));
-        }
+        self.configurations(from)?;
 
-        Ok(self
-            .configurations(from)?
-            .iter()
-            .rev()
-            .find_map(|configuration| {
+        for ancestor in directory.ancestors() {
+            if let Some(alias) = self.project_aliases(ancestor)?.get(name) {
+                return Ok(Some(alias.clone()));
+            }
+
+            if let Some(alias) = self.configurations[directory].iter().find_map(|configuration| {
+                if configuration.path.parent() != Some(ancestor) {
+                    return None;
+                }
+
                 Some(Alias {
                     configuration: configuration.path.clone(),
                     value: configuration.aliases.get(name)?.clone(),
                 })
-            }))
+            }) {
+                return Ok(Some(alias));
+            }
+        }
+
+        Ok(None)
     }
 
     /// # Errors
