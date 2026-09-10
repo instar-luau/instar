@@ -38,7 +38,7 @@ static std::string text(Bytes value)
     return value.size ? std::string(value.data, value.size) : std::string{};
 }
 
-static void initialize()
+void instar_initialize()
 {
     static std::once_flag flags;
     std::call_once(flags, setLuauFlagsDefault);
@@ -123,7 +123,7 @@ extern "C" void instar_aliases(Bytes source, void* context, Alias alias, Report 
 {
     try
     {
-        initialize();
+        instar_initialize();
         Luau::Config configuration;
 
         if (auto error = Luau::parseConfig(text(source), configuration, configurationOptions()))
@@ -165,7 +165,7 @@ extern "C" void instar_analyze(
     try
     {
         std::lock_guard<std::mutex> lock(mutex);
-        initialize();
+        instar_initialize();
         Files files;
         files.context = context;
         files.read = read;

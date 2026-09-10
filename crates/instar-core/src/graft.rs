@@ -1,5 +1,6 @@
 mod host;
 mod layout;
+mod luau;
 mod native;
 
 use crate::format::Options;
@@ -16,6 +17,7 @@ const RESPONSE_LIMIT: usize = 64 * 1024 * 1024;
 #[serde(rename_all = "lowercase")]
 pub enum Runtime {
     Native,
+    Luau,
     Wasm,
 }
 
@@ -40,6 +42,7 @@ pub struct Manifest {
 #[derive(Debug, Clone)]
 enum Artifact {
     Native(PathBuf),
+    Luau(Vec<u8>),
     Wasm(Vec<u8>),
 }
 
@@ -115,6 +118,13 @@ impl Graft {
                 Artifact::Native(entry)
             }
 
+            Runtime::Luau => {
+                let bytes = fs::read(entry)?;
+                luau::validate(&bytes, manifest.format, manifest.lint)?;
+
+                Artifact::Luau(bytes)
+            }
+
             Runtime::Wasm => {
                 let bytes = fs::read(entry)?;
 
@@ -149,6 +159,7 @@ impl Graft {
 
         let result = match &self.artifact {
             Artifact::Native(entry) => native::invoke(entry, &request),
+            Artifact::Luau(bytes) => luau::invoke(bytes, &request, self.format, self.lint),
 
             Artifact::Wasm(bytes) => {
                 host::Host::load(bytes, self.format, self.lint, &self.configuration)

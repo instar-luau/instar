@@ -14,6 +14,10 @@ fn graft_layouts_reach_standard_output_checks_and_file_writes() {
     for directory in [
         support::fixture(reply, "instar_format"),
         native::fixture(reply),
+        support::luau(
+            "return table.freeze({format=function() return {version=1, document={sequence={{text='local value ='},{indent={sequence={'hard',{host={start=14,['end']=15,parse='expression'}}}}}}}} end})",
+            "format",
+        ),
     ] {
         let root = directory.path();
         fs::write(root.join("instar.toml"), "[grafts]\nexample = 'graft.toml'").unwrap();
@@ -67,6 +71,10 @@ fn invalid_graft_output_leaves_files_untouched() {
     for directory in [
         support::fixture(reply, "instar_format"),
         native::fixture(reply),
+        support::luau(
+            "return table.freeze({format=function() return {version=1,document={text='return 2'}} end})",
+            "format",
+        ),
     ] {
         let root = directory.path();
         fs::write(root.join("instar.toml"), "[grafts]\nexample = 'graft.toml'").unwrap();
