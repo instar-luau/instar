@@ -14,6 +14,7 @@ use super::selection::Selection;
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
+#[derive(serde::Serialize)]
 pub enum Indentation {
     #[default]
     Tabs,
@@ -23,6 +24,7 @@ pub enum Indentation {
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
+#[derive(serde::Serialize)]
 pub enum Endings {
     #[default]
     Unix,
@@ -41,6 +43,7 @@ impl Endings {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+#[derive(serde::Serialize)]
 pub enum Quotes {
     #[default]
     AutoPreferDouble,
@@ -53,6 +56,7 @@ pub enum Quotes {
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+#[derive(serde::Serialize)]
 pub enum Zero {
     #[default]
     Add,
@@ -63,6 +67,7 @@ pub enum Zero {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+#[derive(serde::Serialize)]
 pub enum Parentheses {
     #[default]
     Always,
@@ -77,6 +82,7 @@ pub enum Parentheses {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+#[derive(serde::Serialize)]
 pub enum Spacing {
     #[default]
     Never,
@@ -88,6 +94,7 @@ pub enum Spacing {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+#[derive(serde::Serialize)]
 pub enum Semicolons {
     #[default]
     Never,
@@ -97,6 +104,7 @@ pub enum Semicolons {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+#[derive(serde::Serialize)]
 pub enum Expansion {
     #[default]
     WhenNeeded,
@@ -107,6 +115,7 @@ pub enum Expansion {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+#[derive(serde::Serialize)]
 pub enum Separator {
     #[default]
     Comma,
@@ -125,6 +134,7 @@ impl Separator {
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
+#[derive(serde::Serialize)]
 pub struct Tables {
     pub enabled: bool,
     pub width: usize,
@@ -143,6 +153,7 @@ impl Default for Tables {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+#[derive(serde::Serialize)]
 pub enum ConditionalExpansion {
     #[default]
     Never,
@@ -153,6 +164,7 @@ pub enum ConditionalExpansion {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+#[derive(serde::Serialize)]
 pub enum ConditionalStyle {
     #[default]
     Block,
@@ -162,6 +174,7 @@ pub enum ConditionalStyle {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+#[derive(serde::Serialize)]
 pub enum Placement {
     #[default]
     SameLine,
@@ -171,6 +184,7 @@ pub enum Placement {
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
+#[derive(serde::Serialize)]
 pub struct Conditional {
     pub expand: ConditionalExpansion,
     pub width: usize,
@@ -193,6 +207,7 @@ impl Default for Conditional {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+#[derive(serde::Serialize)]
 pub enum CallStyle {
     #[default]
     OnePerLine,
@@ -202,6 +217,7 @@ pub enum CallStyle {
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
+#[derive(serde::Serialize)]
 pub struct Calls {
     pub expand: Expansion,
     pub style: CallStyle,
@@ -220,6 +236,7 @@ impl Default for Calls {
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
+#[derive(serde::Serialize)]
 pub struct Parameters {
     pub expand: Expansion,
     pub indent: usize,
@@ -240,6 +257,7 @@ impl Default for Parameters {
     clippy::struct_excessive_bools,
     reason = "Independent formatter switches match the reference configuration"
 )]
+#[derive(serde::Serialize)]
 pub struct Options {
     pub collapse_simple_statement: Collapse,
     pub block_newline_gaps: Gaps,

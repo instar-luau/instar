@@ -4,13 +4,17 @@ use std::fs;
 #[path = "../../instar-core/tests/support/graft.rs"]
 mod support;
 
+#[path = "../../instar-core/tests/support/native.rs"]
+mod native;
 
 #[test]
 fn graft_layouts_reach_standard_output_checks_and_file_writes() {
     let reply = r#"{"version":1,"document":{"sequence":[{"text":"local value ="},{"indent":{"sequence":["hard",{"host":{"start":14,"end":15,"parse":"expression"}}]}}]}}"#;
 
-    {
-        let directory = support::fixture(reply, "instar_format");
+    for directory in [
+        support::fixture(reply, "instar_format"),
+        native::fixture(reply),
+    ] {
         let root = directory.path();
         fs::write(root.join("instar.toml"), "[grafts]\nexample = 'graft.toml'").unwrap();
         fs::write(root.join("source.luau"), "local value=1").unwrap();
@@ -60,8 +64,10 @@ fn graft_layouts_reach_standard_output_checks_and_file_writes() {
 fn invalid_graft_output_leaves_files_untouched() {
     let reply = r#"{"version":1,"document":{"text":"return 2"}}"#;
 
-    {
-        let directory = support::fixture(reply, "instar_format");
+    for directory in [
+        support::fixture(reply, "instar_format"),
+        native::fixture(reply),
+    ] {
         let root = directory.path();
         fs::write(root.join("instar.toml"), "[grafts]\nexample = 'graft.toml'").unwrap();
         fs::write(root.join("source.luau"), "return 1").unwrap();

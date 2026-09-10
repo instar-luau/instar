@@ -1,8 +1,9 @@
 mod host;
 mod layout;
+mod native;
 
 use crate::format::Options;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fs, io,
@@ -14,6 +15,7 @@ const RESPONSE_LIMIT: usize = 64 * 1024 * 1024;
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Runtime {
+    Native,
     Wasm,
 }
 
@@ -36,12 +38,27 @@ pub struct Manifest {
 }
 
 #[derive(Debug, Clone)]
+enum Artifact {
+    Native(PathBuf),
+    Wasm(Vec<u8>),
+}
+
+#[derive(Debug, Clone)]
 pub struct Graft {
     path: PathBuf,
-    bytes: Vec<u8>,
+    artifact: Artifact,
     format: bool,
     lint: bool,
     configuration: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Serialize)]
+struct Request<'value> {
+    version: u32,
+    hook: &'value str,
+    source: &'value str,
+    configuration: &'value BTreeMap<String, serde_json::Value>,
+    settings: Option<&'value Options>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -91,23 +108,54 @@ impl Graft {
             ));
         }
 
-        let Runtime::Wasm = manifest.runtime;
-        let bytes = fs::read(entry)?;
-        host::Host::load(&bytes, manifest.format, manifest.lint, &manifest.configuration)?;
+        let artifact = match manifest.runtime {
+            Runtime::Native => {
+                native::validate(&entry)?;
+
+                Artifact::Native(entry)
+            }
+
+            Runtime::Wasm => {
+                let bytes = fs::read(entry)?;
+
+                host::Host::load(
+                    &bytes,
+                    manifest.format,
+                    manifest.lint,
+                    &manifest.configuration,
+                )?;
+
+                Artifact::Wasm(bytes)
+            }
+        };
 
         Ok(Self {
             path: path.to_owned(),
-            bytes,
+            artifact,
             format: manifest.format,
             lint: manifest.lint,
             configuration: manifest.configuration,
         })
     }
 
-    fn invoke(&self, hook: &str, source: &[u8]) -> io::Result<Vec<u8>> {
-        let result = host::Host::load(&self.bytes, self.format, self.lint, &self.configuration)
-            .and_then(|mut host| host.invoke(&format!("instar_{hook}"), source))
-            .and_then(|reply| reply.ok_or_else(|| io::Error::other("graft hook is absent")));
+    fn invoke(&self, hook: &str, source: &[u8], settings: Option<&Options>) -> io::Result<Vec<u8>> {
+        let request = Request {
+            version: 1,
+            hook,
+            source: std::str::from_utf8(source).map_err(io::Error::other)?,
+            configuration: &self.configuration,
+            settings,
+        };
+
+        let result = match &self.artifact {
+            Artifact::Native(entry) => native::invoke(entry, &request),
+
+            Artifact::Wasm(bytes) => {
+                host::Host::load(bytes, self.format, self.lint, &self.configuration)
+                    .and_then(|mut host| host.invoke(&format!("instar_{hook}"), source))
+                    .and_then(|reply| reply.ok_or_else(|| io::Error::other("graft hook is absent")))
+            }
+        };
 
         result.map_err(|error| io::Error::other(format!("{}: {error}", self.path.display())))
     }
@@ -121,7 +169,7 @@ impl Graft {
 
         layout::format(
             source,
-            &self.invoke("format", source)?,
+            &self.invoke("format", source, Some(options))?,
             options,
         )
     }
@@ -133,7 +181,7 @@ impl Graft {
             return Ok(Vec::new());
         }
 
-        let reply = self.invoke("lint", source)?;
+        let reply = self.invoke("lint", source, None)?;
         let findings: Vec<Finding> = serde_json::from_slice(&reply).map_err(io::Error::other)?;
         let source = std::str::from_utf8(source).map_err(io::Error::other)?;
 
