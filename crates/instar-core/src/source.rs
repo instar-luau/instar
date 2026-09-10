@@ -216,14 +216,72 @@ pub struct SourceStore {
     entries: BTreeMap<PathBuf, Entry>,
 }
 
-fn absolute(path: &Path) -> Result<PathBuf, SourceError> {
-    std::path::absolute(path).map_err(|source| SourceError::Io {
+pub(crate) fn absolute(path: &Path) -> Result<PathBuf, SourceError> {
+    let path = std::path::absolute(path).map_err(|source| SourceError::Io {
         path: path.to_owned(),
         source,
-    })
+    })?;
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component),
+        }
+    }
+    Ok(normalized)
 }
 
 impl SourceStore {
+    /// Whether a path has editor-owned contents, including an unsaved file.
+    ///
+    /// # Errors
+    /// Returns path normalization failures.
+    pub fn is_open(&self, path: &Path) -> Result<bool, SourceError> {
+        Ok(self
+            .entries
+            .get(&absolute(path)?)
+            .is_some_and(|entry| entry.version.is_some()))
+    }
+
+    pub(crate) fn has_open_descendants(&self, path: &Path) -> Result<bool, SourceError> {
+        let path = absolute(path)?;
+        Ok(self.entries.iter().any(|(candidate, entry)| {
+            entry.version.is_some() && candidate != &path && candidate.starts_with(&path)
+        }))
+    }
+
+    /// Open original bytes for a virtual source such as standard input.
+    ///
+    /// # Errors
+    /// Returns path, duplicate-document or source capacity failures.
+    pub fn open_bytes(
+        &mut self,
+        path: &Path,
+        version: i32,
+        bytes: Vec<u8>,
+    ) -> Result<Arc<Source>, SourceError> {
+        let path = absolute(path)?;
+        if self
+            .entries
+            .get(&path)
+            .is_some_and(|entry| entry.version.is_some())
+        {
+            return Err(SourceError::AlreadyOpen);
+        }
+        let source = Arc::new(Source::new(path.clone(), bytes)?);
+        self.entries.insert(
+            path,
+            Entry {
+                source: Arc::clone(&source),
+                version: Some(version),
+            },
+        );
+        Ok(source)
+    }
+
     /// Read current editor contents or refresh a disk-backed source.
     /// Unchanged disk bytes retain their current revision.
     ///
@@ -273,23 +331,7 @@ impl SourceStore {
         version: i32,
         text: &str,
     ) -> Result<Arc<Source>, SourceError> {
-        let path = absolute(path)?;
-        if self
-            .entries
-            .get(&path)
-            .is_some_and(|entry| entry.version.is_some())
-        {
-            return Err(SourceError::AlreadyOpen);
-        }
-        let source = Arc::new(Source::new(path.clone(), text.as_bytes().to_vec())?);
-        self.entries.insert(
-            path,
-            Entry {
-                source: Arc::clone(&source),
-                version: Some(version),
-            },
-        );
-        Ok(source)
+        self.open_bytes(path, version, text.as_bytes().to_vec())
     }
 
     /// Replace an open document only against its current source and a newer client version.
