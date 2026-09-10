@@ -6,7 +6,7 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
         &self,
         view: View<'tree, 'source>,
     ) -> io::Result<Option<Document<'source>>> {
-        let options = &self.options.call_chains;
+        let options = &self.options.calls.chains;
 
         if options.style == Chain::Preserve {
             return Ok(None);
@@ -69,7 +69,7 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
             return Ok(None);
         }
 
-        let forced = options.min_calls > 0 && steps.len() >= options.min_calls;
+        let forced = options.minimum_calls > 0 && steps.len() >= options.minimum_calls;
         let mut head = vec![self.node(current)?];
         let mut tail = Vec::new();
 

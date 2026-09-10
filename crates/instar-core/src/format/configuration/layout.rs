@@ -1,31 +1,38 @@
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-#[derive(serde::Serialize)]
 pub enum Collapse {
     #[default]
     Never,
 
-    FunctionOnly,
-    ConditionalOnly,
+    Functions,
+    Conditionals,
     Always,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-#[derive(serde::Serialize)]
 pub enum Gaps {
     #[default]
-    Never,
+    Remove,
 
     Preserve,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Blocks {
+    /// Collapse eligible single-statement blocks: never, functions, conditionals, or always. Comments can prevent collapsing.
+    pub collapse: Collapse,
+
+    /// Remove or preserve one existing blank line at each block boundary. Interior statement gaps are retained independently.
+    pub blank_lines: Gaps,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-#[derive(serde::Serialize)]
 pub enum Binding {
     #[default]
     Preserve,
@@ -34,10 +41,9 @@ pub enum Binding {
     Local,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-#[derive(serde::Serialize)]
-pub enum Imports {
+pub enum Unused {
     #[default]
     Ignore,
 
@@ -45,10 +51,9 @@ pub enum Imports {
     Remove,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-#[derive(serde::Serialize)]
-pub enum Functions {
+pub enum Declaration {
     #[default]
     Preserve,
 
@@ -57,9 +62,8 @@ pub enum Functions {
     Global,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-#[derive(serde::Serialize)]
 pub enum Grouping {
     #[default]
     Flat,
@@ -67,39 +71,47 @@ pub enum Grouping {
     ByKind,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
-#[derive(serde::Serialize)]
-pub struct Requires {
-    pub enabled: bool,
+pub struct Imports {
+    /// Sort eligible adjacent require bindings by module path.
+    pub sort: bool,
+
+    /// Flat sorts imports together; by-kind groups alias paths, other paths, then relative paths, inserting blank lines between categories. Only applies when sorting.
     pub grouping: Grouping,
+
+    /// Preserve require binding declarations or convert eligible bindings to const or local.
+    pub binding: Binding,
+
+    /// Ignore unused require bindings, prefix their names with an underscore, or remove eligible declarations.
+    pub unused: Unused,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
-#[derive(serde::Serialize)]
 pub struct Constants {
-    pub enabled: bool,
-    pub mutated_tables_stay_local: bool,
+    /// Convert eligible unreassigned local bindings to const using lexical scope analysis.
+    pub prefer_constant: bool,
+
+    /// Keep bindings to mutated tables local when preferring constant bindings.
+    pub preserve_mutated_tables: bool,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-#[derive(serde::Serialize)]
 pub enum Order {
     #[default]
-    None,
+    Preserve,
 
-    Ascending,
-    Descending,
+    KeyLengthAscending,
+    KeyLengthDescending,
     Alphabetical,
-    SizeAscending,
-    SizeDescending,
+    FieldWidthAscending,
+    FieldWidthDescending,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-#[derive(serde::Serialize)]
 pub enum Indexer {
     #[default]
     First,
@@ -108,30 +120,15 @@ pub enum Indexer {
     Sorted,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
-#[derive(serde::Serialize)]
-pub struct Properties {
-    pub order: Order,
-    pub indexer: Indexer,
-}
-
-impl Properties {
-    pub(in crate::format) fn position(&self) -> Indexer {
-        self.indexer
-    }
-}
-
-#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
-#[serde(default, deny_unknown_fields)]
-#[derive(serde::Serialize)]
 pub struct Sorting {
+    /// Preserve field order, sort alphabetically, by key length, or by formatted field width. Length and width orders use alphabetical tie-breaking. Comment-bearing tables retain their order.
     pub order: Order,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-#[derive(serde::Serialize)]
 pub enum Chain {
     #[default]
     Preserve,
@@ -140,37 +137,58 @@ pub enum Chain {
     Full,
 }
 
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
-#[derive(serde::Serialize)]
 pub struct Chains {
+    /// Preserve ordinary call layout; method keeps the first call with the receiver; full allows a break before every call. Both method and full handle dot and colon calls.
     pub style: Chain,
-    pub min_calls: usize,
+
+    /// Force chain expansion at this many calls. Zero disables count-based expansion; width-based wrapping remains available.
+    pub minimum_calls: usize,
 }
 
 impl Default for Chains {
     fn default() -> Self {
         Self {
             style: Chain::default(),
-            min_calls: 3,
+            minimum_calls: 3,
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-#[derive(serde::Serialize)]
 pub enum TypeExpansion {
     #[default]
-    Auto,
+    Needed,
 
     Always,
     Never,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
-#[derive(serde::Serialize)]
 pub struct Operators {
+    /// Expand unions and intersections when needed, always, or never voluntarily. Nested types and overload signatures remain grouped where possible.
     pub expand: TypeExpansion,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Types {
+    /// Layout and ordering of fields in table types.
+    pub tables: super::Tables,
+
+    /// Layout of union and intersection members.
+    pub operators: Operators,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Functions {
+    /// Layout of function declaration parameters.
+    pub parameters: super::Parameters,
+
+    /// Preserve function declarations or convert eligible declarations to local, const, or global forms.
+    pub binding: Declaration,
 }

@@ -118,7 +118,7 @@ fn configuration_follows_named_input() -> TestResult {
 
     fs::write(
         root.join("project/instar.toml"),
-        "[format]\nindent_type = 'spaces'\n",
+        "[format]\nindentation.style = 'spaces'\n",
     )?;
 
     Command::new(env!("CARGO_BIN_EXE_instar"))

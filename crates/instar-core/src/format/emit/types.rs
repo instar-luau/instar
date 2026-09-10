@@ -35,9 +35,9 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
         });
 
         let expansion = if nested {
-            TypeExpansion::Auto
+            TypeExpansion::Needed
         } else {
-            self.options.type_operators.expand
+            self.options.types.operators.expand
         };
 
         let operator = if view.kind() == Kind::TypeUnion {
@@ -46,16 +46,16 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
             "& "
         };
 
-        if expansion == TypeExpansion::Auto && overloads {
+        if expansion == TypeExpansion::Needed && overloads {
             let flat = Document::join(&Document::text(" & "), members.clone());
             let mut members = members.into_iter();
             let first = members.next().expect("overload signature");
 
             let expanded = Document::sequence([
                 first,
-                Document::sequence(members.flat_map(|member| {
-                    [Document::Hard, Document::text("& "), member]
-                }))
+                Document::sequence(
+                    members.flat_map(|member| [Document::Hard, Document::text("& "), member]),
+                )
                 .indent(),
             ]);
 
@@ -66,7 +66,7 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
             });
         }
 
-        if expansion == TypeExpansion::Auto {
+        if expansion == TypeExpansion::Needed {
             return Ok(Document::sequence([
                 Document::text(if self.text(view).starts_with(['|', '&']) {
                     operator
@@ -102,11 +102,31 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
             return Ok(Document::text("{}"));
         }
 
-        let options = &self.options.table_types;
+        let options = &self.options.types.tables;
         let separator = options.separator.text();
 
+        let mut previous = None;
+        let mut gaps = Vec::new();
+
         let fields = fields
-            .map(|field| self.node(field))
+            .map(|field| {
+                gaps.push(
+                    if options.blank_lines == crate::format::configuration::Gaps::Preserve {
+                        previous.map_or(0, |end| {
+                            self.source[end..field.span().start]
+                                .matches('\n')
+                                .count()
+                                .saturating_sub(1)
+                        })
+                    } else {
+                        0
+                    },
+                );
+
+                previous = Some(field.span().end);
+
+                self.node(field)
+            })
             .collect::<io::Result<Vec<_>>>()?;
 
         let flat = Document::sequence([
@@ -119,17 +139,18 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
             return Ok(Document::Flat(Box::new(flat)));
         }
 
-        let forced = flat.width().is_none_or(|width| width > options.width);
+        let forced = gaps.iter().any(|gap| *gap > 0)
+            || flat.width().is_none_or(|width| width > options.width);
 
         let edge = if forced {
             Document::Hard
-        } else if self.options.space_inside_braces {
+        } else if self.options.spacing.braces {
             Document::Line
         } else {
             Document::Soft
         };
 
-        let suffix = if self.options.trailing_comma {
+        let suffix = if self.options.trailing_separator {
             Document::Choice(
                 Box::new(Document::text("")),
                 Box::new(Document::text(separator)),
@@ -138,17 +159,25 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
             Document::text("")
         };
 
+        let mut contents = Vec::new();
+
+        for (index, (field, gap)) in fields.into_iter().zip(gaps).enumerate() {
+            if index > 0 {
+                contents.push(Document::text(separator));
+
+                if gap > 0 {
+                    contents.extend(std::iter::repeat_n(Document::Hard, gap + 1));
+                } else {
+                    contents.push(Document::Line);
+                }
+            }
+
+            contents.push(field);
+        }
+
         Ok(Document::sequence([
             Document::text("{"),
-            Document::sequence([
-                edge.clone(),
-                Document::join(
-                    &Document::sequence([Document::text(separator), Document::Line]),
-                    fields,
-                ),
-                suffix,
-            ])
-            .indent(),
+            Document::sequence([edge.clone(), Document::sequence(contents), suffix]).indent(),
             edge,
             Document::text("}"),
         ])

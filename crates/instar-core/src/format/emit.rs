@@ -11,7 +11,7 @@ use vermis::{Children, Kind, Parts, TokenKind, Tree, View};
 
 use super::{
     Options,
-    configuration::{CallStyle, Collapse, Expansion, Parentheses, Semicolons, Spacing},
+    configuration::{CallStyle, Collapse, Expansion, Parentheses, Semicolons, Separation},
     document::Document,
 };
 
@@ -94,7 +94,7 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
             Document::Soft
         };
 
-        let comma = if table && self.options.trailing_comma {
+        let comma = if table && self.options.trailing_separator {
             Document::Choice(Box::new(Document::text("")), Box::new(Document::text(",")))
         } else {
             Document::text("")
@@ -178,13 +178,13 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
             return self.commented(parameters);
         }
 
-        let options = &self.options.function_declaration;
+        let options = &self.options.functions.parameters;
 
-        self.parenthesized(parameters.children(), options.expand, options.indent)
+        self.parenthesized(parameters.children(), options.expand, options.indentation)
     }
 
     fn arguments(&self, values: Children<'tree, 'source>) -> io::Result<Document<'source>> {
-        let options = &self.options.function_call;
+        let options = &self.options.calls;
         let last = values.clone().next_back();
 
         let hanging = last.is_some_and(|value| {
@@ -210,14 +210,14 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
             ]));
         }
 
-        self.parenthesized(values, options.expand, options.indent)
+        self.parenthesized(values, options.expand, options.indentation)
     }
 
     fn parenthesized(
         &self,
         children: Children<'tree, 'source>,
         expand: Expansion,
-        indent: usize,
+        indentation: usize,
     ) -> io::Result<Document<'source>> {
         if children.clone().next().is_none() {
             return Ok(Document::text("()"));
@@ -225,7 +225,7 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
 
         let edge = if expand == Expansion::Always {
             Document::Hard
-        } else if self.options.space_inside_parens {
+        } else if self.options.spacing.parentheses {
             Document::Line
         } else {
             Document::Soft
@@ -234,7 +234,7 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
         let mut content = Document::sequence([edge.clone(), self.list(children)?]);
 
         if expand != Expansion::Never {
-            for _ in 0..indent {
+            for _ in 0..indentation {
                 content = content.indent();
             }
         }
@@ -299,7 +299,7 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
         if view.kind() == Kind::String {
             return Ok(Document::text(super::literals::quote(
                 self.text(view),
-                self.options.quote_style,
+                self.options.quotes,
             )));
         }
 
@@ -375,7 +375,7 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
                     "(",
                     ")",
                     parameters,
-                    self.options.space_inside_parens,
+                    self.options.spacing.parentheses,
                     false,
                     false,
                 );
@@ -387,12 +387,16 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
                     .next()
                     .filter(|_| values.clone().count() == 1)
                 {
-                    let bare = match self.options.call_parentheses {
+                    let bare = match self.options.calls.parentheses {
                         Parentheses::Always => false,
-                        Parentheses::NoSingleString => value.kind() == Kind::String,
-                        Parentheses::NoSingleTable => value.kind() == Kind::Table,
-                        Parentheses::None => matches!(value.kind(), Kind::String | Kind::Table),
-                        Parentheses::Input => !self.text(view).starts_with('('),
+                        Parentheses::OmitString => value.kind() == Kind::String,
+                        Parentheses::OmitTable => value.kind() == Kind::Table,
+
+                        Parentheses::OmitOptional => {
+                            matches!(value.kind(), Kind::String | Kind::Table)
+                        }
+
+                        Parentheses::Preserve => !self.text(view).starts_with('('),
                     };
 
                     if bare {
@@ -405,8 +409,8 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
                 return Ok(Document::sequence([
                     Document::text(
                         if matches!(
-                            self.options.space_after_function_names,
-                            Spacing::Calls | Spacing::Always
+                            self.options.spacing.function_names,
+                            Separation::Calls | Separation::Always
                         ) {
                             " "
                         } else {
@@ -450,8 +454,8 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
                     self.optional(generics)?,
                     Document::text(
                         if matches!(
-                            self.options.space_after_function_names,
-                            Spacing::Definitions | Spacing::Always
+                            self.options.spacing.function_names,
+                            Separation::Definitions | Separation::Always
                         ) {
                             " "
                         } else {
@@ -468,7 +472,7 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
                 }
 
                 if body.is_none()
-                    && self.options.function_declaration.expand == Expansion::WhenNeeded
+                    && self.options.functions.parameters.expand == Expansion::Needed
                     && parameters.children().next().is_some()
                     && self.gap(view.span().start, view.span().end).is_empty()
                     && documents.iter().all(|document| document.width().is_some())
@@ -478,7 +482,7 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
                     documents[parameter_index] = self.parenthesized(
                         parameters.children(),
                         Expansion::Always,
-                        self.options.function_declaration.indent,
+                        self.options.functions.parameters.indentation,
                     )?;
 
                     return Ok(Document::Choice(
@@ -494,8 +498,8 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
                     if body.children().next().is_none() && self.gap(start, end).is_empty() {
                         documents.extend([Document::Hard, Document::text("end")]);
                     } else if matches!(
-                        self.options.collapse_simple_statement,
-                        Collapse::FunctionOnly | Collapse::Always
+                        self.options.blocks.collapse,
+                        Collapse::Functions | Collapse::Always
                     ) && let Some(collapsed) = self.collapsed(body)?
                     {
                         documents.extend([collapsed, Document::text("end")]);
@@ -526,8 +530,8 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
                 if otherwise.is_none()
                     && branches.clone().count() == 1
                     && matches!(
-                        self.options.collapse_simple_statement,
-                        Collapse::ConditionalOnly | Collapse::Always
+                        self.options.blocks.collapse,
+                        Collapse::Conditionals | Collapse::Always
                     )
                     && let Some(Parts::Branch { condition, body }) =
                         branches.clone().next().and_then(View::parts)
@@ -795,7 +799,7 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
             Parts::Index { receiver, key } => Document::sequence([
                 self.node(receiver)?,
                 Document::text(
-                    if self.options.space_inside_brackets || self.text(key).starts_with('[') {
+                    if self.options.spacing.brackets || self.text(key).starts_with('[') {
                         "[ "
                     } else {
                         "["
@@ -803,7 +807,7 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
                 ),
                 self.node(key)?,
                 Document::text(
-                    if self.options.space_inside_brackets || self.text(key).starts_with('[') {
+                    if self.options.spacing.brackets || self.text(key).starts_with('[') {
                         " ]"
                     } else {
                         "]"
@@ -843,17 +847,10 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
 
                 let forced = text.strip_prefix('{').is_some_and(|rest| {
                     rest.trim_start_matches([' ', '\t', '\r']).starts_with('\n')
-                }) || self.options.magic_trailing_comma
+                }) || self.options.expand_on_trailing_comma
                     && text.trim_end_matches('}').trim_end().ends_with(',');
 
-                return self.delimited(
-                    "{",
-                    "}",
-                    fields,
-                    self.options.space_inside_braces,
-                    true,
-                    forced,
-                );
+                return self.delimited("{", "}", fields, self.options.spacing.braces, true, forced);
             }
 
             Parts::TableField {
@@ -862,7 +859,7 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
                 indexed,
             } => {
                 let spaced = indexed
-                    && (self.options.space_inside_brackets
+                    && (self.options.spacing.brackets
                         || key.is_some_and(|key| self.text(key).starts_with('[')));
 
                 Document::sequence([
@@ -903,7 +900,7 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
                 element,
                 fields,
             } => {
-                if !self.options.table_types.enabled && self.text(view).contains('\n') {
+                if !self.options.types.tables.enabled && self.text(view).contains('\n') {
                     return Ok(Document::text(self.text(view)));
                 }
 
@@ -963,7 +960,7 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
                     "(",
                     ")",
                     types,
-                    self.options.space_inside_parens,
+                    self.options.spacing.parentheses,
                     false,
                     false,
                 );

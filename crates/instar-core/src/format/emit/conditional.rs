@@ -3,7 +3,7 @@ use crate::format::configuration::{ConditionalExpansion, ConditionalStyle, Place
 
 impl<'tree, 'source> Emitter<'tree, 'source> {
     pub(super) fn conditional(&self, view: View<'tree, 'source>) -> io::Result<Document<'source>> {
-        let options = &self.options.if_expression;
+        let options = &self.options.conditionals;
         let mut branches = Vec::new();
         let mut current = view;
 
@@ -114,7 +114,7 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
     }
 
     fn conditional_indent(&self, mut document: Document<'source>) -> Document<'source> {
-        for _ in 0..self.options.if_expression.indent {
+        for _ in 0..self.options.conditionals.indentation {
             document = document.indent();
         }
 
@@ -134,7 +134,7 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
         let document = self.list(values)?;
 
         if single_conditional
-            && self.options.if_expression.placement == Placement::NextLine
+            && self.options.conditionals.placement == Placement::NextLine
             && document.width().is_none()
         {
             Ok(self.conditional_indent(Document::sequence([Document::Hard, document])))

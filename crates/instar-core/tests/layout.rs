@@ -1,8 +1,9 @@
 use instar_core::format::Options;
 use instar_core::format::configuration::{
-    CallStyle, Calls, Collapse, Conditional, ConditionalExpansion, ConditionalStyle, Constants,
-    Endings, Expansion, Imports, Indentation, Indexer, Operators, Order, Parameters, Parentheses, Placement,
-    Properties, Quotes, Separator, Spacing, Tables, TypeExpansion,
+    Blocks, CallStyle, Calls, Chains, Collapse, Conditional, ConditionalExpansion,
+    ConditionalStyle, Constants, Endings, Expansion, Functions, Imports, Indentation, Indexer,
+    Operators, Order, Parameters, Parentheses, Placement, Quotes, Separation, Separator, Sorting,
+    Spacing, Tables, TypeExpansion, Types, Unused, Whitespace,
 };
 fn format(source: &str, options: &Options) -> std::io::Result<String> {
     instar_core::format::format(source.as_bytes(), options)
@@ -15,7 +16,7 @@ fn formatted(source: &str) -> String {
 
 #[expect(
     clippy::needless_pass_by_value,
-    reason = "The reference corpus passes owned configurations"
+    reason = "Layout cases consume their configuration"
 )]
 fn configured(source: &str, configuration: Options) -> String {
     format(source, &configuration).expect("formats")
@@ -236,9 +237,9 @@ fn without_the_trailing_comma_the_same_table_stays_flat() {
 }
 
 #[test]
-fn magic_trailing_comma_can_be_turned_off() {
+fn source_comma_expansion_is_configurable() {
     let configuration = Options {
-        magic_trailing_comma: false,
+        expand_on_trailing_comma: false,
         ..Default::default()
     };
 
@@ -379,7 +380,7 @@ fn requoting_fixes_the_escapes() {
         configured(
             r#"local s = "say \"hi\"""#,
             Options {
-                quote_style: Quotes::ForceSingle,
+                quotes: Quotes::Single,
                 ..Default::default()
             }
         ),
@@ -398,7 +399,7 @@ fn the_quote_needing_fewer_escapes_wins() {
 #[test]
 fn preserve_leaves_every_literal_alone() {
     let configuration = Options {
-        quote_style: Quotes::Preserve,
+        quotes: Quotes::Preserve,
         ..Default::default()
     };
 
@@ -427,8 +428,10 @@ fn escape_sequences_are_left_intact() {
 #[test]
 fn spaces_can_replace_tabs() {
     let configuration = Options {
-        indent_type: Indentation::Spaces,
-        indent_width: 2,
+        indentation: Indentation {
+            style: Whitespace::Spaces,
+            width: 2,
+        },
         ..Default::default()
     };
 
@@ -454,7 +457,10 @@ fn windows_line_endings_apply_everywhere() {
 #[test]
 fn space_after_function_names_targets_definitions_and_calls_separately() {
     let defs = Options {
-        space_after_function_names: Spacing::Definitions,
+        spacing: Spacing {
+            function_names: Separation::Definitions,
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -464,7 +470,10 @@ fn space_after_function_names_targets_definitions_and_calls_separately() {
     );
 
     let calls = Options {
-        space_after_function_names: Spacing::Calls,
+        spacing: Spacing {
+            function_names: Separation::Calls,
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -474,9 +483,12 @@ fn space_after_function_names_targets_definitions_and_calls_separately() {
 #[test]
 fn inner_spacing_is_configurable() {
     let configuration = Options {
-        space_inside_parens: true,
-        space_inside_brackets: true,
-        space_inside_braces: false,
+        spacing: Spacing {
+            parentheses: true,
+            brackets: true,
+            braces: false,
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -496,14 +508,20 @@ fn inner_spacing_is_configurable() {
 #[test]
 fn call_parentheses_can_be_dropped_for_a_single_string_or_table() {
     let no_string = Options {
-        call_parentheses: Parentheses::NoSingleString,
+        calls: Calls {
+            parentheses: Parentheses::OmitString,
+            ..Default::default()
+        },
         ..Default::default()
     };
 
     assert_eq!(configured(r#"require("x")"#, no_string), "require \"x\"\n");
 
     let no_table = Options {
-        call_parentheses: Parentheses::NoSingleTable,
+        calls: Calls {
+            parentheses: Parentheses::OmitTable,
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -517,9 +535,12 @@ fn call_parentheses_are_added_by_default() {
 }
 
 #[test]
-fn collapse_simple_statement_folds_a_one_line_body() {
+fn collapses_a_single_statement_body() {
     let configuration = Options {
-        collapse_simple_statement: Collapse::Always,
+        blocks: Blocks {
+            collapse: Collapse::Always,
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -540,7 +561,10 @@ fn collapse_simple_statement_folds_a_one_line_body() {
 #[test]
 fn collapsing_never_swallows_a_comment() {
     let configuration = Options {
-        collapse_simple_statement: Collapse::Always,
+        blocks: Blocks {
+            collapse: Collapse::Always,
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -625,13 +649,14 @@ fn attributes_stay_above_their_function() {
     assert_eq!(formatted(source), source);
 }
 
-use instar_core::format::configuration::{Grouping, Requires};
+use instar_core::format::configuration::Grouping;
 
 fn sorting(grouping: Grouping) -> Options {
     Options {
-        sort_requires: Requires {
-            enabled: true,
+        imports: Imports {
+            sort: true,
             grouping,
+            ..Default::default()
         },
         ..Default::default()
     }
@@ -943,7 +968,10 @@ fn a_comment_is_placed_or_the_file_is_refused_never_dropped() {
 
 fn gaps(mode: instar_core::format::configuration::Gaps) -> Options {
     Options {
-        block_newline_gaps: mode,
+        blocks: Blocks {
+            blank_lines: mode,
+            ..Default::default()
+        },
         ..Default::default()
     }
 }
@@ -1001,7 +1029,10 @@ fn preserving_gaps_is_still_idempotent() {
 
 fn binding(mode: instar_core::format::configuration::Binding) -> Options {
     Options {
-        require_binding: mode,
+        imports: Imports {
+            binding: mode,
+            ..Default::default()
+        },
         ..Default::default()
     }
 }
@@ -1151,7 +1182,10 @@ fn terminating_every_statement_is_idempotent() {
 #[test]
 fn bare_calls_keep_parentheses_where_required() {
     let configuration = Options {
-        call_parentheses: instar_core::format::configuration::Parentheses::None,
+        calls: Calls {
+            parentheses: instar_core::format::configuration::Parentheses::OmitOptional,
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -1291,8 +1325,7 @@ fn a_region_inside_a_block_keeps_its_own_shape() {
 
 #[test]
 fn holding_the_formatter_off_is_idempotent() {
-    let source =
-        "local  a  = 1\n-- instar: format off\nlocal  m = {1,0}\n-- instar: format on\nlocal  b  = 2\n";
+    let source = "local  a  = 1\n-- instar: format off\nlocal  m = {1,0}\n-- instar: format on\nlocal  b  = 2\n";
 
     let once = formatted(source);
 
@@ -1317,7 +1350,7 @@ fn a_lint_marker_does_not_hold_the_formatter() {
 
 fn conditional(expand: ConditionalExpansion) -> Options {
     Options {
-        if_expression: Conditional {
+        conditionals: Conditional {
             expand,
             ..Default::default()
         },
@@ -1356,21 +1389,21 @@ fn always_opens_each_arm_of_an_elseif_chain() {
 }
 
 #[test]
-fn when_large_keeps_a_short_expression_on_one_line() {
+fn width_based_expansion_keeps_short_expressions_flat() {
     assert_eq!(
         configured(
             "local a = if bar then 'baz' else 'foo'",
-            conditional(ConditionalExpansion::WhenLarge)
+            conditional(ConditionalExpansion::Needed)
         ),
         "local a = if bar then \"baz\" else \"foo\"\n"
     );
 }
 
 #[test]
-fn when_large_opens_an_expression_over_the_width() {
+fn width_based_expansion_opens_long_expressions() {
     let output = configured(
         "local a = if someCondition then 'a rather long branch value' else 'another long branch value'",
-        conditional(ConditionalExpansion::WhenLarge),
+        conditional(ConditionalExpansion::Needed),
     );
 
     assert_eq!(
@@ -1380,12 +1413,12 @@ fn when_large_opens_an_expression_over_the_width() {
 }
 
 #[test]
-fn the_width_decides_where_when_large_opens() {
+fn conditional_width_controls_expansion() {
     let source = "local a = if bar then 'baz' else 'foo'";
 
     let wide = Options {
-        if_expression: Conditional {
-            expand: ConditionalExpansion::WhenLarge,
+        conditionals: Conditional {
+            expand: ConditionalExpansion::Needed,
             width: 4,
             ..Default::default()
         },
@@ -1429,7 +1462,7 @@ fn a_nested_expression_over_the_width_opens_as_well() {
 #[test]
 fn the_width_reaches_a_nested_expression() {
     let configuration = Options {
-        if_expression: Conditional {
+        conditionals: Conditional {
             expand: ConditionalExpansion::Always,
             width: 10,
             ..Default::default()
@@ -1448,7 +1481,7 @@ fn the_width_reaches_a_nested_expression() {
 #[test]
 fn next_line_starts_the_if_below_the_equals() {
     let configuration = Options {
-        if_expression: Conditional {
+        conditionals: Conditional {
             expand: ConditionalExpansion::Always,
             placement: Placement::NextLine,
             ..Default::default()
@@ -1465,8 +1498,8 @@ fn next_line_starts_the_if_below_the_equals() {
 #[test]
 fn next_line_leaves_an_expression_that_stays_flat_where_it_is() {
     let configuration = Options {
-        if_expression: Conditional {
-            expand: ConditionalExpansion::WhenLarge,
+        conditionals: Conditional {
+            expand: ConditionalExpansion::Needed,
             placement: Placement::NextLine,
             ..Default::default()
         },
@@ -1482,9 +1515,9 @@ fn next_line_leaves_an_expression_that_stays_flat_where_it_is() {
 #[test]
 fn the_indent_levels_are_the_projects_to_choose() {
     let configuration = |indent| Options {
-        if_expression: Conditional {
+        conditionals: Conditional {
             expand: ConditionalExpansion::Always,
-            indent,
+            indentation: indent,
             ..Default::default()
         },
         ..Default::default()
@@ -1505,7 +1538,7 @@ fn the_indent_levels_are_the_projects_to_choose() {
 
 fn leading(expand: ConditionalExpansion) -> Options {
     Options {
-        if_expression: Conditional {
+        conditionals: Conditional {
             expand,
             style: ConditionalStyle::Leading,
             ..Default::default()
@@ -1541,7 +1574,7 @@ fn the_leading_style_is_the_same_on_one_line() {
     assert_eq!(
         configured(
             "local a = if bar then 'baz' else 'foo'",
-            leading(ConditionalExpansion::WhenLarge)
+            leading(ConditionalExpansion::Needed)
         ),
         "local a = if bar then \"baz\" else \"foo\"\n"
     );
@@ -1550,7 +1583,7 @@ fn the_leading_style_is_the_same_on_one_line() {
 #[test]
 fn the_leading_style_takes_next_line_too() {
     let configuration = Options {
-        if_expression: Conditional {
+        conditionals: Conditional {
             expand: ConditionalExpansion::Always,
             style: ConditionalStyle::Leading,
             placement: Placement::NextLine,
@@ -1568,9 +1601,11 @@ fn the_leading_style_takes_next_line_too() {
 fn next_line(width: usize) -> Options {
     Options {
         column_width: width,
-        indent_type: Indentation::Spaces,
-        indent_width: 4,
-        if_expression: Conditional {
+        indentation: Indentation {
+            style: Whitespace::Spaces,
+            width: 4,
+        },
+        conditionals: Conditional {
             expand: ConditionalExpansion::Always,
             style: ConditionalStyle::Block,
             placement: Placement::NextLine,
@@ -1679,26 +1714,26 @@ fn every_if_layout_is_idempotent_and_parses() {
     let configs = [
         conditional(ConditionalExpansion::Never),
         conditional(ConditionalExpansion::Always),
-        conditional(ConditionalExpansion::WhenLarge),
+        conditional(ConditionalExpansion::Needed),
         Options {
-            if_expression: Conditional {
+            conditionals: Conditional {
                 expand: ConditionalExpansion::Always,
                 placement: Placement::NextLine,
                 style: ConditionalStyle::Block,
                 width: 5,
-                indent: 2,
+                indentation: 2,
             },
             ..Default::default()
         },
         leading(ConditionalExpansion::Always),
-        leading(ConditionalExpansion::WhenLarge),
+        leading(ConditionalExpansion::Needed),
         Options {
-            if_expression: Conditional {
+            conditionals: Conditional {
                 expand: ConditionalExpansion::Always,
                 placement: Placement::NextLine,
                 style: ConditionalStyle::Leading,
                 width: 5,
-                indent: 2,
+                indentation: 2,
             },
             ..Default::default()
         },
@@ -1725,10 +1760,14 @@ fn every_if_layout_is_idempotent_and_parses() {
 
 fn table_types(enabled: bool, width: usize, separator: Separator) -> Options {
     Options {
-        table_types: Tables {
-            enabled,
-            width,
-            separator,
+        types: Types {
+            tables: Tables {
+                enabled,
+                width,
+                separator,
+                ..Default::default()
+            },
+            ..Default::default()
         },
         ..Default::default()
     }
@@ -1913,7 +1952,14 @@ fn an_author_wrapped_short_alias_collapses() {
 
 fn sorted(order: Order, indexer: Indexer) -> Options {
     Options {
-        sort_table_types: Properties { order, indexer },
+        types: Types {
+            tables: Tables {
+                order,
+                indexer,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
         ..Default::default()
     }
 }
@@ -1931,7 +1977,7 @@ fn the_property_order_of_the_author_is_the_default() {
 #[test]
 fn ascending_sorts_the_shortest_name_first() {
     assert_eq!(
-        configured(ROW, sorted(Order::Ascending, Indexer::First)),
+        configured(ROW, sorted(Order::KeyLengthAscending, Indexer::First)),
         "type Row = {\n\t[number]: any,\n\thp: number,\n\tid: string,\n\tmana: number,\n\tname: string,\n\tdescription: string,\n}\n"
     );
 }
@@ -1939,19 +1985,22 @@ fn ascending_sorts_the_shortest_name_first() {
 #[test]
 fn descending_sorts_the_longest_name_first() {
     assert_eq!(
-        configured(ROW, sorted(Order::Descending, Indexer::First)),
+        configured(ROW, sorted(Order::KeyLengthDescending, Indexer::First)),
         "type Row = {\n\t[number]: any,\n\tdescription: string,\n\tmana: number,\n\tname: string,\n\thp: number,\n\tid: string,\n}\n"
     );
 }
 
 #[test]
 fn indexer_position_controls_field_order() {
-    let ascending = configured(ROW, sorted(Order::Ascending, Indexer::First));
-
-    assert_eq!(configured(ROW, sorted(Order::Ascending, Indexer::Sorted)), ascending);
+    let ascending = configured(ROW, sorted(Order::KeyLengthAscending, Indexer::First));
 
     assert_eq!(
-        configured(ROW, sorted(Order::Descending, Indexer::Sorted)),
+        configured(ROW, sorted(Order::KeyLengthAscending, Indexer::Sorted)),
+        ascending
+    );
+
+    assert_eq!(
+        configured(ROW, sorted(Order::KeyLengthDescending, Indexer::Sorted)),
         "type Row = {\n\tdescription: string,\n\tmana: number,\n\tname: string,\n\thp: number,\n\tid: string,\n\t[number]: any,\n}\n"
     );
 }
@@ -1961,7 +2010,7 @@ fn a_flat_table_type_sorts_as_well() {
     assert_eq!(
         configured(
             "type S = { name: string, id: number }\n",
-            sorted(Order::Ascending, Indexer::First)
+            sorted(Order::KeyLengthAscending, Indexer::First)
         ),
         "type S = { id: number, name: string }\n"
     );
@@ -1971,13 +2020,20 @@ fn a_flat_table_type_sorts_as_well() {
 fn a_comment_holds_the_properties_of_its_table_where_they_are() {
     let source = "type C = {\n\t-- the id of the row\n\tidentifier: string,\n\tx: number,\n}\n";
 
-    assert_eq!(configured(source, sorted(Order::Ascending, Indexer::First)), source);
-    assert_eq!(configured(source, sorted(Order::Descending, Indexer::First)), source);
+    assert_eq!(
+        configured(source, sorted(Order::KeyLengthAscending, Indexer::First)),
+        source
+    );
+
+    assert_eq!(
+        configured(source, sorted(Order::KeyLengthDescending, Indexer::First)),
+        source
+    );
 }
 
 #[test]
 fn a_field_with_no_name_leaves_its_table_as_written() {
-    let configuration = sorted(Order::Ascending, Indexer::First);
+    let configuration = sorted(Order::KeyLengthAscending, Indexer::First);
 
     assert_eq!(
         configured("type A = { string }\n", configuration.clone()),
@@ -1994,7 +2050,7 @@ fn a_read_or_write_modifier_travels_with_its_property() {
     assert_eq!(
         configured(
             "type M = { read identifier: string, write hp: number, [string]: any }\n",
-            sorted(Order::Ascending, Indexer::First)
+            sorted(Order::KeyLengthAscending, Indexer::First)
         ),
         "type M = { [string]: any, write hp: number, read identifier: string }\n"
     );
@@ -2005,7 +2061,7 @@ fn a_property_named_read_sorts_under_that_name() {
     assert_eq!(
         configured(
             "type K = { abcdef: boolean, write: string, read: number }\n",
-            sorted(Order::Ascending, Indexer::First)
+            sorted(Order::KeyLengthAscending, Indexer::First)
         ),
         "type K = { read: number, write: string, abcdef: boolean }\n"
     );
@@ -2014,12 +2070,12 @@ fn a_property_named_read_sorts_under_that_name() {
 #[test]
 fn the_sort_needs_the_table_type_layout() {
     let configuration = Options {
-        table_types: Tables {
-            enabled: false,
-            ..Default::default()
-        },
-        sort_table_types: Properties {
-            order: Order::Ascending,
+        types: Types {
+            tables: Tables {
+                enabled: false,
+                order: Order::KeyLengthAscending,
+                ..Default::default()
+            },
             ..Default::default()
         },
         ..Default::default()
@@ -2047,12 +2103,23 @@ fn every_property_order_is_idempotent_and_parses() {
 
     let mut configs = Vec::new();
 
-    for order in [Order::None, Order::Ascending, Order::Descending] {
+    for order in [
+        Order::Preserve,
+        Order::KeyLengthAscending,
+        Order::KeyLengthDescending,
+    ] {
         for indexer in [Indexer::First, Indexer::Sorted] {
             for column_width in [40, 120] {
                 configs.push(Options {
                     column_width,
-                    sort_table_types: Properties { order, indexer },
+                    types: Types {
+                        tables: Tables {
+                            order,
+                            indexer,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
                     ..Default::default()
                 });
             }
@@ -2080,7 +2147,10 @@ fn every_property_order_is_idempotent_and_parses() {
 
 fn operators(expand: TypeExpansion) -> Options {
     Options {
-        type_operators: Operators { expand },
+        types: Types {
+            operators: Operators { expand },
+            ..Default::default()
+        },
         ..Default::default()
     }
 }
@@ -2089,7 +2159,7 @@ const LONG_UNION: &str =
     "type Long = AlphaAlphaAlpha | BetaBetaBetaBeta | GammaGammaGamma | DeltaDeltaDelta\n";
 
 #[test]
-fn auto_replays_a_chain_on_one_line() {
+fn compact_type_operators_fit_on_one_line() {
     assert_eq!(formatted(LONG_UNION), LONG_UNION);
 
     let narrow = Options {
@@ -2166,8 +2236,11 @@ fn never_holds_one_line_over_the_table_type_width() {
 fn column_width_outranks_never() {
     let configuration = Options {
         column_width: 40,
-        type_operators: Operators {
-            expand: TypeExpansion::Never,
+        types: Types {
+            operators: Operators {
+                expand: TypeExpansion::Never,
+            },
+            ..Default::default()
         },
         ..Default::default()
     };
@@ -2238,18 +2311,28 @@ fn every_type_layout_is_idempotent_and_parses() {
 
     let mut configs = Vec::new();
 
-    for order in [Order::None, Order::Ascending, Order::Descending] {
+    for order in [
+        Order::Preserve,
+        Order::KeyLengthAscending,
+        Order::KeyLengthDescending,
+    ] {
         for indexer in [Indexer::First, Indexer::Sorted] {
             for expand in [
-                TypeExpansion::Auto,
+                TypeExpansion::Needed,
                 TypeExpansion::Always,
                 TypeExpansion::Never,
             ] {
                 for column_width in [40, 120] {
                     configs.push(Options {
                         column_width,
-                        sort_table_types: Properties { order, indexer },
-                        type_operators: Operators { expand },
+                        types: Types {
+                            tables: Tables {
+                                order,
+                                indexer,
+                                ..Default::default()
+                            },
+                            operators: Operators { expand },
+                        },
                         ..Default::default()
                     });
                 }
@@ -2277,9 +2360,66 @@ fn every_type_layout_is_idempotent_and_parses() {
 }
 
 #[test]
+fn table_type_configuration_preserves_existing_blank_lines() {
+    let options: Options =
+        toml_edit::de::from_str("[types.tables]\nblank_lines = 'preserve'").unwrap();
+
+    let schema = serde_json::to_value(instar_core::project::InstarConfig::schema()).unwrap();
+
+    assert_eq!(
+        schema["$defs"]["Tables"]["properties"]["blank_lines"]["default"],
+        "remove"
+    );
+
+    for (source, expected) in [
+        (
+            "type Record = {first:number,\n\nsecond:string}",
+            "type Record = {\n\tfirst: number,\n\n\tsecond: string,\n}\n",
+        ),
+        (
+            "declare registry: {first:number,\n \n\t\nsecond:string}",
+            "declare registry: {\n\tfirst: number,\n\n\n\tsecond: string,\n}\n",
+        ),
+        (
+            "type Record = {child:{first:number,\n\nsecond:string}}",
+            "type Record = {\n\tchild: {\n\t\tfirst: number,\n\n\t\tsecond: string,\n\t},\n}\n",
+        ),
+    ] {
+        assert_eq!(configured(source, options.clone()), expected);
+        assert_eq!(configured(expected, options.clone()), expected);
+
+        let windows = Options {
+            line_endings: Endings::Windows,
+            ..options.clone()
+        };
+
+        assert_eq!(
+            configured(&source.replace('\n', "\r\n"), windows.clone()),
+            expected.replace('\n', "\r\n"),
+        );
+
+        assert_eq!(
+            configured(&expected.replace('\n', "\r\n"), windows),
+            expected.replace('\n', "\r\n"),
+        );
+    }
+
+    let compact = "type Record = { first: number, second: string }\n";
+    assert_eq!(configured(compact, options), compact);
+
+    assert_eq!(
+        formatted("type Record = {first:number,\n\nsecond:string}"),
+        compact
+    );
+}
+
+#[test]
 fn overloads_wrap_between_complete_signatures() {
     let source = "declare convert: ((input: number) -> string) & ((input: string) -> number)";
-    let expected = "declare convert: ((input: number) -> string)\n\t& ((input: string) -> number)\n";
+
+    let expected =
+        "declare convert: ((input: number) -> string)\n\t& ((input: string) -> number)\n";
+
     let options = narrow(60);
     assert_eq!(configured(source, options.clone()), expected);
     assert_eq!(configured(expected, options), expected);
@@ -2366,10 +2506,11 @@ fn read_and_write_modifiers_survive_types() {
 
 fn calls(expand: Expansion, style: CallStyle) -> Options {
     Options {
-        function_call: Calls {
+        calls: Calls {
             expand,
             style,
-            indent: 1,
+            indentation: 1,
+            ..Default::default()
         },
         ..Default::default()
     }
@@ -2377,7 +2518,13 @@ fn calls(expand: Expansion, style: CallStyle) -> Options {
 
 fn declarations(expand: Expansion) -> Options {
     Options {
-        function_declaration: Parameters { expand, indent: 1 },
+        functions: Functions {
+            parameters: Parameters {
+                expand,
+                indentation: 1,
+            },
+            ..Default::default()
+        },
         ..Default::default()
     }
 }
@@ -2392,7 +2539,7 @@ fn a_call_keeps_its_layout_by_default() {
 
 #[test]
 fn hug_last_keeps_the_arguments_on_the_line_of_the_call() {
-    let output = configured(HUG_SOURCE, calls(Expansion::WhenNeeded, CallStyle::HugLast));
+    let output = configured(HUG_SOURCE, calls(Expansion::Needed, CallStyle::HugLast));
 
     assert_eq!(
         output,
@@ -2402,10 +2549,7 @@ fn hug_last_keeps_the_arguments_on_the_line_of_the_call() {
 
 #[test]
 fn one_per_line_gives_every_argument_a_line() {
-    let output = configured(
-        HUG_SOURCE,
-        calls(Expansion::WhenNeeded, CallStyle::OnePerLine),
-    );
+    let output = configured(HUG_SOURCE, calls(Expansion::Needed, CallStyle::OnePerLine));
 
     assert!(output.starts_with("Colors:Apply(\n\tframe,\n"), "{output}");
 }
@@ -2413,7 +2557,7 @@ fn one_per_line_gives_every_argument_a_line() {
 #[test]
 fn hug_last_falls_back_where_the_last_argument_is_not_a_block() {
     let source = "someFunction(argumentNumberOne, argumentNumberTwo, argumentNumberThree, argumentNumberFour, argumentNumberFive, argumentSix)";
-    let output = configured(source, calls(Expansion::WhenNeeded, CallStyle::HugLast));
+    let output = configured(source, calls(Expansion::Needed, CallStyle::HugLast));
 
     assert!(output.contains("(\n\targumentNumberOne,\n"), "{output}");
 }
@@ -2489,10 +2633,11 @@ fn declarations_and_calls_are_decided_apart() {
 #[test]
 fn the_indent_levels_of_a_call_are_the_projects_to_choose() {
     let configuration = Options {
-        function_call: Calls {
+        calls: Calls {
             expand: Expansion::Always,
             style: CallStyle::OnePerLine,
-            indent: 2,
+            indentation: 2,
+            ..Default::default()
         },
         ..Default::default()
     };
@@ -2501,14 +2646,15 @@ fn the_indent_levels_of_a_call_are_the_projects_to_choose() {
 }
 
 #[test]
-fn never_and_a_magic_trailing_comma_do_not_fight() {
+fn trailing_comma_expansion_respects_call_layout() {
     let configuration = Options {
-        function_call: Calls {
+        calls: Calls {
             expand: Expansion::Never,
             style: CallStyle::OnePerLine,
-            indent: 1,
+            indentation: 1,
+            ..Default::default()
         },
-        magic_trailing_comma: true,
+        expand_on_trailing_comma: true,
         ..Default::default()
     };
 
@@ -2526,15 +2672,16 @@ fn never_and_a_magic_trailing_comma_do_not_fight() {
 #[test]
 fn never_and_hug_last_agree_on_a_trailing_table_and_not_on_a_middle_one() {
     let never = Options {
-        function_call: Calls {
+        calls: Calls {
             expand: Expansion::Never,
             style: CallStyle::OnePerLine,
-            indent: 1,
+            indentation: 1,
+            ..Default::default()
         },
         ..Default::default()
     };
 
-    let hug = calls(Expansion::WhenNeeded, CallStyle::HugLast);
+    let hug = calls(Expansion::Needed, CallStyle::HugLast);
 
     let trailing = "f(a, b, { x = 1, })";
 
@@ -2559,7 +2706,7 @@ fn every_list_layout_is_idempotent_and_parses() {
     ];
 
     let configs = [
-        calls(Expansion::WhenNeeded, CallStyle::HugLast),
+        calls(Expansion::Needed, CallStyle::HugLast),
         calls(Expansion::Always, CallStyle::OnePerLine),
         calls(Expansion::Never, CallStyle::OnePerLine),
         declarations(Expansion::Always),
@@ -2585,11 +2732,11 @@ fn every_list_layout_is_idempotent_and_parses() {
     }
 }
 
-fn constants(enabled: bool, mutated_tables_stay_local: bool) -> Options {
+fn constants(enabled: bool, preserve_mutated_tables: bool) -> Options {
     Options {
-        prefer_const: Constants {
-            enabled,
-            mutated_tables_stay_local,
+        bindings: Constants {
+            prefer_constant: enabled,
+            preserve_mutated_tables,
         },
         ..Default::default()
     }
@@ -2680,19 +2827,22 @@ fn the_const_rewrite_is_idempotent_and_parses() {
     }
 }
 
-fn imports(mode: Imports) -> Options {
+fn imports(mode: Unused) -> Options {
     Options {
-        unused_imports: mode,
+        imports: Imports {
+            unused: mode,
+            ..Default::default()
+        },
         ..Default::default()
     }
 }
 
 #[test]
-fn unused_imports_are_left_alone_by_default() {
+fn preserves_unused_bindings_by_default() {
     let source = "local Dead = require(\"@pkg/Dead\")\nreturn 1\n";
 
     assert_eq!(formatted(source), source);
-    assert_eq!(configured(source, imports(Imports::Ignore)), source);
+    assert_eq!(configured(source, imports(Unused::Ignore)), source);
 }
 
 #[test]
@@ -2700,7 +2850,7 @@ fn underscore_marks_the_name_and_keeps_the_require() {
     let source = "local Dead = require(\"@pkg/Dead\")\nreturn 1\n";
 
     assert_eq!(
-        configured(source, imports(Imports::Underscore)),
+        configured(source, imports(Unused::Underscore)),
         "local _Dead = require(\"@pkg/Dead\")\nreturn 1\n"
     );
 }
@@ -2709,29 +2859,29 @@ fn underscore_marks_the_name_and_keeps_the_require() {
 fn remove_deletes_the_declaration() {
     let source = "local Dead = require(\"@pkg/Dead\")\nreturn 1\n";
 
-    assert_eq!(configured(source, imports(Imports::Remove)), "return 1\n");
+    assert_eq!(configured(source, imports(Unused::Remove)), "return 1\n");
 }
 
 #[test]
 fn an_import_that_only_a_type_uses_survives_both_modes() {
     let source = "local jecs = require(\"@pkg/jecs\")\n\ntype Component = jecs.Component\n\nreturn nil :: Component?\n";
 
-    assert_eq!(configured(source, imports(Imports::Remove)), source);
-    assert_eq!(configured(source, imports(Imports::Underscore)), source);
+    assert_eq!(configured(source, imports(Unused::Remove)), source);
+    assert_eq!(configured(source, imports(Unused::Underscore)), source);
 }
 
 #[test]
 fn an_import_used_deep_inside_a_type_survives() {
     let source = "local Deep = require(\"@pkg/Deep\")\n\ntype Held = { field: Deep.Thing }\n\nreturn nil :: Held?\n";
 
-    assert_eq!(configured(source, imports(Imports::Remove)), source);
+    assert_eq!(configured(source, imports(Unused::Remove)), source);
 }
 
 #[test]
 fn a_used_import_is_never_touched() {
     let source = "local Used = require(\"@pkg/Used\")\n\nreturn Used.make()\n";
 
-    for mode in [Imports::Ignore, Imports::Underscore, Imports::Remove] {
+    for mode in [Unused::Ignore, Unused::Underscore, Unused::Remove] {
         assert_eq!(
             configured(source, imports(mode)),
             source,
@@ -2744,8 +2894,8 @@ fn a_used_import_is_never_touched() {
 fn a_name_already_marked_is_left_as_it_is() {
     let source = "local _Dead = require(\"@pkg/Dead\")\nreturn 1\n";
 
-    assert_eq!(configured(source, imports(Imports::Underscore)), source);
-    assert_eq!(configured(source, imports(Imports::Remove)), source);
+    assert_eq!(configured(source, imports(Unused::Underscore)), source);
+    assert_eq!(configured(source, imports(Unused::Remove)), source);
 }
 
 #[test]
@@ -2753,7 +2903,7 @@ fn removing_an_import_keeps_the_comments_around_it() {
     let source =
         "-- the dead one\nlocal Dead = require(\"@pkg/Dead\")\n-- a trailing thought\n\nreturn 1\n";
 
-    let output = configured(source, imports(Imports::Remove));
+    let output = configured(source, imports(Unused::Remove));
 
     assert!(
         !output.contains("require"),
@@ -2766,26 +2916,25 @@ fn removing_an_import_keeps_the_comments_around_it() {
 
 #[test]
 fn a_held_off_import_is_not_removed() {
-    let source =
-        "-- instar: format off\nlocal Dead = require(\"@pkg/Dead\")\n-- instar: format on\nreturn 1\n";
+    let source = "-- instar: format off\nlocal Dead = require(\"@pkg/Dead\")\n-- instar: format on\nreturn 1\n";
 
-    assert_eq!(configured(source, imports(Imports::Remove)), source);
-    assert_eq!(configured(source, imports(Imports::Underscore)), source);
+    assert_eq!(configured(source, imports(Unused::Remove)), source);
+    assert_eq!(configured(source, imports(Unused::Underscore)), source);
 }
 
 #[test]
 fn a_multi_name_declaration_is_left_alone() {
     let source = "local A, B = require(\"@pkg/A\"), require(\"@pkg/B\")\nreturn 1\n";
 
-    assert_eq!(configured(source, imports(Imports::Remove)), source);
+    assert_eq!(configured(source, imports(Unused::Remove)), source);
 }
 
 #[test]
 fn only_a_require_counts_as_an_import() {
     let source = "local dead = 1\nreturn 2\n";
 
-    assert_eq!(configured(source, imports(Imports::Remove)), source);
-    assert_eq!(configured(source, imports(Imports::Underscore)), source);
+    assert_eq!(configured(source, imports(Unused::Remove)), source);
+    assert_eq!(configured(source, imports(Unused::Underscore)), source);
 }
 
 #[test]
@@ -2793,12 +2942,12 @@ fn a_dead_import_inside_a_function_is_handled() {
     let source = "local function f()\n\tlocal Dead = require(\"@pkg/Dead\")\nend\n\nreturn f\n";
 
     assert_eq!(
-        configured(source, imports(Imports::Remove)),
+        configured(source, imports(Unused::Remove)),
         "local function f()\nend\n\nreturn f\n"
     );
 
     assert_eq!(
-        configured(source, imports(Imports::Underscore)),
+        configured(source, imports(Unused::Underscore)),
         "local function f()\n\tlocal _Dead = require(\"@pkg/Dead\")\nend\n\nreturn f\n"
     );
 }
@@ -2807,7 +2956,7 @@ fn a_dead_import_inside_a_function_is_handled() {
 fn both_modes_are_stable() {
     let source = "-- a note\nlocal Dead = require(\"@pkg/Dead\")\nlocal jecs = require(\"@pkg/jecs\")\n\ntype C = jecs.Component\n\nreturn nil :: C?\n";
 
-    for mode in [Imports::Underscore, Imports::Remove] {
+    for mode in [Unused::Underscore, Unused::Remove] {
         let once = configured(source, imports(mode));
         let twice = configured(&once, imports(mode));
 
@@ -2825,7 +2974,7 @@ fn a_value_table_keeps_its_order_by_default() {
 #[test]
 fn a_value_table_sorts_when_the_project_asks() {
     let configuration = |order| Options {
-        sort_tables: instar_core::format::configuration::Sorting { order },
+        tables: Sorting { order },
         ..Default::default()
     };
 
@@ -2837,7 +2986,7 @@ fn a_value_table_sorts_when_the_project_asks() {
     );
 
     assert_eq!(
-        configured(source, configuration(Order::Ascending)),
+        configured(source, configuration(Order::KeyLengthAscending)),
         "local t = { al = 2, mid = 3, zeta = 1 }\nreturn t\n"
     );
 }
@@ -2845,7 +2994,7 @@ fn a_value_table_sorts_when_the_project_asks() {
 #[test]
 fn the_value_sort_leaves_a_table_it_cannot_read_whole() {
     let configuration = Options {
-        sort_tables: instar_core::format::configuration::Sorting {
+        tables: Sorting {
             order: Order::Alphabetical,
         },
         ..Default::default()
@@ -2861,8 +3010,8 @@ fn the_value_sort_leaves_a_table_it_cannot_read_whole() {
 #[test]
 fn a_sorted_table_keeps_one_separator_and_its_magic_comma() {
     let configuration = Options {
-        magic_trailing_comma: true,
-        sort_tables: instar_core::format::configuration::Sorting {
+        expand_on_trailing_comma: true,
+        tables: Sorting {
             order: Order::Alphabetical,
         },
         ..Default::default()
@@ -2882,11 +3031,15 @@ fn a_sorted_table_keeps_one_separator_and_its_magic_comma() {
 }
 
 #[test]
-fn the_size_orders_measure_the_field() {
+fn width_orders_measure_the_field() {
     let configuration = |order| Options {
-        sort_table_types: Properties {
-            order,
-            indexer: Indexer::Sorted,
+        types: Types {
+            tables: Tables {
+                order,
+                indexer: Indexer::Sorted,
+                ..Default::default()
+            },
+            ..Default::default()
         },
         ..Default::default()
     };
@@ -2894,12 +3047,12 @@ fn the_size_orders_measure_the_field() {
     let source = "type T = { ab: SomeVeryLongTypeName, long: no }\nreturn nil\n";
 
     assert_eq!(
-        configured(source, configuration(Order::SizeAscending)),
+        configured(source, configuration(Order::FieldWidthAscending)),
         "type T = { long: no, ab: SomeVeryLongTypeName }\nreturn nil\n"
     );
 
     assert_eq!(
-        configured(source, configuration(Order::SizeDescending)),
+        configured(source, configuration(Order::FieldWidthDescending)),
         "type T = { ab: SomeVeryLongTypeName, long: no }\nreturn nil\n"
     );
 }
@@ -2909,9 +3062,13 @@ fn the_indexer_takes_its_position() {
     use instar_core::format::configuration::Indexer;
 
     let configuration = |indexer| Options {
-        sort_table_types: Properties {
-            order: Order::Alphabetical,
-            indexer,
+        types: Types {
+            tables: Tables {
+                order: Order::Alphabetical,
+                indexer,
+                ..Default::default()
+            },
+            ..Default::default()
         },
         ..Default::default()
     };
@@ -2932,11 +3089,14 @@ fn the_indexer_takes_its_position() {
 #[test]
 fn a_tie_sorts_the_same_way_every_run() {
     let configuration = Options {
-        sort_tables: instar_core::format::configuration::Sorting {
-            order: Order::SizeAscending,
+        tables: Sorting {
+            order: Order::FieldWidthAscending,
         },
-        sort_table_types: Properties {
-            order: Order::SizeAscending,
+        types: Types {
+            tables: Tables {
+                order: Order::FieldWidthAscending,
+                ..Default::default()
+            },
             ..Default::default()
         },
         ..Default::default()
@@ -2961,16 +3121,19 @@ fn a_tie_sorts_the_same_way_every_run() {
 
 #[test]
 fn the_function_style_leaves_the_forms_that_have_no_keyword() {
-    use instar_core::format::configuration::Functions;
+    use instar_core::format::configuration::Declaration;
 
     let configuration = |style| Options {
-        function_style: style,
+        functions: Functions {
+            binding: style,
+            ..Default::default()
+        },
         ..Default::default()
     };
 
     let source = "local C = {}\nfunction plain()\n\treturn 1\nend\nfunction C.method()\n\treturn 2\nend\nfunction C:other()\n\treturn 3\nend\nlocal anon = function()\n\treturn 4\nend\nreturn { C, plain, anon }\n";
 
-    let output = configured(source, configuration(Functions::Local));
+    let output = configured(source, configuration(Declaration::Local));
 
     assert!(output.contains("local function plain()"), "{output}");
     assert!(output.contains("function C.method()"), "{output}");
@@ -2978,7 +3141,7 @@ fn the_function_style_leaves_the_forms_that_have_no_keyword() {
     assert!(output.contains("local anon = function()"), "{output}");
     assert!(!output.contains("local function C"), "{output}");
 
-    let back = configured(&output, configuration(Functions::Global));
+    let back = configured(&output, configuration(Declaration::Global));
 
     assert!(back.contains("function plain()"), "{back}");
     assert!(!back.contains("local function plain"), "{back}");
@@ -2987,7 +3150,10 @@ fn the_function_style_leaves_the_forms_that_have_no_keyword() {
 #[test]
 fn the_const_style_refuses_a_reassigned_name() {
     let configuration = Options {
-        function_style: instar_core::format::configuration::Functions::Const,
+        functions: Functions {
+            binding: instar_core::format::configuration::Declaration::Const,
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -3003,7 +3169,10 @@ fn the_const_style_refuses_a_reassigned_name() {
 #[test]
 fn a_removed_import_leaves_no_blank_line() {
     let configuration = Options {
-        unused_imports: instar_core::format::configuration::Imports::Remove,
+        imports: Imports {
+            unused: instar_core::format::configuration::Unused::Remove,
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -3018,9 +3187,15 @@ fn a_removed_import_leaves_no_blank_line() {
     );
 }
 
-fn chained(style: instar_core::format::configuration::Chain, min_calls: usize) -> Options {
+fn chained(style: instar_core::format::configuration::Chain, minimum_calls: usize) -> Options {
     Options {
-        call_chains: instar_core::format::configuration::Chains { style, min_calls },
+        calls: Calls {
+            chains: Chains {
+                style,
+                minimum_calls,
+            },
+            ..Default::default()
+        },
         ..Default::default()
     }
 }
