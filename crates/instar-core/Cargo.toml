@@ -8,39 +8,18 @@ license.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
-[features]
-oracle = []
-
 [dependencies]
-ignore = "0.4.33"
-jsonc-parser = "0.27.1"
-la-arena = "0.3.1"
-libloading = "0.9.0"
 line-index = "0.1.2"
-logos = "0.16.1"
-process-wrap = { version = "10.0.0", default-features = false, features = ["job-object", "kill-on-drop", "process-group", "tokio1"] }
-rbx_binary = "3.0.0"
-rbx_dom_weak = "4.2.0"
-rbx_xml = "3.0.0"
-ropey = "1.6.1"
-rowan = "0.17.0"
 schemars = "1.2.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 text-size = "1.1.1"
 thiserror = "2.0.20"
-tokio = { version = "1.53.1", features = ["io-util", "macros", "process", "rt", "time"] }
-tokio-util = { version = "0.7.19", features = ["rt"] }
 toml_edit = { version = "0.23.5", features = ["serde"] }
+vermis = { path = "../../../vermis" }
 
 [dev-dependencies]
-assert_cmd = "2.2.2"
-eyre = "0.6.14"
-fs-err = { version = "3.3.1", features = ["expose_original_error"] }
 tempfile = "3.27.0"
-
-[build-dependencies]
-cmake = "0.1.58"
 
 [lints]
 workspace = true
