@@ -172,7 +172,7 @@ fn rejects_ambiguous_module_candidates() -> TestResult {
 }
 
 #[test]
-fn aliases_use_configuration_origins_and_project_overrides() -> TestResult {
+fn aliases_follow_proximity_then_format_and_preserve_origins() -> TestResult {
     let directory = tempfile::tempdir()?;
     let root = directory.path();
     fs::create_dir(root.join("nested"))?;
@@ -205,13 +205,37 @@ fn aliases_use_configuration_origins_and_project_overrides() -> TestResult {
         Some(root.join("first.luau"))
     );
 
-    fs::write(root.join("instar.toml"), "[aliases]\nvalue = './third'\n")?;
+    fs::write(
+        root.join("instar.toml"),
+        "[aliases]\nvalue = './third'\ninherited = './third'\nchain = '@inherited'\n",
+    )?;
+
     let mut resolver = Resolver::new(&mut sources);
 
     assert_eq!(
         resolver.resolve(&from, "@value")?,
+        Some(root.join("second.luau"))
+    );
+
+    assert_eq!(
+        resolver.resolve(&root.join("main.luau"), "@value")?,
         Some(root.join("third.luau"))
     );
+
+    fs::write(
+        root.join("nested/instar.toml"),
+        "[aliases]\nvalue = '../first'\n",
+    )?;
+
+    let mut resolver = Resolver::new(&mut sources);
+
+    for (specifier, filename) in [
+        ("@VALUE", "first.luau"),
+        ("@inherited", "third.luau"),
+        ("@chain", "third.luau"),
+    ] {
+        assert_eq!(resolver.resolve(&from, specifier)?, Some(root.join(filename)));
+    }
 
     assert_eq!(
         resolver.resolve(&from, "@parent")?,
