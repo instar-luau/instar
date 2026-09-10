@@ -66,6 +66,8 @@ unsafe extern "C" {
         annotate: Annotate,
         modules: *const Bytes,
         count: usize,
+        definitions: *const Bytes,
+        definition_count: usize,
         strict: bool,
         old_solver: bool,
         annotations: bool,
@@ -213,6 +215,68 @@ pub(crate) fn analyze(
     modules: &[PathBuf],
     options: &Options,
 ) -> io::Result<Report> {
+    let mut groups = BTreeMap::<Vec<PathBuf>, Vec<PathBuf>>::new();
+
+    for path in modules {
+        let source = resolver.load(path)?;
+        let path = source.path().to_owned();
+        let mut definitions = resolver.definitions(&path)?;
+
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(".d.luau"))
+            && !definitions.contains(&path)
+        {
+            definitions.push(path.clone());
+        }
+
+        groups.entry(definitions).or_default().push(path);
+    }
+
+    let mut report = Report::default();
+
+    for (definitions, modules) in groups {
+        let result = analyze_group(resolver, &modules, &definitions, options)?;
+        report.diagnostics.extend(result.diagnostics);
+        report.annotations.extend(result.annotations);
+    }
+
+    let mut seen = std::collections::BTreeSet::new();
+
+    report.diagnostics.retain(|diagnostic| {
+        seen.insert((
+            diagnostic.path.clone(),
+            diagnostic.line,
+            diagnostic.column,
+            diagnostic.message.clone(),
+            diagnostic.is_error,
+        ))
+    });
+
+    Ok(report)
+}
+
+fn analyze_group(
+    resolver: &mut Resolver<'_>,
+    modules: &[PathBuf],
+    definitions: &[PathBuf],
+    options: &Options,
+) -> io::Result<Report> {
+    let definition_names = definitions
+        .iter()
+        .map(|path| {
+            resolver
+                .load(path)
+                .and_then(|source| module_name(source.path()))
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+
+    let definitions: Vec<_> = definition_names
+        .iter()
+        .map(|name| Bytes::new(name.as_bytes()))
+        .collect();
+
     let names = modules
         .iter()
         .map(|path| {
@@ -244,6 +308,8 @@ pub(crate) fn analyze(
             annotate,
             modules.as_ptr(),
             modules.len(),
+            definitions.as_ptr(),
+            definitions.len(),
             options.strict,
             options.old_solver,
             options.annotations,
