@@ -1,5 +1,3 @@
-// The C ABI is confined here. Calls are synchronous: C++ copies returned bytes
-// before the next callback, and Rust copies native reports before returning.
 #![allow(unsafe_code)]
 
 use std::{
@@ -86,18 +84,25 @@ impl Context<'_, '_> {
         if self.error.is_some() {
             return Bytes::absent();
         }
+
         match catch_unwind(AssertUnwindSafe(|| operation(self))) {
             Ok(Ok(Some(bytes))) => {
                 self.buffer = bytes;
+
                 Bytes::new(&self.buffer)
             }
+
             Ok(Ok(None)) => Bytes::absent(),
+
             Ok(Err(error)) => {
                 self.error = Some(error);
+
                 Bytes::absent()
             }
+
             Err(_) => {
                 self.error = Some(io::Error::other("native callback panicked"));
+
                 Bytes::absent()
             }
         }
@@ -106,8 +111,10 @@ impl Context<'_, '_> {
 
 extern "C" fn read(context: *mut c_void, name: Bytes) -> Bytes {
     let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
+
     context.call(|context| {
         let name = unsafe { name.string()? };
+
         Ok(Some(
             context.resolver.load(Path::new(&name))?.bytes().to_vec(),
         ))
@@ -116,9 +123,12 @@ extern "C" fn read(context: *mut c_void, name: Bytes) -> Bytes {
 
 extern "C" fn resolve(context: *mut c_void, from: Bytes, specifier: Bytes) -> Bytes {
     let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
+
     context.call(|context| {
         let from = unsafe { from.string()? };
+
         let specifier = unsafe { specifier.string()? };
+
         context
             .resolver
             .resolve(Path::new(&from), &specifier)?
@@ -129,8 +139,10 @@ extern "C" fn resolve(context: *mut c_void, from: Bytes, specifier: Bytes) -> By
 
 extern "C" fn configuration(context: *mut c_void, name: Bytes, index: usize) -> Bytes {
     let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
+
     context.call(|context| {
         let name = unsafe { name.string()? };
+
         Ok(context
             .resolver
             .configurations(Path::new(&name))?
@@ -148,6 +160,7 @@ extern "C" fn emit(
     is_error: bool,
 ) {
     let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
+
     context.call(|context| {
         context.report.diagnostics.push(Diagnostic {
             path: PathBuf::from(unsafe { name.string()? }),
@@ -156,17 +169,20 @@ extern "C" fn emit(
             message: String::from_utf8_lossy(unsafe { message.slice() }).into_owned(),
             is_error,
         });
+
         Ok(None)
     });
 }
 
 extern "C" fn annotate(context: *mut c_void, name: Bytes, text: Bytes) {
     let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
+
     context.call(|context| {
         context.report.annotations.push(Annotation {
             path: PathBuf::from(unsafe { name.string()? }),
             bytes: unsafe { text.slice() }.to_vec(),
         });
+
         Ok(None)
     });
 }
@@ -178,6 +194,7 @@ fn module_name(path: &Path) -> io::Result<String> {
             {
                 path.replace('\\', "/")
             }
+
             #[cfg(not(windows))]
             {
                 path.to_owned()
@@ -204,16 +221,19 @@ pub(crate) fn analyze(
                 .and_then(|source| module_name(source.path()))
         })
         .collect::<io::Result<Vec<_>>>()?;
+
     let modules: Vec<_> = names
         .iter()
         .map(|name| Bytes::new(name.as_bytes()))
         .collect();
+
     let mut context = Context {
         resolver,
         buffer: Vec::new(),
         report: Report::default(),
         error: None,
     };
+
     unsafe {
         instar_analyze(
             ptr::from_mut(&mut context).cast(),
@@ -229,9 +249,11 @@ pub(crate) fn analyze(
             options.annotations,
         );
     }
+
     if let Some(error) = context.error {
         return Err(error);
     }
+
     Ok(context.report)
 }
 
@@ -243,12 +265,15 @@ struct Aliases {
 
 extern "C" fn alias(context: *mut c_void, name: Bytes, target: Bytes) {
     let context = unsafe { &mut *context.cast::<Aliases>() };
+
     let result = catch_unwind(AssertUnwindSafe(|| -> io::Result<()> {
         context
             .values
             .insert(unsafe { name.string()? }, unsafe { target.string()? });
+
         Ok(())
     }));
+
     match result {
         Ok(Ok(())) => {}
         Ok(Err(error)) => context.error = Some(error.to_string()),
@@ -258,14 +283,17 @@ extern "C" fn alias(context: *mut c_void, name: Bytes, target: Bytes) {
 
 extern "C" fn alias_error(context: *mut c_void, _: Bytes, message: Bytes, _: u32, _: u32, _: bool) {
     let context = unsafe { &mut *context.cast::<Aliases>() };
+
     let result = catch_unwind(AssertUnwindSafe(|| {
         String::from_utf8_lossy(unsafe { message.slice() }).into_owned()
     }));
+
     context.error = Some(result.unwrap_or_else(|_| "configuration callback panicked".into()));
 }
 
 pub(crate) fn aliases(source: &[u8]) -> io::Result<BTreeMap<String, String>> {
     let mut aliases = Aliases::default();
+
     unsafe {
         instar_aliases(
             Bytes::new(source),
@@ -274,8 +302,10 @@ pub(crate) fn aliases(source: &[u8]) -> io::Result<BTreeMap<String, String>> {
             alias_error,
         );
     }
+
     if let Some(error) = aliases.error {
         return Err(io::Error::other(error));
     }
+
     Ok(aliases.values)
 }

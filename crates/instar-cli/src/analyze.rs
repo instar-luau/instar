@@ -39,30 +39,37 @@ impl Analyze {
         let mut directories = BTreeSet::new();
         let mut pending = self.files;
         let mut stdin = None;
+
         if self.filename.is_some() && !pending.iter().any(|path| path == Path::new("-")) {
             return Err(io::Error::other("--filename requires '-' input"));
         }
+
         while let Some(path) = pending.pop() {
             if path == Path::new("-") {
                 if stdin.is_none() {
                     let mut bytes = Vec::new();
                     io::stdin().lock().read_to_end(&mut bytes)?;
-                    // Luau's VfsNavigator names unnamed stdin 'stdin' under cwd.
+
                     let path = self
                         .filename
                         .clone()
                         .unwrap_or_else(|| PathBuf::from("stdin"));
+
                     let source = sources
                         .open_bytes(&path, 0, bytes)
                         .map_err(io::Error::other)?;
+
                     modules.push(source.path().to_owned());
                     stdin = Some(source);
                 }
+
                 continue;
             }
+
             let metadata = fs::metadata(&path).map_err(|error| {
                 io::Error::new(error.kind(), format!("{}: {error}", path.display()))
             })?;
+
             if metadata.is_file() {
                 let source = sources.read(&path).map_err(io::Error::other)?;
                 modules.push(source.path().to_owned());
@@ -70,13 +77,17 @@ impl Analyze {
                 if !directories.insert(fs::canonicalize(&path)?) {
                     continue;
                 }
+
                 let mut children = Vec::new();
+
                 for entry in fs::read_dir(&path)? {
                     let entry = entry?;
                     let path = entry.path();
+
                     let metadata = fs::metadata(&path).map_err(|error| {
                         io::Error::new(error.kind(), format!("{}: {error}", path.display()))
                     })?;
+
                     if metadata.is_dir()
                         || matches!(
                             path.extension().and_then(|extension| extension.to_str()),
@@ -86,6 +97,7 @@ impl Analyze {
                         children.push(path);
                     }
                 }
+
                 children.sort();
                 pending.extend(children.into_iter().rev());
             } else {
@@ -95,12 +107,15 @@ impl Analyze {
                 )));
             }
         }
+
         let options = analysis::Options {
             strict: self.mode.is_some(),
             old_solver: self.solver.as_deref() == Some("old"),
             annotations: self.annotate,
         };
+
         let report = analysis::analyze(&mut Resolver::new(&mut sources), &modules, &options)?;
+
         for diagnostic in &report.diagnostics {
             eprintln!(
                 "{}({},{}): {}",
@@ -110,10 +125,13 @@ impl Analyze {
                 diagnostic.message
             );
         }
+
         let mut output = io::stdout().lock();
+
         for annotation in &report.annotations {
             output.write_all(&annotation.bytes)?;
         }
+
         Ok(if report.has_errors() {
             ExitCode::FAILURE
         } else {

@@ -2,7 +2,6 @@ use std::{io, path::PathBuf};
 
 use crate::{native, resolution::Resolver};
 
-/// Overrides of the pinned Luau CLI's checking defaults.
 #[derive(Default)]
 pub struct Options {
     pub strict: bool,
@@ -38,8 +37,6 @@ impl Report {
     }
 }
 
-/// Analyze original snapshots using the operation's shared module resolver.
-///
 /// # Errors
 /// Returns source, configuration, resolution or native callback failures.
 pub fn analyze(
