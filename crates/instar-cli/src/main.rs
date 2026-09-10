@@ -1,4 +1,5 @@
 mod analyze;
+mod input;
 
 use std::process::ExitCode;
 
