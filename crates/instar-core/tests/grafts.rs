@@ -163,7 +163,7 @@ fn runtime_is_required_and_validated() {
         );
     }
 
-    for runtime in ["native", "wasm"] {
+    for runtime in ["native", "luau", "wasm"] {
         fs::write(
             &path,
             format!("name='example'\nversion=1\nruntime='{runtime}'\nentry='../module'\nlint=true"),
@@ -177,6 +177,149 @@ fn runtime_is_required_and_validated() {
                 .contains("inside")
         );
     }
+}
+
+#[test]
+fn luau_receives_settings_and_uses_host_layouts() {
+    let directory = support::luau(
+        r#"
+local function format(request: {read settings: {read indent_width: number}, read configuration: {read setting: string}})
+    if request.settings.indent_width ~= 2 or request.configuration.setting ~= "value" then
+        error("missing settings or configuration")
+    end
+    return {
+        version = 1,
+        document = {sequence = {
+            {text = "local value ="},
+            {indent = {sequence = {"hard", {host = {start = 14, ["end"] = 15, parse = "expression"}}}}},
+        }},
+    }
+end
+return table.freeze({format = format})
+"#,
+        "format",
+    );
+
+    let manifest = directory.path().join("graft.toml");
+
+    fs::write(
+        &manifest,
+        fs::read_to_string(&manifest).unwrap() + "[configuration]\nsetting='value'\n",
+    )
+    .unwrap();
+
+    fs::write(
+        directory.path().join("instar.toml"),
+        "[format]\nindent_type='spaces'\nindent_width=2\n[grafts]\nexample='graft.toml'",
+    )
+    .unwrap();
+
+    let configuration =
+        Configuration::discover(&directory.path().join("source.luau"), None).unwrap();
+
+    let output = configuration.format(b"local value=1").unwrap();
+    assert_eq!(output, b"local value =\n  1\n");
+    assert_eq!(configuration.format(&output).unwrap(), output);
+}
+
+#[test]
+fn luau_preserves_request_bytes_and_validates_lint_ranges() {
+    let directory = support::luau(
+        r#"
+local function lint(request: {read source: string, read configuration: {read message: string}})
+    return {{rule = "example", message = request.source .. request.configuration.message, start = 0, ["end"] = #request.source}}
+end
+return table.freeze({lint = lint})
+"#,
+        "lint",
+    );
+
+    let manifest = directory.path().join("graft.toml");
+
+    fs::write(
+        &manifest,
+        fs::read_to_string(&manifest).unwrap() + "[configuration]\nmessage='雪\"\\123'\n",
+    )
+    .unwrap();
+
+    let graft = Graft::load(&manifest, "example").unwrap();
+    let source = "雪\"\\123\0\nreturn [=[value]=]";
+    let findings = graft.lint(source.as_bytes()).unwrap();
+    assert_eq!(findings[0].message, format!("{source}雪\"\\123"));
+    assert_eq!(findings[0].end, source.len());
+
+    assert_eq!(
+        graft
+            .format(source.as_bytes(), &Options::default())
+            .unwrap(),
+        source.as_bytes()
+    );
+
+    fs::write(directory.path().join("module.luau"), "return {lint=function() return {{rule='example', message='reported', start=1, ['end']=2}} end}").unwrap();
+    let graft = Graft::load(&manifest, "example").unwrap();
+    assert!(graft.lint("雪".as_bytes()).is_err());
+}
+
+#[test]
+fn luau_modules_and_responses_are_checked() {
+    for source in ["not luau", "return 1", "return {}", "return {format=1}"] {
+        let directory = support::luau(source, "format");
+
+        assert!(
+            Graft::load(&directory.path().join("graft.toml"), "example").is_err(),
+            "{source}"
+        );
+    }
+
+    for body in [
+        "error('failure')",
+        "error({})",
+        "local value = {}; value.self = value; return value",
+        "return function() end",
+        "return setmetatable({}, {})",
+        "return {[1]='first', [3]='third'}",
+        "return {[1]='first', name='mixed'}",
+        "return {version=0/0, document='empty'}",
+        "local value = {}; for index=1,128 do value={value} end; return value",
+        "return {version=1, document={text='return 2'}}",
+        "return {version=1, document={source={0,999}}}",
+        "return {version=1, document={text=string.char(255)}}",
+    ] {
+        let directory = support::luau(
+            &format!("return {{format=function() {body} end}}"),
+            "format",
+        );
+
+        let graft = Graft::load(&directory.path().join("graft.toml"), "example").unwrap();
+
+        assert!(
+            graft.format(b"return 1", &Options::default()).is_err(),
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn luau_instances_are_isolated_and_have_no_host_io() {
+    let directory = support::luau(
+        r#"
+if io ~= nil or require ~= nil or print ~= nil or os.execute ~= nil then
+    error("host capabilities exposed")
+end
+local count = 0
+local function lint()
+    count += 1
+    if count ~= 1 then error("instance reused") end
+    return {}
+end
+return table.freeze({lint=lint})
+"#,
+        "lint",
+    );
+
+    let graft = Graft::load(&directory.path().join("graft.toml"), "example").unwrap();
+    assert!(graft.lint(b"return 1").unwrap().is_empty());
+    assert!(graft.lint(b"return 1").unwrap().is_empty());
 }
 
 #[test]

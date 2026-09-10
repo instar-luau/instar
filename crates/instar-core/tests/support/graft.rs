@@ -74,6 +74,19 @@ pub(super) fn module(reply: &str, hook: &str) -> Vec<u8> {
     module
 }
 
+pub(super) fn luau(source: &str, hook: &str) -> tempfile::TempDir {
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(directory.path().join("module.luau"), source).unwrap();
+
+    fs::write(
+        directory.path().join("graft.toml"),
+        format!("name='example'\nversion=1\nruntime='luau'\nentry='module.luau'\n{hook}=true\n"),
+    )
+    .unwrap();
+
+    directory
+}
+
 pub(super) fn fixture(reply: &str, hook: &str) -> tempfile::TempDir {
     let directory = tempfile::tempdir().unwrap();
     fs::write(directory.path().join("module.wasm"), module(reply, hook)).unwrap();
