@@ -25,8 +25,6 @@ pub struct RobloxConfig {
 }
 
 impl InstarConfig {
-    /// Decode the supported fields without assigning defaults to omitted values.
-    ///
     /// # Errors
     /// Returns invalid TOML, unknown fields or field-type errors with TOML spans.
     pub fn parse(text: &str) -> Result<Self, toml_edit::de::Error> {
@@ -57,6 +55,7 @@ impl ConfigKind {
     #[must_use]
     pub fn from_path(path: &Path) -> Option<Self> {
         let filename = path.file_name()?;
+
         CONFIG_FILES
             .iter()
             .find_map(|&(name, kind)| (filename == name).then_some(kind))
@@ -85,28 +84,29 @@ pub enum ProjectError {
         #[source]
         source: io::Error,
     },
+
     #[error("{path}: {source}")]
     Encoding {
         path: PathBuf,
         #[source]
         source: std::str::Utf8Error,
     },
+
     #[error("{path}: {source}")]
     Toml {
         path: PathBuf,
         #[source]
         source: toml_edit::de::Error,
     },
+
     #[error("project root is not a directory: {0}")]
     NotDirectory(PathBuf),
+
     #[error("configuration is not a regular file: {0}")]
     NotFile(PathBuf),
 }
 
 impl Project {
-    /// Load recognized files directly under a selected root, retaining coexistence.
-    /// No ancestor selection, cross-file merging or Luau evaluation is performed.
-    ///
     /// # Errors
     /// Returns root, filesystem, encoding or Instar configuration failures.
     pub fn load(root: &Path) -> Result<Self, ProjectError> {
@@ -114,40 +114,49 @@ impl Project {
             path: root.to_owned(),
             source,
         })?;
+
         let metadata = fs::metadata(&root).map_err(|source| ProjectError::Io {
             path: root.clone(),
             source,
         })?;
+
         if !metadata.is_dir() {
             return Err(ProjectError::NotDirectory(root));
         }
+
         let mut files = Vec::new();
         let mut instar = None;
+
         for (name, kind) in CONFIG_FILES {
             let path = root.join(name);
-            // Inspect presence separately so a dangling link is an error, not absence.
+
             match fs::symlink_metadata(&path) {
                 Ok(_) => {}
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                 Err(source) => return Err(ProjectError::Io { path, source }),
             }
+
             let metadata = fs::metadata(&path).map_err(|source| ProjectError::Io {
                 path: path.clone(),
                 source,
             })?;
+
             if !metadata.is_file() {
                 return Err(ProjectError::NotFile(path));
             }
+
             let bytes = fs::read(&path).map_err(|source| ProjectError::Io {
                 path: path.clone(),
                 source,
             })?;
+
             if kind == ConfigKind::Instar {
                 let text =
                     std::str::from_utf8(&bytes).map_err(|source| ProjectError::Encoding {
                         path: path.clone(),
                         source,
                     })?;
+
                 instar = Some(
                     InstarConfig::parse(text).map_err(|source| ProjectError::Toml {
                         path: path.clone(),
@@ -155,8 +164,10 @@ impl Project {
                     })?,
                 );
             }
+
             files.push(ConfigFile { path, kind, bytes });
         }
+
         Ok(Self {
             root,
             files,

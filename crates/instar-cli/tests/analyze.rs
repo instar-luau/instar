@@ -18,6 +18,7 @@ fn analyzes_original_bytes_and_reports_type_and_syntax_errors() {
         (&b"local =\n"[..], Some("SyntaxError")),
     ] {
         fs::write(&source, bytes).unwrap();
+
         let assertion = Command::new(assert_cmd::cargo::cargo_bin!("instar"))
             .arg("analyze")
             .arg(&source)
@@ -55,12 +56,15 @@ fn analyzes_original_standard_input_bytes() {
 #[test]
 fn analyzes_directories_and_resolves_modules_with_upstream_configuration() {
     let directory = tempfile::tempdir().unwrap();
+
     fs::write(
         directory.path().join(".luaurc"),
         r#"{"languageMode":"strict"}"#,
     )
     .unwrap();
+
     fs::write(directory.path().join("value.luau"), "return 'wrong'\n").unwrap();
+
     fs::write(
         directory.path().join("main.luau"),
         "local value: number = require('./value')\nreturn value\n",
@@ -76,6 +80,7 @@ fn analyzes_directories_and_resolves_modules_with_upstream_configuration() {
             .arg(path)
             .assert()
             .code(1);
+
         let stderr = String::from_utf8_lossy(&assertion.get_output().stderr);
         assert!(stderr.contains("TypeError"), "{stderr}");
         assert!(stderr.contains("main.luau"), "{stderr}");
@@ -85,11 +90,13 @@ fn analyzes_directories_and_resolves_modules_with_upstream_configuration() {
 #[test]
 fn handles_missing_files_and_requires_inputs() {
     let directory = tempfile::tempdir().unwrap();
+
     let assertion = Command::new(assert_cmd::cargo::cargo_bin!("instar"))
         .arg("analyze")
         .arg(directory.path().join("missing.luau"))
         .assert()
         .code(1);
+
     let stderr = String::from_utf8_lossy(&assertion.get_output().stderr);
     assert!(stderr.contains("missing.luau"), "{stderr}");
 
@@ -117,18 +124,22 @@ fn analyzes_multiple_files_and_filenames_that_look_like_options() {
 fn honors_aliases_and_reports_invalid_configuration() {
     let directory = tempfile::tempdir().unwrap();
     let configuration = directory.path().join(".luaurc");
+
     fs::write(
         &configuration,
         r#"{"languageMode":"strict","aliases":{"value":"./value"}}"#,
     )
     .unwrap();
+
     fs::write(directory.path().join("value.luau"), "return 42\n").unwrap();
     let source = directory.path().join("source.luau");
+
     fs::write(
         &source,
         "local value: number = require('@value')\nreturn value\n",
     )
     .unwrap();
+
     Command::new(assert_cmd::cargo::cargo_bin!("instar"))
         .arg("analyze")
         .arg(&source)
@@ -137,11 +148,13 @@ fn honors_aliases_and_reports_invalid_configuration() {
         .stderr("");
 
     fs::write(&configuration, r#"{"languageMode":"invalid"}"#).unwrap();
+
     let assertion = Command::new(assert_cmd::cargo::cargo_bin!("instar"))
         .arg("analyze")
         .arg(&source)
         .assert()
         .code(1);
+
     let stderr = String::from_utf8_lossy(&assertion.get_output().stderr);
     assert!(stderr.contains(".luaurc"), "{stderr}");
 }
@@ -158,13 +171,16 @@ fn explicit_strict_mode_reports_type_errors() {
 #[test]
 fn named_standard_input_resolves_imports_from_its_filename() {
     let directory = tempfile::tempdir().unwrap();
+
     fs::write(
         directory.path().join(".luaurc"),
         r#"{"languageMode":"strict"}"#,
     )
     .unwrap();
+
     fs::write(directory.path().join("value.luau"), "return 42").unwrap();
     let filename = directory.path().join("unsaved.luau");
+
     Command::new(assert_cmd::cargo::cargo_bin!("instar"))
         .args(["analyze", "--filename"])
         .arg(&filename)
@@ -173,6 +189,7 @@ fn named_standard_input_resolves_imports_from_its_filename() {
         .assert()
         .success()
         .stderr("");
+
     let assertion = Command::new(assert_cmd::cargo::cargo_bin!("instar"))
         .args(["analyze", "--filename"])
         .arg(&filename)
@@ -180,6 +197,7 @@ fn named_standard_input_resolves_imports_from_its_filename() {
         .write_stdin("local value: string = require('./value')\nreturn value")
         .assert()
         .code(1);
+
     let stderr = String::from_utf8_lossy(&assertion.get_output().stderr);
     assert!(stderr.contains("unsaved.luau"), "{stderr}");
     assert!(stderr.contains("TypeError"), "{stderr}");
@@ -193,11 +211,13 @@ fn resolves_unicode_module_paths() {
     fs::create_dir(&folder).unwrap();
     fs::write(folder.join("値.luau"), "return 1").unwrap();
     let main = folder.join("入口.luau");
+
     fs::write(
         &main,
         "--!strict\nlocal value: number = require('./値')\nreturn value",
     )
     .unwrap();
+
     Command::new(assert_cmd::cargo::cargo_bin!("instar"))
         .arg("analyze")
         .arg(main)
@@ -209,11 +229,13 @@ fn resolves_unicode_module_paths() {
 #[test]
 fn runs_from_a_relocated_binary_and_supports_upstream_options() {
     let directory = tempfile::tempdir().unwrap();
+
     let executable = directory.path().join(if cfg!(windows) {
         "instar.exe"
     } else {
         "instar"
     });
+
     fs::copy(assert_cmd::cargo::cargo_bin!("instar"), &executable).unwrap();
     fs::write(directory.path().join("source.luau"), "return 1\n").unwrap();
 
@@ -229,6 +251,7 @@ fn runs_from_a_relocated_binary_and_supports_upstream_options() {
         .assert()
         .success()
         .stderr("");
+
     let stdout = String::from_utf8_lossy(&assertion.get_output().stdout);
     assert!(stdout.contains("return 1"), "{stdout}");
 }
