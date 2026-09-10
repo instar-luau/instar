@@ -97,6 +97,9 @@ fn disk_bytes_and_old_snapshots_remain_exact() -> TestResult {
     ));
     let source = store.read(&path)?;
     assert_eq!(source.bytes(), b"return '\xff'");
+    let tree = source.parse();
+    assert_eq!(tree.source, source.bytes());
+    assert!(std::ptr::eq(tree.source.as_ptr(), source.bytes().as_ptr()));
     assert!(matches!(source.text(), Err(SourceError::Encoding(_))));
     assert_eq!(
         source.position(TextSize::from(9), PositionEncoding::Utf16)?,
@@ -113,6 +116,8 @@ fn disk_bytes_and_old_snapshots_remain_exact() -> TestResult {
     assert_ne!(new.revision(), source.revision());
     assert!(store.validate(&source).is_err());
     assert_eq!(source.bytes(), b"return '\xff'");
+    assert_eq!(tree.source, source.bytes());
+    assert_eq!(new.parse().source, new.bytes());
     Ok(())
 }
 

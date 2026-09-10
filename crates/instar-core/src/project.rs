@@ -1,5 +1,3 @@
-//! Project configuration at an explicitly selected root.
-
 use std::{
     collections::BTreeMap,
     fs, io,
@@ -9,29 +7,20 @@ use std::{
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-/// Instar project inputs. Paths are relative to the containing configuration file.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct InstarConfig {
-    /// Glob patterns selecting entry files for commands.
     pub include: Option<Vec<String>>,
-    /// Glob patterns excluding entry files, not required dependencies.
     pub exclude: Option<Vec<String>>,
-    /// External Luau type-definition files.
     pub definitions: Option<Vec<PathBuf>>,
-    /// Logical require aliases mapped to paths relative to this configuration.
     pub aliases: Option<BTreeMap<String, PathBuf>>,
-    /// Optional Roblox project inputs.
     pub roblox: Option<RobloxConfig>,
 }
 
-/// Existing Roblox project inputs; loading configuration does not regenerate them.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RobloxConfig {
-    /// Rojo project file.
     pub project: Option<PathBuf>,
-    /// Existing instance-to-source mapping.
     pub sourcemap: Option<PathBuf>,
 }
 
@@ -44,21 +33,16 @@ impl InstarConfig {
         toml_edit::de::from_str(text)
     }
 
-    /// Generate the editor schema from the same types used to decode configuration.
     #[must_use]
     pub fn schema() -> schemars::Schema {
         schemars::schema_for!(Self)
     }
 }
 
-/// Recognized project configuration formats.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConfigKind {
-    /// Instar TOML configuration.
     Instar,
-    /// Upstream JSON configuration.
     Luaurc,
-    /// Luau configuration source retained without evaluation.
     Luau,
 }
 
@@ -70,7 +54,6 @@ const CONFIG_FILES: [(&str, ConfigKind); 4] = [
 ];
 
 impl ConfigKind {
-    /// Recognize an exact configuration filename.
     #[must_use]
     pub fn from_path(path: &Path) -> Option<Self> {
         let filename = path.file_name()?;
@@ -80,7 +63,6 @@ impl ConfigKind {
     }
 }
 
-/// Original configuration bytes and their owning file.
 #[derive(Debug)]
 pub struct ConfigFile {
     pub path: PathBuf,
@@ -88,7 +70,6 @@ pub struct ConfigFile {
     pub bytes: Vec<u8>,
 }
 
-/// Independently retained configurations at one selected project root.
 #[derive(Debug)]
 pub struct Project {
     root: PathBuf,
@@ -96,7 +77,6 @@ pub struct Project {
     instar: Option<InstarConfig>,
 }
 
-/// Configuration acquisition and decoding failures retain their file owner.
 #[derive(Debug, thiserror::Error)]
 pub enum ProjectError {
     #[error("{path}: {source}")]
@@ -184,19 +164,16 @@ impl Project {
         })
     }
 
-    /// Base directory for relative configuration paths.
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
     }
 
-    /// Every recognized configuration, without assigning cross-format precedence.
     #[must_use]
     pub fn files(&self) -> &[ConfigFile] {
         &self.files
     }
 
-    /// Parsed Instar settings, absent when no Instar configuration exists.
     #[must_use]
     pub const fn instar(&self) -> Option<&InstarConfig> {
         self.instar.as_ref()

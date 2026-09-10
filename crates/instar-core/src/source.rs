@@ -1,5 +1,3 @@
-//! Immutable source revisions and editor-owned overlays over original disk bytes.
-
 use std::{
     borrow::Cow,
     collections::BTreeMap,
@@ -15,10 +13,8 @@ use std::{
 use line_index::{LineCol, LineIndex, WideEncoding, WideLineCol};
 use text_size::{TextRange, TextSize};
 
-// Revisions distinguish snapshots even across independent stores and close/reopen.
 static REVISION: AtomicU64 = AtomicU64::new(0);
 
-/// Encoding of a zero-based text column.
 #[derive(Clone, Copy, Debug)]
 pub enum PositionEncoding {
     Utf8,
@@ -26,7 +22,6 @@ pub enum PositionEncoding {
     Utf32,
 }
 
-/// An immutable version of one logical source path.
 #[derive(Debug)]
 pub struct Source {
     path: PathBuf,
@@ -35,7 +30,6 @@ pub struct Source {
     lines: LineIndex,
 }
 
-/// Source acquisition, revision and coordinate failures.
 #[derive(Debug, thiserror::Error)]
 pub enum SourceError {
     #[error("{path}: {source}")]
@@ -64,11 +58,10 @@ pub enum SourceError {
 
 impl Source {
     fn new(path: PathBuf, bytes: Vec<u8>) -> Result<Self, SourceError> {
-        // LineIndex requires a byte length strictly smaller than u32::MAX.
         if u32::try_from(bytes.len()).map_or(true, |len| len == u32::MAX) {
             return Err(SourceError::Capacity);
         }
-        let lines = LineIndex::new(&syntax_text(&bytes));
+        let lines = LineIndex::new(&position_text(&bytes));
         let revision = REVISION
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                 value.checked_add(1)
@@ -82,19 +75,16 @@ impl Source {
         })
     }
 
-    /// Logical source identity. Paths are made absolute, not filesystem-canonicalized.
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    /// Unique revision of the retained contents.
     #[must_use]
     pub const fn revision(&self) -> u64 {
         self.revision
     }
 
-    /// Original bytes, including non-UTF-8 disk contents.
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
@@ -118,8 +108,9 @@ impl Source {
             .ok_or(SourceError::Range)
     }
 
-    pub(crate) fn syntax_text(&self) -> Cow<'_, str> {
-        syntax_text(&self.bytes)
+    #[must_use]
+    pub fn parse(&self) -> vermis::Tree<'_> {
+        vermis::parse(self.bytes().into())
     }
 
     /// Convert a byte boundary to a zero-based line and encoded column.
@@ -193,9 +184,7 @@ impl Source {
     }
 }
 
-// Same-length stand-in: preserve valid UTF-8 and replace each malformed
-// byte with SUB. This is tree/position storage only; original bytes own semantics.
-fn syntax_text(bytes: &[u8]) -> Cow<'_, str> {
+fn position_text(bytes: &[u8]) -> Cow<'_, str> {
     let error = match str::from_utf8(bytes) {
         Ok(text) => return Cow::Borrowed(text),
         Err(error) => error,
@@ -222,7 +211,6 @@ struct Entry {
     version: Option<i32>,
 }
 
-/// Current sources indexed by logical path. Editor overlays are never replaced by disk reads.
 #[derive(Debug, Default)]
 pub struct SourceStore {
     entries: BTreeMap<PathBuf, Entry>,

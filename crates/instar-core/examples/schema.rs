@@ -1,5 +1,3 @@
-//! Export the Instar configuration schema from its Rust model.
-
 use std::{env, error::Error, fs, path::PathBuf};
 
 use instar_core::project::InstarConfig;
