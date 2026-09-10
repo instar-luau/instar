@@ -3,6 +3,7 @@ use serde::Deserialize;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+#[derive(serde::Serialize)]
 pub enum Collapse {
     #[default]
     Never,
@@ -14,6 +15,7 @@ pub enum Collapse {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+#[derive(serde::Serialize)]
 pub enum Gaps {
     #[default]
     Never,
@@ -23,6 +25,7 @@ pub enum Gaps {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+#[derive(serde::Serialize)]
 pub enum Binding {
     #[default]
     Preserve,
@@ -33,6 +36,7 @@ pub enum Binding {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+#[derive(serde::Serialize)]
 pub enum Imports {
     #[default]
     Ignore,
@@ -43,6 +47,7 @@ pub enum Imports {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+#[derive(serde::Serialize)]
 pub enum Functions {
     #[default]
     Preserve,
@@ -54,6 +59,7 @@ pub enum Functions {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+#[derive(serde::Serialize)]
 pub enum Grouping {
     #[default]
     Flat,
@@ -63,6 +69,7 @@ pub enum Grouping {
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
+#[derive(serde::Serialize)]
 pub struct Requires {
     pub enabled: bool,
     pub grouping: Grouping,
@@ -70,6 +77,7 @@ pub struct Requires {
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
+#[derive(serde::Serialize)]
 pub struct Constants {
     pub enabled: bool,
     pub mutated_tables_stay_local: bool,
@@ -77,6 +85,7 @@ pub struct Constants {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+#[derive(serde::Serialize)]
 pub enum Order {
     #[default]
     None,
@@ -90,6 +99,7 @@ pub enum Order {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+#[derive(serde::Serialize)]
 pub enum Indexer {
     #[default]
     First,
@@ -100,6 +110,7 @@ pub enum Indexer {
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
+#[derive(serde::Serialize)]
 pub struct Properties {
     pub order: Order,
     pub indexer: Indexer,
@@ -113,12 +124,14 @@ impl Properties {
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
+#[derive(serde::Serialize)]
 pub struct Sorting {
     pub order: Order,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+#[derive(serde::Serialize)]
 pub enum Chain {
     #[default]
     Preserve,
@@ -129,6 +142,7 @@ pub enum Chain {
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
+#[derive(serde::Serialize)]
 pub struct Chains {
     pub style: Chain,
     pub min_calls: usize,
@@ -145,6 +159,7 @@ impl Default for Chains {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+#[derive(serde::Serialize)]
 pub enum TypeExpansion {
     #[default]
     Auto,
@@ -155,6 +170,7 @@ pub enum TypeExpansion {
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
+#[derive(serde::Serialize)]
 pub struct Operators {
     pub expand: TypeExpansion,
 }
