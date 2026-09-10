@@ -1,4 +1,5 @@
 mod analyze;
+mod format;
 mod input;
 
 use std::process::ExitCode;
@@ -14,10 +15,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Analyze files and directories with pinned Luau.
     Analyze(analyze::Analyze),
 
-    Format,
+    Format(format::Format),
 
     Lint {
         #[arg(long)]
@@ -42,7 +42,18 @@ fn main() -> ExitCode {
             };
         }
 
-        Command::Format => "format",
+        Command::Format(arguments) => {
+            return match arguments.run() {
+                Ok(status) => status,
+
+                Err(error) => {
+                    eprintln!("format: {error}");
+
+                    ExitCode::FAILURE
+                }
+            };
+        }
+
         Command::Lint { fix: false } => "lint",
         Command::Lint { fix: true } => "lint --fix",
         Command::Lsp => "lsp",

@@ -23,6 +23,7 @@ pub struct Input {
 pub struct Loaded {
     pub store: SourceStore,
     pub sources: Vec<Arc<Source>>,
+    pub standard_input: Option<PathBuf>,
 }
 
 impl Input {
@@ -117,6 +118,7 @@ impl Input {
         Ok(Loaded {
             store,
             sources,
+            standard_input,
         })
     }
 }

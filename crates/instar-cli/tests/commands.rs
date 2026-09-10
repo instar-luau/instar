@@ -38,8 +38,7 @@ fn help_and_version_describe_the_cli() {
 #[test]
 fn placeholders_fail_without_protocol_output() {
     for args in [
-        &["format"][..],
-        &["lint"],
+        &["lint"][..],
         &["lint", "--fix"],
         &["lsp"],
         &["build"],
