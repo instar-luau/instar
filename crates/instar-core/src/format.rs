@@ -145,6 +145,61 @@ pub(crate) fn validate(source: &[u8], output: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+pub(crate) fn fragment(
+    source: &str,
+    options: &Options,
+    expression: bool,
+) -> io::Result<document::Document<'static>> {
+    let source = if expression {
+        format!("return {source}")
+    } else {
+        source.to_owned()
+    };
+
+    let tree = vermis::parse(source.as_bytes().into());
+
+    if !tree.diagnostics.is_empty() {
+        return Err(io::Error::other("invalid graft host span"));
+    }
+
+    let held = regions::held(&source, &tree);
+    let source = rewrite::prepare(&source, &tree, options, &held)?;
+    let tree = vermis::parse(source.as_bytes().into());
+    let held = regions::held(&source, &tree);
+    let emitter = emit::Emitter::new(&source, &tree, options, &held);
+
+    if expression {
+        let block = tree
+            .root_view()
+            .and_then(|root| root.children().next())
+            .ok_or_else(|| io::Error::other("missing graft expression"))?;
+
+        if block.children().count() != 1 {
+            return Err(io::Error::other(
+                "graft expression span contains statements",
+            ));
+        }
+
+        let Some(vermis::Parts::Return { values }) =
+            block.children().next().and_then(vermis::View::parts)
+        else {
+            return Err(io::Error::other("missing graft expression"));
+        };
+
+        if values.clone().count() != 1 {
+            return Err(io::Error::other(
+                "graft expression span contains multiple values",
+            ));
+        }
+
+        Ok(emitter
+            .node(values.clone().next().expect("one expression"))?
+            .owned())
+    } else {
+        Ok(emitter.root()?.owned())
+    }
+}
+
 fn structure<'source>(tree: &Tree<'_>, source: &'source str) -> Vec<(Kind, Cow<'source, str>)> {
     let mut result = Vec::new();
     let mut pending = vec![tree.root];

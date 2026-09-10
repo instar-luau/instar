@@ -2,8 +2,9 @@ mod layout;
 pub use layout::*;
 
 use std::{
+    collections::BTreeMap,
     fs, io,
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use schemars::JsonSchema;
@@ -330,13 +331,22 @@ impl Options {
 pub struct Configuration {
     pub options: Options,
     pub selection: Selection,
+    pub grafts: Vec<crate::graft::Graft>,
 }
 
 impl Configuration {
     /// # Errors
-    /// Returns formatting failures or invalid output.
+    /// Returns native formatting failures, graft traps, or invalid graft output.
     pub fn format(&self, source: &[u8]) -> io::Result<Vec<u8>> {
-        super::format(source, &self.options)
+        let mut output = super::format(source, &self.options)?;
+
+        if self.options.enabled {
+            for graft in &self.grafts {
+                output = graft.format(&output, &self.options)?;
+            }
+        }
+
+        Ok(output)
     }
 
     /// # Errors
@@ -345,6 +355,7 @@ impl Configuration {
         let path = crate::source::absolute(path).map_err(io::Error::other)?;
         let mut merged = serde_json::Map::new();
         let mut selection = Selection::default();
+        let mut grafts = BTreeMap::new();
 
         let directory = path
             .parent()
@@ -360,6 +371,7 @@ impl Configuration {
                             &mut merged,
                             &text,
                             &mut selection,
+                            &mut grafts,
                             &configuration,
                         )
                         .map_err(|error| {
@@ -380,6 +392,7 @@ impl Configuration {
                 &mut merged,
                 &fs::read_to_string(&explicit)?,
                 &mut selection,
+                &mut grafts,
                 &explicit,
             )?;
         }
@@ -397,6 +410,10 @@ impl Configuration {
         Ok(Self {
             options: serde_json::from_value(merged.into()).map_err(io::Error::other)?,
             selection,
+            grafts: grafts
+                .into_iter()
+                .map(|(name, path)| crate::graft::Graft::load(&path, &name))
+                .collect::<io::Result<Vec<_>>>()?,
         })
     }
 }
@@ -422,11 +439,28 @@ fn merge(
     merged: &mut serde_json::Map<String, serde_json::Value>,
     text: &str,
     selection: &mut Selection,
+    grafts: &mut BTreeMap<String, PathBuf>,
     configuration: &Path,
 ) -> io::Result<()> {
     crate::project::InstarConfig::parse(text).map_err(io::Error::other)?;
     let mut value: serde_json::Value = toml_edit::de::from_str(text).map_err(io::Error::other)?;
     selection.merge(&value, configuration)?;
+
+    if let Some(entries) = value.get("grafts").and_then(serde_json::Value::as_object) {
+        for (name, path) in entries {
+            let path = path
+                .as_str()
+                .ok_or_else(|| io::Error::other("graft manifest path must be a string"))?;
+
+            grafts.insert(
+                name.clone(),
+                configuration
+                    .parent()
+                    .ok_or_else(|| io::Error::other("configuration has no parent"))?
+                    .join(path),
+            );
+        }
+    }
 
     value = value
         .get_mut("format")
