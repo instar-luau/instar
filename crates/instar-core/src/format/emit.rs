@@ -461,8 +461,31 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
                     self.parameters(parameters)?,
                 ]);
 
+                let parameter_index = documents.len() - 1;
+
                 if let Some(returns) = returns {
                     documents.extend([Document::text(": "), self.node(returns)?]);
+                }
+
+                if body.is_none()
+                    && self.options.function_declaration.expand == Expansion::WhenNeeded
+                    && parameters.children().next().is_some()
+                    && self.gap(view.span().start, view.span().end).is_empty()
+                    && documents.iter().all(|document| document.width().is_some())
+                {
+                    let flat = Document::sequence(documents.clone()).flattened();
+
+                    documents[parameter_index] = self.parenthesized(
+                        parameters.children(),
+                        Expansion::Always,
+                        self.options.function_declaration.indent,
+                    )?;
+
+                    return Ok(Document::Choice(
+                        Box::new(flat),
+                        Box::new(Document::sequence(documents)),
+                    )
+                    .group());
                 }
 
                 if let Some(body) = body {
