@@ -9,7 +9,7 @@ pub mod selection;
 
 use std::{borrow::Cow, io};
 
-pub use configuration::{Endings, Indentation, Options, Quotes, Zero};
+pub use configuration::{Endings, Options, Quotes, Whitespace, Zero};
 use vermis::{Kind, TokenKind, Tree};
 
 /// # Errors
@@ -19,7 +19,7 @@ pub fn format(source: &[u8], options: &Options) -> io::Result<Vec<u8>> {
         return Ok(source.to_vec());
     }
 
-    if options.indent_width == 0 || options.column_width == 0 {
+    if options.indentation.width == 0 || options.column_width == 0 {
         return Err(io::Error::other("format widths must be positive"));
     }
 
@@ -230,7 +230,7 @@ fn structure<'source>(tree: &Tree<'_>, source: &'source str) -> Vec<(Kind, Cow<'
         };
 
         let text = match node.kind {
-            Kind::String => literals::quote(text, Quotes::ForceDouble),
+            Kind::String => literals::quote(text, Quotes::Double),
             Kind::Number => literals::number(text, Zero::Add),
             _ => Cow::Borrowed(text),
         };

@@ -12,9 +12,9 @@ pub(super) fn sort(
     options: &Options,
     held: &[Range<usize>],
 ) -> io::Result<String> {
-    if !options.sort_requires.enabled
-        && options.sort_tables.order == Order::None
-        && options.sort_table_types.order == Order::None
+    if !options.imports.sort
+        && options.tables.order == Order::Preserve
+        && options.types.tables.order == Order::Preserve
     {
         return Ok(source.to_owned());
     }
@@ -89,7 +89,7 @@ impl<'tree, 'source> Sorter<'tree, 'source> {
             .map(|child| Ok((child, self.render(child)?)))
             .collect::<io::Result<Vec<_>>>()?;
 
-        if view.kind() == Kind::Block && self.options.sort_requires.enabled {
+        if view.kind() == Kind::Block && self.options.imports.sort {
             return Ok(self.requires(range, children));
         }
 
@@ -127,13 +127,13 @@ impl<'tree, 'source> Sorter<'tree, 'source> {
         let typed = view.kind() == Kind::TypeTable;
 
         let order = if typed {
-            self.options.sort_table_types.order
+            self.options.types.tables.order
         } else {
-            self.options.sort_tables.order
+            self.options.tables.order
         };
 
-        if order == Order::None
-            || typed && !self.options.table_types.enabled
+        if order == Order::Preserve
+            || typed && !self.options.types.tables.enabled
             || self
                 .held
                 .iter()
@@ -186,7 +186,7 @@ impl<'tree, 'source> Sorter<'tree, 'source> {
 
         entries.sort_by(|left, right| {
             let position = if typed {
-                self.options.sort_table_types.position()
+                self.options.types.tables.indexer
             } else {
                 Indexer::Sorted
             };
@@ -199,10 +199,10 @@ impl<'tree, 'source> Sorter<'tree, 'source> {
 
             indexer
                 .then_with(|| match order {
-                    Order::Ascending => left.0.len().cmp(&right.0.len()),
-                    Order::Descending => right.0.len().cmp(&left.0.len()),
-                    Order::SizeAscending => left.1.cmp(&right.1),
-                    Order::SizeDescending => right.1.cmp(&left.1),
+                    Order::KeyLengthAscending => left.0.len().cmp(&right.0.len()),
+                    Order::KeyLengthDescending => right.0.len().cmp(&left.0.len()),
+                    Order::FieldWidthAscending => left.1.cmp(&right.1),
+                    Order::FieldWidthDescending => right.1.cmp(&left.1),
                     _ => Ordering::Equal,
                 })
                 .then_with(|| left.0.cmp(&right.0))
@@ -336,7 +336,7 @@ impl<'tree, 'source> Sorter<'tree, 'source> {
 
             pieces[start..end].sort_by_key(|piece| {
                 (
-                    if self.options.sort_requires.grouping == Grouping::ByKind {
+                    if self.options.imports.grouping == Grouping::ByKind {
                         kind(piece.key.as_deref().unwrap_or_default())
                     } else {
                         0
@@ -351,7 +351,7 @@ impl<'tree, 'source> Sorter<'tree, 'source> {
 
             pieces[start].blank = blank;
 
-            if self.options.sort_requires.grouping == Grouping::ByKind {
+            if self.options.imports.grouping == Grouping::ByKind {
                 for index in start + 1..end {
                     if kind(pieces[index - 1].key.as_deref().unwrap_or_default())
                         != kind(pieces[index].key.as_deref().unwrap_or_default())

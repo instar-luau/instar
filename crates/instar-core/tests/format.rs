@@ -1,6 +1,6 @@
 use std::{error::Error, fs};
 
-use instar_core::format::{self, Endings, Indentation, Options, Quotes, Zero};
+use instar_core::format::{self, Endings, Options, Quotes, Whitespace, Zero};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -9,7 +9,7 @@ fn formatted(source: &str, options: &Options) -> String {
 }
 
 #[test]
-fn layout_matches_reference_cases() {
+fn formats_syntax_layouts() {
     let options = Options::default();
 
     for (source, expected) in [
@@ -99,7 +99,10 @@ fn widths_and_line_endings_are_configurable() {
     );
 
     let options = Options {
-        indent_type: Indentation::Spaces,
+        indentation: instar_core::format::configuration::Indentation {
+            style: Whitespace::Spaces,
+            ..Default::default()
+        },
         line_endings: Endings::Windows,
         ..Options::default()
     };
@@ -111,7 +114,7 @@ fn widths_and_line_endings_are_configurable() {
 }
 
 #[test]
-fn literals_follow_reference_style() {
+fn formats_literal_quotes() {
     for source in [
         "return 'hello'",
         "return 'a\\\"b'",
@@ -131,7 +134,7 @@ fn literals_follow_reference_style() {
     assert_eq!(formatted("return .5", &Options::default()), "return 0.5\n");
 
     let options = Options {
-        quote_style: Quotes::ForceSingle,
+        quotes: Quotes::Single,
         leading_zero: Zero::Strip,
         ..Options::default()
     };
@@ -179,18 +182,19 @@ fn formatting_uses_luau_parsing() {
 
 #[test]
 fn calls_declarations_and_separators_follow_configuration() {
-    use instar_core::format::configuration::{
-        Expansion, Parameters, Parentheses, Semicolons, Spacing,
-    };
+    use instar_core::format::configuration::{Expansion, Parentheses, Semicolons, Separation};
 
     for (parentheses, source, expected) in [
-        (Parentheses::NoSingleString, "f('x')", "f \"x\"\n"),
-        (Parentheses::NoSingleTable, "f({x=1})", "f { x = 1 }\n"),
-        (Parentheses::None, "f(value)", "f(value)\n"),
-        (Parentheses::Input, "f 'x'", "f \"x\"\n"),
+        (Parentheses::OmitString, "f('x')", "f \"x\"\n"),
+        (Parentheses::OmitTable, "f({x=1})", "f { x = 1 }\n"),
+        (Parentheses::OmitOptional, "f(value)", "f(value)\n"),
+        (Parentheses::Preserve, "f 'x'", "f \"x\"\n"),
     ] {
         let options = Options {
-            call_parentheses: parentheses,
+            calls: instar_core::format::configuration::Calls {
+                parentheses,
+                ..Default::default()
+            },
             ..Options::default()
         };
 
@@ -199,7 +203,10 @@ fn calls_declarations_and_separators_follow_configuration() {
     }
 
     let options = Options {
-        space_after_function_names: Spacing::Always,
+        spacing: instar_core::format::configuration::Spacing {
+            function_names: Separation::Always,
+            ..Default::default()
+        },
         ..Options::default()
     };
 
@@ -229,9 +236,12 @@ fn calls_declarations_and_separators_follow_configuration() {
     );
 
     let options = Options {
-        function_declaration: Parameters {
-            expand: Expansion::Always,
-            ..Parameters::default()
+        functions: instar_core::format::configuration::Functions {
+            parameters: instar_core::format::configuration::Parameters {
+                expand: Expansion::Always,
+                ..Default::default()
+            },
+            ..Default::default()
         },
         ..Options::default()
     };
@@ -243,9 +253,12 @@ fn calls_declarations_and_separators_follow_configuration() {
 
     let options = Options {
         column_width: 8,
-        function_declaration: Parameters {
-            expand: Expansion::Never,
-            ..Parameters::default()
+        functions: instar_core::format::configuration::Functions {
+            parameters: instar_core::format::configuration::Parameters {
+                expand: Expansion::Never,
+                ..Default::default()
+            },
+            ..Default::default()
         },
         ..Options::default()
     };
@@ -259,14 +272,14 @@ fn calls_declarations_and_separators_follow_configuration() {
 #[test]
 fn call_and_conditional_layouts_follow_configuration() {
     use instar_core::format::configuration::{
-        CallStyle, Calls, Conditional, ConditionalExpansion, ConditionalStyle, Expansion, Placement,
+        CallStyle, ConditionalExpansion, ConditionalStyle, Expansion, Placement,
     };
 
     let options = Options {
-        function_call: Calls {
+        calls: instar_core::format::configuration::Calls {
             expand: Expansion::Always,
-            indent: 2,
-            ..Calls::default()
+            indentation: 2,
+            ..Default::default()
         },
         ..Options::default()
     };
@@ -275,9 +288,9 @@ fn call_and_conditional_layouts_follow_configuration() {
 
     let options = Options {
         column_width: 5,
-        function_call: Calls {
+        calls: instar_core::format::configuration::Calls {
             expand: Expansion::Never,
-            ..Calls::default()
+            ..Default::default()
         },
         ..Options::default()
     };
@@ -293,9 +306,9 @@ fn call_and_conditional_layouts_follow_configuration() {
     );
 
     let options = Options {
-        function_call: Calls {
+        calls: instar_core::format::configuration::Calls {
             style: CallStyle::HugLast,
-            ..Calls::default()
+            ..Default::default()
         },
         ..Options::default()
     };
@@ -306,9 +319,9 @@ fn call_and_conditional_layouts_follow_configuration() {
     );
 
     let options = Options {
-        if_expression: Conditional {
+        conditionals: instar_core::format::configuration::Conditional {
             expand: ConditionalExpansion::Always,
-            ..Conditional::default()
+            ..Default::default()
         },
         ..Options::default()
     };
@@ -323,11 +336,11 @@ fn call_and_conditional_layouts_follow_configuration() {
     assert_eq!(formatted(expected, &options), expected);
 
     let options = Options {
-        if_expression: Conditional {
+        conditionals: instar_core::format::configuration::Conditional {
             expand: ConditionalExpansion::Always,
             style: ConditionalStyle::Leading,
             placement: Placement::NextLine,
-            ..Conditional::default()
+            ..Default::default()
         },
         ..Options::default()
     };
@@ -340,14 +353,17 @@ fn call_and_conditional_layouts_follow_configuration() {
 
 #[test]
 fn table_type_layout_follows_configuration() {
-    use instar_core::format::configuration::{Separator, Tables};
+    use instar_core::format::configuration::Separator;
     let source = "type Record = { first: number, second: string }";
 
     let options = Options {
-        table_types: Tables {
-            width: 10,
-            separator: Separator::Semicolon,
-            ..Tables::default()
+        types: instar_core::format::configuration::Types {
+            tables: instar_core::format::configuration::Tables {
+                width: 10,
+                separator: Separator::Semicolon,
+                ..Default::default()
+            },
+            ..Default::default()
         },
         ..Options::default()
     };
@@ -358,9 +374,12 @@ fn table_type_layout_follows_configuration() {
 
     let options = Options {
         column_width: 10,
-        table_types: Tables {
-            enabled: false,
-            ..Tables::default()
+        types: instar_core::format::configuration::Types {
+            tables: instar_core::format::configuration::Tables {
+                enabled: false,
+                ..Default::default()
+            },
+            ..Default::default()
         },
         ..Options::default()
     };
@@ -369,26 +388,26 @@ fn table_type_layout_follows_configuration() {
 }
 
 #[test]
-fn nested_configuration_and_neutral_defaults() -> TestResult {
+fn nested_configuration_overrides() -> TestResult {
     let directory = tempfile::tempdir()?;
     let root = directory.path();
     fs::create_dir(root.join("nested"))?;
 
     fs::write(
         root.join("instar.toml"),
-        "[format]\nrecommended = false\nfinal_newline = true\n[format.function_declaration]\nexpand = 'always'\n",
+        "[format]\nexpand_on_trailing_comma = false\nspacing.braces = false\ntrailing_separator = false\nfinal_newline = true\n[format.functions.parameters]\nexpand = 'always'\n",
     )?;
 
     fs::write(
         root.join("nested/instar.toml"),
-        "[format]\nfinal_newline = false\n[format.function_declaration]\nindent = 2\n",
+        "[format]\nfinal_newline = false\n[format.functions.parameters]\nindentation = 2\n",
     )?;
 
     let options = Options::discover(&root.join("nested/main.luau"), None)?;
     assert!(!options.final_newline);
-    assert!(!options.trailing_comma);
-    assert!(!options.space_inside_braces);
-    assert_eq!(options.function_declaration.indent, 2);
+    assert!(!options.trailing_separator);
+    assert!(!options.spacing.braces);
+    assert_eq!(options.functions.parameters.indentation, 2);
 
     assert_eq!(
         formatted("function f(a) end", &options),
@@ -442,14 +461,18 @@ fn configuration_inherits_fields_by_proximity() -> TestResult {
 
     fs::write(
         root.join("instar.toml"),
-        "[format]\nindent_type = 'spaces'\ncolumn_width = 60\n",
+        "[format]\nindentation.style = 'spaces'\ncolumn_width = 60\n",
     )?;
 
-    fs::write(root.join("nested/instar.toml"), "[format]\ncolumn_width = 30\n")?;
+    fs::write(
+        root.join("nested/instar.toml"),
+        "[format]\ncolumn_width = 30\n",
+    )?;
+
     let path = root.join("nested/main.luau");
     let options = Options::discover(&path, None)?;
     assert_eq!(options.column_width, 30);
-    assert!(matches!(options.indent_type, Indentation::Spaces));
+    assert!(matches!(options.indentation.style, Whitespace::Spaces));
 
     fs::write(
         root.join("nested/instar.toml"),

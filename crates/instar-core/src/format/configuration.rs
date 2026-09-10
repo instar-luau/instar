@@ -15,7 +15,7 @@ use super::selection::Selection;
 #[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 #[derive(serde::Serialize)]
-pub enum Indentation {
+pub enum Whitespace {
     #[default]
     Tabs,
 
@@ -46,11 +46,11 @@ impl Endings {
 #[derive(serde::Serialize)]
 pub enum Quotes {
     #[default]
-    AutoPreferDouble,
+    PreferDouble,
 
-    AutoPreferSingle,
-    ForceDouble,
-    ForceSingle,
+    PreferSingle,
+    Double,
+    Single,
     Preserve,
 }
 
@@ -72,18 +72,18 @@ pub enum Parentheses {
     #[default]
     Always,
 
-    NoSingleString,
-    NoSingleTable,
+    OmitString,
+    OmitTable,
 
-    None,
+    OmitOptional,
 
-    Input,
+    Preserve,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 #[derive(serde::Serialize)]
-pub enum Spacing {
+pub enum Separation {
     #[default]
     Never,
 
@@ -107,7 +107,7 @@ pub enum Semicolons {
 #[derive(serde::Serialize)]
 pub enum Expansion {
     #[default]
-    WhenNeeded,
+    Needed,
 
     Always,
     Never,
@@ -136,17 +136,34 @@ impl Separator {
 #[serde(default, deny_unknown_fields)]
 #[derive(serde::Serialize)]
 pub struct Tables {
+    /// Format table-type layouts. When false, multiline table types retain their source layout and single-line table types stay flat.
     pub enabled: bool,
+
+    /// Remove or preserve existing blank lines between members without inserting new gaps.
+    pub blank_lines: Gaps,
+
+    /// Maximum flat table-type width before expansion, also constrained by `column_width`.
     pub width: usize,
+
+    /// Separate table-type members with a comma or semicolon.
     pub separator: Separator,
+
+    /// Preserve field order, sort alphabetically, by key length, or by formatted field width. Length and width orders use alphabetical tie-breaking. Comments prevent sorting.
+    pub order: Order,
+
+    /// Place indexers first, last, or among sorted fields. Used only when order changes; sorted indexers use an empty key.
+    pub indexer: Indexer,
 }
 
 impl Default for Tables {
     fn default() -> Self {
         Self {
             enabled: true,
+            blank_lines: Gaps::default(),
             width: 60,
             separator: Separator::default(),
+            order: Order::default(),
+            indexer: Indexer::default(),
         }
     }
 }
@@ -159,7 +176,7 @@ pub enum ConditionalExpansion {
     Never,
 
     Always,
-    WhenLarge,
+    Needed,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
@@ -186,11 +203,20 @@ pub enum Placement {
 #[serde(default, deny_unknown_fields)]
 #[derive(serde::Serialize)]
 pub struct Conditional {
+    /// Expand conditional expressions when needed by width, always at the outermost level, or never voluntarily. Column-width wrapping still applies.
     pub expand: ConditionalExpansion,
+
+    /// Flat expression width that triggers expansion when expand is needed or always.
     pub width: usize,
+
+    /// Block places branch values on indented lines; leading places then and else before their values on indented lines.
     pub style: ConditionalStyle,
+
+    /// Same-line starts the expression after its binding or return; next-line moves an expanded sole expression to an indented line.
     pub placement: Placement,
-    pub indent: usize,
+
+    /// Number of additional indentation levels for expanded conditional branches.
+    pub indentation: usize,
 }
 
 impl Default for Conditional {
@@ -200,7 +226,7 @@ impl Default for Conditional {
             width: 60,
             style: ConditionalStyle::default(),
             placement: Placement::default(),
-            indent: 1,
+            indentation: 1,
         }
     }
 }
@@ -219,9 +245,20 @@ pub enum CallStyle {
 #[serde(default, deny_unknown_fields)]
 #[derive(serde::Serialize)]
 pub struct Calls {
+    /// Expand argument lists when needed by width, always, or never voluntarily. Mandatory line breaks are retained.
     pub expand: Expansion,
+
+    /// One-per-line separates expanded arguments; hug-last keeps a final table, function, or multiline string attached to preceding arguments unless expansion is always. A sole string, table, or function remains attached in either style.
     pub style: CallStyle,
-    pub indent: usize,
+
+    /// Number of additional indentation levels for expanded arguments.
+    pub indentation: usize,
+
+    /// Always use parentheses, omit them for a sole string or table argument, omit either optional form, or preserve the input choice.
+    pub parentheses: Parentheses,
+
+    /// Layout of repeated dot and colon calls.
+    pub chains: Chains,
 }
 
 impl Default for Calls {
@@ -229,7 +266,9 @@ impl Default for Calls {
         Self {
             expand: Expansion::default(),
             style: CallStyle::default(),
-            indent: 1,
+            indentation: 1,
+            parentheses: Parentheses::default(),
+            chains: Chains::default(),
         }
     }
 }
@@ -238,102 +277,163 @@ impl Default for Calls {
 #[serde(default, deny_unknown_fields)]
 #[derive(serde::Serialize)]
 pub struct Parameters {
+    /// Expand declaration parameters when needed by width, always, or never voluntarily. Mandatory line breaks are retained.
     pub expand: Expansion,
-    pub indent: usize,
+
+    /// Number of additional indentation levels for expanded declaration parameters.
+    pub indentation: usize,
 }
 
 impl Default for Parameters {
     fn default() -> Self {
         Self {
             expand: Expansion::default(),
-            indent: 1,
+            indentation: 1,
         }
     }
 }
 
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, JsonSchema, serde::Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Indentation {
+    /// Indent with tabs or spaces.
+    pub style: Whitespace,
+
+    /// Columns per indentation level, including the display width of a tab. Must be positive when formatting is enabled.
+    pub width: usize,
+}
+
+impl Default for Indentation {
+    fn default() -> Self {
+        Self {
+            style: Whitespace::default(),
+            width: 4,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema, serde::Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Spacing {
+    /// Add interior spaces to nonempty parentheses.
+    pub parentheses: bool,
+
+    /// Add interior spaces to nonempty brackets.
+    pub brackets: bool,
+
+    /// Add interior spaces to nonempty braces.
+    pub braces: bool,
+
+    /// Add a space before function parentheses: never, definitions, calls, or always.
+    pub function_names: Separation,
+}
+
+impl Default for Spacing {
+    fn default() -> Self {
+        Self {
+            parentheses: false,
+            brackets: false,
+            braces: true,
+            function_names: Separation::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema, serde::Serialize)]
 #[serde(default, deny_unknown_fields)]
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "Independent formatter switches match the reference configuration"
+    reason = "Independent formatting controls"
 )]
-#[derive(serde::Serialize)]
 pub struct Options {
-    pub collapse_simple_statement: Collapse,
-    pub block_newline_gaps: Gaps,
-    pub sort_requires: Requires,
-    pub require_binding: Binding,
-    pub prefer_const: Constants,
-    pub unused_imports: Imports,
-    pub sort_table_types: Properties,
-    pub sort_tables: Sorting,
-    pub function_style: Functions,
-    pub call_chains: Chains,
-    pub type_operators: Operators,
-    pub table_types: Tables,
-    pub if_expression: Conditional,
-    pub function_call: Calls,
+    /// Format source files and run formatting grafts.
     pub enabled: bool,
+
+    /// Include matching source paths. Patterns are relative to the declaring configuration and override format exclusions. Explicit file inputs bypass selection. An empty list clears inherited patterns.
     pub include: Vec<String>,
+
+    /// Exclude matching source paths unless included at format level. Patterns are relative to the declaring configuration. Explicit file inputs bypass selection. An empty list clears inherited patterns.
     pub exclude: Vec<String>,
-    pub recommended: Option<bool>,
-    pub call_parentheses: Parentheses,
-    pub space_after_function_names: Spacing,
-    pub semicolons: Semicolons,
-    pub function_declaration: Parameters,
-    pub quote_style: Quotes,
-    pub leading_zero: Zero,
+
+    /// Target line width in columns. Must be positive when formatting is enabled. Unbreakable syntax may exceed it.
     pub column_width: usize,
-    pub indent_type: Indentation,
-    pub indent_width: usize,
+
+    /// Indentation characters and columns per level.
+    pub indentation: Indentation,
+
+    /// Unix emits line feeds; windows emits carriage return plus line feed.
     pub line_endings: Endings,
 
+    /// End nonempty formatted output with a newline.
     pub final_newline: bool,
 
-    pub magic_trailing_comma: bool,
-    pub space_inside_parens: bool,
-    pub space_inside_brackets: bool,
-    pub space_inside_braces: bool,
-    pub trailing_comma: bool,
+    /// Prefer-double and prefer-single choose the delimiter with fewer unescaped occurrences in the source, using the preference for ties. Double and single enforce a delimiter; preserve retains it. Long strings retain their delimiters.
+    pub quotes: Quotes,
+
+    /// Add, strip, or preserve the zero before the decimal point in fractional numeric literals.
+    pub leading_zero: Zero,
+
+    /// Never emits statement semicolons only where required to preserve parsing; always emits them after eligible statements.
+    pub semicolons: Semicolons,
+
+    /// Interior delimiter spaces and spacing before function parentheses.
+    pub spacing: Spacing,
+
+    /// Expand table expressions whose source contains a trailing comma.
+    pub expand_on_trailing_comma: bool,
+
+    /// Emit a trailing separator in expanded tables and table types, using the configured table-type separator where applicable.
+    pub trailing_separator: bool,
+
+    /// Statement block layout and existing blank lines.
+    pub blocks: Blocks,
+
+    /// Argument parentheses, list layout, and repeated calls.
+    pub calls: Calls,
+
+    /// Function parameter layout and declaration binding rewrites.
+    pub functions: Functions,
+
+    /// Layout of if-then-else expressions, not conditional statements.
+    pub conditionals: Conditional,
+
+    /// Field ordering in table expressions.
+    pub tables: Sorting,
+
+    /// Table-type fields and union and intersection layouts.
+    pub types: Types,
+
+    /// Require binding ordering, grouping, conversion, and unused binding handling.
+    pub imports: Imports,
+
+    /// Scope-aware conversion of local bindings to constants.
+    pub bindings: Constants,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
-            function_call: Calls::default(),
-            if_expression: Conditional::default(),
-            table_types: Tables::default(),
-            collapse_simple_statement: Collapse::default(),
-            block_newline_gaps: Gaps::default(),
-            sort_requires: Requires::default(),
-            require_binding: Binding::default(),
-            prefer_const: Constants::default(),
-            unused_imports: Imports::default(),
-            sort_table_types: Properties::default(),
-            sort_tables: Sorting::default(),
-            function_style: Functions::default(),
-            call_chains: Chains::default(),
-            type_operators: Operators::default(),
             enabled: true,
             include: Vec::new(),
             exclude: Vec::new(),
-            recommended: None,
-            call_parentheses: Parentheses::default(),
-            space_after_function_names: Spacing::default(),
-            semicolons: Semicolons::default(),
-            function_declaration: Parameters::default(),
-            quote_style: Quotes::default(),
-            leading_zero: Zero::default(),
             column_width: 120,
-            indent_type: Indentation::default(),
-            indent_width: 4,
+            indentation: Indentation::default(),
             line_endings: Endings::default(),
             final_newline: true,
-            magic_trailing_comma: true,
-            space_inside_parens: false,
-            space_inside_brackets: false,
-            space_inside_braces: true,
-            trailing_comma: true,
+            quotes: Quotes::default(),
+            leading_zero: Zero::default(),
+            semicolons: Semicolons::default(),
+            spacing: Spacing::default(),
+            expand_on_trailing_comma: true,
+            trailing_separator: true,
+            blocks: Blocks::default(),
+            calls: Calls::default(),
+            functions: Functions::default(),
+            conditionals: Conditional::default(),
+            tables: Sorting::default(),
+            types: Types::default(),
+            imports: Imports::default(),
+            bindings: Constants::default(),
         }
     }
 }
@@ -413,16 +513,6 @@ impl Configuration {
                 &mut grafts,
                 &explicit,
             )?;
-        }
-
-        if merged.get("recommended") == Some(&serde_json::Value::Bool(false)) {
-            for key in [
-                "magic_trailing_comma",
-                "space_inside_braces",
-                "trailing_comma",
-            ] {
-                merged.entry(key).or_insert(serde_json::Value::Bool(false));
-            }
         }
 
         Ok(Self {

@@ -134,15 +134,15 @@ pub(crate) fn render(document: &Document<'_>, options: &super::Options) -> Strin
 
                 output.push_str(newline);
 
-                match options.indent_type {
-                    super::Indentation::Tabs => output.extend(std::iter::repeat_n('\t', depth)),
+                match options.indentation.style {
+                    super::Whitespace::Tabs => output.extend(std::iter::repeat_n('\t', depth)),
 
-                    super::Indentation::Spaces => {
-                        output.extend(std::iter::repeat_n(' ', depth * options.indent_width));
+                    super::Whitespace::Spaces => {
+                        output.extend(std::iter::repeat_n(' ', depth * options.indentation.width));
                     }
                 }
 
-                column = depth * options.indent_width;
+                column = depth * options.indentation.width;
             }
 
             Document::Choice(first, second) => {

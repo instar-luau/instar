@@ -71,7 +71,7 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
             })
             .map_or(start, |token| token.span.end);
 
-        let preserve = self.options.block_newline_gaps == Gaps::Preserve;
+        let preserve = self.options.blocks.blank_lines == Gaps::Preserve;
         let before = preserve && self.source[start..first].matches('\n').count() > 1;
         let after = preserve && self.source[last..end].matches('\n').count() > 1;
 

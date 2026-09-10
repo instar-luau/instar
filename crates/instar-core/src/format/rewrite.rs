@@ -2,7 +2,7 @@ mod sorting;
 
 use super::{
     Options,
-    configuration::{Binding, Functions, Imports},
+    configuration::{Binding, Declaration, Unused},
     scope::Names,
 };
 use std::{io, ops::Range};
@@ -71,10 +71,10 @@ fn bindings(
     options: &Options,
     held: &[Range<usize>],
 ) -> io::Result<String> {
-    if options.require_binding == Binding::Preserve
-        && !options.prefer_const.enabled
-        && options.unused_imports == Imports::Ignore
-        && options.function_style == Functions::Preserve
+    if options.imports.binding == Binding::Preserve
+        && !options.bindings.prefer_constant
+        && options.imports.unused == Unused::Ignore
+        && options.functions.binding == Declaration::Preserve
     {
         return Ok(source.to_owned());
     }
@@ -115,20 +115,20 @@ fn bindings(
                     .get(&name.span().start)
                     .is_none_or(|binding| {
                         binding.writes > 0
-                            || options.prefer_const.mutated_tables_stay_local && binding.mutated
+                            || options.bindings.preserve_mutated_tables && binding.mutated
                     })
             });
 
             let mut keyword = None;
 
-            if options.prefer_const.enabled && values.clone().next().is_some() && !mutable {
+            if options.bindings.prefer_constant && values.clone().next().is_some() && !mutable {
                 keyword = Some("const");
             }
 
             if let Some(name) = required(view) {
                 let binding = names.bindings.get(&name.span().start);
 
-                match options.require_binding {
+                match options.imports.binding {
                     Binding::Local => keyword = Some("local"),
 
                     Binding::Const if binding.is_some_and(|binding| binding.writes == 0) => {
@@ -141,13 +141,13 @@ fn bindings(
                 if !name.text().to_string().starts_with('_')
                     && binding.is_some_and(|binding| binding.reads == 0 && binding.writes == 0)
                 {
-                    match options.unused_imports {
-                        Imports::Underscore => changes.push((
+                    match options.imports.unused {
+                        Unused::Underscore => changes.push((
                             name.span().start..name.span().end,
                             format!("_{}", name.text()),
                         )),
 
-                        Imports::Remove if keyword.is_none() => {
+                        Unused::Remove if keyword.is_none() => {
                             let comments = tree
                                 .tokens
                                 .iter()
@@ -211,7 +211,7 @@ fn bindings(
                 changes.push((span.start..span.start + length, keyword.to_owned()));
             }
         } else if top.contains(&index)
-            && options.function_style != Functions::Preserve
+            && options.functions.binding != Declaration::Preserve
             && let Some(Parts::Function {
                 name: Some(name), ..
             }) = view.parts()
@@ -243,10 +243,10 @@ fn bindings(
                     .is_some_and(|count| *count > 1)
             };
 
-            let keyword = match options.function_style {
-                Functions::Const if !mutable => "const ",
-                Functions::Local => "local ",
-                Functions::Global => "",
+            let keyword = match options.functions.binding {
+                Declaration::Const if !mutable => "const ",
+                Declaration::Local => "local ",
+                Declaration::Global => "",
                 _ => continue,
             };
 

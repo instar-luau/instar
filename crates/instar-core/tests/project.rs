@@ -132,7 +132,15 @@ fn generated_schema_matches_the_configuration_model() -> TestResult {
     let schema = serde_json::to_value(InstarConfig::schema())?;
     assert_eq!(schema["additionalProperties"], false);
 
-    for field in ["include", "exclude", "definitions", "aliases", "roblox"] {
+    for field in [
+        "format",
+        "grafts",
+        "include",
+        "exclude",
+        "definitions",
+        "aliases",
+        "roblox",
+    ] {
         assert!(schema["properties"].get(field).is_some());
     }
 
@@ -142,6 +150,59 @@ fn generated_schema_matches_the_configuration_model() -> TestResult {
         schema["$defs"]["RobloxConfig"]["additionalProperties"],
         false
     );
+
+    let definitions = schema["$defs"].as_object().ok_or("missing definitions")?;
+
+    for definition in definitions.values().chain(std::iter::once(&schema)) {
+        if let Some(properties) = definition
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+        {
+            for (name, property) in properties {
+                let description = property["description"]
+                    .as_str()
+                    .ok_or("missing description")?;
+
+                assert!(
+                    !description.split("\n\nDefault:").next().unwrap().is_empty(),
+                    "{name}"
+                );
+
+                let default = property.get("default").ok_or("missing default")?;
+
+                let default = if default.is_null() {
+                    "unset".to_owned()
+                } else {
+                    default.to_string()
+                };
+
+                assert!(
+                    description.ends_with(&format!("Default: `{default}`.")),
+                    "{name}"
+                );
+            }
+        }
+    }
+
+    let defaults = serde_json::to_value(instar_core::format::Options::default())?;
+
+    for (name, value) in defaults.as_object().ok_or("missing formatter defaults")? {
+        assert_eq!(
+            &definitions["Options"]["properties"][name]["default"], value,
+            "{name}"
+        );
+    }
+
+    let parsed = InstarConfig::parse("[format]")?
+        .format
+        .ok_or("missing format")?;
+
+    assert_eq!(serde_json::to_value(parsed)?, defaults);
+
+    let published: serde_json::Value =
+        serde_json::from_str(include_str!("../../../schemas/instar.schema.json"))?;
+
+    assert_eq!(published, schema);
 
     Ok(())
 }

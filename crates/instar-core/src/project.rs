@@ -10,19 +10,44 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct InstarConfig {
+    /// Formatter settings. Ancestor settings merge field by field; absent settings use their documented defaults.
+    #[schemars(default)]
     pub format: Option<crate::format::Options>,
+
+    /// Graft names mapped to manifest paths relative to this configuration. Entries inherit by name and run in name order.
+    #[schemars(default)]
     pub grafts: Option<BTreeMap<String, PathBuf>>,
+
+    /// Source selection patterns relative to this configuration. Explicit file inputs bypass selection; an empty list clears inherited patterns.
+    #[schemars(default)]
     pub include: Option<Vec<String>>,
+
+    /// Source exclusion patterns relative to this configuration. Explicit file inputs bypass selection; an empty list clears inherited patterns.
+    #[schemars(default)]
     pub exclude: Option<Vec<String>>,
+
+    /// External Luau definition files, resolved relative to this configuration.
+    #[schemars(default)]
     pub definitions: Option<Vec<PathBuf>>,
+
+    /// Require aliases mapped to paths relative to this configuration. Entries inherit by name.
+    #[schemars(default)]
     pub aliases: Option<BTreeMap<String, PathBuf>>,
+
+    /// Roblox project inputs. Project mapping integration is not yet implemented.
+    #[schemars(default)]
     pub roblox: Option<RobloxConfig>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, JsonSchema, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RobloxConfig {
+    /// Rojo project path relative to this configuration. Project mapping integration is not yet implemented.
+    #[schemars(default)]
     pub project: Option<PathBuf>,
+
+    /// Existing instance-to-source mapping path relative to this configuration. Sourcemap integration is not yet implemented; Instar does not generate this file.
+    #[schemars(default)]
     pub sourcemap: Option<PathBuf>,
 }
 
@@ -35,7 +60,48 @@ impl InstarConfig {
 
     #[must_use]
     pub fn schema() -> schemars::Schema {
-        schemars::schema_for!(Self)
+        let mut schema = schemars::schema_for!(Self);
+
+        if let Some(object) = schema.as_object_mut() {
+            for value in object.values_mut() {
+                describe(value);
+            }
+        }
+
+        schema
+    }
+}
+
+fn describe(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(object) => {
+            if let Some(default) = object.get("default") {
+                let default = if default.is_null() {
+                    "unset".to_owned()
+                } else {
+                    default.to_string()
+                };
+
+                if let Some(serde_json::Value::String(description)) = object.get_mut("description")
+                {
+                    description.push_str("\n\nDefault: `");
+                    description.push_str(&default);
+                    description.push_str("`.");
+                }
+            }
+
+            for value in object.values_mut() {
+                describe(value);
+            }
+        }
+
+        serde_json::Value::Array(values) => {
+            for value in values {
+                describe(value);
+            }
+        }
+
+        _ => {}
     }
 }
 

@@ -23,9 +23,9 @@ pub(super) fn quote(text: &str, style: Quotes) -> Cow<'_, str> {
     }
 
     let target = match style {
-        Quotes::ForceSingle => '\'',
-        Quotes::AutoPreferDouble if doubles > singles => '\'',
-        Quotes::AutoPreferSingle if singles <= doubles => '\'',
+        Quotes::Single => '\'',
+        Quotes::PreferDouble if doubles > singles => '\'',
+        Quotes::PreferSingle if singles <= doubles => '\'',
         _ => '"',
     };
 

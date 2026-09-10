@@ -62,7 +62,7 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
             documents.extend(self.trivia(cursor, child.span().start, previous, true));
             documents.push(self.node(child)?);
 
-            if children.peek().is_some() || table && self.options.trailing_comma {
+            if children.peek().is_some() || table && self.options.trailing_separator {
                 documents.push(Document::text(","));
             }
 

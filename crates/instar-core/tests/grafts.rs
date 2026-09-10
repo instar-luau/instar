@@ -183,8 +183,8 @@ fn runtime_is_required_and_validated() {
 fn luau_receives_settings_and_uses_host_layouts() {
     let directory = support::luau(
         r#"
-local function format(request: {read settings: {read indent_width: number}, read configuration: {read setting: string}})
-    if request.settings.indent_width ~= 2 or request.configuration.setting ~= "value" then
+local function format(request: {read settings: {read indentation: {read width: number}}, read configuration: {read setting: string}})
+    if request.settings.indentation.width ~= 2 or request.configuration.setting ~= "value" then
         error("missing settings or configuration")
     end
     return {
@@ -210,7 +210,7 @@ return table.freeze({format = format})
 
     fs::write(
         directory.path().join("instar.toml"),
-        "[format]\nindent_type='spaces'\nindent_width=2\n[grafts]\nexample='graft.toml'",
+        "[format]\nindentation.style='spaces'\nindentation.width=2\n[grafts]\nexample='graft.toml'",
     )
     .unwrap();
 
