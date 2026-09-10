@@ -6,14 +6,22 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
         view: vermis::View<'tree, 'source>,
     ) -> io::Result<Document<'source>> {
         use crate::format::configuration::TypeExpansion;
-        use vermis::Kind;
+        use vermis::{Kind, Parts};
         let mut pending = vec![view];
         let mut members = Vec::new();
+        let mut overloads = view.kind() == Kind::TypeIntersection;
 
         while let Some(member) = pending.pop() {
             if member.kind() == view.kind() {
                 pending.extend(member.children().rev());
             } else {
+                let mut signature = member;
+
+                while let Some(Parts::TypeGroup { annotation }) = signature.parts() {
+                    signature = annotation;
+                }
+
+                overloads &= matches!(signature.parts(), Some(Parts::TypeFunction { .. }));
                 members.push(self.node(member)?);
             }
         }
@@ -37,6 +45,26 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
         } else {
             "& "
         };
+
+        if expansion == TypeExpansion::Auto && overloads {
+            let flat = Document::join(&Document::text(" & "), members.clone());
+            let mut members = members.into_iter();
+            let first = members.next().expect("overload signature");
+
+            let expanded = Document::sequence([
+                first,
+                Document::sequence(members.flat_map(|member| {
+                    [Document::Hard, Document::text("& "), member]
+                }))
+                .indent(),
+            ]);
+
+            return Ok(if self.text(view).contains('\n') {
+                expanded
+            } else {
+                Document::Choice(Box::new(flat), Box::new(expanded)).group()
+            });
+        }
 
         if expansion == TypeExpansion::Auto {
             return Ok(Document::sequence([

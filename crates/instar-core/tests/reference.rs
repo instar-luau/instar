@@ -2277,6 +2277,26 @@ fn every_type_layout_is_idempotent_and_parses() {
 }
 
 #[test]
+fn overloads_wrap_between_complete_signatures() {
+    let source = "declare convert: ((input: number) -> string) & ((input: string) -> number)";
+    let expected = "declare convert: ((input: number) -> string)\n\t& ((input: string) -> number)\n";
+    let options = narrow(60);
+    assert_eq!(configured(source, options.clone()), expected);
+    assert_eq!(configured(expected, options), expected);
+    assert_eq!(formatted(expected), expected);
+    assert_eq!(formatted(source), format!("{source}\n"));
+}
+
+#[test]
+fn declarations_wrap_parameters_before_return_signatures() {
+    let source = "declare function combine<Input..., Output...>(left: (Input...) -> Output..., right: (Input...) -> Output...): (Input...) -> Output...";
+    let expected = "declare function combine<Input..., Output...>(\n\tleft: (Input...) -> Output...,\n\tright: (Input...) -> Output...\n): (Input...) -> Output...\n";
+    let options = narrow(80);
+    assert_eq!(configured(source, options.clone()), expected);
+    assert_eq!(configured(expected, options), expected);
+}
+
+#[test]
 fn external_type_declarations_preserve_their_syntax() {
     for source in [
         "declare extern type Record with\nend\n",
