@@ -45,6 +45,27 @@ impl<'source> Document<'source> {
         Self::Indent(Box::new(self))
     }
 
+    pub(super) fn owned(self) -> Document<'static> {
+        match self {
+            Self::Text(text) => Document::Text(Cow::Owned(text.into_owned())),
+            Self::Line => Document::Line,
+            Self::Soft => Document::Soft,
+            Self::Hard => Document::Hard,
+            Self::Blank => Document::Blank,
+            Self::Group(inner) => Document::Group(Box::new(inner.owned())),
+            Self::Flat(inner) => Document::Flat(Box::new(inner.owned())),
+            Self::Indent(inner) => Document::Indent(Box::new(inner.owned())),
+
+            Self::Choice(first, second) => {
+                Document::Choice(Box::new(first.owned()), Box::new(second.owned()))
+            }
+
+            Self::Sequence(parts) => {
+                Document::Sequence(parts.into_iter().map(Self::owned).collect())
+            }
+        }
+    }
+
     pub(super) fn flattened(self) -> Self {
         match self {
             Self::Line | Self::Hard | Self::Blank => Self::text(" "),

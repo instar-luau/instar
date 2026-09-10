@@ -11,6 +11,7 @@ use serde::Deserialize;
 #[serde(deny_unknown_fields)]
 pub struct InstarConfig {
     pub format: Option<crate::format::Options>,
+    pub grafts: Option<BTreeMap<String, PathBuf>>,
     pub include: Option<Vec<String>>,
     pub exclude: Option<Vec<String>>,
     pub definitions: Option<Vec<PathBuf>>,
