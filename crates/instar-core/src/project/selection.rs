@@ -42,9 +42,14 @@ impl Selection {
         Ok(true)
     }
 
-    pub(super) fn merge(&mut self, value: &Value, configuration: &Path) -> io::Result<()> {
+    pub(super) fn merge_root(&mut self, value: &Value, configuration: &Path) -> io::Result<()> {
         replace(&mut self.root_include, value.get("include"), configuration)?;
-        replace(&mut self.root_exclude, value.get("exclude"), configuration)?;
+
+        replace(&mut self.root_exclude, value.get("exclude"), configuration)
+    }
+
+    pub(super) fn merge(&mut self, value: &Value, configuration: &Path) -> io::Result<()> {
+        self.merge_root(value, configuration)?;
 
         if let Some(format) = value.get("format") {
             replace(&mut self.include, format.get("include"), configuration)?;

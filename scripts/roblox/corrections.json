@@ -1,0 +1,2218 @@
+{
+  "Classes": [
+    {
+      "Name": "Instance",
+      "Members": [
+        {
+          "Name": "GetDescendants",
+          "ReturnType": {
+            "Name": "Objects"
+          }
+        }
+      ]
+    },
+    {
+      "Name": "Players",
+      "Members": [
+        {
+          "Name": "LocalPlayer",
+          "ValueType": {
+            "Name": "Player"
+          }
+        },
+        {
+          "Name": "GetHumanoidDescriptionFromOutfitId",
+          "ReturnType": {
+            "Name": "HumanoidDescription"
+          }
+        },
+        {
+          "Name": "GetHumanoidDescriptionFromUserId",
+          "ReturnType": {
+            "Name": "HumanoidDescription"
+          }
+        },
+        {
+          "Name": "GetFriendsAsync",
+          "ReturnType": {
+            "Name": "FriendPages"
+          }
+        },
+        {
+          "Name": "CreateHumanoidModelFromUserId",
+          "ReturnType": {
+            "Name": "Model"
+          }
+        },
+        {
+          "Name": "CreateHumanoidModelFromDescription",
+          "Parameters": [
+            {
+              "Name": "description",
+              "Type": {
+                "Name": "HumanoidDescription"
+              }
+            }
+          ],
+          "ReturnType": {
+            "Name": "Model"
+          }
+        },
+        {
+          "Name": "PlayerMembershipChanged",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "PlayerDisconnecting",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "PlayerRejoining",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "PlayerRemoving",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "PlayerConnecting",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "PlayerAdded",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "GetUserThumbnailAsync",
+          "TupleReturns": [
+            {
+              "Name": "string"
+            },
+            {
+              "Name": "boolean"
+            }
+          ]
+        },
+        {
+          "Name": "GetPlayers",
+          "ReturnType": {
+            "Generic": "Player"
+          }
+        },
+        {
+          "Name": "BanAsync",
+          "Parameters": [
+            {
+              "Name": "config",
+              "Type": {
+                "Declared": "BanConfigType"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "UnbanAsync",
+          "Parameters": [
+            {
+              "Name": "config",
+              "Type": {
+                "Declared": "UnbanConfigType"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Name": "Player",
+      "Members": [
+        {
+          "Name": "GetMouse",
+          "ReturnType": {
+            "Name": "Mouse"
+          }
+        },
+        {
+          "Name": "LoadCharacterWithHumanoidDescription",
+          "Parameters": [
+            {
+              "Name": "humanoidDescription",
+              "Type": {
+                "Name": "HumanoidDescription"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "CharacterRemoving",
+          "Parameters": [
+            {
+              "Name": "character",
+              "Type": {
+                "Name": "Model"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "CharacterAppearanceLoaded",
+          "Parameters": [
+            {
+              "Name": "character",
+              "Type": {
+                "Name": "Model"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "CharacterAdded",
+          "Parameters": [
+            {
+              "Name": "character",
+              "Type": {
+                "Name": "Model"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Name": "Workspace",
+      "Members": [
+        {
+          "Name": "Terrain",
+          "ValueType": {
+            "Name": "Terrain"
+          }
+        }
+      ]
+    },
+    {
+      "Name": "Terrain",
+      "Members": [
+        {
+          "Name": "CopyRegion",
+          "ReturnType": {
+            "Name": "TerrainRegion"
+          }
+        },
+        {
+          "Name": "PasteRegion",
+          "Parameters": [
+            {
+              "Name": "region",
+              "Type": {
+                "Name": "TerrainRegion"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Name": "MeshPart",
+      "Members": [
+        {
+          "Name": "ApplyMesh",
+          "Parameters": [
+            {
+              "Name": "meshPart",
+              "Type": {
+                "Name": "MeshPart"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Name": "PathfindingService",
+      "Members": [
+        {
+          "Name": "CreatePath",
+          "ReturnType": {
+            "Name": "Path"
+          }
+        },
+        {
+          "Name": "FindPathAsync",
+          "ReturnType": {
+            "Name": "Path"
+          }
+        }
+      ]
+    },
+    {
+      "Name": "Plugin",
+      "Members": [
+        {
+          "Name": "CreateDockWidgetPluginGui",
+          "ReturnType": {
+            "Name": "DockWidgetPluginGui"
+          }
+        },
+        {
+          "Name": "CreatePluginAction",
+          "ReturnType": {
+            "Name": "PluginAction"
+          }
+        },
+        {
+          "Name": "CreatePluginMenu",
+          "ReturnType": {
+            "Name": "PluginMenu"
+          }
+        },
+        {
+          "Name": "CreateToolbar",
+          "ReturnType": {
+            "Name": "PluginToolbar"
+          }
+        },
+        {
+          "Name": "GetMouse",
+          "ReturnType": {
+            "Name": "PluginMouse"
+          }
+        },
+        {
+          "Name": "Union",
+          "ReturnType": {
+            "Name": "UnionOperation"
+          }
+        },
+        {
+          "Name": "Negate",
+          "ReturnType": {
+            "Generic": "NegateOperation"
+          }
+        },
+        {
+          "Name": "Separate",
+          "ReturnType": {
+            "Generic": "UnionOperation"
+          }
+        }
+      ]
+    },
+    {
+      "Name": "PluginMenu",
+      "Members": [
+        {
+          "Name": "AddNewAction",
+          "ReturnType": {
+            "Name": "PluginAction"
+          }
+        },
+        {
+          "Name": "AddAction",
+          "Parameters": [
+            {
+              "Name": "action",
+              "Type": {
+                "Name": "PluginAction"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "AddMenu",
+          "Parameters": [
+            {
+              "Name": "menu",
+              "Type": {
+                "Name": "PluginMenu"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "ShowAsync",
+          "ReturnType": {
+            "Name": "PluginAction"
+          }
+        }
+      ]
+    },
+    {
+      "Name": "TweenService",
+      "Members": [
+        {
+          "Name": "Create",
+          "ReturnType": {
+            "Name": "Tween"
+          }
+        }
+      ]
+    },
+    {
+      "Name": "KeyframeSequence",
+      "Members": [
+        {
+          "Name": "RegisterKeyframeSequence",
+          "Parameters": [
+            {
+              "Name": "keyframeSequence",
+              "Type": {
+                "Name": "KeyframeSequence"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "AddKeyframe",
+          "Parameters": [
+            {
+              "Name": "keyframe",
+              "Type": {
+                "Name": "Keyframe"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "RegisterActiveKeyframeSequence",
+          "Parameters": [
+            {
+              "Name": "keyframeSequence",
+              "Type": {
+                "Name": "KeyframeSequence"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "RemoveKeyframe",
+          "Parameters": [
+            {
+              "Name": "keyframe",
+              "Type": {
+                "Name": "Keyframe"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Name": "SocialService",
+      "Members": [
+        {
+          "Name": "PromptGameInvite",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "CanSendGameInviteAsync",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "PromptLinkSharingAsync",
+          "Parameters": [
+            {
+              "Name": "options",
+              "Type": {
+                "Declared": "LinkSharingOptions"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "PromptLinkSharing",
+          "Parameters": [
+            {
+              "Name": "options",
+              "Type": {
+                "Declared": "LinkSharingOptions"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Name": "VehicleSeat",
+      "Members": [
+        {
+          "Name": "Sit",
+          "Parameters": [
+            {
+              "Name": "humanoid",
+              "Type": {
+                "Name": "Humanoid"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Name": "AssetService",
+      "Members": [
+        {
+          "Name": "CreatePlaceInPlayerInventoryAsync",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Name": "LocalizationService",
+      "Members": [
+        {
+          "Name": "GetTranslatorForPlayer",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ],
+          "ReturnType": {
+            "Name": "Translator"
+          }
+        },
+        {
+          "Name": "GetCountryRegionForPlayerAsync",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "GetTranslatorForPlayerAsync",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ],
+          "ReturnType": {
+            "Name": "Translator"
+          }
+        },
+        {
+          "Name": "GetTranslatorForLocaleAsync",
+          "ReturnType": {
+            "Name": "Translator"
+          }
+        }
+      ]
+    },
+    {
+      "Name": "LocalizationTable",
+      "Members": [
+        {
+          "Name": "GetTranslator",
+          "ReturnType": {
+            "Name": "Translator"
+          }
+        }
+      ]
+    },
+    {
+      "Name": "Animator",
+      "Members": [
+        {
+          "Name": "LoadAnimation",
+          "Parameters": [
+            {
+              "Name": "animation",
+              "Type": {
+                "Name": "Animation"
+              }
+            }
+          ],
+          "ReturnType": {
+            "Name": "AnimationTrack"
+          }
+        },
+        {
+          "Name": "AnimationPlayed",
+          "Parameters": [
+            {
+              "Name": "animationTrack",
+              "Type": {
+                "Name": "AnimationTrack"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "GetPlayingAnimationTracks",
+          "ReturnType": {
+            "Generic": "AnimationTrack"
+          }
+        }
+      ]
+    },
+    {
+      "Name": "TeleportService",
+      "Members": [
+        {
+          "Name": "SetTeleportGui",
+          "Parameters": [
+            {
+              "Name": "gui",
+              "Type": {
+                "Name": "GuiObject"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "GetArrivingTeleportGui",
+          "ReturnType": {
+            "Name": "ScreenGui"
+          }
+        }
+      ]
+    },
+    {
+      "Name": "SoundService",
+      "Members": [
+        {
+          "Name": "PlayLocalSound",
+          "Parameters": [
+            {
+              "Name": "sound",
+              "Type": {
+                "Name": "Sound"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "GetListener",
+          "TupleReturns": [
+            {
+              "Category": "Enum",
+              "Name": "ListenerType"
+            },
+            {
+              "Name": "any"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Name": "Chat",
+      "Members": [
+        {
+          "Name": "FilterStringAsync",
+          "Parameters": [
+            {
+              "Name": "playerTo",
+              "Type": {
+                "Name": "Player"
+              }
+            },
+            {
+              "Name": "playerFrom",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "FilterStringForBroadcast",
+          "Parameters": [
+            {
+              "Name": "playerFrom",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "Chatted",
+          "Parameters": [
+            {
+              "Name": "part",
+              "Type": {
+                "Name": "BasePart"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Name": "Pose",
+      "Members": [
+        {
+          "Name": "AddSubPose",
+          "Parameters": [
+            {
+              "Name": "pose",
+              "Type": {
+                "Name": "Pose"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "RemoveSubPose",
+          "Parameters": [
+            {
+              "Name": "pose",
+              "Type": {
+                "Name": "Pose"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Name": "PolicyService",
+      "Members": [
+        {
+          "Name": "GetPolicyInfoForPlayerAsync",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Name": "GuiService",
+      "Members": [
+        {
+          "Name": "InspectPlayerFromHumanoidDescription",
+          "Parameters": [
+            {
+              "Name": "humanoidDescription",
+              "Type": {
+                "Name": "HumanoidDescription"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "GetGuiInset",
+          "TupleReturns": [
+            {
+              "Name": "Vector2"
+            },
+            {
+              "Name": "Vector2"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Name": "Humanoid",
+      "Members": [
+        {
+          "Name": "MoveTo",
+          "Parameters": [
+            {
+              "Name": "part",
+              "Type": {
+                "Name": "BasePart"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "ApplyDescription",
+          "Parameters": [
+            {
+              "Name": "humanoidDescription",
+              "Type": {
+                "Name": "HumanoidDescription"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "GetAppliedDescription",
+          "ReturnType": {
+            "Name": "HumanoidDescription"
+          }
+        },
+        {
+          "Name": "EquipTool",
+          "Parameters": [
+            {
+              "Name": "tool",
+              "Type": {
+                "Name": "Tool"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "GetBodyPartR15",
+          "Parameters": [
+            {
+              "Name": "part",
+              "Type": {
+                "Name": "BasePart"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "ReplaceBodyPartR15",
+          "Parameters": [
+            {
+              "Name": "part",
+              "Type": {
+                "Name": "BasePart"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "AddAccessory",
+          "Parameters": [
+            {
+              "Name": "accessory",
+              "Type": {
+                "Name": "Accessory"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "LoadAnimation",
+          "Parameters": [
+            {
+              "Name": "animation",
+              "Type": {
+                "Name": "Animation"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "GetLimb",
+          "Parameters": [
+            {
+              "Name": "part",
+              "Type": {
+                "Name": "BasePart"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "AnimationPlayed",
+          "Parameters": [
+            {
+              "Name": "animationTrack",
+              "Type": {
+                "Name": "AnimationTrack"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "Seated",
+          "Parameters": [
+            {
+              "Name": "currentSeatPart",
+              "Type": {
+                "Name": "Seat"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "Touched",
+          "Parameters": [
+            {
+              "Name": "touchingPart",
+              "Type": {
+                "Name": "BasePart"
+              }
+            },
+            {
+              "Name": "humanoidPart",
+              "Type": {
+                "Name": "BasePart"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "GetPlayingAnimationTracks",
+          "ReturnType": {
+            "Generic": "AnimationTrack"
+          }
+        }
+      ]
+    },
+    {
+      "Name": "Seat",
+      "Members": [
+        {
+          "Name": "Sit",
+          "Parameters": [
+            {
+              "Name": "humanoid",
+              "Type": {
+                "Name": "Humanoid"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Name": "BasePart",
+      "Members": [
+        {
+          "Name": "CanCollideWith",
+          "Parameters": [
+            {
+              "Name": "part",
+              "Type": {
+                "Name": "BasePart"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "SetNetworkOwner",
+          "Parameters": [
+            {
+              "Name": "playerInstance",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "GetRootPart",
+          "ReturnType": {
+            "Name": "BasePart"
+          }
+        },
+        {
+          "Name": "TouchEnded",
+          "Parameters": [
+            {
+              "Name": "otherPart",
+              "Type": {
+                "Name": "BasePart"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "Touched",
+          "Parameters": [
+            {
+              "Name": "otherPart",
+              "Type": {
+                "Name": "BasePart"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "CanSetNetworkOwnership",
+          "TupleReturns": [
+            {
+              "Name": "boolean"
+            },
+            {
+              "Name": "string"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Name": "Keyframe",
+      "Members": [
+        {
+          "Name": "RemoveMarker",
+          "Parameters": [
+            {
+              "Name": "market",
+              "Type": {
+                "Name": "KeyframeMarker"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "AddMarker",
+          "Parameters": [
+            {
+              "Name": "marker",
+              "Type": {
+                "Name": "KeyframeMarker"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "AddPose",
+          "Parameters": [
+            {
+              "Name": "pose",
+              "Type": {
+                "Name": "Pose"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "RemovePose",
+          "Parameters": [
+            {
+              "Name": "pose",
+              "Type": {
+                "Name": "Pose"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Name": "AnimationController",
+      "Members": [
+        {
+          "Name": "LoadAnimation",
+          "Parameters": [
+            {
+              "Name": "animation",
+              "Type": {
+                "Name": "Animation"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "AnimationPlayed",
+          "Parameters": [
+            {
+              "Name": "animationTrack",
+              "Type": {
+                "Name": "AnimationTrack"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "GetPlayingAnimationTracks",
+          "ReturnType": {
+            "Generic": "AnimationTrack"
+          }
+        }
+      ]
+    },
+    {
+      "Name": "MarketplaceService",
+      "Members": [
+        {
+          "Name": "PromptPurchase",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "PromptProductPurchase",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "PromptPremiumPurchase",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "PlayerOwnsAsset",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "PromptGamePassPurchase",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "PromptSubscriptionPurchase",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "IsPlayerSubscribed",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "PromptSubscriptionCancellation",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "PromptSubscriptionPurchaseRequested",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "PromptGamePassPurchaseRequested",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "PromptSubscriptionPurchaseFinished",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "PromptSubscriptionCancellationFinished",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "PromptProductPurchaseRequested",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "PromptGamePassPurchaseFinished",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "PromptBundlePurchase",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "GetDeveloperProductsAsync",
+          "ReturnType": {
+            "Name": "Pages"
+          }
+        },
+        {
+          "Name": "NativePurchaseFinished",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "PromptPurchaseRequested",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "PromptPurchaseFinished",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "RankProductsAsync",
+          "Parameters": [
+            {
+              "Name": "productIdentifiers",
+              "Type": {
+                "Declared": "ProductIdentifierArray"
+              }
+            }
+          ],
+          "ReturnType": {
+            "Declared": "RankedItemArray"
+          }
+        },
+        {
+          "Name": "RecommendTopProductsAsync",
+          "Parameters": [
+            {
+              "Name": "infoTypes",
+              "Type": {
+                "Declared": "InfoTypeArray"
+              }
+            }
+          ],
+          "ReturnType": {
+            "Declared": "RankedItemArray"
+          }
+        }
+      ]
+    },
+    {
+      "Name": "GuiButton",
+      "Members": [
+        {
+          "Name": "Activated",
+          "Parameters": [
+            {
+              "Name": "inputObject",
+              "Type": {
+                "Name": "InputObject"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Name": "Tool",
+      "Members": [
+        {
+          "Name": "Equipped",
+          "Parameters": [
+            {
+              "Name": "mouse",
+              "Type": {
+                "Name": "Mouse"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Name": "UserInputService",
+      "Members": [
+        {
+          "Name": "TouchMoved",
+          "Parameters": [
+            {
+              "Name": "touch",
+              "Type": {
+                "Name": "InputObject"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "TextBoxFocusReleased",
+          "Parameters": [
+            {
+              "Name": "textboxReleased",
+              "Type": {
+                "Name": "TextBox"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "TextBoxFocused",
+          "Parameters": [
+            {
+              "Name": "textboxFocused",
+              "Type": {
+                "Name": "TextBox"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "InputChanged",
+          "Parameters": [
+            {
+              "Name": "input",
+              "Type": {
+                "Name": "InputObject"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "InputEnded",
+          "Parameters": [
+            {
+              "Name": "input",
+              "Type": {
+                "Name": "InputObject"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "TouchEnded",
+          "Parameters": [
+            {
+              "Name": "touch",
+              "Type": {
+                "Name": "InputObject"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "InputBegan",
+          "Parameters": [
+            {
+              "Name": "input",
+              "Type": {
+                "Name": "InputObject"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "TouchStarted",
+          "Parameters": [
+            {
+              "Name": "touch",
+              "Type": {
+                "Name": "InputObject"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "GetDeviceRotation",
+          "TupleReturns": [
+            {
+              "Name": "number"
+            },
+            {
+              "Name": "CFrame"
+            }
+          ]
+        },
+        {
+          "Name": "TouchLongPress",
+          "Parameters": [
+            {
+              "Name": "touchPositions",
+              "Type": {
+                "Generic": "Vector2"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "TouchPan",
+          "Parameters": [
+            {
+              "Name": "touchPositions",
+              "Type": {
+                "Generic": "Vector2"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "TouchPinch",
+          "Parameters": [
+            {
+              "Name": "touchPositions",
+              "Type": {
+                "Generic": "Vector2"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "TouchRotate",
+          "Parameters": [
+            {
+              "Name": "touchPositions",
+              "Type": {
+                "Generic": "Vector2"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "TouchTap",
+          "Parameters": [
+            {
+              "Name": "touchPositions",
+              "Type": {
+                "Generic": "Vector2"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Name": "Explosion",
+      "Members": [
+        {
+          "Name": "Hit",
+          "Parameters": [
+            {
+              "Name": "part",
+              "Type": {
+                "Name": "BasePart"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Name": "ContextActionService",
+      "Members": [
+        {
+          "Name": "LocalToolEquipped",
+          "Parameters": [
+            {
+              "Name": "toolEquipped",
+              "Type": {
+                "Name": "Tool"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "LocalToolUnequipped",
+          "Parameters": [
+            {
+              "Name": "toolUnequipped",
+              "Type": {
+                "Name": "Tool"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "GetButton",
+          "ReturnType": {
+            "Name": "ImageButton"
+          }
+        }
+      ]
+    },
+    {
+      "Name": "ClickDetector",
+      "Members": [
+        {
+          "Name": "MouseHoverEnter",
+          "Parameters": [
+            {
+              "Name": "playerWhoHovered",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "MouseHoverLeave",
+          "Parameters": [
+            {
+              "Name": "playerWhoHovered",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "RightMouseClick",
+          "Parameters": [
+            {
+              "Name": "playerWhoClicked",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "MouseClick",
+          "Parameters": [
+            {
+              "Name": "playerWhoClicked",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Name": "GuiObject",
+      "Members": [
+        {
+          "Name": "InputChanged",
+          "Parameters": [
+            {
+              "Name": "input",
+              "Type": {
+                "Name": "InputObject"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "InputEnded",
+          "Parameters": [
+            {
+              "Name": "input",
+              "Type": {
+                "Name": "InputObject"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "InputBegan",
+          "Parameters": [
+            {
+              "Name": "input",
+              "Type": {
+                "Name": "InputObject"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "TouchLongPress",
+          "Parameters": [
+            {
+              "Name": "touchPositions",
+              "Type": {
+                "Generic": "Vector2"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "TouchPan",
+          "Parameters": [
+            {
+              "Name": "touchPositions",
+              "Type": {
+                "Generic": "Vector2"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "TouchPinch",
+          "Parameters": [
+            {
+              "Name": "touchPositions",
+              "Type": {
+                "Generic": "Vector2"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "TouchRotate",
+          "Parameters": [
+            {
+              "Name": "touchPositions",
+              "Type": {
+                "Generic": "Vector2"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "TouchTap",
+          "Parameters": [
+            {
+              "Name": "touchPositions",
+              "Type": {
+                "Generic": "Vector2"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Name": "Dialog",
+      "Members": [
+        {
+          "Name": "DialogChoiceSelected",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            },
+            {
+              "Name": "dialogChoice",
+              "Type": {
+                "Name": "DialogChoice"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "GetCurrentPlayers",
+          "ReturnType": {
+            "Generic": "Player"
+          }
+        }
+      ]
+    },
+    {
+      "Name": "TextBox",
+      "Members": [
+        {
+          "Name": "FocusLost",
+          "Parameters": [
+            {
+              "Name": "inputThatCausedFocusLoss",
+              "Type": {
+                "Name": "InputObject"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Name": "Team",
+      "Members": [
+        {
+          "Name": "PlayerRemoved",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "PlayerAdded",
+          "Parameters": [
+            {
+              "Name": "player",
+              "Type": {
+                "Name": "Player"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Name": "Camera",
+      "Members": [
+        {
+          "Name": "WorldToScreenPoint",
+          "TupleReturns": [
+            {
+              "Name": "Vector3"
+            },
+            {
+              "Name": "boolean"
+            }
+          ]
+        },
+        {
+          "Name": "WorldToViewportPoint",
+          "TupleReturns": [
+            {
+              "Name": "Vector3"
+            },
+            {
+              "Name": "boolean"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Name": "WorldRoot",
+      "Members": [
+        {
+          "Name": "FindPartOnRay",
+          "TupleReturns": [
+            {
+              "Name": "BasePart"
+            },
+            {
+              "Name": "Vector3"
+            },
+            {
+              "Name": "Vector3"
+            },
+            {
+              "Category": "Enum",
+              "Name": "Material"
+            }
+          ]
+        },
+        {
+          "Name": "FindPartOnRayWithIgnoreList",
+          "TupleReturns": [
+            {
+              "Name": "BasePart"
+            },
+            {
+              "Name": "Vector3"
+            },
+            {
+              "Name": "Vector3"
+            },
+            {
+              "Category": "Enum",
+              "Name": "Material"
+            }
+          ]
+        },
+        {
+          "Name": "FindPartOnRayWithWhiteList",
+          "TupleReturns": [
+            {
+              "Name": "BasePart"
+            },
+            {
+              "Name": "Vector3"
+            },
+            {
+              "Name": "Vector3"
+            },
+            {
+              "Category": "Enum",
+              "Name": "Material"
+            }
+          ]
+        },
+        {
+          "Name": "findPartOnRay",
+          "TupleReturns": [
+            {
+              "Name": "BasePart"
+            },
+            {
+              "Name": "Vector3"
+            },
+            {
+              "Name": "Vector3"
+            },
+            {
+              "Category": "Enum",
+              "Name": "Material"
+            }
+          ]
+        },
+        {
+          "Name": "FindPartsInRegion3",
+          "ReturnType": {
+            "Generic": "BasePart"
+          }
+        },
+        {
+          "Name": "FindPartsInRegion3WithIgnoreList",
+          "ReturnType": {
+            "Generic": "BasePart"
+          }
+        },
+        {
+          "Name": "FindPartsInRegion3WithWhiteList",
+          "ReturnType": {
+            "Generic": "BasePart"
+          }
+        }
+      ]
+    },
+    {
+      "Name": "DataStoreKeyInfo",
+      "Members": [
+        {
+          "Name": "GetUserIds",
+          "ReturnType": {
+            "Generic": "number"
+          }
+        }
+      ]
+    },
+    {
+      "Name": "DataStoreService",
+      "Members": [
+        {
+          "Name": "GetDataStore",
+          "ReturnType": {
+            "Name": "DataStore"
+          }
+        }
+      ]
+    },
+    {
+      "Name": "ReflectionService",
+      "Members": [
+        {
+          "Name": "GetClass",
+          "Parameters": [
+            {
+              "Name": "filter",
+              "Type": {
+                "Declared": "ReflectionClassFilter?"
+              }
+            }
+          ],
+          "ReturnType": {
+            "Declared": "ReflectedClassOrNil"
+          }
+        },
+        {
+          "Name": "GetClasses",
+          "Parameters": [
+            {
+              "Name": "filter",
+              "Type": {
+                "Declared": "ReflectionClassFilter?"
+              }
+            }
+          ],
+          "ReturnType": {
+            "Declared": "ReflectedClasses"
+          }
+        },
+        {
+          "Name": "GetEventsOfClass",
+          "Parameters": [
+            {
+              "Name": "filter",
+              "Type": {
+                "Declared": "ReflectionMemberFilter?"
+              }
+            }
+          ],
+          "ReturnType": {
+            "Declared": "{ ReflectedEvent }"
+          }
+        },
+        {
+          "Name": "GetMethodsOfClass",
+          "Parameters": [
+            {
+              "Name": "filter",
+              "Type": {
+                "Declared": "ReflectionMemberFilter?"
+              }
+            }
+          ],
+          "ReturnType": {
+            "Declared": "{ ReflectedMethod }"
+          }
+        },
+        {
+          "Name": "GetPropertiesOfClass",
+          "Parameters": [
+            {
+              "Name": "filter",
+              "Type": {
+                "Declared": "ReflectionMemberFilter?"
+              }
+            }
+          ],
+          "ReturnType": {
+            "Declared": "ReflectedProperties"
+          }
+        },
+        {
+          "Name": "GetPropertyNames",
+          "Parameters": [
+            {
+              "Name": "className",
+              "Type": {
+                "Name": "string"
+              }
+            }
+          ],
+          "ReturnType": {
+            "Generic": "string"
+          }
+        }
+      ]
+    },
+    {
+      "Name": "EditableImage",
+      "Members": [
+        {
+          "Name": "DrawImageProjected",
+          "Parameters": [
+            {
+              "Name": "projection",
+              "Type": {
+                "Declared": "ProjectionParams"
+              }
+            },
+            {
+              "Name": "brushConfig",
+              "Type": {
+                "Declared": "BrushConfig"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Name": "RecommendationService",
+      "Members": [
+        {
+          "Name": "GenerateItemListAsync",
+          "Parameters": [
+            {
+              "Name": "generateRecommendationItemListRequest",
+              "Type": {
+                "Declared": "GenerateRecommendationItemListRequest"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "GetRecommendationItemAsync",
+          "ReturnType": {
+            "Declared": "RecommendationItem"
+          }
+        },
+        {
+          "Name": "LogActionEvent",
+          "Parameters": [
+            {
+              "Name": "actionEventDetails",
+              "Type": {
+                "Declared": "RecommendationActionEventDetails?"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "LogImpressionEvent",
+          "Parameters": [
+            {
+              "Name": "impressionEventDetails",
+              "Type": {
+                "Declared": "RecommendationImpressionEventDetails?"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "RegisterItemAsync",
+          "Parameters": [
+            {
+              "Name": "registerRecommendationItemsRequest",
+              "Type": {
+                "Declared": "RegisterRecommendationItemRequest"
+              }
+            }
+          ],
+          "ReturnType": {
+            "Declared": "RegisterRecommendationItemResponse"
+          }
+        },
+        {
+          "Name": "UpdateItemAsync",
+          "Parameters": [
+            {
+              "Name": "updateRecommendationItemRequest",
+              "Type": {
+                "Declared": "UpdateRecommendationItemRequest"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Name": "ModerationService",
+      "Members": [
+        {
+          "Name": "CreateReviewableContentAsync",
+          "Parameters": [
+            {
+              "Name": "config",
+              "Type": {
+                "Declared": "CreateReviewableContentParams"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "InternalCreateReviewableContentAsync",
+          "Parameters": [
+            {
+              "Name": "config",
+              "Type": {
+                "Declared": "CreateReviewableContentParams"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "InternalRequestReviewableContentReviewAsync",
+          "Parameters": [
+            {
+              "Name": "config",
+              "Type": {
+                "Declared": "RequestReviewableContentReviewParams"
+              }
+            }
+          ]
+        },
+        {
+          "Name": "InternalProcessReviewableContentEvent",
+          "Parameters": [
+            {
+              "Name": "event",
+              "Type": {
+                "Declared": "ReviewableContentEvent"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Name": "VideoSampler",
+      "Members": [
+        {
+          "Name": "GetSamplesAtTimes",
+          "Parameters": [
+            {
+              "Name": "times",
+              "Type": {
+                "Generic": "number"
+              }
+            }
+          ],
+          "ReturnType": {
+            "Declared": "VideoSampleArray"
+          }
+        }
+      ]
+    }
+  ],
+  "Types": {
+    "Variant": "any",
+    "Tuple": "...any",
+    "Function": "((...any) -> ...any)",
+    "function": "((...any) -> ...any)",
+    "bool": "boolean",
+    "int": "number",
+    "int64": "number",
+    "double": "number",
+    "float": "number",
+    "void": "nil",
+    "null": "nil",
+    "Objects": "{ Instance }",
+    "Instances": "{ Instance }",
+    "Dictionary": "{ [string]: any }",
+    "Map": "{ [any]: any }",
+    "Array": "{ any }",
+    "table": "{ any }",
+    "CoordinateFrame": "CFrame",
+    "OptionalCoordinateFrame": "CFrame?"
+  },
+  "Exclusions": {
+    "Types": [
+      "RBXScriptSignal",
+      "Enum",
+      "EnumItem",
+      "GlobalSettings",
+      "SharedTable",
+      "RaycastResult",
+      "Enums"
+    ],
+    "Sections": ["TestEZ", "BehaviorScript"],
+    "Globals": ["Game", "Workspace"]
+  },
+  "Exports": [
+    "ReflectionClassFilter",
+    "ReflectionMemberFilter",
+    "ReflectionType",
+    "ReflectionParameter",
+    "ReflectedProperty",
+    "ReflectedMethod",
+    "ReflectedEvent",
+    "ReflectedClass"
+  ]
+}

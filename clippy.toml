@@ -1,1 +1,1 @@
-allowed-duplicate-crates = ["syn", "bitflags", "hashbrown", "thiserror", "thiserror-impl", "winnow"]
+allowed-duplicate-crates = ["syn", "bitflags", "hashbrown", "thiserror", "thiserror-impl", "winnow", "getrandom"]

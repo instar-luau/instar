@@ -27,10 +27,6 @@ pub struct Loaded {
 }
 
 impl Input {
-    pub fn load(self) -> io::Result<Loaded> {
-        self.load_selected(|_| Ok(true))
-    }
-
     pub fn load_selected(
         self,
         mut selected: impl FnMut(&Path) -> io::Result<bool>,
