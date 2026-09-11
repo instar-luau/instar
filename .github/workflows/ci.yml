@@ -1,0 +1,39 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  check:
+    name: check ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
+        with:
+          persist-credentials: false
+          submodules: true
+      - uses: hustcer/setup-nu@913f2aa794632a1834b5a6b983bd21832177544b
+      - uses: jdx/mise-action@082e167e38ac2494dfb62e04240eac1f2a2d30dc
+        with:
+          install_args: rust aqua:Kitware/CMake
+      - name: check
+        shell: nu {0}
+        env:
+          TARGET: ${{ matrix.target }}
+        run: nu scripts/ci.nu $env.TARGET

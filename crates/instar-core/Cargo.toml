@@ -20,7 +20,7 @@ text-size = "1.1.1"
 thiserror = "2.0.20"
 toml_edit = { version = "0.23.5", features = ["serde"] }
 ureq = { version = "2", default-features = false, features = ["native-tls"] }
-vermis = { path = "../../../vermis" }
+vermis = "0.2.0"
 wasmi = { version = "2.0.0-beta.9", default-features = false, features = ["std", "validate", "stable", "auto-dispatch"] }
 
 [build-dependencies]
