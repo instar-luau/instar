@@ -22,3 +22,6 @@ rust_2018_idioms = { level = "deny", priority = -1 }
 unsafe_code = "deny"
 unused = { level = "deny", priority = -1 }
 warnings = { level = "deny", priority = -1 }
+
+[workspace.metadata.release]
+publish = false

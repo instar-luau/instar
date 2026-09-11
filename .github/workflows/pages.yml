@@ -1,0 +1,47 @@
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - schemas/instar.schema.json
+      - generated/**
+      - scripts/pages.nu
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: pages
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-slim
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
+        with:
+          persist-credentials: false
+      - uses: hustcer/setup-nu@913f2aa794632a1834b5a6b983bd21832177544b
+      - name: stage public assets
+        shell: nu {0}
+        run: nu scripts/pages.nu ($env.RUNNER_TEMP | path join pages)
+      - uses: actions/upload-pages-artifact@98ef48e41587a300b82de4cf298aa98b57b2faae
+        with:
+          path: ${{ runner.temp }}/pages
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-slim
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346

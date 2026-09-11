@@ -1,0 +1,69 @@
+name: release
+
+on:
+  push:
+    tags: [v*]
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
+        with:
+          persist-credentials: false
+          submodules: true
+      - uses: hustcer/setup-nu@913f2aa794632a1834b5a6b983bd21832177544b
+      - uses: jdx/mise-action@082e167e38ac2494dfb62e04240eac1f2a2d30dc
+        with:
+          install_args: rust aqua:Kitware/CMake
+          cache: false
+      - name: build
+        shell: nu {0}
+        env:
+          TARGET: ${{ matrix.target }}
+          TAG: ${{ github.ref_name }}
+        run: nu scripts/release.nu build $env.TARGET ($env.RUNNER_TEMP | path join release)
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: instar-${{ matrix.target }}
+          path: ${{ runner.temp }}/release/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-slim
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
+        with:
+          persist-credentials: false
+      - uses: hustcer/setup-nu@913f2aa794632a1834b5a6b983bd21832177544b
+      - uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317
+        with:
+          pattern: instar-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/release
+      - name: publish
+        shell: nu {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: nu scripts/release.nu publish $env.TAG ($env.RUNNER_TEMP | path join release)
