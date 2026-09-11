@@ -3,6 +3,7 @@ run = "nu scripts/roblox.nu"
 
 [tools]
 "aqua:Kitware/CMake" = "latest"
+"aqua:ninja-build/ninja" = "latest"
 "aqua:tombi-toml/tombi" = "latest"
 "github:0hirume/breathers" = "latest"
 "github:llvm/llvm-project" = "latest"

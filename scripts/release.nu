@@ -21,7 +21,6 @@ def "main build" [
 
         if $target not-in $TARGETS { error make $"Unsupported release target: ($target)" }
 
-        nu scripts/ci.nu $target
         cargo build --release --locked --package instar-cli --target $target
 
         let binary = if $target ends-with windows-msvc { 'instar.exe' } else { 'instar' }

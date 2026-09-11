@@ -12,7 +12,8 @@ fn main() {
     let output = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo output directory"));
 
     let destination = cmake::Config::new(root.join("bridge"))
-        .out_dir(output.join("bridge"))
+        .generator("Ninja")
+        .out_dir(output.join("ninja"))
         .build();
 
     println!(
