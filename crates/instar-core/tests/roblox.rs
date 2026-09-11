@@ -33,6 +33,58 @@ fn checker()
     }
 }
 
+fn batch(root: &Path, cases: &[(String, bool)]) -> Result {
+    support::configure(root)?;
+
+    let paths = cases
+        .iter()
+        .enumerate()
+        .map(|(index, (source, _))| {
+            let path = root.join(format!("{index}.luau"));
+            fs::write(&path, source)?;
+
+            Ok(path)
+        })
+        .collect::<std::io::Result<Vec<_>>>()?;
+
+    let expected = paths
+        .iter()
+        .zip(cases)
+        .filter_map(|(path, (_, errors))| errors.then_some(path))
+        .collect::<std::collections::BTreeSet<_>>();
+
+    for old_solver in [false, true] {
+        let report = analysis::analyze(
+            &mut Resolver::new(&mut SourceStore::default()),
+            &paths,
+            &Options {
+                old_solver,
+                ..Default::default()
+            },
+        )?;
+
+        let actual = report
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.is_error)
+            .map(|diagnostic| &diagnostic.path)
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert_eq!(
+            actual,
+            expected,
+            "solver={old_solver}: {:?}",
+            report
+                .diagnostics
+                .iter()
+                .map(|diagnostic| (&diagnostic.path, &diagnostic.message))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    Ok(())
+}
+
 fn valid(report: &analysis::Report) {
     assert!(
         !report.has_errors(),
@@ -81,157 +133,124 @@ fn cached_environment_is_explicit_and_contains_datatypes_and_documented_signatur
 }
 
 #[test]
-fn roblox_globals_constructors_signals_and_equality() -> Result {
-    let mut check = checker();
+fn independent_roblox_snippets_preserve_types() -> Result {
     let directory = tempfile::tempdir()?;
     let root = directory.path();
     fs::write(root.join("instar.toml"), "[roblox]")?;
+
+    let cases = [
+        roblox_globals_constructors_signals_and_equality(),
+        datatype_collections_variadics_and_opaque_references_preserve_types(),
+        datatype_signatures_preserve_operators_packs_and_nullable_seats(),
+        predicates_and_class_lookups_use_cached_metadata(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+
+    batch(root, &cases)
+}
+
+fn roblox_globals_constructors_signals_and_equality() -> Vec<(String, bool)> {
     let source = "--!strict\nlocal font: Font = Font.new('rbxasset://fonts/families/SourceSansPro.json')\nlocal family: string = font.Family\nlocal other: Font = Font.fromEnum(Enum.Font.SourceSans)\nlocal dimension: UDim = UDim.new()\nlocal storage: buffer = buffer.create(1)\nwarn(storage)\nlocal button = Instance.new('TextButton')\nlocal connection: RBXScriptConnection = button.MouseButton1Click:Connect(function() warn(family) end)\nlocal signal: RBXScriptSignal<()> = button.MouseButton1Click\nlocal item: EnumItem = Enum.KeyCode.Space\nreturn function(name: string, instance: Instance, humanoid: Humanoid)\nlocal group: Enum = Enum[name]\nreturn group == Enum.KeyCode, item.EnumType ~= Enum.KeyCode, instance ~= humanoid, font, other, dimension, signal, connection\nend";
 
-    for old_solver in [false, true] {
-        valid(&check(root, source, old_solver)?);
+    let mut cases = vec![(source.to_owned(), false)];
 
-        for invalid in [
-            "--!strict\nlocal value: Font = Enum.Font.SourceSans\nreturn value",
-            "--!strict\nlocal value: Enum.Font = Font.new('sample')\nreturn value",
-            "--!strict\nlocal value: Buffer = buffer.create(1)\nreturn value",
-            "--!strict\nInstance.new('TextButton').MouseButton1Click:Connect(function(value: number) print(value) end)",
-            "--!strict\nreturn UDim.new('sample')",
-        ] {
-            assert!(check(root, invalid, old_solver)?.has_errors());
-        }
+    for invalid in [
+        "--!strict\nlocal value: Font = Enum.Font.SourceSans\nreturn value",
+        "--!strict\nlocal value: Enum.Font = Font.new('sample')\nreturn value",
+        "--!strict\nlocal value: Buffer = buffer.create(1)\nreturn value",
+        "--!strict\nInstance.new('TextButton').MouseButton1Click:Connect(function(value: number) print(value) end)",
+        "--!strict\nreturn UDim.new('sample')",
+    ] {
+        cases.push((invalid.to_owned(), true));
     }
 
-    Ok(())
+    cases
 }
 
-#[test]
-fn datatype_collections_variadics_and_opaque_references_preserve_types() -> Result {
-    let mut check = checker();
-    let directory = tempfile::tempdir()?;
-    let root = directory.path();
-    fs::write(root.join("instar.toml"), "[roblox]")?;
+fn datatype_collections_variadics_and_opaque_references_preserve_types() -> Vec<(String, bool)> {
+    let mut cases = Vec::new();
 
-    for old_solver in [false, true] {
-        for source in [
-            "local parameters = CatalogSearchParams.new()\nlocal assets: {Enum.AvatarAssetType} = parameters.AssetTypes\nlocal bundles: {Enum.BundleType} = parameters.BundleTypes\nreturn assets, bundles",
-            "local points: {ColorSequenceKeypoint} = ColorSequence.new(Color3.new()).Keypoints\nlocal color: Color3 = points[1].Value\nreturn color",
-            "local points: {NumberSequenceKeypoint} = NumberSequence.new(1).Keypoints\nlocal value: number = points[1].Value\nreturn value",
-            "local parameters = RaycastParams.new()\nparameters.ExcludeInstances = nil\nlocal instances: {Instance} = {Instance.new('Part')}\nparameters.ExcludeInstances = instances\nlocal selected: {Instance}? = parameters.ExcludeInstances\nreturn selected",
-            "local empty: SecurityCapabilities = SecurityCapabilities.new()\nlocal capabilities: SecurityCapabilities = SecurityCapabilities.new(Enum.SecurityCapability.Players, Enum.SecurityCapability.Animation)\nreturn empty, capabilities",
-            "local evaluator: ClipEvaluator = game:GetService('AnimationClipProvider'):GetClipEvaluatorAsync('sample')\nreturn evaluator",
-            "local players: {Player} = game:GetService('Players'):GetPlayers()\nreturn players",
-            "local event = Instance.new('RemoteEvent')\nevent.OnServerEvent:Connect(function(player: Player, count: number, message: string) print(player, count, message) end)\nevent.OnClientEvent:Connect(function(count: number, message: string) print(count, message) end)",
-        ] {
-            valid(&check(root, &format!("--!strict\n{source}"), old_solver)?);
-        }
-
-        for source in [
-            "local value: number = CatalogSearchParams.new().AssetTypes[1]\nreturn value",
-            "local value: number = ColorSequence.new(Color3.new()).Keypoints[1].Value\nreturn value",
-            "local value: Color3 = NumberSequence.new(1).Keypoints[1].Value\nreturn value",
-            "local parameters = RaycastParams.new()\nparameters.ExcludeInstances = {1}",
-            "local value: number = Instance.new('Folder'):GetChildren()[1]\nreturn value",
-            "return SecurityCapabilities.new(1)",
-            "local value: number = game:GetService('AnimationClipProvider'):GetClipEvaluatorAsync('sample')\nreturn value",
-            "return game:GetService('AnimationClipProvider'):GetClipEvaluatorAsync('sample').Missing",
-        ] {
-            assert!(
-                check(root, &format!("--!strict\n{source}"), old_solver)?.has_errors(),
-                "{source}"
-            );
-        }
+    for source in [
+        "local parameters = CatalogSearchParams.new()\nlocal assets: {Enum.AvatarAssetType} = parameters.AssetTypes\nlocal bundles: {Enum.BundleType} = parameters.BundleTypes\nreturn assets, bundles",
+        "local points: {ColorSequenceKeypoint} = ColorSequence.new(Color3.new()).Keypoints\nlocal color: Color3 = points[1].Value\nreturn color",
+        "local points: {NumberSequenceKeypoint} = NumberSequence.new(1).Keypoints\nlocal value: number = points[1].Value\nreturn value",
+        "local parameters = RaycastParams.new()\nparameters.ExcludeInstances = nil\nlocal instances: {Instance} = {Instance.new('Part')}\nparameters.ExcludeInstances = instances\nlocal selected: {Instance}? = parameters.ExcludeInstances\nreturn selected",
+        "local empty: SecurityCapabilities = SecurityCapabilities.new()\nlocal capabilities: SecurityCapabilities = SecurityCapabilities.new(Enum.SecurityCapability.Players, Enum.SecurityCapability.Animation)\nreturn empty, capabilities",
+        "local evaluator: ClipEvaluator = game:GetService('AnimationClipProvider'):GetClipEvaluatorAsync('sample')\nreturn evaluator",
+        "local players: {Player} = game:GetService('Players'):GetPlayers()\nreturn players",
+        "local event = Instance.new('RemoteEvent')\nevent.OnServerEvent:Connect(function(player: Player, count: number, message: string) print(player, count, message) end)\nevent.OnClientEvent:Connect(function(count: number, message: string) print(count, message) end)",
+    ] {
+        cases.push((format!("--!strict\n{source}"), false));
     }
 
-    Ok(())
+    for source in [
+        "local value: number = CatalogSearchParams.new().AssetTypes[1]\nreturn value",
+        "local value: number = ColorSequence.new(Color3.new()).Keypoints[1].Value\nreturn value",
+        "local value: Color3 = NumberSequence.new(1).Keypoints[1].Value\nreturn value",
+        "local parameters = RaycastParams.new()\nparameters.ExcludeInstances = {1}",
+        "local value: number = Instance.new('Folder'):GetChildren()[1]\nreturn value",
+        "return SecurityCapabilities.new(1)",
+        "local value: number = game:GetService('AnimationClipProvider'):GetClipEvaluatorAsync('sample')\nreturn value",
+        "return game:GetService('AnimationClipProvider'):GetClipEvaluatorAsync('sample').Missing",
+    ] {
+        cases.push((format!("--!strict\n{source}"), true));
+    }
+
+    cases
 }
 
-#[test]
-fn datatype_signatures_preserve_operators_packs_and_nullable_seats() -> Result {
-    let mut check = checker();
-    let directory = tempfile::tempdir()?;
-    let root = directory.path();
-    fs::write(root.join("instar.toml"), "[roblox]")?;
+fn datatype_signatures_preserve_operators_packs_and_nullable_seats() -> Vec<(String, bool)> {
+    let mut cases = Vec::new();
 
-    for old_solver in [false, true] {
-        for (name, value) in [
-            ("Vector2", "Vector2.new(1, 2)"),
-            ("Vector3", "Vector3.new(1, 2, 3)"),
-            ("Vector2int16", "Vector2int16.new(1, 2)"),
-            ("Vector3int16", "Vector3int16.new(1, 2, 3)"),
-            ("UDim", "UDim.new(1, 2)"),
-            ("UDim2", "UDim2.new(1, 2, 3, 4)"),
-        ] {
-            valid(&check(
-                root,
-                &format!("--!strict\nlocal value: {name} = -{value}\nreturn value"),
-                old_solver,
-            )?);
-        }
+    for (name, value) in [
+        ("Vector2", "Vector2.new(1, 2)"),
+        ("Vector3", "Vector3.new(1, 2, 3)"),
+        ("Vector2int16", "Vector2int16.new(1, 2)"),
+        ("Vector3int16", "Vector3int16.new(1, 2, 3)"),
+        ("UDim", "UDim.new(1, 2)"),
+        ("UDim2", "UDim2.new(1, 2, 3, 4)"),
+    ] {
+        cases.push((
+            format!("--!strict\nlocal value: {name} = -{value}\nreturn value"),
+            false,
+        ));
+    }
 
-        for (method, name, value) in [
-            ("ToWorldSpace", "CFrame", "CFrame.new()"),
-            ("ToObjectSpace", "CFrame", "CFrame.new()"),
-            ("PointToWorldSpace", "Vector3", "Vector3.zero"),
-            ("PointToObjectSpace", "Vector3", "Vector3.zero"),
-            ("VectorToWorldSpace", "Vector3", "Vector3.zero"),
-            ("VectorToObjectSpace", "Vector3", "Vector3.zero"),
-        ] {
-            valid(&check(
-                root,
-                &format!(
-                    "--!strict\nlocal first: {name}, second: {name} = CFrame.new():{method}({value}, {value})\nreturn first, second"
-                ),
-                old_solver,
-            )?);
+    for (method, name, value) in [
+        ("ToWorldSpace", "CFrame", "CFrame.new()"),
+        ("ToObjectSpace", "CFrame", "CFrame.new()"),
+        ("PointToWorldSpace", "Vector3", "Vector3.zero"),
+        ("PointToObjectSpace", "Vector3", "Vector3.zero"),
+        ("VectorToWorldSpace", "Vector3", "Vector3.zero"),
+        ("VectorToObjectSpace", "Vector3", "Vector3.zero"),
+    ] {
+        cases.push((format!("--!strict\nlocal first: {name}, second: {name} = CFrame.new():{method}({value}, {value})\nreturn first, second"), false));
+        cases.push((format!("--!strict\nreturn CFrame.new():{method}(1)"), true));
 
-            assert!(
-                check(
-                    root,
-                    &format!("--!strict\nreturn CFrame.new():{method}(1)"),
-                    old_solver
-                )?
-                .has_errors()
-            );
-
-            assert!(check(root, &format!("--!strict\nlocal value: number = CFrame.new():{method}({value})\nreturn value"), old_solver)?.has_errors());
-        }
-
-        valid(&check(
-            root,
-            "--!strict\nlocal frame = CFrame.new()\nlocal inverse: CFrame = frame:Inverse()\nlocal interpolated: CFrame = frame:Lerp(inverse, 0.5)\nlocal normalized: CFrame = frame:Orthonormalize()\nlocal equal: boolean = frame:FuzzyEq(inverse)\nlocal axis: Vector3, angle: number = frame:ToAxisAngle()\nlocal position: Vector3 = frame * Vector3.zero\nlocal translated: CFrame = frame + Vector3.zero - Vector3.zero\nlocal composed: CFrame = frame * frame\nreturn interpolated, normalized, equal, axis, angle, position, translated, composed",
-            old_solver,
-        )?);
-
-        let numbers = ["number"; 12].join(", ");
-
-        valid(&check(
-            root,
-            &format!(
-                "--!strict\nlocal components: (CFrame) -> ({numbers}) = CFrame.new().GetComponents\nreturn components"
+        cases.push((
+            format!(
+                "--!strict\nlocal value: number = CFrame.new():{method}({value})\nreturn value"
             ),
-            old_solver,
-        )?);
-
-        assert!(check(root, "--!strict\nlocal components: (CFrame) -> string = CFrame.new().GetComponents\nreturn components", old_solver)?.has_errors());
-
-        valid(&check(
-            root,
-            "--!strict\nreturn function(humanoid: Humanoid): (Seat | VehicleSeat)? return humanoid.SeatPart end",
-            old_solver,
-        )?);
-
-        assert!(
-            check(
-                root,
-                "--!strict\nlocal value: number = -Vector3.zero\nreturn value",
-                old_solver
-            )?
-            .has_errors()
-        );
+            true,
+        ));
     }
 
-    Ok(())
+    cases.push(("--!strict\nlocal frame = CFrame.new()\nlocal inverse: CFrame = frame:Inverse()\nlocal interpolated: CFrame = frame:Lerp(inverse, 0.5)\nlocal normalized: CFrame = frame:Orthonormalize()\nlocal equal: boolean = frame:FuzzyEq(inverse)\nlocal axis: Vector3, angle: number = frame:ToAxisAngle()\nlocal position: Vector3 = frame * Vector3.zero\nlocal translated: CFrame = frame + Vector3.zero - Vector3.zero\nlocal composed: CFrame = frame * frame\nreturn interpolated, normalized, equal, axis, angle, position, translated, composed".to_owned(), false));
+
+    let numbers = ["number"; 12].join(", ");
+
+    cases.push((format!("--!strict\nlocal components: (CFrame) -> ({numbers}) = CFrame.new().GetComponents\nreturn components"), false));
+    cases.push(("--!strict\nlocal components: (CFrame) -> string = CFrame.new().GetComponents\nreturn components".to_owned(), true));
+    cases.push(("--!strict\nreturn function(humanoid: Humanoid): (Seat | VehicleSeat)? return humanoid.SeatPart end".to_owned(), false));
+
+    cases.push((
+        "--!strict\nlocal value: number = -Vector3.zero\nreturn value".to_owned(),
+        true,
+    ));
+
+    cases
 }
 
 #[test]
@@ -402,7 +421,6 @@ fn security_levels_filter_inaccessible_members() -> Result {
             "--!strict\nreturn Instance.new('Part').UniqueId",
             old_solver,
         )?);
-
     }
 
     Ok(())
@@ -439,31 +457,19 @@ fn levels_inherit_and_validate() -> Result {
     Ok(())
 }
 
-#[test]
-fn predicates_and_class_lookups_use_cached_metadata() -> Result {
-    let mut check = checker();
-    let directory = tempfile::tempdir()?;
-    let root = directory.path();
-    fs::write(root.join("instar.toml"), "[roblox]")?;
+fn predicates_and_class_lookups_use_cached_metadata() -> Vec<(String, bool)> {
+    let mut cases = vec![("--!strict\nreturn function(value: Instance) if value:IsA('Part') then local shape: Enum.PartType = value.Shape print(shape) end local child: Folder? = value:FindFirstChildWhichIsA('Folder') return child end".to_owned(), false)];
 
-    for old_solver in [false, true] {
-        valid(&check(
-            root,
-            "--!strict\nreturn function(value: Instance) if value:IsA('Part') then local shape: Enum.PartType = value.Shape print(shape) end local child: Folder? = value:FindFirstChildWhichIsA('Folder') return child end",
-            old_solver,
-        )?);
-
-        for source in [
-            "return Instance.new('Missing')",
-            "return Instance.new('Workspace')",
-            "return game:GetService('Folder')",
-            "return function(value: Instance) return value:IsA('Missing') end",
-        ] {
-            assert!(check(root, source, old_solver)?.has_errors());
-        }
+    for source in [
+        "return Instance.new('Missing')",
+        "return Instance.new('Workspace')",
+        "return game:GetService('Folder')",
+        "return function(value: Instance) return value:IsA('Missing') end",
+    ] {
+        cases.push((source.to_owned(), true));
     }
 
-    Ok(())
+    cases
 }
 
 #[test]
