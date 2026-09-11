@@ -49,15 +49,24 @@ impl Bytes {
 }
 
 type Read = extern "C" fn(*mut c_void, Bytes) -> Bytes;
-type Resolve = extern "C" fn(*mut c_void, Bytes, Bytes) -> Bytes;
+type Resolve = extern "C" fn(*mut c_void, Bytes, Bytes, u32) -> Bytes;
+type Environment = extern "C" fn(*mut c_void, Bytes, Bytes, usize) -> Bytes;
 type Configuration = extern "C" fn(*mut c_void, Bytes, usize) -> Bytes;
 type Emit = extern "C" fn(*mut c_void, Bytes, Bytes, u32, u32, bool);
 type Annotate = extern "C" fn(*mut c_void, Bytes, Bytes);
 type Alias = extern "C" fn(*mut c_void, Bytes, Bytes);
 
 unsafe extern "C" {
-    fn instar_aliases(source: Bytes, context: *mut c_void, alias: Alias, report: Emit);
+    fn instar_aliases(
+        source: Bytes,
+        executable: bool,
+        context: *mut c_void,
+        alias: Alias,
+        report: Emit,
+    );
+    fn instar_destroy(session: *mut c_void);
     fn instar_analyze(
+        session: *mut *mut c_void,
         context: *mut c_void,
         read: Read,
         resolve: Resolve,
@@ -68,7 +77,9 @@ unsafe extern "C" {
         count: usize,
         definitions: *const Bytes,
         definition_count: usize,
-        strict: bool,
+        configuration_types: Bytes,
+        environment: Environment,
+        mode: Bytes,
         old_solver: bool,
         annotations: bool,
     );
@@ -77,6 +88,7 @@ unsafe extern "C" {
 struct Context<'resolver, 'store> {
     resolver: &'resolver mut Resolver<'store>,
     buffer: Vec<u8>,
+    environment: crate::roblox::Environment,
     report: Report,
     error: Option<io::Error>,
 }
@@ -117,13 +129,23 @@ extern "C" fn read(context: *mut c_void, name: Bytes) -> Bytes {
     context.call(|context| {
         let name = unsafe { name.string()? };
 
+        let path = Path::new(&name);
+
+        if !context.environment.readable(path) {
+            return Ok(None);
+        }
+
         Ok(Some(
-            context.resolver.load(Path::new(&name))?.bytes().to_vec(),
+            context
+                .resolver
+                .load(&context.environment.source(path))?
+                .bytes()
+                .to_vec(),
         ))
     })
 }
 
-extern "C" fn resolve(context: *mut c_void, from: Bytes, specifier: Bytes) -> Bytes {
+extern "C" fn resolve(context: *mut c_void, from: Bytes, specifier: Bytes, kind: u32) -> Bytes {
     let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
 
     context.call(|context| {
@@ -131,10 +153,18 @@ extern "C" fn resolve(context: *mut c_void, from: Bytes, specifier: Bytes) -> By
 
         let specifier = unsafe { specifier.string()? };
 
-        context
-            .resolver
-            .resolve(Path::new(&from), &specifier)?
-            .map(|path| module_name(&path).map(String::into_bytes))
+        let path = if kind == 0 {
+            context.resolver.resolve(
+                &context.environment.configuration(Path::new(&from)),
+                &specifier,
+            )?
+        } else {
+            context
+                .environment
+                .resolve(Path::new(&from), &specifier, kind)
+        };
+
+        path.map(|path| module_name(&path).map(String::into_bytes))
             .transpose()
     })
 }
@@ -145,12 +175,76 @@ extern "C" fn configuration(context: *mut c_void, name: Bytes, index: usize) -> 
     context.call(|context| {
         let name = unsafe { name.string()? };
 
-        Ok(context
+        context
             .resolver
             .discovery
-            .configurations(Path::new(&name))?
+            .configurations(&context.environment.configuration(Path::new(&name)))?
             .get(index)
-            .map(|configuration| configuration.bytes.clone()))
+            .map(|configuration| -> io::Result<_> {
+                let mut bytes = module_name(&configuration.path)?.into_bytes();
+                bytes.push(0);
+                bytes.extend_from_slice(&configuration.bytes);
+
+                Ok(bytes)
+            })
+            .transpose()
+    })
+}
+
+extern "C" fn metadata(context: *mut c_void, category: Bytes, name: Bytes, index: usize) -> Bytes {
+    let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
+
+    context.call(|context| {
+        let category = unsafe { category.string()? };
+
+        let name = unsafe { name.string()? };
+
+        let environment = &context.environment;
+
+        let value = match category.as_str() {
+            "enabled" => environment.enabled.then(String::new),
+
+            "definitions" => environment.enabled.then(|| environment.definitions.clone()),
+
+            "enumeration" => environment.enumerations.get(index).cloned(),
+            "class" => environment.classes.get(index).cloned(),
+
+            "node" => environment.nodes.get(index).map(|node| {
+                format!(
+                    "{}\0{}\0{}",
+                    node.name,
+                    node.class_name,
+                    node.parent
+                        .map(|parent| parent.to_string())
+                        .unwrap_or_default()
+                )
+            }),
+
+            "script" => environment
+                .node(Path::new(&name))
+                .map(|index| index.to_string()),
+
+            "kind" => environment.enabled.then(|| {
+                environment.node(Path::new(&name)).map_or_else(
+                    || {
+                        if name.ends_with(".server.lua") || name.ends_with(".server.luau") {
+                            "Script"
+                        } else if name.ends_with(".client.lua") || name.ends_with(".client.luau") {
+                            "LocalScript"
+                        } else {
+                            "ModuleScript"
+                        }
+                        .to_owned()
+                    },
+                    |index| environment.nodes[index].class_name.clone(),
+                )
+            }),
+
+            "path" => Some(module_name(&environment.source(Path::new(&name)))?),
+            _ => None,
+        };
+
+        Ok(value.map(String::into_bytes))
     })
 }
 
@@ -166,7 +260,9 @@ extern "C" fn emit(
 
     context.call(|context| {
         context.report.diagnostics.push(Diagnostic {
-            path: PathBuf::from(unsafe { name.string()? }),
+            path: context
+                .environment
+                .source(Path::new(&unsafe { name.string()? })),
             line,
             column,
             message: String::from_utf8_lossy(unsafe { message.slice() }).into_owned(),
@@ -182,7 +278,9 @@ extern "C" fn annotate(context: *mut c_void, name: Bytes, text: Bytes) {
 
     context.call(|context| {
         context.report.annotations.push(Annotation {
-            path: PathBuf::from(unsafe { name.string()? }),
+            path: context
+                .environment
+                .source(Path::new(&unsafe { name.string()? })),
             bytes: unsafe { text.slice() }.to_vec(),
         });
 
@@ -211,117 +309,186 @@ fn module_name(path: &Path) -> io::Result<String> {
         })
 }
 
-pub(crate) fn analyze(
-    resolver: &mut Resolver<'_>,
-    modules: &[PathBuf],
-    options: &Options,
-) -> io::Result<Report> {
-    let mut groups = BTreeMap::<Vec<PathBuf>, Vec<PathBuf>>::new();
-
-    for path in modules {
-        let source = resolver.load(path)?;
-        let path = source.path().to_owned();
-        let mut definitions = resolver.discovery.definitions(&path)?;
-
-        if path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.ends_with(".d.luau"))
-            && !definitions.contains(&path)
-        {
-            definitions.push(path.clone());
-        }
-
-        groups.entry(definitions).or_default().push(path);
-    }
-
-    let mut report = Report::default();
-
-    for (definitions, modules) in groups {
-        let result = analyze_group(resolver, &modules, &definitions, options)?;
-        report.diagnostics.extend(result.diagnostics);
-        report.annotations.extend(result.annotations);
-    }
-
-    let mut seen = std::collections::BTreeSet::new();
-
-    report.diagnostics.retain(|diagnostic| {
-        seen.insert((
-            diagnostic.path.clone(),
-            diagnostic.line,
-            diagnostic.column,
-            diagnostic.message.clone(),
-            diagnostic.is_error,
-        ))
-    });
-
-    Ok(report)
+#[derive(Default)]
+pub(crate) struct Session {
+    handle: *mut c_void,
 }
 
-fn analyze_group(
-    resolver: &mut Resolver<'_>,
-    modules: &[PathBuf],
-    definitions: &[PathBuf],
-    options: &Options,
-) -> io::Result<Report> {
-    let definition_names = definitions
-        .iter()
-        .map(|path| {
-            resolver
-                .load(path)
-                .and_then(|source| module_name(source.path()))
-        })
-        .collect::<io::Result<Vec<_>>>()?;
+impl Drop for Session {
+    fn drop(&mut self) {
+        unsafe { instar_destroy(self.handle) };
+    }
+}
 
-    let definitions: Vec<_> = definition_names
-        .iter()
-        .map(|name| Bytes::new(name.as_bytes()))
-        .collect();
+impl Session {
+    pub(crate) fn analyze(
+        &mut self,
+        resolver: &mut Resolver<'_>,
+        modules: &[PathBuf],
+        options: &Options,
+    ) -> io::Result<Report> {
+        let mut groups = BTreeMap::new();
 
-    let names = modules
-        .iter()
-        .map(|path| {
-            resolver
-                .load(path)
-                .and_then(|source| module_name(source.path()))
-        })
-        .collect::<io::Result<Vec<_>>>()?;
+        for path in modules {
+            let source = resolver.load(path)?;
+            let path = source.path().to_owned();
 
-    let modules: Vec<_> = names
-        .iter()
-        .map(|name| Bytes::new(name.as_bytes()))
-        .collect();
+            let configuration = crate::project::ConfigKind::from_path(&path)
+                == Some(crate::project::ConfigKind::Luau);
 
-    let mut context = Context {
-        resolver,
-        buffer: Vec::new(),
-        report: Report::default(),
-        error: None,
-    };
+            let mut definitions = if configuration {
+                Vec::new()
+            } else {
+                resolver.discovery.definitions(&path)?
+            };
 
-    unsafe {
-        instar_analyze(
-            ptr::from_mut(&mut context).cast(),
-            read,
-            resolve,
-            configuration,
-            emit,
-            annotate,
-            modules.as_ptr(),
-            modules.len(),
-            definitions.as_ptr(),
-            definitions.len(),
-            options.strict,
-            options.old_solver,
-            options.annotations,
-        );
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(".d.luau"))
+                && !definitions.contains(&path)
+            {
+                definitions.push(path.clone());
+            }
+
+            let environment = if configuration {
+                None
+            } else {
+                resolver.discovery.roblox(&path)?
+            };
+
+            groups
+                .entry((definitions, environment))
+                .or_insert_with(Vec::new)
+                .push(path);
+        }
+
+        let mut report = Report::default();
+
+        for ((definitions, environment), modules) in groups {
+            let result = self.analyze_group(
+                resolver,
+                &modules,
+                &definitions,
+                environment.as_ref(),
+                options,
+            )?;
+
+            report.diagnostics.extend(result.diagnostics);
+            report.annotations.extend(result.annotations);
+            report.documentation.extend(result.documentation);
+        }
+
+        let mut seen = std::collections::BTreeSet::new();
+
+        report.diagnostics.retain(|diagnostic| {
+            seen.insert((
+                diagnostic.path.clone(),
+                diagnostic.line,
+                diagnostic.column,
+                diagnostic.message.clone(),
+                diagnostic.is_error,
+            ))
+        });
+
+        Ok(report)
     }
 
-    if let Some(error) = context.error {
-        return Err(error);
-    }
+    fn analyze_group(
+        &mut self,
+        resolver: &mut Resolver<'_>,
+        modules: &[PathBuf],
+        definitions: &[PathBuf],
+        settings: Option<&crate::configuration::RobloxConfig>,
+        options: &Options,
+    ) -> io::Result<Report> {
+        let environment = settings
+            .map(|settings| crate::roblox::Environment::load(resolver, settings, options.update))
+            .transpose()?
+            .unwrap_or_default();
 
-    Ok(context.report)
+        let definition_names = definitions
+            .iter()
+            .map(|path| {
+                resolver
+                    .load(path)
+                    .and_then(|source| module_name(source.path()))
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+
+        let definitions: Vec<_> = definition_names
+            .iter()
+            .map(|name| Bytes::new(name.as_bytes()))
+            .collect();
+
+        let names = modules
+            .iter()
+            .map(|path| {
+                resolver
+                    .load(path)
+                    .and_then(|source| module_name(source.path()))
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+
+        let modules: Vec<_> = names
+            .iter()
+            .map(|name| Bytes::new(name.as_bytes()))
+            .collect();
+
+        let mut context = Context {
+            resolver,
+            buffer: Vec::new(),
+            environment,
+            report: Report::default(),
+            error: None,
+        };
+
+        unsafe {
+            instar_analyze(
+                ptr::from_mut(&mut self.handle),
+                ptr::from_mut(&mut context).cast(),
+                read,
+                resolve,
+                configuration,
+                emit,
+                annotate,
+                modules.as_ptr(),
+                modules.len(),
+                definitions.as_ptr(),
+                definitions.len(),
+                Bytes::new(include_bytes!("../bridge/configuration.d.luau")),
+                metadata,
+                options.mode.map_or_else(Bytes::absent, |mode| {
+                    Bytes::new(match mode {
+                        crate::analysis::Mode::Strict => b"strict",
+                        crate::analysis::Mode::Nonstrict => b"nonstrict",
+                        crate::analysis::Mode::Nocheck => b"nocheck",
+                    })
+                }),
+                options.old_solver,
+                options.annotations,
+            );
+        }
+
+        if let Some(error) = context.error {
+            *self = Self::default();
+
+            return Err(error);
+        }
+
+        if !context.environment.documentation.is_empty() {
+            let documentation = context.environment.documentation;
+
+            for name in names {
+                context
+                    .report
+                    .documentation
+                    .insert(PathBuf::from(name), std::sync::Arc::clone(&documentation));
+            }
+        }
+
+        Ok(context.report)
+    }
 }
 
 #[derive(Default)]
@@ -358,12 +525,13 @@ extern "C" fn alias_error(context: *mut c_void, _: Bytes, message: Bytes, _: u32
     context.error = Some(result.unwrap_or_else(|_| "configuration callback panicked".into()));
 }
 
-pub(crate) fn aliases(source: &[u8]) -> io::Result<BTreeMap<String, String>> {
+pub(crate) fn aliases(source: &[u8], executable: bool) -> io::Result<BTreeMap<String, String>> {
     let mut aliases = Aliases::default();
 
     unsafe {
         instar_aliases(
             Bytes::new(source),
+            executable,
             ptr::from_mut(&mut aliases).cast(),
             alias,
             alias_error,

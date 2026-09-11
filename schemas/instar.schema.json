@@ -1,0 +1,839 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "InstarConfig",
+  "type": "object",
+  "properties": {
+    "aliases": {
+      "description": "Require aliases mapped to paths relative to this configuration. Entries inherit by name.\n\nDefault: `unset`.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": null
+    },
+    "definitions": {
+      "description": "External Luau definition files, resolved relative to this configuration.\n\nDefault: `unset`.",
+      "type": [
+        "array",
+        "null"
+      ],
+      "default": null,
+      "items": {
+        "type": "string"
+      }
+    },
+    "exclude": {
+      "description": "Source exclusion patterns relative to this configuration. Explicit file inputs bypass selection; an empty list clears inherited patterns.\n\nDefault: `unset`.",
+      "type": [
+        "array",
+        "null"
+      ],
+      "default": null,
+      "items": {
+        "type": "string"
+      }
+    },
+    "format": {
+      "description": "Formatter settings. Ancestor settings merge field by field; absent settings use their documented defaults.\n\nDefault: `unset`.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Options"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "grafts": {
+      "description": "Graft names mapped to manifest paths relative to this configuration. Entries inherit by name and run in name order.\n\nDefault: `unset`.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": null
+    },
+    "include": {
+      "description": "Source selection patterns relative to this configuration. Explicit file inputs bypass selection; an empty list clears inherited patterns.\n\nDefault: `unset`.",
+      "type": [
+        "array",
+        "null"
+      ],
+      "default": null,
+      "items": {
+        "type": "string"
+      }
+    },
+    "mode": {
+      "description": "Checking mode. Inherits from ancestor configurations; defaults to nonstrict. CLI mode and file directives take precedence.\n\nDefault: `unset`.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Mode"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "roblox": {
+      "description": "Downloaded Roblox types, instance mappings, and analysis permissions.\n\nDefault: `unset`.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RobloxConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "Binding": {
+      "type": "string",
+      "enum": [
+        "preserve",
+        "const",
+        "local"
+      ]
+    },
+    "Blocks": {
+      "type": "object",
+      "properties": {
+        "blank_lines": {
+          "description": "Remove or preserve one existing blank line at each block boundary. Interior statement gaps are retained independently.\n\nDefault: `\"remove\"`.",
+          "$ref": "#/$defs/Gaps",
+          "default": "remove"
+        },
+        "collapse": {
+          "description": "Collapse eligible single-statement blocks: never, functions, conditionals, or always. Comments can prevent collapsing.\n\nDefault: `\"never\"`.",
+          "$ref": "#/$defs/Collapse",
+          "default": "never"
+        }
+      },
+      "additionalProperties": false
+    },
+    "CallStyle": {
+      "type": "string",
+      "enum": [
+        "one-per-line",
+        "hug-last"
+      ]
+    },
+    "Calls": {
+      "type": "object",
+      "properties": {
+        "chains": {
+          "description": "Layout of repeated dot and colon calls.\n\nDefault: `{\"minimum_calls\":3,\"style\":\"preserve\"}`.",
+          "$ref": "#/$defs/Chains",
+          "default": {
+            "minimum_calls": 3,
+            "style": "preserve"
+          }
+        },
+        "expand": {
+          "description": "Expand argument lists when needed by width, always, or never voluntarily. Mandatory line breaks are retained.\n\nDefault: `\"needed\"`.",
+          "$ref": "#/$defs/Expansion",
+          "default": "needed"
+        },
+        "indentation": {
+          "description": "Number of additional indentation levels for expanded arguments.\n\nDefault: `1`.",
+          "type": "integer",
+          "format": "uint",
+          "default": 1,
+          "minimum": 0
+        },
+        "parentheses": {
+          "description": "Always use parentheses, omit them for a sole string or table argument, omit either optional form, or preserve the input choice.\n\nDefault: `\"always\"`.",
+          "$ref": "#/$defs/Parentheses",
+          "default": "always"
+        },
+        "style": {
+          "description": "One-per-line separates expanded arguments; hug-last keeps a final table, function, or multiline string attached to preceding arguments unless expansion is always. A sole string, table, or function remains attached in either style.\n\nDefault: `\"one-per-line\"`.",
+          "$ref": "#/$defs/CallStyle",
+          "default": "one-per-line"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Chain": {
+      "type": "string",
+      "enum": [
+        "preserve",
+        "method",
+        "full"
+      ]
+    },
+    "Chains": {
+      "type": "object",
+      "properties": {
+        "minimum_calls": {
+          "description": "Force chain expansion at this many calls. Zero disables count-based expansion; width-based wrapping remains available.\n\nDefault: `3`.",
+          "type": "integer",
+          "format": "uint",
+          "default": 3,
+          "minimum": 0
+        },
+        "style": {
+          "description": "Preserve ordinary call layout; method keeps the first call with the receiver; full allows a break before every call. Both method and full handle dot and colon calls.\n\nDefault: `\"preserve\"`.",
+          "$ref": "#/$defs/Chain",
+          "default": "preserve"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Collapse": {
+      "type": "string",
+      "enum": [
+        "never",
+        "functions",
+        "conditionals",
+        "always"
+      ]
+    },
+    "Conditional": {
+      "type": "object",
+      "properties": {
+        "expand": {
+          "description": "Expand conditional expressions when needed by width, always at the outermost level, or never voluntarily. Column-width wrapping still applies.\n\nDefault: `\"never\"`.",
+          "$ref": "#/$defs/ConditionalExpansion",
+          "default": "never"
+        },
+        "indentation": {
+          "description": "Number of additional indentation levels for expanded conditional branches.\n\nDefault: `1`.",
+          "type": "integer",
+          "format": "uint",
+          "default": 1,
+          "minimum": 0
+        },
+        "placement": {
+          "description": "Same-line starts the expression after its binding or return; next-line moves an expanded sole expression to an indented line.\n\nDefault: `\"same-line\"`.",
+          "$ref": "#/$defs/Placement",
+          "default": "same-line"
+        },
+        "style": {
+          "description": "Block places branch values on indented lines; leading places then and else before their values on indented lines.\n\nDefault: `\"block\"`.",
+          "$ref": "#/$defs/ConditionalStyle",
+          "default": "block"
+        },
+        "width": {
+          "description": "Flat expression width that triggers expansion when expand is needed or always.\n\nDefault: `60`.",
+          "type": "integer",
+          "format": "uint",
+          "default": 60,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "ConditionalExpansion": {
+      "type": "string",
+      "enum": [
+        "never",
+        "always",
+        "needed"
+      ]
+    },
+    "ConditionalStyle": {
+      "type": "string",
+      "enum": [
+        "block",
+        "leading"
+      ]
+    },
+    "Constants": {
+      "type": "object",
+      "properties": {
+        "prefer_constant": {
+          "description": "Convert eligible unreassigned local bindings to const using lexical scope analysis.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "preserve_mutated_tables": {
+          "description": "Keep bindings to mutated tables local when preferring constant bindings.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "Declaration": {
+      "type": "string",
+      "enum": [
+        "preserve",
+        "local",
+        "const",
+        "global"
+      ]
+    },
+    "Endings": {
+      "type": "string",
+      "enum": [
+        "unix",
+        "windows"
+      ]
+    },
+    "Expansion": {
+      "type": "string",
+      "enum": [
+        "needed",
+        "always",
+        "never"
+      ]
+    },
+    "Functions": {
+      "type": "object",
+      "properties": {
+        "binding": {
+          "description": "Preserve function declarations or convert eligible declarations to local, const, or global forms.\n\nDefault: `\"preserve\"`.",
+          "$ref": "#/$defs/Declaration",
+          "default": "preserve"
+        },
+        "parameters": {
+          "description": "Layout of function declaration parameters.\n\nDefault: `{\"expand\":\"needed\",\"indentation\":1}`.",
+          "$ref": "#/$defs/Parameters",
+          "default": {
+            "expand": "needed",
+            "indentation": 1
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Gaps": {
+      "type": "string",
+      "enum": [
+        "remove",
+        "preserve"
+      ]
+    },
+    "Grouping": {
+      "type": "string",
+      "enum": [
+        "flat",
+        "by-kind"
+      ]
+    },
+    "Imports": {
+      "type": "object",
+      "properties": {
+        "binding": {
+          "description": "Preserve require binding declarations or convert eligible bindings to const or local.\n\nDefault: `\"preserve\"`.",
+          "$ref": "#/$defs/Binding",
+          "default": "preserve"
+        },
+        "grouping": {
+          "description": "Flat sorts imports together; by-kind groups alias paths, other paths, then relative paths, inserting blank lines between categories. Only applies when sorting.\n\nDefault: `\"flat\"`.",
+          "$ref": "#/$defs/Grouping",
+          "default": "flat"
+        },
+        "sort": {
+          "description": "Sort eligible adjacent require bindings by module path.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "unused": {
+          "description": "Ignore unused require bindings, prefix their names with an underscore, or remove eligible declarations.\n\nDefault: `\"ignore\"`.",
+          "$ref": "#/$defs/Unused",
+          "default": "ignore"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Indentation": {
+      "type": "object",
+      "properties": {
+        "style": {
+          "description": "Indent with tabs or spaces.\n\nDefault: `\"tabs\"`.",
+          "$ref": "#/$defs/Whitespace",
+          "default": "tabs"
+        },
+        "width": {
+          "description": "Columns per indentation level, including the display width of a tab. Must be positive when formatting is enabled.\n\nDefault: `4`.",
+          "type": "integer",
+          "format": "uint",
+          "default": 4,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "Indexer": {
+      "type": "string",
+      "enum": [
+        "first",
+        "last",
+        "sorted"
+      ]
+    },
+    "Mode": {
+      "type": "string",
+      "enum": [
+        "strict",
+        "nonstrict",
+        "nocheck"
+      ]
+    },
+    "Operators": {
+      "type": "object",
+      "properties": {
+        "expand": {
+          "description": "Expand unions and intersections when needed, always, or never voluntarily. Nested types and overload signatures remain grouped where possible.\n\nDefault: `\"needed\"`.",
+          "$ref": "#/$defs/TypeExpansion",
+          "default": "needed"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Options": {
+      "type": "object",
+      "properties": {
+        "bindings": {
+          "description": "Scope-aware conversion of local bindings to constants.\n\nDefault: `{\"prefer_constant\":false,\"preserve_mutated_tables\":false}`.",
+          "$ref": "#/$defs/Constants",
+          "default": {
+            "prefer_constant": false,
+            "preserve_mutated_tables": false
+          }
+        },
+        "blocks": {
+          "description": "Statement block layout and existing blank lines.\n\nDefault: `{\"blank_lines\":\"remove\",\"collapse\":\"never\"}`.",
+          "$ref": "#/$defs/Blocks",
+          "default": {
+            "blank_lines": "remove",
+            "collapse": "never"
+          }
+        },
+        "calls": {
+          "description": "Argument parentheses, list layout, and repeated calls.\n\nDefault: `{\"chains\":{\"minimum_calls\":3,\"style\":\"preserve\"},\"expand\":\"needed\",\"indentation\":1,\"parentheses\":\"always\",\"style\":\"one-per-line\"}`.",
+          "$ref": "#/$defs/Calls",
+          "default": {
+            "chains": {
+              "minimum_calls": 3,
+              "style": "preserve"
+            },
+            "expand": "needed",
+            "indentation": 1,
+            "parentheses": "always",
+            "style": "one-per-line"
+          }
+        },
+        "column_width": {
+          "description": "Target line width in columns. Must be positive when formatting is enabled. Unbreakable syntax may exceed it.\n\nDefault: `120`.",
+          "type": "integer",
+          "format": "uint",
+          "default": 120,
+          "minimum": 0
+        },
+        "conditionals": {
+          "description": "Layout of if-then-else expressions, not conditional statements.\n\nDefault: `{\"expand\":\"never\",\"indentation\":1,\"placement\":\"same-line\",\"style\":\"block\",\"width\":60}`.",
+          "$ref": "#/$defs/Conditional",
+          "default": {
+            "expand": "never",
+            "indentation": 1,
+            "placement": "same-line",
+            "style": "block",
+            "width": 60
+          }
+        },
+        "enabled": {
+          "description": "Format source files and run formatting grafts.\n\nDefault: `true`.",
+          "type": "boolean",
+          "default": true
+        },
+        "exclude": {
+          "description": "Exclude matching source paths unless included at format level. Patterns are relative to the declaring configuration. Explicit file inputs bypass selection. An empty list clears inherited patterns.\n\nDefault: `[]`.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "expand_on_trailing_comma": {
+          "description": "Expand table expressions whose source contains a trailing comma.\n\nDefault: `true`.",
+          "type": "boolean",
+          "default": true
+        },
+        "final_newline": {
+          "description": "End nonempty formatted output with a newline.\n\nDefault: `true`.",
+          "type": "boolean",
+          "default": true
+        },
+        "functions": {
+          "description": "Function parameter layout and declaration binding rewrites.\n\nDefault: `{\"binding\":\"preserve\",\"parameters\":{\"expand\":\"needed\",\"indentation\":1}}`.",
+          "$ref": "#/$defs/Functions",
+          "default": {
+            "binding": "preserve",
+            "parameters": {
+              "expand": "needed",
+              "indentation": 1
+            }
+          }
+        },
+        "imports": {
+          "description": "Require binding ordering, grouping, conversion, and unused binding handling.\n\nDefault: `{\"binding\":\"preserve\",\"grouping\":\"flat\",\"sort\":false,\"unused\":\"ignore\"}`.",
+          "$ref": "#/$defs/Imports",
+          "default": {
+            "binding": "preserve",
+            "grouping": "flat",
+            "sort": false,
+            "unused": "ignore"
+          }
+        },
+        "include": {
+          "description": "Include matching source paths. Patterns are relative to the declaring configuration and override format exclusions. Explicit file inputs bypass selection. An empty list clears inherited patterns.\n\nDefault: `[]`.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "indentation": {
+          "description": "Indentation characters and columns per level.\n\nDefault: `{\"style\":\"tabs\",\"width\":4}`.",
+          "$ref": "#/$defs/Indentation",
+          "default": {
+            "style": "tabs",
+            "width": 4
+          }
+        },
+        "leading_zero": {
+          "description": "Add, strip, or preserve the zero before the decimal point in fractional numeric literals.\n\nDefault: `\"add\"`.",
+          "$ref": "#/$defs/Zero",
+          "default": "add"
+        },
+        "line_endings": {
+          "description": "Unix emits line feeds; windows emits carriage return plus line feed.\n\nDefault: `\"unix\"`.",
+          "$ref": "#/$defs/Endings",
+          "default": "unix"
+        },
+        "quotes": {
+          "description": "Prefer-double and prefer-single choose the delimiter with fewer unescaped occurrences in the source, using the preference for ties. Double and single enforce a delimiter; preserve retains it. Long strings retain their delimiters.\n\nDefault: `\"prefer-double\"`.",
+          "$ref": "#/$defs/Quotes",
+          "default": "prefer-double"
+        },
+        "semicolons": {
+          "description": "Never emits statement semicolons only where required to preserve parsing; always emits them after eligible statements.\n\nDefault: `\"never\"`.",
+          "$ref": "#/$defs/Semicolons",
+          "default": "never"
+        },
+        "spacing": {
+          "description": "Interior delimiter spaces and spacing before function parentheses.\n\nDefault: `{\"braces\":true,\"brackets\":false,\"function_names\":\"never\",\"parentheses\":false}`.",
+          "$ref": "#/$defs/Spacing",
+          "default": {
+            "braces": true,
+            "brackets": false,
+            "function_names": "never",
+            "parentheses": false
+          }
+        },
+        "tables": {
+          "description": "Field ordering in table expressions.\n\nDefault: `{\"order\":\"preserve\"}`.",
+          "$ref": "#/$defs/Sorting",
+          "default": {
+            "order": "preserve"
+          }
+        },
+        "trailing_separator": {
+          "description": "Emit a trailing separator in expanded tables and table types, using the configured table-type separator where applicable.\n\nDefault: `true`.",
+          "type": "boolean",
+          "default": true
+        },
+        "types": {
+          "description": "Table-type fields and union and intersection layouts.\n\nDefault: `{\"operators\":{\"expand\":\"needed\"},\"tables\":{\"blank_lines\":\"remove\",\"enabled\":true,\"indexer\":\"first\",\"order\":\"preserve\",\"separator\":\"comma\",\"width\":60}}`.",
+          "$ref": "#/$defs/Types",
+          "default": {
+            "operators": {
+              "expand": "needed"
+            },
+            "tables": {
+              "blank_lines": "remove",
+              "enabled": true,
+              "indexer": "first",
+              "order": "preserve",
+              "separator": "comma",
+              "width": 60
+            }
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Order": {
+      "type": "string",
+      "enum": [
+        "preserve",
+        "key-length-ascending",
+        "key-length-descending",
+        "alphabetical",
+        "field-width-ascending",
+        "field-width-descending"
+      ]
+    },
+    "Parameters": {
+      "type": "object",
+      "properties": {
+        "expand": {
+          "description": "Expand declaration parameters when needed by width, always, or never voluntarily. Mandatory line breaks are retained.\n\nDefault: `\"needed\"`.",
+          "$ref": "#/$defs/Expansion",
+          "default": "needed"
+        },
+        "indentation": {
+          "description": "Number of additional indentation levels for expanded declaration parameters.\n\nDefault: `1`.",
+          "type": "integer",
+          "format": "uint",
+          "default": 1,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "Parentheses": {
+      "type": "string",
+      "enum": [
+        "always",
+        "omit-string",
+        "omit-table",
+        "omit-optional",
+        "preserve"
+      ]
+    },
+    "Placement": {
+      "type": "string",
+      "enum": [
+        "same-line",
+        "next-line"
+      ]
+    },
+    "Quotes": {
+      "type": "string",
+      "enum": [
+        "prefer-double",
+        "prefer-single",
+        "double",
+        "single",
+        "preserve"
+      ]
+    },
+    "RobloxConfig": {
+      "type": "object",
+      "properties": {
+        "cache": {
+          "description": "Roblox cache directory, relative to this configuration. Defaults to the platform cache directory under instar/roblox.\n\nDefault: `unset`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "level": {
+          "description": "Roblox API security level. Inherits from ancestor configurations; defaults to PluginSecurity.\n\nDefault: `unset`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RobloxLevel"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "project": {
+          "description": "Rojo project path relative to this configuration.\n\nDefault: `unset`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "revision": {
+          "description": "Full commit hash of the generated Roblox assets. Unset checks for updates every 24 hours.\n\nDefault: `unset`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "sourcemap": {
+          "description": "Existing instance-to-source mapping path relative to this configuration.\n\nDefault: `unset`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "RobloxLevel": {
+      "type": "string",
+      "enum": [
+        "None",
+        "LocalUserSecurity",
+        "PluginSecurity",
+        "RobloxScriptSecurity"
+      ]
+    },
+    "Semicolons": {
+      "type": "string",
+      "enum": [
+        "never",
+        "always"
+      ]
+    },
+    "Separation": {
+      "type": "string",
+      "enum": [
+        "never",
+        "definitions",
+        "calls",
+        "always"
+      ]
+    },
+    "Separator": {
+      "type": "string",
+      "enum": [
+        "comma",
+        "semicolon"
+      ]
+    },
+    "Sorting": {
+      "type": "object",
+      "properties": {
+        "order": {
+          "description": "Preserve field order, sort alphabetically, by key length, or by formatted field width. Length and width orders use alphabetical tie-breaking. Comment-bearing tables retain their order.\n\nDefault: `\"preserve\"`.",
+          "$ref": "#/$defs/Order",
+          "default": "preserve"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Spacing": {
+      "type": "object",
+      "properties": {
+        "braces": {
+          "description": "Add interior spaces to nonempty braces.\n\nDefault: `true`.",
+          "type": "boolean",
+          "default": true
+        },
+        "brackets": {
+          "description": "Add interior spaces to nonempty brackets.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "function_names": {
+          "description": "Add a space before function parentheses: never, definitions, calls, or always.\n\nDefault: `\"never\"`.",
+          "$ref": "#/$defs/Separation",
+          "default": "never"
+        },
+        "parentheses": {
+          "description": "Add interior spaces to nonempty parentheses.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "Tables": {
+      "type": "object",
+      "properties": {
+        "blank_lines": {
+          "description": "Remove or preserve existing blank lines between members without inserting new gaps.\n\nDefault: `\"remove\"`.",
+          "$ref": "#/$defs/Gaps",
+          "default": "remove"
+        },
+        "enabled": {
+          "description": "Format table-type layouts. When false, multiline table types retain their source layout and single-line table types stay flat.\n\nDefault: `true`.",
+          "type": "boolean",
+          "default": true
+        },
+        "indexer": {
+          "description": "Place indexers first, last, or among sorted fields. Used only when order changes; sorted indexers use an empty key.\n\nDefault: `\"first\"`.",
+          "$ref": "#/$defs/Indexer",
+          "default": "first"
+        },
+        "order": {
+          "description": "Preserve field order, sort alphabetically, by key length, or by formatted field width. Length and width orders use alphabetical tie-breaking. Comments prevent sorting.\n\nDefault: `\"preserve\"`.",
+          "$ref": "#/$defs/Order",
+          "default": "preserve"
+        },
+        "separator": {
+          "description": "Separate table-type members with a comma or semicolon.\n\nDefault: `\"comma\"`.",
+          "$ref": "#/$defs/Separator",
+          "default": "comma"
+        },
+        "width": {
+          "description": "Maximum flat table-type width before expansion, also constrained by `column_width`.\n\nDefault: `60`.",
+          "type": "integer",
+          "format": "uint",
+          "default": 60,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "TypeExpansion": {
+      "type": "string",
+      "enum": [
+        "needed",
+        "always",
+        "never"
+      ]
+    },
+    "Types": {
+      "type": "object",
+      "properties": {
+        "operators": {
+          "description": "Layout of union and intersection members.\n\nDefault: `{\"expand\":\"needed\"}`.",
+          "$ref": "#/$defs/Operators",
+          "default": {
+            "expand": "needed"
+          }
+        },
+        "tables": {
+          "description": "Layout and ordering of fields in table types.\n\nDefault: `{\"blank_lines\":\"remove\",\"enabled\":true,\"indexer\":\"first\",\"order\":\"preserve\",\"separator\":\"comma\",\"width\":60}`.",
+          "$ref": "#/$defs/Tables",
+          "default": {
+            "blank_lines": "remove",
+            "enabled": true,
+            "indexer": "first",
+            "order": "preserve",
+            "separator": "comma",
+            "width": 60
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Unused": {
+      "type": "string",
+      "enum": [
+        "ignore",
+        "underscore",
+        "remove"
+      ]
+    },
+    "Whitespace": {
+      "type": "string",
+      "enum": [
+        "tabs",
+        "spaces"
+      ]
+    },
+    "Zero": {
+      "type": "string",
+      "enum": [
+        "add",
+        "strip",
+        "preserve"
+      ]
+    }
+  }
+}

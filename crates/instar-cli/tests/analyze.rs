@@ -160,12 +160,186 @@ fn honors_aliases_and_reports_invalid_configuration() {
 }
 
 #[test]
+fn executable_configuration_controls_analysis_and_has_local_types() {
+    for filename in [".config.luau", "config.luau"] {
+        let directory = tempfile::tempdir().unwrap();
+        let configuration = directory.path().join(filename);
+        fs::write(&configuration, "local settings: Config = {luau = {languagemode = 'strict', aliases = {entry = './value'}}}\nreturn settings").unwrap();
+        fs::write(directory.path().join("value.luau"), "return 1").unwrap();
+        let source = directory.path().join("main.luau");
+
+        fs::write(
+            &source,
+            "local value: number = require('@ENTRY')\nreturn value",
+        )
+        .unwrap();
+
+        for solver in ["new", "old"] {
+            Command::new(assert_cmd::cargo::cargo_bin!("instar"))
+                .args(["analyze", "--solver", solver])
+                .arg(&configuration)
+                .arg(&source)
+                .assert()
+                .success()
+                .stderr("");
+        }
+
+        fs::write(
+            &source,
+            "local value: string = require('@entry')\nreturn value",
+        )
+        .unwrap();
+
+        Command::new(assert_cmd::cargo::cargo_bin!("instar"))
+            .arg("analyze")
+            .arg(&source)
+            .assert()
+            .code(1);
+    }
+}
+
+#[test]
 fn explicit_strict_mode_reports_type_errors() {
     Command::new(assert_cmd::cargo::cargo_bin!("instar"))
         .args(["analyze", "--mode=strict", "-"])
         .write_stdin("local value: number = 'wrong'\nreturn value\n")
         .assert()
         .code(1);
+}
+
+#[test]
+fn checking_modes_respect_configuration_and_directives() {
+    let directory = tempfile::tempdir().unwrap();
+
+    for solver in ["new", "old"] {
+        for (mode, source, status) in [
+            (
+                "strict",
+                "local function field(value) return value.name end\nreturn field(1)",
+                1,
+            ),
+            (
+                "nonstrict",
+                "local function field(value) return value.name end\nreturn field(1)",
+                0,
+            ),
+            (
+                "nonstrict",
+                "local value: number = 'wrong'\nreturn value",
+                i32::from(solver == "old"),
+            ),
+            ("nocheck", "local value: number = 'wrong'\nreturn value", 0),
+            (
+                "nocheck",
+                "--!strict\nlocal value: number = 'wrong'\nreturn value",
+                1,
+            ),
+            (
+                "strict",
+                "--!nocheck\nlocal value: number = 'wrong'\nreturn value",
+                0,
+            ),
+            (
+                "strict",
+                "--!nonstrict\nlocal function field(value) return value.name end\nreturn field(1)",
+                0,
+            ),
+            ("nocheck", "local =", 1),
+        ] {
+            Command::new(assert_cmd::cargo::cargo_bin!("instar"))
+                .current_dir(directory.path())
+                .args(["analyze", "--mode", mode, "--solver", solver, "-"])
+                .write_stdin(source)
+                .assert()
+                .code(status);
+        }
+    }
+
+    fs::write(
+        directory.path().join(".luaurc"),
+        r#"{"languageMode":"strict"}"#,
+    )
+    .unwrap();
+
+    Command::new(assert_cmd::cargo::cargo_bin!("instar"))
+        .current_dir(directory.path())
+        .args(["analyze", "--mode", "nocheck", "-"])
+        .write_stdin("local value: number = 'wrong'\nreturn value")
+        .assert()
+        .success();
+
+    Command::new(assert_cmd::cargo::cargo_bin!("instar"))
+        .args(["analyze", "--mode", "invalid", "-"])
+        .assert()
+        .code(2);
+}
+
+#[test]
+fn instar_mode_inherits_and_overrides_upstream_settings() {
+    let source = "local function field(value) return value.name end\nreturn field(1)";
+
+    for solver in ["new", "old"] {
+        for upstream in [".luaurc", ".config.luau", "config.luau"] {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path();
+            let child = root.join("child");
+            fs::create_dir(&child).unwrap();
+            fs::write(root.join("instar.toml"), "mode = 'strict'").unwrap();
+
+            let settings = if upstream == ".luaurc" {
+                r#"{"languageMode":"nocheck"}"#
+            } else {
+                "return {luau = {languagemode = 'nocheck'}}"
+            };
+
+            fs::write(root.join(upstream), settings).unwrap();
+
+            Command::new(assert_cmd::cargo::cargo_bin!("instar"))
+                .current_dir(&child)
+                .args(["analyze", "--solver", solver, "-"])
+                .write_stdin(source)
+                .assert()
+                .code(1);
+
+            fs::write(child.join(upstream), settings).unwrap();
+            let checked = "--!strict\nlocal value: number = true\nreturn value";
+            let unchecked = "--!nocheck\nlocal value: number = true\nreturn value";
+
+            for (configuration, mode, input, status) in [
+                ("", None, source, 0),
+                ("mode = 'strict'", None, source, 1),
+                ("mode = 'nonstrict'", None, source, 0),
+                ("mode = 'nocheck'", None, source, 0),
+                ("mode = 'nocheck'", Some("strict"), source, 1),
+                ("mode = 'strict'", Some("nonstrict"), source, 0),
+                ("mode = 'strict'", Some("nocheck"), source, 0),
+                ("mode = 'strict'", Some("strict"), unchecked, 0),
+                ("mode = 'nocheck'", Some("nocheck"), checked, 1),
+            ] {
+                fs::write(child.join("instar.toml"), configuration).unwrap();
+                let mut command = Command::new(assert_cmd::cargo::cargo_bin!("instar"));
+
+                command
+                    .current_dir(&child)
+                    .args(["analyze", "--solver", solver]);
+
+                if let Some(mode) = mode {
+                    command.args(["--mode", mode]);
+                }
+
+                command.arg("-").write_stdin(input).assert().code(status);
+            }
+
+            fs::write(child.join("instar.toml"), "mode = 'invalid'").unwrap();
+
+            Command::new(assert_cmd::cargo::cargo_bin!("instar"))
+                .current_dir(&child)
+                .args(["analyze", "-"])
+                .write_stdin(source)
+                .assert()
+                .code(1);
+        }
+    }
 }
 
 #[test]
@@ -233,7 +407,13 @@ fn annotations_preserve_source_and_produce_checkable_types() {
     for solver in ["new", "old"] {
         let assertion = Command::new(assert_cmd::cargo::cargo_bin!("instar"))
             .args([
-                "analyze", "--mode", "strict", "--solver", solver, "--annotate", "-",
+                "analyze",
+                "--mode",
+                "strict",
+                "--solver",
+                solver,
+                "--annotate",
+                "-",
             ])
             .write_stdin(source)
             .assert()

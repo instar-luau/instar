@@ -1,3 +1,6 @@
+[tasks.roblox]
+run = "nu scripts/roblox.nu"
+
 [tools]
 "aqua:Kitware/CMake" = "latest"
 "aqua:tombi-toml/tombi" = "latest"

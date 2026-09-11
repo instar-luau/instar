@@ -37,12 +37,7 @@ fn help_and_version_describe_the_cli() {
 
 #[test]
 fn placeholders_fail_without_protocol_output() {
-    for args in [
-        &["lint"][..],
-        &["lint", "--fix"],
-        &["lsp"],
-        &["build"],
-    ] {
+    for args in [&["lint"][..], &["lint", "--fix"], &["lsp"], &["build"]] {
         Command::new(env!("CARGO_BIN_EXE_instar"))
             .args(args)
             .assert()

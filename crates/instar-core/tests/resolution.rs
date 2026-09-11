@@ -9,6 +9,224 @@ use instar_core::{
 type TestResult = Result<(), Box<dyn Error>>;
 
 #[test]
+fn sessions_refresh_sources_dependencies_and_configuration() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path();
+    let main = root.join("main.luau");
+    let dependency = root.join("value.luau");
+    let configuration = root.join("instar.toml");
+    let source = "local value: number = require('@value')\nreturn value";
+    let settings = "mode = 'strict'\naliases = {value = './value'}";
+    let mut session = analysis::Session::default();
+
+    for old_solver in [false, true] {
+        let mut sources = SourceStore::default();
+        let opened = sources.open(&main, 1, source)?;
+        let modules = std::slice::from_ref(&main);
+
+        let options = Options {
+            old_solver,
+            annotations: true,
+            ..Default::default()
+        };
+
+        fs::write(&configuration, settings)?;
+        fs::write(&dependency, "return 1")?;
+
+        for _ in 0..2 {
+            let report = session.analyze(&mut sources, modules, &options)?;
+            assert!(!report.has_errors());
+
+            assert!(
+                report
+                    .annotations
+                    .iter()
+                    .any(|annotation| annotation.path == main)
+            );
+        }
+
+        fs::write(&dependency, "return 'changed'")?;
+
+        assert!(
+            session
+                .analyze(&mut sources, modules, &options)?
+                .has_errors()
+        );
+
+        fs::write(
+            &configuration,
+            "mode = 'nocheck'\naliases = {value = './value'}",
+        )?;
+
+        assert!(
+            !session
+                .analyze(&mut sources, modules, &options)?
+                .has_errors()
+        );
+
+        fs::write(&configuration, settings)?;
+
+        assert!(
+            session
+                .analyze(&mut sources, modules, &options)?
+                .has_errors()
+        );
+
+        let updated = sources.update(
+            &opened,
+            2,
+            "local value: string = require('@value')\nreturn value",
+        )?;
+
+        assert!(
+            !session
+                .analyze(&mut sources, modules, &options)?
+                .has_errors()
+        );
+
+        fs::remove_file(&dependency)?;
+
+        assert!(
+            session
+                .analyze(&mut sources, modules, &options)?
+                .has_errors()
+        );
+
+        fs::write(&dependency, "return 'restored'")?;
+
+        assert!(
+            !session
+                .analyze(&mut sources, modules, &options)?
+                .has_errors()
+        );
+
+        fs::write(
+            &configuration,
+            "mode = 'strict'\naliases = {value = './other'}",
+        )?;
+
+        fs::write(root.join("other.luau"), "return 1")?;
+
+        assert!(
+            session
+                .analyze(&mut sources, modules, &options)?
+                .has_errors()
+        );
+
+        sources.update(&updated, 3, source)?;
+
+        assert!(
+            !session
+                .analyze(&mut sources, modules, &options)?
+                .has_errors()
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn sessions_refresh_checking_modes() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path();
+    let main = root.join("main.luau");
+    fs::write(root.join("instar.toml"), "mode = 'nocheck'")?;
+    fs::write(&main, "local value: number = 'wrong'\nreturn value")?;
+    let mut session = analysis::Session::default();
+    let mut sources = SourceStore::default();
+
+    for old_solver in [false, true] {
+        for (mode, errors) in [
+            (Some(analysis::Mode::Strict), true),
+            (None, false),
+            (Some(analysis::Mode::Nocheck), false),
+            (Some(analysis::Mode::Strict), true),
+        ] {
+            let report = session.analyze(
+                &mut sources,
+                std::slice::from_ref(&main),
+                &Options {
+                    mode,
+                    old_solver,
+                    ..Default::default()
+                },
+            )?;
+
+            assert_eq!(report.has_errors(), errors);
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn sessions_reload_definitions_and_repeat_their_diagnostics() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path();
+    let main = root.join("main.luau");
+    let definitions = root.join("types.d.luau");
+
+    fs::write(
+        root.join("instar.toml"),
+        "mode = 'strict'\ndefinitions = ['types.d.luau']",
+    )?;
+
+    fs::write(&main, "local value: number = application\nreturn value")?;
+    let mut session = analysis::Session::default();
+    let mut sources = SourceStore::default();
+
+    for old_solver in [false, true] {
+        let options = Options {
+            old_solver,
+            ..Default::default()
+        };
+
+        for (declaration, errors) in [
+            ("declare application: number", false),
+            ("declare application: string", true),
+            ("declare application: number", false),
+            ("declare application:", true),
+        ] {
+            fs::write(&definitions, declaration)?;
+
+            for _ in 0..2 {
+                let report =
+                    session.analyze(&mut sources, std::slice::from_ref(&main), &options)?;
+
+                assert_eq!(report.has_errors(), errors);
+
+                if declaration.ends_with(':') {
+                    assert!(
+                        report
+                            .diagnostics
+                            .iter()
+                            .any(|diagnostic| diagnostic.path == definitions)
+                    );
+                }
+            }
+        }
+
+        fs::remove_file(&definitions)?;
+
+        assert!(
+            session
+                .analyze(&mut sources, std::slice::from_ref(&main), &options)
+                .is_err()
+        );
+
+        fs::write(&definitions, "declare application: number")?;
+
+        assert!(
+            !session
+                .analyze(&mut sources, std::slice::from_ref(&main), &options)?
+                .has_errors()
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
 fn resolves_files_directory_modules_and_dotted_names() -> TestResult {
     let directory = tempfile::tempdir()?;
     let root = directory.path();
@@ -373,7 +591,7 @@ fn native_analysis_preserves_dependency_types_for_diagnostics() -> TestResult {
         &mut Resolver::new(&mut sources),
         std::slice::from_ref(&main),
         &Options {
-            strict: true,
+            mode: Some(analysis::Mode::Strict),
             ..Options::default()
         },
     )?;
@@ -427,32 +645,291 @@ fn native_analysis_reports_dependency_lint_errors() -> TestResult {
 }
 
 #[test]
-fn executable_configuration_is_rejected_without_evaluation() -> TestResult {
+fn executable_configuration_is_loaded_and_reports_its_path() -> TestResult {
     let directory = tempfile::tempdir()?;
-    fs::write(directory.path().join("main.luau"), "return 1")?;
-
-    fs::write(
-        directory.path().join(".config.luau"),
-        "error('must not execute')",
-    )?;
-
+    let config = directory.path().join(".config.luau");
+    fs::write(&config, "return {luau = 1}")?;
+    let main = directory.path().join("main.luau");
+    fs::write(&main, "local value: string = 1\nreturn value")?;
     let mut sources = SourceStore::default();
 
-    let result = analysis::analyze(
+    let report = analysis::analyze(
         &mut Resolver::new(&mut sources),
-        &[directory.path().join("main.luau")],
+        std::slice::from_ref(&main),
         &Options::default(),
-    );
+    )?;
 
-    let Err(error) = result else {
-        return Err("executable configuration accepted".into());
-    };
+    assert!(report.has_errors());
 
     assert!(
-        error
-            .to_string()
-            .contains("executable configuration is not supported")
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.path == config)
     );
+
+    Ok(())
+}
+
+#[test]
+fn upstream_configuration_candidates_are_ambiguous() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let main = directory.path().join("main.luau");
+    fs::write(&main, "return 1")?;
+
+    for (first, second) in [
+        (".config.luau", "config.luau"),
+        (".luaurc", ".config.luau"),
+        (".luaurc", "config.luau"),
+    ] {
+        fs::write(directory.path().join(first), "{}")?;
+        fs::write(directory.path().join(second), "{}")?;
+
+        let result = analysis::analyze(
+            &mut Resolver::new(&mut SourceStore::default()),
+            std::slice::from_ref(&main),
+            &Options::default(),
+        );
+
+        assert!(result.err().is_some_and(|error| {
+            error
+                .to_string()
+                .contains("ambiguous upstream configuration")
+        }));
+
+        fs::remove_file(directory.path().join(first))?;
+        fs::remove_file(directory.path().join(second))?;
+    }
+
+    Ok(())
+}
+
+#[test]
+fn executable_aliases_use_shared_resolution_and_instar_precedence() -> TestResult {
+    for filename in [".config.luau", "config.luau"] {
+        let directory = tempfile::tempdir()?;
+        let root = directory.path();
+        fs::create_dir(root.join("nested"))?;
+
+        fs::write(
+            root.join(filename),
+            "return {luau = {aliases = {Entries = './value'}}}",
+        )?;
+
+        fs::write(root.join("value.luau"), "return 1")?;
+        fs::write(root.join("replacement.luau"), "return 'value'")?;
+        let main = root.join("nested/main.luau");
+
+        fs::write(
+            &main,
+            "--!strict\nlocal value: number = require('@ENTRIES')\nreturn value",
+        )?;
+
+        assert_eq!(
+            Resolver::new(&mut SourceStore::default()).resolve(&main, "@entries")?,
+            Some(root.join("value.luau"))
+        );
+
+        for old_solver in [false, true] {
+            let report = analysis::analyze(
+                &mut Resolver::new(&mut SourceStore::default()),
+                std::slice::from_ref(&main),
+                &Options {
+                    old_solver,
+                    ..Default::default()
+                },
+            )?;
+
+            assert!(
+                !report.has_errors(),
+                "{:?}",
+                report
+                    .diagnostics
+                    .iter()
+                    .map(|diagnostic| &diagnostic.message)
+                    .collect::<Vec<_>>()
+            );
+        }
+
+        fs::write(
+            root.join("instar.toml"),
+            "[aliases]\nentries = './replacement'",
+        )?;
+
+        assert_eq!(
+            Resolver::new(&mut SourceStore::default()).resolve(&main, "@ENTRIES")?,
+            Some(root.join("replacement.luau"))
+        );
+
+        let report = analysis::analyze(
+            &mut Resolver::new(&mut SourceStore::default()),
+            &[main],
+            &Options::default(),
+        )?;
+
+        assert!(
+            report.has_errors(),
+            "Instar alias must override upstream alias"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn executable_settings_inherit_and_override_upstream_configuration() -> TestResult {
+    for filename in [".config.luau", "config.luau"] {
+        let directory = tempfile::tempdir()?;
+        let root = directory.path();
+        fs::create_dir(root.join("nested"))?;
+
+        fs::write(
+            root.join(".luaurc"),
+            r#"{"languageMode":"strict","aliases":{"entry":"./value"}}"#,
+        )?;
+
+        fs::write(root.join("value.luau"), "return 1")?;
+        let path = root.join("nested/main.luau");
+
+        fs::write(
+            &path,
+            "local value: string = require('@entry')\nreturn value",
+        )?;
+
+        for old_solver in [false, true] {
+            let options = Options {
+                old_solver,
+                ..Default::default()
+            };
+
+            fs::write(
+                root.join("nested").join(filename),
+                "return {luau = {lint = {['*'] = false}}}",
+            )?;
+
+            let report = analysis::analyze(
+                &mut Resolver::new(&mut SourceStore::default()),
+                std::slice::from_ref(&path),
+                &options,
+            )?;
+
+            assert!(report.has_errors());
+
+            fs::write(
+                root.join("nested").join(filename),
+                "return {luau = {languagemode = 'nocheck'}}",
+            )?;
+
+            let report = analysis::analyze(
+                &mut Resolver::new(&mut SourceStore::default()),
+                std::slice::from_ref(&path),
+                &options,
+            )?;
+
+            assert!(!report.has_errors());
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn configuration_types_are_local_and_validate_returns() -> TestResult {
+    for filename in [".config.luau", "config.luau"] {
+        for old_solver in [false, true] {
+            let directory = tempfile::tempdir()?;
+            let path = directory.path().join(filename);
+
+            fs::write(
+                &path,
+                "--!strict\nlocal mode: LanguageMode = 'strict'\nlocal warning: LintWarning = 'LocalUnused'\nlocal options: LuauConfig = {languagemode = mode, lint = {[warning] = false}}\nlocal settings: Config = {luau = options}\nreturn settings",
+            )?;
+
+            let options = Options {
+                old_solver,
+                ..Default::default()
+            };
+
+            let report = analysis::analyze(
+                &mut Resolver::new(&mut SourceStore::default()),
+                std::slice::from_ref(&path),
+                &options,
+            )?;
+
+            assert!(
+                !report.has_errors(),
+                "{:?}",
+                report
+                    .diagnostics
+                    .iter()
+                    .map(|diagnostic| &diagnostic.message)
+                    .collect::<Vec<_>>()
+            );
+
+            let main = directory.path().join("main.luau");
+
+            fs::write(
+                &main,
+                "--!strict\nlocal settings: Config = {}\nreturn settings",
+            )?;
+
+            let report = analysis::analyze(
+                &mut Resolver::new(&mut SourceStore::default()),
+                &[main],
+                &options,
+            )?;
+
+            assert!(
+                report
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains("Unknown type 'Config'")),
+                "{:?}",
+                report
+                    .diagnostics
+                    .iter()
+                    .map(|diagnostic| &diagnostic.message)
+                    .collect::<Vec<_>>()
+            );
+
+            for (source, message) in [
+                (
+                    "--!strict\nreturn {luau = {languagemode = 'invalid'}}",
+                    "TypeError:",
+                ),
+                (
+                    "--!strict\nlocal warning: LintWarning = 'InvalidWarning'\nreturn {luau = {lint = {[warning] = true}}}",
+                    "TypeError:",
+                ),
+                (
+                    "--!strict\nreturn {luau = {lint = {InvalidWarning = true}}}",
+                    "Unknown lint InvalidWarning",
+                ),
+            ] {
+                fs::write(&path, source)?;
+
+                let report = analysis::analyze(
+                    &mut Resolver::new(&mut SourceStore::default()),
+                    std::slice::from_ref(&path),
+                    &options,
+                )?;
+
+                assert!(
+                    report
+                        .diagnostics
+                        .iter()
+                        .any(|diagnostic| diagnostic.path == path
+                            && diagnostic.message.starts_with(message)),
+                    "{:?}",
+                    report
+                        .diagnostics
+                        .iter()
+                        .map(|diagnostic| &diagnostic.message)
+                        .collect::<Vec<_>>()
+                );
+            }
+        }
+    }
 
     Ok(())
 }
