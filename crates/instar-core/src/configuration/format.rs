@@ -1,16 +1,5 @@
-mod layout;
-pub use layout::*;
-
-use std::{
-    collections::BTreeMap,
-    fs, io,
-    path::{Path, PathBuf},
-};
-
 use schemars::JsonSchema;
-use serde::Deserialize;
-
-use super::selection::Selection;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -124,7 +113,7 @@ pub enum Separator {
 }
 
 impl Separator {
-    pub(super) fn text(self) -> &'static str {
+    pub(crate) fn text(self) -> &'static str {
         match self {
             Self::Comma => ",",
             Self::Semicolon => ";",
@@ -438,145 +427,194 @@ impl Default for Options {
     }
 }
 
-impl Options {
-    /// # Errors
-    /// Returns filesystem, encoding, or configuration failures.
-    pub fn discover(path: &Path, explicit: Option<&Path>) -> io::Result<Self> {
-        Ok(Configuration::discover(path, explicit)?.options)
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum Collapse {
+    #[default]
+    Never,
+
+    Functions,
+    Conditionals,
+    Always,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum Gaps {
+    #[default]
+    Remove,
+
+    Preserve,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Blocks {
+    /// Collapse eligible single-statement blocks: never, functions, conditionals, or always. Comments can prevent collapsing.
+    pub collapse: Collapse,
+
+    /// Remove or preserve one existing blank line at each block boundary. Interior statement gaps are retained independently.
+    pub blank_lines: Gaps,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum Binding {
+    #[default]
+    Preserve,
+
+    Const,
+    Local,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum Unused {
+    #[default]
+    Ignore,
+
+    Underscore,
+    Remove,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum Declaration {
+    #[default]
+    Preserve,
+
+    Local,
+    Const,
+    Global,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum Grouping {
+    #[default]
+    Flat,
+
+    ByKind,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Imports {
+    /// Sort eligible adjacent require bindings by module path.
+    pub sort: bool,
+
+    /// Flat sorts imports together; by-kind groups alias paths, other paths, then relative paths, inserting blank lines between categories. Only applies when sorting.
+    pub grouping: Grouping,
+
+    /// Preserve require binding declarations or convert eligible bindings to const or local.
+    pub binding: Binding,
+
+    /// Ignore unused require bindings, prefix their names with an underscore, or remove eligible declarations.
+    pub unused: Unused,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Constants {
+    /// Convert eligible unreassigned local bindings to const using lexical scope analysis.
+    pub prefer_constant: bool,
+
+    /// Keep bindings to mutated tables local when preferring constant bindings.
+    pub preserve_mutated_tables: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum Order {
+    #[default]
+    Preserve,
+
+    KeyLengthAscending,
+    KeyLengthDescending,
+    Alphabetical,
+    FieldWidthAscending,
+    FieldWidthDescending,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum Indexer {
+    #[default]
+    First,
+
+    Last,
+    Sorted,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Sorting {
+    /// Preserve field order, sort alphabetically, by key length, or by formatted field width. Length and width orders use alphabetical tie-breaking. Comment-bearing tables retain their order.
+    pub order: Order,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum Chain {
+    #[default]
+    Preserve,
+
+    Method,
+    Full,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Chains {
+    /// Preserve ordinary call layout; method keeps the first call with the receiver; full allows a break before every call. Both method and full handle dot and colon calls.
+    pub style: Chain,
+
+    /// Force chain expansion at this many calls. Zero disables count-based expansion; width-based wrapping remains available.
+    pub minimum_calls: usize,
+}
+
+impl Default for Chains {
+    fn default() -> Self {
+        Self {
+            style: Chain::default(),
+            minimum_calls: 3,
+        }
     }
 }
 
-pub struct Configuration {
-    pub options: Options,
-    pub selection: Selection,
-    pub grafts: Vec<crate::graft::Graft>,
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum TypeExpansion {
+    #[default]
+    Needed,
+
+    Always,
+    Never,
 }
 
-impl Configuration {
-    /// # Errors
-    /// Returns native formatting failures, graft traps, or invalid graft output.
-    pub fn format(&self, source: &[u8]) -> io::Result<Vec<u8>> {
-        let mut output = super::format(source, &self.options)?;
-
-        if self.options.enabled {
-            for graft in &self.grafts {
-                output = graft.format(&output, &self.options)?;
-            }
-        }
-
-        Ok(output)
-    }
-
-    /// # Errors
-    /// Returns filesystem, encoding, configuration, or glob failures.
-    pub fn discover(path: &Path, explicit: Option<&Path>) -> io::Result<Self> {
-        let path = crate::source::absolute(path).map_err(io::Error::other)?;
-        let mut merged = serde_json::Map::new();
-        let mut selection = Selection::default();
-        let mut grafts = BTreeMap::new();
-
-        let directory = path
-            .parent()
-            .ok_or_else(|| io::Error::other("source has no parent"))?;
-
-        if explicit.is_none() {
-            for ancestor in directory.ancestors().collect::<Vec<_>>().into_iter().rev() {
-                let configuration = ancestor.join("instar.toml");
-
-                match fs::read_to_string(&configuration) {
-                    Ok(text) => {
-                        merge(
-                            &mut merged,
-                            &text,
-                            &mut selection,
-                            &mut grafts,
-                            &configuration,
-                        )
-                        .map_err(|error| {
-                            io::Error::other(format!("{}: {error}", configuration.display()))
-                        })?;
-                    }
-
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(error),
-                }
-            }
-        }
-
-        if let Some(explicit) = explicit {
-            let explicit = crate::source::absolute(explicit).map_err(io::Error::other)?;
-
-            merge(
-                &mut merged,
-                &fs::read_to_string(&explicit)?,
-                &mut selection,
-                &mut grafts,
-                &explicit,
-            )?;
-        }
-
-        Ok(Self {
-            options: serde_json::from_value(merged.into()).map_err(io::Error::other)?,
-            selection,
-            grafts: grafts
-                .into_iter()
-                .map(|(name, path)| crate::graft::Graft::load(&path, &name))
-                .collect::<io::Result<Vec<_>>>()?,
-        })
-    }
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Operators {
+    /// Expand unions and intersections when needed, always, or never voluntarily. Nested types and overload signatures remain grouped where possible.
+    pub expand: TypeExpansion,
 }
 
-fn overlay(
-    under: &mut serde_json::Map<String, serde_json::Value>,
-    over: serde_json::Map<String, serde_json::Value>,
-) {
-    for (key, value) in over {
-        match (under.get_mut(&key), value) {
-            (Some(serde_json::Value::Object(under)), serde_json::Value::Object(over)) => {
-                overlay(under, over);
-            }
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Types {
+    /// Layout and ordering of fields in table types.
+    pub tables: Tables,
 
-            (_, value) => {
-                under.insert(key, value);
-            }
-        }
-    }
+    /// Layout of union and intersection members.
+    pub operators: Operators,
 }
 
-fn merge(
-    merged: &mut serde_json::Map<String, serde_json::Value>,
-    text: &str,
-    selection: &mut Selection,
-    grafts: &mut BTreeMap<String, PathBuf>,
-    configuration: &Path,
-) -> io::Result<()> {
-    crate::project::InstarConfig::parse(text).map_err(io::Error::other)?;
-    let mut value: serde_json::Value = toml_edit::de::from_str(text).map_err(io::Error::other)?;
-    selection.merge(&value, configuration)?;
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Functions {
+    /// Layout of function declaration parameters.
+    pub parameters: Parameters,
 
-    if let Some(entries) = value.get("grafts").and_then(serde_json::Value::as_object) {
-        for (name, path) in entries {
-            let path = path
-                .as_str()
-                .ok_or_else(|| io::Error::other("graft manifest path must be a string"))?;
-
-            grafts.insert(
-                name.clone(),
-                configuration
-                    .parent()
-                    .ok_or_else(|| io::Error::other("configuration has no parent"))?
-                    .join(path),
-            );
-        }
-    }
-
-    value = value
-        .get_mut("format")
-        .map_or(serde_json::Value::Null, serde_json::Value::take);
-
-    if let serde_json::Value::Object(fields) = value {
-        overlay(merged, fields);
-    }
-
-    Ok(())
+    /// Preserve function declarations or convert eligible declarations to local, const, or global forms.
+    pub binding: Declaration,
 }

@@ -7,7 +7,7 @@ use std::{
 };
 
 use clap::Args;
-use instar_core::format::configuration::Configuration;
+use instar_core::project::Configuration;
 
 use crate::input::Input;
 

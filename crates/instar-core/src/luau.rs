@@ -11,7 +11,7 @@ use std::{
 
 use crate::{
     analysis::{Annotation, Diagnostic, Options, Report},
-    resolution::Resolver,
+    project::resolution::Resolver,
 };
 
 #[repr(C)]
@@ -147,6 +147,7 @@ extern "C" fn configuration(context: *mut c_void, name: Bytes, index: usize) -> 
 
         Ok(context
             .resolver
+            .discovery
             .configurations(Path::new(&name))?
             .get(index)
             .map(|configuration| configuration.bytes.clone()))
@@ -220,7 +221,7 @@ pub(crate) fn analyze(
     for path in modules {
         let source = resolver.load(path)?;
         let path = source.path().to_owned();
-        let mut definitions = resolver.definitions(&path)?;
+        let mut definitions = resolver.discovery.definitions(&path)?;
 
         if path
             .file_name()

@@ -1,5 +1,5 @@
 If:
-  PathMatch: crates/instar-core/native/.*
+  PathMatch: crates/instar-core/bridge/.*
 CompileFlags:
   Add:
     - -std=c++17

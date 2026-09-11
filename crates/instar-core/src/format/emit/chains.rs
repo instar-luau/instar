@@ -1,5 +1,5 @@
 use super::{Document, Emitter, Parts, View, io};
-use crate::format::configuration::Chain;
+use crate::configuration::format::Chain;
 
 impl<'tree, 'source> Emitter<'tree, 'source> {
     pub(super) fn chain(

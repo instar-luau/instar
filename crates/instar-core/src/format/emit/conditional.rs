@@ -1,5 +1,5 @@
 use super::{Document, Emitter, Kind, Parts, View, io};
-use crate::format::configuration::{ConditionalExpansion, ConditionalStyle, Placement};
+use crate::configuration::format::{ConditionalExpansion, ConditionalStyle, Placement};
 
 impl<'tree, 'source> Emitter<'tree, 'source> {
     pub(super) fn conditional(&self, view: View<'tree, 'source>) -> io::Result<Document<'source>> {

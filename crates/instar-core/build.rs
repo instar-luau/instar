@@ -2,7 +2,7 @@ use std::{env, path::PathBuf};
 
 fn main() {
     let root = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("Cargo manifest directory"));
-    println!("cargo:rerun-if-changed=native");
+    println!("cargo:rerun-if-changed=bridge");
 
     println!(
         "cargo:rerun-if-changed={}",
@@ -11,8 +11,8 @@ fn main() {
 
     let output = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo output directory"));
 
-    let destination = cmake::Config::new(root.join("native"))
-        .out_dir(output.join("native"))
+    let destination = cmake::Config::new(root.join("bridge"))
+        .out_dir(output.join("bridge"))
         .build();
 
     println!(

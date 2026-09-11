@@ -1,6 +1,9 @@
 use std::{error::Error, fs, path::Path};
 
-use instar_core::project::{ConfigKind, InstarConfig, Project, ProjectError};
+use instar_core::{
+    configuration::{InstarConfig, format::Whitespace},
+    project::{ConfigKind, Configuration, Project, ProjectError},
+};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -184,7 +187,7 @@ fn generated_schema_matches_the_configuration_model() -> TestResult {
         }
     }
 
-    let defaults = serde_json::to_value(instar_core::format::Options::default())?;
+    let defaults = serde_json::to_value(instar_core::configuration::format::Options::default())?;
 
     for (name, value) in defaults.as_object().ok_or("missing formatter defaults")? {
         assert_eq!(
@@ -203,6 +206,78 @@ fn generated_schema_matches_the_configuration_model() -> TestResult {
         serde_json::from_str(include_str!("../../../schemas/instar.schema.json"))?;
 
     assert_eq!(published, schema);
+
+    Ok(())
+}
+
+#[test]
+fn nested_configuration_overrides() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path();
+    fs::create_dir(root.join("nested"))?;
+
+    fs::write(
+        root.join("instar.toml"),
+        "[format]\nexpand_on_trailing_comma = false\nspacing.braces = false\ntrailing_separator = false\nfinal_newline = true\n[format.functions.parameters]\nexpand = 'always'\n",
+    )?;
+
+    fs::write(
+        root.join("nested/instar.toml"),
+        "[format]\nfinal_newline = false\n[format.functions.parameters]\nindentation = 2\n",
+    )?;
+
+    let configuration = Configuration::discover(&root.join("nested/main.luau"), None)?;
+    let options = &configuration.options;
+    assert!(!options.final_newline);
+    assert!(!options.trailing_separator);
+    assert!(!options.spacing.braces);
+    assert_eq!(options.functions.parameters.indentation, 2);
+
+    assert_eq!(
+        configuration.format(b"function f(a) end")?,
+        b"function f(\n\t\ta\n)\nend"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn configuration_inherits_fields_by_proximity() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path();
+    fs::create_dir(root.join("nested"))?;
+
+    fs::write(
+        root.join("instar.toml"),
+        "[format]\nindentation.style = 'spaces'\ncolumn_width = 60\n",
+    )?;
+
+    fs::write(
+        root.join("nested/instar.toml"),
+        "[format]\ncolumn_width = 30\n",
+    )?;
+
+    let path = root.join("nested/main.luau");
+    let options = Configuration::discover(&path, None)?.options;
+    assert_eq!(options.column_width, 30);
+    assert!(matches!(options.indentation.style, Whitespace::Spaces));
+
+    fs::write(
+        root.join("nested/instar.toml"),
+        "[format]\ncolumn_width = 20\n",
+    )?;
+
+    assert_eq!(
+        Configuration::discover(&path, None)?.options.column_width,
+        20
+    );
+
+    fs::write(
+        root.join("nested/instar.toml"),
+        "[format]\nunknown = true\n",
+    )?;
+
+    assert!(Configuration::discover(&path, None).is_err());
 
     Ok(())
 }

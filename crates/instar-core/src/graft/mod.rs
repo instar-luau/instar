@@ -1,9 +1,9 @@
-mod host;
 mod layout;
 mod luau;
 mod native;
+mod wasm;
 
-use crate::format::Options;
+use crate::configuration::format::Options;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -128,7 +128,7 @@ impl Graft {
             Runtime::Wasm => {
                 let bytes = fs::read(entry)?;
 
-                host::Host::load(
+                wasm::Host::load(
                     &bytes,
                     manifest.format,
                     manifest.lint,
@@ -162,7 +162,7 @@ impl Graft {
             Artifact::Luau(bytes) => luau::invoke(bytes, &request, self.format, self.lint),
 
             Artifact::Wasm(bytes) => {
-                host::Host::load(bytes, self.format, self.lint, &self.configuration)
+                wasm::Host::load(bytes, self.format, self.lint, &self.configuration)
                     .and_then(|mut host| host.invoke(&format!("instar_{hook}"), source))
                     .and_then(|reply| reply.ok_or_else(|| io::Error::other("graft hook is absent")))
             }

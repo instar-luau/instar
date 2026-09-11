@@ -1,10 +1,7 @@
 mod sorting;
 
-use super::{
-    Options,
-    configuration::{Binding, Declaration, Unused},
-    scope::Names,
-};
+use super::{Options, scope::Names};
+use crate::configuration::format::{Binding, Declaration, Unused};
 use std::{io, ops::Range};
 use vermis::{Kind, Parts, Tree, View};
 
