@@ -135,9 +135,11 @@ pub(crate) fn render(document: &Document<'_>, options: &super::Options) -> Strin
                 output.push_str(newline);
 
                 match options.indentation.style {
-                    super::Whitespace::Tabs => output.extend(std::iter::repeat_n('\t', depth)),
+                    crate::configuration::format::Whitespace::Tabs => {
+                        output.extend(std::iter::repeat_n('\t', depth));
+                    }
 
-                    super::Whitespace::Spaces => {
+                    crate::configuration::format::Whitespace::Spaces => {
                         output.extend(std::iter::repeat_n(' ', depth * options.indentation.width));
                     }
                 }

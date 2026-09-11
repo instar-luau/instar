@@ -1,5 +1,5 @@
 use super::{Document, Emitter, Kind, TokenKind, View, io};
-use crate::format::configuration::Gaps;
+use crate::configuration::format::Gaps;
 
 impl<'tree, 'source> Emitter<'tree, 'source> {
     pub(super) fn boundaries(&self, body: View<'tree, 'source>) -> (usize, usize) {
@@ -139,7 +139,7 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
                 Document::Line,
                 statement,
                 Document::text(
-                    if self.options.semicolons == crate::format::configuration::Semicolons::Always {
+                    if self.options.semicolons == crate::configuration::format::Semicolons::Always {
                         ";"
                     } else {
                         ""

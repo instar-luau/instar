@@ -1,15 +1,13 @@
-pub mod configuration;
 pub(crate) mod document;
 mod emit;
 mod literals;
 mod regions;
 mod rewrite;
 mod scope;
-pub mod selection;
 
 use std::{borrow::Cow, io};
 
-pub use configuration::{Endings, Options, Quotes, Whitespace, Zero};
+use crate::configuration::format::{Options, Quotes, Zero};
 use vermis::{Kind, TokenKind, Tree};
 
 /// # Errors

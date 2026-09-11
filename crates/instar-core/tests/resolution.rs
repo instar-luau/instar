@@ -2,7 +2,7 @@ use std::{error::Error, fs, sync::Arc};
 
 use instar_core::{
     analysis::{self, Options},
-    resolution::Resolver,
+    project::resolution::Resolver,
     source::SourceStore,
 };
 
@@ -234,7 +234,10 @@ fn aliases_follow_proximity_then_format_and_preserve_origins() -> TestResult {
         ("@inherited", "third.luau"),
         ("@chain", "third.luau"),
     ] {
-        assert_eq!(resolver.resolve(&from, specifier)?, Some(root.join(filename)));
+        assert_eq!(
+            resolver.resolve(&from, specifier)?,
+            Some(root.join(filename))
+        );
     }
 
     assert_eq!(

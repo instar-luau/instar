@@ -5,36 +5,17 @@ use std::{
     sync::Arc,
 };
 
-use crate::{
-    native,
-    project::InstarConfig,
-    source::{Source, SourceStore, absolute},
-};
-
-#[derive(Clone)]
-pub(crate) struct Configuration {
-    pub path: PathBuf,
-    pub bytes: Vec<u8>,
-    aliases: BTreeMap<String, String>,
-}
+use crate::source::{Source, SourceStore, absolute};
 
 struct Node {
     is_directory: bool,
     module: Option<PathBuf>,
 }
 
-#[derive(Clone)]
-struct Alias {
-    configuration: PathBuf,
-    value: String,
-}
-
 pub struct Resolver<'store> {
     sources: &'store mut SourceStore,
     snapshots: BTreeMap<PathBuf, Arc<Source>>,
-    configurations: BTreeMap<PathBuf, Vec<Configuration>>,
-    aliases: BTreeMap<PathBuf, BTreeMap<String, Alias>>,
-    contents: BTreeMap<PathBuf, Option<Vec<u8>>>,
+    pub(crate) discovery: super::discovery::Discovery,
 }
 
 impl<'store> Resolver<'store> {
@@ -42,9 +23,7 @@ impl<'store> Resolver<'store> {
         Self {
             sources,
             snapshots: BTreeMap::new(),
-            configurations: BTreeMap::new(),
-            aliases: BTreeMap::new(),
-            contents: BTreeMap::new(),
+            discovery: super::discovery::Discovery::default(),
         }
     }
 
@@ -75,208 +54,11 @@ impl<'store> Resolver<'store> {
         Ok(metadata(path)?.is_some_and(|metadata| metadata.is_file()))
     }
 
-    fn contents(&mut self, path: &Path) -> io::Result<Option<&[u8]>> {
-        if !self.contents.contains_key(path) {
-            let exists = match fs::symlink_metadata(path) {
-                Ok(_) => true,
-
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
-                    ) =>
-                {
-                    false
-                }
-
-                Err(error) => {
-                    return Err(io::Error::new(
-                        error.kind(),
-                        format!("{}: {error}", path.display()),
-                    ));
-                }
-            };
-
-            let contents = if exists {
-                Some(fs::read(path).map_err(|error| {
-                    io::Error::new(error.kind(), format!("{}: {error}", path.display()))
-                })?)
-            } else {
-                None
-            };
-
-            self.contents.insert(path.to_owned(), contents);
-        }
-
-        Ok(self.contents[path].as_deref())
-    }
-
-    pub(crate) fn configurations(&mut self, from: &Path) -> io::Result<&[Configuration]> {
-        let directory = from
-            .parent()
-            .ok_or_else(|| io::Error::other("module has no parent directory"))?;
-
-        if !self.configurations.contains_key(directory) {
-            let mut configurations = Vec::new();
-
-            for ancestor in directory.ancestors().collect::<Vec<_>>().into_iter().rev() {
-                self.project_aliases(ancestor)?;
-
-                let executable = ancestor.join(".config.luau");
-
-                if self.contents(&executable)?.is_some() {
-                    return Err(io::Error::other(format!(
-                        "{}: executable configuration is not supported by the native integration",
-                        executable.display()
-                    )));
-                }
-
-                let path = ancestor.join(".luaurc");
-
-                let Some(bytes) = self.contents(&path)? else {
-                    continue;
-                };
-
-                let bytes = bytes.to_vec();
-
-                let aliases = native::aliases(&bytes)
-                    .map_err(|error| io::Error::other(format!("{}: {error}", path.display())))?;
-
-                configurations.push(Configuration {
-                    path,
-                    bytes,
-                    aliases,
-                });
-            }
-
-            self.configurations
-                .insert(directory.to_owned(), configurations);
-        }
-
-        Ok(&self.configurations[directory])
-    }
-
-    pub(crate) fn definitions(&mut self, from: &Path) -> io::Result<Vec<PathBuf>> {
-        let directory = from
-            .parent()
-            .ok_or_else(|| io::Error::other("module has no parent"))?;
-
-        let mut definitions = Vec::new();
-
-        for ancestor in directory.ancestors().collect::<Vec<_>>().into_iter().rev() {
-            let path = ancestor.join("instar.toml");
-
-            let Some(contents) = self.contents(&path)? else {
-                continue;
-            };
-
-            let contents = std::str::from_utf8(contents).map_err(io::Error::other)?;
-
-            let configuration = InstarConfig::parse(contents)
-                .map_err(|error| io::Error::other(format!("{}: {error}", path.display())))?;
-
-            if let Some(configured) = configuration.definitions {
-                definitions = configured
-                    .into_iter()
-                    .map(|path| absolute(&ancestor.join(path)).map_err(io::Error::other))
-                    .collect::<io::Result<Vec<_>>>()?;
-            }
-        }
-
-        let mut seen = std::collections::BTreeSet::new();
-        definitions.retain(|path| seen.insert(path.clone()));
-
-        Ok(definitions)
-    }
-
-    fn project_aliases(&mut self, directory: &Path) -> io::Result<&BTreeMap<String, Alias>> {
-        if !self.aliases.contains_key(directory) {
-            let mut aliases = BTreeMap::new();
-
-            let path = directory.join("instar.toml");
-
-            if let Some(contents) = self.contents(&path)? {
-                let contents = std::str::from_utf8(contents)
-                    .map_err(|error| io::Error::other(format!("{}: {error}", path.display())))?;
-
-                let configuration = InstarConfig::parse(contents)
-                    .map_err(|error| io::Error::other(format!("{}: {error}", path.display())))?;
-
-                let configured = configuration.aliases.unwrap_or_default();
-                let validation = serde_json::to_vec(&serde_json::json!({"aliases": &configured}))?;
-
-                native::aliases(&validation)
-                    .map_err(|error| io::Error::other(format!("{}: {error}", path.display())))?;
-
-                for (alias, target) in configured {
-                    let key = alias.to_ascii_lowercase();
-
-                    let value = target
-                        .to_str()
-                        .ok_or_else(|| io::Error::other("alias path requires UTF-8"))?
-                        .to_owned();
-
-                    if aliases
-                        .insert(
-                            key,
-                            Alias {
-                                configuration: path.clone(),
-                                value,
-                            },
-                        )
-                        .is_some()
-                    {
-                        return Err(io::Error::other(format!(
-                            "{}: duplicate case-insensitive alias {alias}",
-                            path.display()
-                        )));
-                    }
-                }
-            }
-
-            self.aliases.insert(directory.to_owned(), aliases);
-        }
-
-        Ok(&self.aliases[directory])
-    }
-
-    fn alias(&mut self, from: &Path, name: &str) -> io::Result<Option<Alias>> {
-        let directory = from
-            .parent()
-            .ok_or_else(|| io::Error::other("module has no parent directory"))?;
-
-        self.configurations(from)?;
-
-        for ancestor in directory.ancestors() {
-            if let Some(alias) = self.project_aliases(ancestor)?.get(name) {
-                return Ok(Some(alias.clone()));
-            }
-
-            if let Some(alias) = self.configurations[directory]
-                .iter()
-                .find_map(|configuration| {
-                    if configuration.path.parent() != Some(ancestor) {
-                        return None;
-                    }
-
-                    Some(Alias {
-                        configuration: configuration.path.clone(),
-                        value: configuration.aliases.get(name)?.clone(),
-                    })
-                })
-            {
-                return Ok(Some(alias));
-            }
-        }
-
-        Ok(None)
-    }
-
     /// # Errors
     /// Returns filesystem, configuration and ambiguous-module failures.
     pub fn resolve(&mut self, from: &Path, specifier: &str) -> io::Result<Option<PathBuf>> {
         let from = absolute(from).map_err(io::Error::other)?;
-        self.configurations(&from)?;
+        self.discovery.configurations(&from)?;
 
         let directory = from
             .parent()
@@ -322,7 +104,7 @@ impl<'store> Resolver<'store> {
                     break;
                 }
 
-                let Some(alias) = self.alias(&context, &name)? else {
+                let Some(alias) = self.discovery.alias(&context, &name)? else {
                     return Ok(None);
                 };
 

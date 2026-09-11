@@ -1,6 +1,6 @@
 use std::{io, path::PathBuf};
 
-use crate::{native, resolution::Resolver};
+use crate::{luau, project::resolution::Resolver};
 
 #[derive(Default)]
 pub struct Options {
@@ -44,5 +44,5 @@ pub fn analyze(
     modules: &[PathBuf],
     options: &Options,
 ) -> io::Result<Report> {
-    native::analyze(resolver, modules, options)
+    luau::analyze(resolver, modules, options)
 }

@@ -9,10 +9,9 @@ use std::{io, ops::Range};
 
 use vermis::{Children, Kind, Parts, TokenKind, Tree, View};
 
-use super::{
-    Options,
-    configuration::{CallStyle, Collapse, Expansion, Parentheses, Semicolons, Separation},
-    document::Document,
+use super::{Options, document::Document};
+use crate::configuration::format::{
+    CallStyle, Collapse, Expansion, Parentheses, Semicolons, Separation,
 };
 
 pub(super) struct Emitter<'tree, 'source> {

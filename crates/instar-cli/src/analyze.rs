@@ -4,7 +4,7 @@ use std::{
 };
 
 use clap::Args;
-use instar_core::{analysis, resolution::Resolver};
+use instar_core::{analysis, project::resolution::Resolver};
 
 use crate::input::Input;
 

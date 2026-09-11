@@ -1,6 +1,6 @@
 use instar_core::{
     analysis::{self, Options},
-    resolution::Resolver,
+    project::resolution::Resolver,
     source::SourceStore,
 };
 use std::{error::Error, fs};

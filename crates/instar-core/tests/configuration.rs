@@ -1,4 +1,4 @@
-use instar_core::format::{Options, format};
+use instar_core::{configuration::format::Options, format::format};
 
 fn check(configuration: &str, source: &str, expected: &str) {
     let options: Options = toml_edit::de::from_str(configuration).expect("valid configuration");
@@ -205,11 +205,9 @@ fn configuration_preserves_selection_paths() {
     let directory = tempfile::tempdir().unwrap();
     std::fs::write(directory.path().join("instar.toml"), "[format]\nindentation.style = 'spaces'\nquotes = 'prefer-single'\nexclude = ['Generated']\n[format.calls]\nexpand = 'always'").unwrap();
 
-    let configuration = instar_core::format::configuration::Configuration::discover(
-        &directory.path().join("source.luau"),
-        None,
-    )
-    .unwrap();
+    let configuration =
+        instar_core::project::Configuration::discover(&directory.path().join("source.luau"), None)
+            .unwrap();
 
     assert_eq!(
         configuration.format(b"f(first,second)").unwrap(),

@@ -1,7 +1,4 @@
-use instar_core::{
-    format::{Options, configuration::Configuration},
-    graft::Graft,
-};
+use instar_core::{configuration::format::Options, graft::Graft, project::Configuration};
 use std::fs;
 
 #[path = "support/graft.rs"]
