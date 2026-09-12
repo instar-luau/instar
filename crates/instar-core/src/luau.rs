@@ -52,7 +52,16 @@ type Read = extern "C" fn(*mut c_void, Bytes) -> Bytes;
 type Resolve = extern "C" fn(*mut c_void, Bytes, Bytes, u32) -> Bytes;
 type Environment = extern "C" fn(*mut c_void, Bytes, Bytes, usize) -> Bytes;
 type Configuration = extern "C" fn(*mut c_void, Bytes, usize) -> Bytes;
-type Emit = extern "C" fn(*mut c_void, Bytes, Bytes, u32, u32, bool);
+#[repr(C)]
+struct Span {
+    line: u32,
+    column: u32,
+    end_line: u32,
+    end_column: u32,
+    related: bool,
+}
+
+type Emit = extern "C" fn(*mut c_void, Bytes, Bytes, Span, bool);
 type Annotate = extern "C" fn(*mut c_void, Bytes, Bytes);
 type Alias = extern "C" fn(*mut c_void, Bytes, Bytes);
 
@@ -65,6 +74,15 @@ unsafe extern "C" {
         report: Emit,
     );
     fn instar_destroy(session: *mut c_void);
+    fn instar_query(
+        session: *mut c_void,
+        context: *mut c_void,
+        path: Bytes,
+        line: u32,
+        column: u32,
+        operation: Bytes,
+        output: Annotate,
+    );
     fn instar_analyze(
         session: *mut *mut c_void,
         context: *mut c_void,
@@ -82,13 +100,15 @@ unsafe extern "C" {
         mode: Bytes,
         old_solver: bool,
         annotations: bool,
+        changed: *const Bytes,
+        changed_count: usize,
     );
 }
 
 struct Context<'resolver, 'store> {
     resolver: &'resolver mut Resolver<'store>,
     buffer: Vec<u8>,
-    environment: crate::roblox::Environment,
+    environment: std::sync::Arc<crate::roblox::Environment>,
     report: Report,
     error: Option<io::Error>,
 }
@@ -248,25 +268,35 @@ extern "C" fn metadata(context: *mut c_void, category: Bytes, name: Bytes, index
     })
 }
 
-extern "C" fn emit(
-    context: *mut c_void,
-    name: Bytes,
-    message: Bytes,
-    line: u32,
-    column: u32,
-    is_error: bool,
-) {
+extern "C" fn emit(context: *mut c_void, name: Bytes, message: Bytes, span: Span, is_error: bool) {
     let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
 
     context.call(|context| {
+        if span.related {
+            if let Some(diagnostic) = context.report.diagnostics.last_mut() {
+                diagnostic.related.push(crate::analysis::RelatedDiagnostic {
+                    path: context
+                        .environment
+                        .source(Path::new(&unsafe { name.string()? })),
+                    range: [span.line, span.column, span.end_line, span.end_column],
+                    message: String::from_utf8_lossy(unsafe { message.slice() }).into_owned(),
+                });
+            }
+
+            return Ok(None);
+        }
+
         context.report.diagnostics.push(Diagnostic {
             path: context
                 .environment
                 .source(Path::new(&unsafe { name.string()? })),
-            line,
-            column,
+            line: span.line,
+            column: span.column,
+            end_line: span.end_line,
+            end_column: span.end_column,
             message: String::from_utf8_lossy(unsafe { message.slice() }).into_owned(),
             is_error,
+            related: Vec::new(),
         });
 
         Ok(None)
@@ -309,9 +339,26 @@ fn module_name(path: &Path) -> io::Result<String> {
         })
 }
 
+fn names(resolver: &mut Resolver<'_>, paths: &[PathBuf]) -> io::Result<Vec<String>> {
+    paths
+        .iter()
+        .map(|path| {
+            resolver
+                .load(path)
+                .and_then(|source| module_name(source.path()))
+        })
+        .collect()
+}
+
 #[derive(Default)]
 pub(crate) struct Session {
     handle: *mut c_void,
+    changed: Vec<PathBuf>,
+    refresh: bool,
+    query: Option<(PathBuf, line_index::LineCol, String)>,
+
+    environments:
+        BTreeMap<crate::configuration::RobloxConfig, std::sync::Arc<crate::roblox::Environment>>,
 }
 
 impl Drop for Session {
@@ -321,12 +368,45 @@ impl Drop for Session {
 }
 
 impl Session {
+    pub(crate) fn query(
+        &mut self,
+        resolver: &mut Resolver<'_>,
+        modules: &[PathBuf],
+        path: &Path,
+        position: line_index::LineCol,
+        operation: &str,
+    ) -> io::Result<Report> {
+        self.query = Some((path.to_owned(), position, operation.to_owned()));
+        let result = self.analyze(resolver, modules, &Options::default());
+        self.query = None;
+
+        result
+    }
+
+    pub(crate) fn refresh(&mut self) {
+        self.refresh = true;
+    }
+
+    pub(crate) fn change(&mut self, path: &Path) {
+        self.changed.push(path.to_owned());
+    }
+
     pub(crate) fn analyze(
         &mut self,
         resolver: &mut Resolver<'_>,
         modules: &[PathBuf],
         options: &Options,
     ) -> io::Result<Report> {
+        let changed = std::mem::take(&mut self.changed);
+
+        let incremental = !std::mem::take(&mut self.refresh)
+            && !options.update
+            && (!changed.is_empty() || self.query.is_some());
+
+        if !incremental {
+            self.environments.clear();
+        }
+
         let mut groups = BTreeMap::new();
 
         for path in modules {
@@ -372,11 +452,16 @@ impl Session {
                 &definitions,
                 environment.as_ref(),
                 options,
+                incremental.then_some(changed.as_slice()),
             )?;
 
             report.diagnostics.extend(result.diagnostics);
             report.annotations.extend(result.annotations);
             report.documentation.extend(result.documentation);
+
+            if result.editor.is_some() {
+                report.editor = result.editor;
+            }
         }
 
         let mut seen = std::collections::BTreeSet::new();
@@ -394,6 +479,30 @@ impl Session {
         Ok(report)
     }
 
+    fn environment(
+        &mut self,
+        resolver: &mut Resolver<'_>,
+        settings: Option<&crate::configuration::RobloxConfig>,
+        update: bool,
+    ) -> io::Result<std::sync::Arc<crate::roblox::Environment>> {
+        let Some(settings) = settings else {
+            return Ok(std::sync::Arc::default());
+        };
+
+        if let Some(environment) = self.environments.get(settings) {
+            return Ok(std::sync::Arc::clone(environment));
+        }
+
+        let environment = std::sync::Arc::new(crate::roblox::Environment::load(
+            resolver, settings, update,
+        )?);
+
+        self.environments
+            .insert(settings.clone(), std::sync::Arc::clone(&environment));
+
+        Ok(environment)
+    }
+
     fn analyze_group(
         &mut self,
         resolver: &mut Resolver<'_>,
@@ -401,34 +510,32 @@ impl Session {
         definitions: &[PathBuf],
         settings: Option<&crate::configuration::RobloxConfig>,
         options: &Options,
+        changed: Option<&[PathBuf]>,
     ) -> io::Result<Report> {
-        let environment = settings
-            .map(|settings| crate::roblox::Environment::load(resolver, settings, options.update))
-            .transpose()?
-            .unwrap_or_default();
+        let environment = self.environment(resolver, settings, options.update)?;
+        let mut changed_names = Vec::new();
 
-        let definition_names = definitions
+        for path in changed.unwrap_or_default() {
+            changed_names.push(module_name(path)?);
+
+            if let Some(index) = environment.node(path) {
+                changed_names.push(module_name(&environment.identity(index))?);
+            }
+        }
+
+        let changed_values = changed_names
             .iter()
-            .map(|path| {
-                resolver
-                    .load(path)
-                    .and_then(|source| module_name(source.path()))
-            })
-            .collect::<io::Result<Vec<_>>>()?;
+            .map(|name| Bytes::new(name.as_bytes()))
+            .collect::<Vec<_>>();
+
+        let definition_names = names(resolver, definitions)?;
 
         let definitions: Vec<_> = definition_names
             .iter()
             .map(|name| Bytes::new(name.as_bytes()))
             .collect();
 
-        let names = modules
-            .iter()
-            .map(|path| {
-                resolver
-                    .load(path)
-                    .and_then(|source| module_name(source.path()))
-            })
-            .collect::<io::Result<Vec<_>>>()?;
+        let names = names(resolver, modules)?;
 
         let modules: Vec<_> = names
             .iter()
@@ -467,7 +574,31 @@ impl Session {
                 }),
                 options.old_solver,
                 options.annotations,
+                changed.map_or(ptr::null(), |_| changed_values.as_ptr()),
+                changed_values.len(),
             );
+        }
+
+        if context.error.is_none()
+            && self
+                .query
+                .as_ref()
+                .is_some_and(|(path, _, _)| names.iter().any(|name| Path::new(name) == path))
+            && let Some((path, position, operation)) = self.query.take()
+        {
+            let name = module_name(&path)?;
+
+            unsafe {
+                instar_query(
+                    self.handle,
+                    ptr::from_mut(&mut context).cast(),
+                    Bytes::new(name.as_bytes()),
+                    position.line,
+                    position.col,
+                    Bytes::new(operation.as_bytes()),
+                    editor,
+                );
+            }
         }
 
         if let Some(error) = context.error {
@@ -477,7 +608,7 @@ impl Session {
         }
 
         if !context.environment.documentation.is_empty() {
-            let documentation = context.environment.documentation;
+            let documentation = std::sync::Arc::clone(&context.environment.documentation);
 
             for name in names {
                 context
@@ -489,6 +620,32 @@ impl Session {
 
         Ok(context.report)
     }
+}
+
+extern "C" fn editor(context: *mut c_void, _: Bytes, payload: Bytes) {
+    let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
+
+    context.call(|context| {
+        context.report.editor =
+            serde_json::from_slice(unsafe { payload.slice() }).map_err(io::Error::other)?;
+
+        let normalize = |entry: &mut crate::analysis::EditorEntry| {
+            if let Some(path) = &mut entry.path {
+                *path = context.environment.source(path);
+            }
+        };
+
+        match &mut context.report.editor {
+            Some(crate::analysis::EditorResult::Entries(entries)) => {
+                entries.iter_mut().for_each(normalize);
+            }
+
+            Some(crate::analysis::EditorResult::Entry(entry)) => normalize(entry),
+            None => {}
+        }
+
+        Ok(None)
+    });
 }
 
 #[derive(Default)]
@@ -515,7 +672,7 @@ extern "C" fn alias(context: *mut c_void, name: Bytes, target: Bytes) {
     }
 }
 
-extern "C" fn alias_error(context: *mut c_void, _: Bytes, message: Bytes, _: u32, _: u32, _: bool) {
+extern "C" fn alias_error(context: *mut c_void, _: Bytes, message: Bytes, _: Span, _: bool) {
     let context = unsafe { &mut *context.cast::<Aliases>() };
 
     let result = catch_unwind(AssertUnwindSafe(|| {
