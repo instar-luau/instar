@@ -11,10 +11,21 @@ fn main() {
 
     let output = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo output directory"));
 
-    let destination = cmake::Config::new(root.join("bridge"))
+    let mut configuration = cmake::Config::new(root.join("bridge"));
+
+    configuration
         .generator("Ninja")
-        .out_dir(output.join("ninja"))
-        .build();
+        .out_dir(output.join("ninja"));
+
+    let target = env::var("TARGET").expect("Cargo target");
+
+    if target.contains("msvc") {
+        configuration
+            .define("CMAKE_POLICY_DEFAULT_CMP0091", "NEW")
+            .define("CMAKE_MSVC_RUNTIME_LIBRARY", "");
+    }
+
+    let destination = configuration.build();
 
     println!(
         "cargo:rustc-link-search=native={}",
@@ -34,8 +45,6 @@ fn main() {
     ] {
         println!("cargo:rustc-link-lib=static={library}");
     }
-
-    let target = env::var("TARGET").expect("Cargo target");
 
     if target.contains("apple") {
         println!("cargo:rustc-link-lib=c++");
