@@ -57,6 +57,18 @@ impl<'store> Resolver<'store> {
     /// # Errors
     /// Returns filesystem, configuration and ambiguous-module failures.
     pub fn resolve(&mut self, from: &Path, specifier: &str) -> io::Result<Option<PathBuf>> {
+        let Some((origin, target)) = self.namespace(from, specifier)? else {
+            return Ok(None);
+        };
+
+        self.walk(&origin, &target)
+    }
+
+    pub(crate) fn namespace(
+        &mut self,
+        from: &Path,
+        specifier: &str,
+    ) -> io::Result<Option<(PathBuf, PathBuf)>> {
         let from = absolute(from).map_err(io::Error::other)?;
         self.discovery.configurations(&from)?;
 
@@ -138,7 +150,7 @@ impl<'store> Resolver<'store> {
             return Ok(None);
         };
 
-        self.walk(&origin, &target)
+        Ok(Some((origin, target)))
     }
 
     fn walk(&self, origin: &Path, target: &Path) -> io::Result<Option<PathBuf>> {

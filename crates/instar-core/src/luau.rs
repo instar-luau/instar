@@ -174,10 +174,9 @@ extern "C" fn resolve(context: *mut c_void, from: Bytes, specifier: Bytes, kind:
         let specifier = unsafe { specifier.string()? };
 
         let path = if kind == 0 {
-            context.resolver.resolve(
-                &context.environment.configuration(Path::new(&from)),
-                &specifier,
-            )?
+            context
+                .environment
+                .require(context.resolver, Path::new(&from), &specifier)?
         } else {
             context
                 .environment
@@ -479,7 +478,7 @@ impl Session {
         Ok(report)
     }
 
-    fn environment(
+    pub(crate) fn environment(
         &mut self,
         resolver: &mut Resolver<'_>,
         settings: Option<&crate::configuration::RobloxConfig>,

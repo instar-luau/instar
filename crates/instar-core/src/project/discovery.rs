@@ -15,6 +15,7 @@ pub(crate) struct Configuration {
 
 #[derive(Clone)]
 pub(super) struct Alias {
+    name: String,
     pub(super) configuration: PathBuf,
     pub(super) value: String,
 }
@@ -251,6 +252,7 @@ impl Discovery {
                         .insert(
                             key,
                             Alias {
+                                name: alias.clone(),
                                 configuration: path.clone(),
                                 value,
                             },
@@ -269,6 +271,47 @@ impl Discovery {
         }
 
         Ok(&self.aliases[directory])
+    }
+
+    pub(crate) fn alias_names(
+        &mut self,
+        from: &Path,
+    ) -> io::Result<std::collections::BTreeSet<String>> {
+        let directory = from
+            .parent()
+            .ok_or_else(|| io::Error::other("module has no parent directory"))?;
+
+        self.configurations(from)?;
+        let mut names = std::collections::BTreeSet::new();
+
+        for ancestor in directory.ancestors() {
+            names.extend(
+                self.project_aliases(ancestor)?
+                    .values()
+                    .map(|alias| alias.name.clone()),
+            );
+        }
+
+        for configuration in self
+            .configurations
+            .get_mut(directory)
+            .expect("discovered directory")
+        {
+            if configuration.aliases.is_none() {
+                configuration.aliases = Some(luau::aliases(&configuration.bytes, true)?);
+            }
+
+            names.extend(
+                configuration
+                    .aliases
+                    .as_ref()
+                    .expect("loaded aliases")
+                    .keys()
+                    .cloned(),
+            );
+        }
+
+        Ok(names)
     }
 
     pub(super) fn alias(&mut self, from: &Path, name: &str) -> io::Result<Option<Alias>> {
@@ -297,12 +340,14 @@ impl Discovery {
                         })?);
                 }
 
-                if let Some(value) = configuration
-                    .aliases
-                    .as_ref()
-                    .and_then(|aliases| aliases.get(name))
-                {
+                if let Some(value) = configuration.aliases.as_ref().and_then(|aliases| {
+                    aliases
+                        .iter()
+                        .find(|(alias, _)| alias.eq_ignore_ascii_case(name))
+                        .map(|(_, value)| value)
+                }) {
                     return Ok(Some(Alias {
+                        name: name.into(),
                         configuration: configuration.path.clone(),
                         value: value.clone(),
                     }));

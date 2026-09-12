@@ -227,6 +227,54 @@ impl Environment {
         }
     }
 
+    pub(crate) fn require(
+        &self,
+        resolver: &mut Resolver<'_>,
+        from: &Path,
+        specifier: &str,
+    ) -> io::Result<Option<PathBuf>> {
+        let physical = self.configuration(from);
+
+        let configured = (specifier == "@game" || specifier.starts_with("@game/"))
+            && resolver
+                .discovery
+                .alias_names(&physical)?
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case("game"));
+
+        if !configured && let Some(index) = self.namespace(from, specifier) {
+            return Ok(Some(self.identity(index)));
+        }
+
+        resolver.resolve(&physical, specifier)
+    }
+
+    pub(crate) fn namespace(&self, from: &Path, specifier: &str) -> Option<usize> {
+        let (root, tail) = specifier.split_once('/').unwrap_or((specifier, ""));
+
+        let mut index = match root {
+            "@game" => (self.nodes.first()?.class_name == "DataModel").then_some(0)?,
+            "@self" => self.node(from)?,
+            _ => return None,
+        };
+
+        for segment in tail
+            .split('/')
+            .filter(|segment| !segment.is_empty() && *segment != ".")
+        {
+            index = if segment == ".." {
+                self.nodes[index].parent?
+            } else {
+                *self.nodes[index]
+                    .descendants
+                    .iter()
+                    .find(|child| self.nodes[**child].name == segment)?
+            };
+        }
+
+        Some(index)
+    }
+
     pub fn resolve(&self, from: &Path, name: &str, kind: u32) -> Option<PathBuf> {
         let index = match kind {
             1 => match name {
