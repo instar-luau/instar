@@ -65,7 +65,7 @@ pub enum SourceError {
 }
 
 impl Source {
-    fn new(path: PathBuf, bytes: Vec<u8>) -> Result<Self, SourceError> {
+    pub(crate) fn new(path: PathBuf, bytes: Vec<u8>) -> Result<Self, SourceError> {
         if u32::try_from(bytes.len()).map_or(true, |len| len == u32::MAX) {
             return Err(SourceError::Capacity);
         }
