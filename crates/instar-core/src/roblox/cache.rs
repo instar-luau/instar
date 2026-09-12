@@ -291,7 +291,15 @@ mod tests {
     const SECOND: &str = "2222222222222222222222222222222222222222";
 
     fn source() -> String {
-        let definitions: BTreeMap<_, _> = LEVELS.into_iter().map(|level| (level, "--#METADATA#{\"classes\":[],\"enumerations\":[]}\ndeclare sample: number")).collect();
+        let definitions: BTreeMap<_, _> = LEVELS
+            .into_iter()
+            .map(|level| {
+                (
+                    level,
+                    "--#METADATA#{\"classes\":[],\"enumerations\":[]}\ndeclare sample: number",
+                )
+            })
+            .collect();
 
         serde_json::json!({"definitions": definitions, "documentation": {"sample": "description"}})
             .to_string()
