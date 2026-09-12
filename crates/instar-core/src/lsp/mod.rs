@@ -1,10 +1,16 @@
 mod actions;
 mod capabilities;
 mod color;
+mod diagnostics;
 mod documentation;
+mod formatting;
 mod hierarchy;
+mod hints;
 mod imports;
 mod index;
+mod progress;
+mod refactor;
+mod renames;
 mod state;
 mod structure;
 mod sync;
@@ -46,15 +52,21 @@ enum Request {
     Close(DidCloseTextDocumentParams),
     Refresh,
     Format(DocumentFormattingParams),
+    Range(protocol::DocumentRangeFormattingParams),
+    Diagnostic(Uri),
+    Configure(serde_json::Value),
+    Hints(protocol::InlayHintParams),
     Actions(protocol::CodeActionParams),
     Query(protocol::TextDocumentPositionParams, &'static str),
     Workspace(Vec<Uri>, Vec<Uri>),
     Symbols(String),
     Complete(protocol::TextDocumentPositionParams),
+    Resolve(Box<protocol::CompletionItem>),
     Hierarchy(protocol::CallHierarchyItem, bool),
     Prepare(protocol::TextDocumentPositionParams),
     Rename(protocol::RenameParams),
     Move(protocol::RenameFilesParams),
+    Moving(protocol::RenameFilesParams),
 }
 
 enum Response {
@@ -64,6 +76,8 @@ enum Response {
     Rename(protocol::WorkspaceEdit),
     Actions(protocol::CodeActionResponse),
     Completions(Vec<protocol::CompletionItem>),
+    Completion(Box<protocol::CompletionItem>),
+    Hints(Vec<protocol::InlayHint>),
     Prepared(Vec<protocol::CallHierarchyItem>),
     Incoming(Vec<protocol::CallHierarchyIncomingCall>),
     Outgoing(Vec<protocol::CallHierarchyOutgoingCall>),
@@ -79,6 +93,7 @@ impl Request {
                 | Self::Refresh
                 | Self::Move(_)
                 | Self::Workspace(_, _)
+                | Self::Configure(_)
         )
     }
 }
@@ -94,6 +109,7 @@ struct EditorEntry {
 struct Message {
     request: Request,
     reply: oneshot::Sender<Result<Response>>,
+    progress: tokio::sync::mpsc::UnboundedSender<(usize, usize)>,
 }
 
 fn symbol_kind(kind: Option<u32>) -> protocol::SymbolKind {
@@ -158,6 +174,10 @@ struct Backend {
     versions: std::sync::Mutex<BTreeMap<Uri, i32>>,
     generation: AtomicU64,
     refresh_tokens: AtomicBool,
+    progress: AtomicBool,
+    progress_identifier: AtomicU64,
+    refresh_hints: AtomicBool,
+    diagnostics: std::sync::Mutex<diagnostics::Cache>,
 }
 
 impl Backend {
@@ -166,10 +186,15 @@ impl Backend {
             request,
             Request::Query(_, _)
                 | Request::Format(_)
+                | Request::Range(_)
+                | Request::Diagnostic(_)
+                | Request::Hints(_)
                 | Request::Rename(_)
+                | Request::Moving(_)
                 | Request::Symbols(_)
                 | Request::Actions(_)
                 | Request::Complete(_)
+                | Request::Resolve(_)
                 | Request::Hierarchy(_, _)
                 | Request::Prepare(_)
         )
@@ -177,11 +202,24 @@ impl Backend {
 
         let (reply, receiver) = oneshot::channel();
 
+        let (progress, events) = tokio::sync::mpsc::unbounded_channel();
+
+        let token = self.progress.load(Ordering::Relaxed).then(|| {
+            protocol::ProgressToken::String(format!(
+                "index-{}",
+                self.progress_identifier.fetch_add(1, Ordering::Relaxed)
+            ))
+        });
+
         self.sender
-            .send(Message { request, reply })
+            .send(Message {
+                request,
+                reply,
+                progress,
+            })
             .map_err(failure)?;
 
-        let response = receiver.await.map_err(failure)?;
+        let response = progress::wait(receiver, events, &self.client, token).await;
 
         if generation
             .is_some_and(|generation| generation != self.generation.load(Ordering::Relaxed))
@@ -304,6 +342,8 @@ impl Backend {
                 | Response::Rename(_)
                 | Response::Actions(_)
                 | Response::Completions(_)
+                | Response::Completion(_)
+                | Response::Hints(_)
                 | Response::Prepared(_)
                 | Response::Incoming(_)
                 | Response::Outgoing(_),
@@ -320,6 +360,31 @@ impl Backend {
 
 impl LanguageServer for Backend {
     async fn initialize(&self, parameters: InitializeParams) -> Result<InitializeResult> {
+        self.progress.store(
+            parameters
+                .capabilities
+                .window
+                .as_ref()
+                .and_then(|window| window.work_done_progress)
+                .unwrap_or_default(),
+            Ordering::Relaxed,
+        );
+
+        self.refresh_hints.store(
+            parameters
+                .capabilities
+                .workspace
+                .as_ref()
+                .and_then(|workspace| workspace.inlay_hint.as_ref())
+                .and_then(|hints| hints.refresh_support)
+                .unwrap_or_default(),
+            Ordering::Relaxed,
+        );
+
+        if let Some(options) = parameters.initialization_options {
+            self.request(Request::Configure(options)).await?;
+        }
+
         self.refresh_tokens.store(
             parameters
                 .capabilities
@@ -471,6 +536,16 @@ impl LanguageServer for Backend {
         self.notify(Request::Refresh).await;
     }
 
+    async fn will_rename_files(
+        &self,
+        parameters: protocol::RenameFilesParams,
+    ) -> Result<Option<protocol::WorkspaceEdit>> {
+        match self.request(Request::Moving(parameters)).await? {
+            Response::Rename(edit) => Ok(Some(edit)),
+            _ => Err(Error::internal_error()),
+        }
+    }
+
     async fn did_rename_files(&self, parameters: protocol::RenameFilesParams) {
         self.notify(Request::Move(parameters)).await;
     }
@@ -487,8 +562,60 @@ impl LanguageServer for Backend {
         self.notify(Request::Refresh).await;
     }
 
-    async fn did_change_configuration(&self, _: DidChangeConfigurationParams) {
-        self.notify(Request::Refresh).await;
+    async fn did_change_configuration(&self, parameters: DidChangeConfigurationParams) {
+        self.notify(Request::Configure(parameters.settings)).await;
+
+        if self.refresh_hints.load(Ordering::Relaxed) {
+            drop(self.client.inlay_hint_refresh().await);
+        }
+    }
+
+    async fn inlay_hint(
+        &self,
+        parameters: protocol::InlayHintParams,
+    ) -> Result<Option<Vec<protocol::InlayHint>>> {
+        match self.request(Request::Hints(parameters)).await? {
+            Response::Hints(hints) => Ok(Some(hints)),
+            _ => Err(Error::internal_error()),
+        }
+    }
+
+    async fn range_formatting(
+        &self,
+        parameters: protocol::DocumentRangeFormattingParams,
+    ) -> Result<Option<Vec<TextEdit>>> {
+        match self.request(Request::Range(parameters)).await? {
+            Response::Edits(edits) => Ok(edits),
+            _ => Err(Error::internal_error()),
+        }
+    }
+
+    async fn diagnostic(
+        &self,
+        parameters: protocol::DocumentDiagnosticParams,
+    ) -> Result<protocol::DocumentDiagnosticReportResult> {
+        let uri = parameters.text_document.uri;
+
+        let Response::Diagnostics(publications) =
+            self.request(Request::Diagnostic(uri.clone())).await?
+        else {
+            return Err(Error::internal_error());
+        };
+
+        let requested = path(&uri)?;
+
+        let items = publications
+            .into_iter()
+            .find(|publication| path(&publication.uri).is_ok_and(|path| path == requested))
+            .map(|publication| publication.diagnostics)
+            .unwrap_or_default();
+
+        Ok(self
+            .diagnostics
+            .lock()
+            .map_err(failure)?
+            .report(&requested, items, parameters.previous_result_id.as_deref())
+            .into())
     }
 
     async fn hover(&self, parameters: protocol::HoverParams) -> Result<Option<protocol::Hover>> {
@@ -531,6 +658,32 @@ impl LanguageServer for Backend {
             .into_iter()
             .find_map(|entry| entry.location)
             .map(protocol::GotoDefinitionResponse::Scalar))
+    }
+
+    async fn goto_implementation(
+        &self,
+        parameters: protocol::request::GotoImplementationParams,
+    ) -> Result<Option<protocol::request::GotoImplementationResponse>> {
+        let locations = self
+            .query(parameters.text_document_position_params, "implementation")
+            .await?
+            .into_iter()
+            .filter_map(|entry| entry.location)
+            .map(|location| {
+                (
+                    (
+                        location.uri.to_string(),
+                        location.range.start,
+                        location.range.end,
+                    ),
+                    location,
+                )
+            })
+            .collect::<BTreeMap<_, _>>()
+            .into_values()
+            .collect();
+
+        Ok(Some(protocol::GotoDefinitionResponse::Array(locations)))
     }
 
     async fn goto_declaration(
@@ -626,6 +779,16 @@ impl LanguageServer for Backend {
             .await?
         {
             Response::Completions(items) => Ok(Some(protocol::CompletionResponse::Array(items))),
+            _ => Err(Error::internal_error()),
+        }
+    }
+
+    async fn completion_resolve(
+        &self,
+        item: protocol::CompletionItem,
+    ) -> Result<protocol::CompletionItem> {
+        match self.request(Request::Resolve(Box::new(item))).await? {
+            Response::Completion(item) => Ok(*item),
             _ => Err(Error::internal_error()),
         }
     }
@@ -927,6 +1090,8 @@ pub fn run() -> io::Result<ExitCode> {
                 }
 
                 if message.request.changes() {
+                    state.progress = Some(message.progress);
+
                     match state.handle(message.request) {
                         Ok(_) => replies.push(message.reply),
 
@@ -936,6 +1101,7 @@ pub fn run() -> io::Result<ExitCode> {
                     }
                 } else {
                     state.publish(&mut replies);
+                    state.progress = Some(message.progress);
                     drop(message.reply.send(state.handle(message.request)));
                 }
             }
@@ -953,6 +1119,10 @@ pub fn run() -> io::Result<ExitCode> {
             versions: std::sync::Mutex::default(),
             generation: AtomicU64::default(),
             refresh_tokens: AtomicBool::default(),
+            progress: AtomicBool::default(),
+            progress_identifier: AtomicU64::default(),
+            refresh_hints: AtomicBool::default(),
+            diagnostics: std::sync::Mutex::default(),
         });
 
         Server::new(tokio::io::stdin(), tokio::io::stdout(), socket)

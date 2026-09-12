@@ -17,6 +17,7 @@ struct Client {
     child: Child,
     input: ChildStdin,
     output: BufReader<ChildStdout>,
+    progress: Vec<String>,
 }
 
 impl Drop for Client {
@@ -45,6 +46,7 @@ impl Client {
             child,
             input,
             output,
+            progress: Vec::new(),
         };
 
         client.send(
@@ -107,7 +109,17 @@ impl Client {
         loop {
             let message = self.receive()?;
 
-            if message["id"] == identifier {
+            if message["method"] == "window/workDoneProgress/create" {
+                self.send(&json!({"jsonrpc":"2.0","id":message["id"],"result":null}))?;
+            }
+
+            if message["method"] == "$/progress"
+                && let Some(kind) = message["params"]["value"]["kind"].as_str()
+            {
+                self.progress.push(kind.into());
+            }
+
+            if message["id"] == identifier && message.get("method").is_none() {
                 return Ok(message);
             }
 
@@ -161,6 +173,16 @@ impl Client {
         character: u32,
     ) -> Result<Value, Box<dyn Error>> {
         self.send(&json!({"jsonrpc":"2.0","id":20,"method":method,"params":{"textDocument":{"uri":uri},"position":{"line":line,"character":character},"context":{"includeDeclaration":true,"triggerKind":1,"isRetrigger":false}}}))?;
+        let response = self.response(20)?;
+        assert!(response.get("error").is_none(), "{response}");
+
+        Ok(response["result"].clone())
+    }
+
+    fn request(&mut self, method: &str, parameters: Value) -> Result<Value, Box<dyn Error>> {
+        let mut message = json!({"jsonrpc":"2.0","id":20,"method":method});
+        message["params"] = parameters;
+        self.send(&message)?;
         let response = self.response(20)?;
         assert!(response.get("error").is_none(), "{response}");
 
@@ -828,6 +850,303 @@ fn imported_type_navigation_and_references_resolve_aliases() -> TestResult {
 }
 
 #[test]
+fn hints_follow_configuration_and_completion_resolves_details() -> TestResult {
+    let directory = tempfile::tempdir()?;
+
+    let uri = Uri::from_file_path(directory.path().join("main.luau"))
+        .ok_or("URI")?
+        .to_string();
+
+    let mut client = Client::start()?;
+    client.open(&uri, "local function increase(amount: number)\nreturn amount + 1\nend\nlocal result = increase(1)\nreturn result")?;
+    client.diagnostics(&uri)?;
+    let parameters = json!({"textDocument":{"uri":uri},"range":{"start":{"line":0,"character":0},"end":{"line":4,"character":13}}});
+
+    assert_eq!(
+        client.request("textDocument/inlayHint", parameters.clone())?,
+        json!([])
+    );
+
+    client.send(&json!({"jsonrpc":"2.0","method":"workspace/didChangeConfiguration","params":{"settings":{"inlayHints":{"variableTypes":true,"functionReturnTypes":true,"parameterNames":"all"}}}}))?;
+    client.diagnostics(&uri)?;
+    let hints = client.request("textDocument/inlayHint", parameters)?;
+
+    assert!(
+        hints
+            .as_array()
+            .ok_or("hints")?
+            .iter()
+            .any(|hint| hint["label"] == ": number"),
+        "{hints}"
+    );
+
+    assert!(
+        hints
+            .as_array()
+            .ok_or("hints")?
+            .iter()
+            .any(|hint| hint["label"] == "amount:"),
+        "{hints}"
+    );
+
+    let completions = client.query(&uri, "textDocument/completion", 4, 13)?;
+
+    let item = completions
+        .as_array()
+        .ok_or("completions")?
+        .iter()
+        .find(|item| item["label"] == "result")
+        .ok_or("completion")?;
+
+    assert!(item.get("detail").is_none(), "{item}");
+    let resolved = client.request("completionItem/resolve", item.clone())?;
+    assert_eq!(resolved["detail"], "number");
+
+    client.shutdown()
+}
+
+#[test]
+fn range_formatting_preserves_unselected_text_and_pull_checks_closed_files() -> TestResult {
+    let directory = tempfile::tempdir()?;
+
+    let uri = Uri::from_file_path(directory.path().join("main.luau"))
+        .ok_or("URI")?
+        .to_string();
+
+    let mut client = Client::start()?;
+
+    client.open(
+        &uri,
+        "local outside=1\nlocal   selected=2\nreturn outside+selected",
+    )?;
+
+    client.diagnostics(&uri)?;
+    let range = json!({"start":{"line":1,"character":0},"end":{"line":1,"character":18}});
+    let edits = client.request("textDocument/rangeFormatting", json!({"textDocument":{"uri":uri},"range":range,"options":{"tabSize":4,"insertSpaces":true}}))?;
+    assert_eq!(edits[0]["range"], range);
+    assert_eq!(edits[0]["newText"], "local selected = 2");
+
+    client.change(
+        &uri,
+        2,
+        &format!(
+            "local outside=1\n{}\nreturn outside+selected",
+            edits[0]["newText"].as_str().ok_or("edit")?
+        ),
+    )?;
+
+    assert!(!has_errors(&client.diagnostics(&uri)?));
+
+    fs::write(
+        directory.path().join("closed.luau"),
+        "--!strict\nlocal value: number = 'wrong'\nreturn value",
+    )?;
+
+    let closed = Uri::from_file_path(directory.path().join("closed.luau"))
+        .ok_or("URI")?
+        .to_string();
+
+    let report = client.request(
+        "textDocument/diagnostic",
+        json!({"textDocument":{"uri":closed}}),
+    )?;
+
+    assert_eq!(report["kind"], "full");
+
+    let unchanged = client.request(
+        "textDocument/diagnostic",
+        json!({"textDocument":{"uri":closed},"previousResultId":report["resultId"]}),
+    )?;
+
+    assert_eq!(
+        unchanged["kind"], "unchanged",
+        "first: {report}; next: {unchanged}"
+    );
+
+    assert!(
+        report["items"]
+            .as_array()
+            .ok_or("diagnostics")?
+            .iter()
+            .any(|item| item["severity"] == 1)
+    );
+
+    client.shutdown()
+}
+
+#[test]
+fn range_formatting_handles_nested_statements_and_expressions() -> TestResult {
+    let directory = tempfile::tempdir()?;
+
+    let uri = Uri::from_file_path(directory.path().join("main.luau"))
+        .ok_or("URI")?
+        .to_string();
+
+    let mut client = Client::start()?;
+
+    client.open(
+        &uri,
+        "local function run()\n    local selected = 1+2\n    return selected\nend\nreturn run",
+    )?;
+
+    client.diagnostics(&uri)?;
+
+    for (start, expected) in [(0, "    local selected = 1 + 2"), (21, "1 + 2")] {
+        let edits = client.request("textDocument/rangeFormatting", json!({"textDocument":{"uri":uri},"range":{"start":{"line":1,"character":start},"end":{"line":1,"character":24}},"options":{"tabSize":4,"insertSpaces":true}}))?;
+        assert_eq!(edits[0]["newText"], expected, "{edits}");
+    }
+
+    client.shutdown()
+}
+
+#[test]
+fn file_rename_edits_preserve_import_targets() -> TestResult {
+    let directory = tempfile::tempdir()?;
+
+    let root = Uri::from_file_path(directory.path())
+        .ok_or("URI")?
+        .to_string();
+
+    let uri = Uri::from_file_path(directory.path().join("main.luau"))
+        .ok_or("URI")?
+        .to_string();
+
+    let old = Uri::from_file_path(directory.path().join("dependency.luau"))
+        .ok_or("URI")?
+        .to_string();
+
+    let new = Uri::from_file_path(directory.path().join("renamed.luau"))
+        .ok_or("URI")?
+        .to_string();
+
+    fs::write(directory.path().join("dependency.luau"), "return 1")?;
+    let mut client = Client::start()?;
+    client.send(&json!({"jsonrpc":"2.0","method":"workspace/didChangeWorkspaceFolders","params":{"event":{"added":[{"uri":root,"name":"workspace"}],"removed":[]}}}))?;
+
+    client.open(
+        &uri,
+        "local dependency = require('./dependency')\nreturn dependency",
+    )?;
+
+    client.diagnostics(&uri)?;
+    let files = json!([{"oldUri":old,"newUri":new}]);
+    let edit = client.request("workspace/willRenameFiles", json!({"files":files}))?;
+    let document = &edit["documentChanges"][0];
+    assert_eq!(document["textDocument"]["uri"], uri);
+    assert_eq!(document["textDocument"]["version"], 1);
+    assert_eq!(document["edits"][0]["newText"], "'./renamed'");
+
+    fs::rename(
+        directory.path().join("dependency.luau"),
+        directory.path().join("renamed.luau"),
+    )?;
+
+    client.change(
+        &uri,
+        2,
+        "local dependency = require('./renamed')\nreturn dependency",
+    )?;
+
+    client.send(
+        &json!({"jsonrpc":"2.0","method":"workspace/didRenameFiles","params":{"files":files}}),
+    )?;
+
+    assert!(!has_errors(&client.diagnostics(&uri)?));
+    let links = client.query(&uri, "textDocument/documentLink", 0, 0)?;
+    assert_eq!(links[0]["target"], new);
+
+    client.shutdown()
+}
+
+#[test]
+fn implementation_navigation_follows_explicit_contract_returns() -> TestResult {
+    let directory = tempfile::tempdir()?;
+
+    let root = Uri::from_file_path(directory.path())
+        .ok_or("URI")?
+        .to_string();
+
+    let uri = Uri::from_file_path(directory.path().join("main.luau"))
+        .ok_or("URI")?
+        .to_string();
+
+    let dependency = Uri::from_file_path(directory.path().join("context.luau"))
+        .ok_or("URI")?
+        .to_string();
+
+    fs::write(
+        directory.path().join("context.luau"),
+        "export type Context = { read get_value: () -> number }\nlocal function create(): Context\nlocal function get_value() return 1 end\nreturn table.freeze({ get_value = get_value })\nend\nreturn create",
+    )?;
+
+    let mut client = Client::start()?;
+    client.send(&json!({"jsonrpc":"2.0","method":"workspace/didChangeWorkspaceFolders","params":{"event":{"added":[{"uri":root,"name":"workspace"}],"removed":[]}}}))?;
+    client.open(&uri, "local shared = require('./context')\nlocal function use(context: shared.Context)\nreturn context.get_value()\nend\nreturn use")?;
+    client.diagnostics(&uri)?;
+    let implementations = client.query(&uri, "textDocument/implementation", 2, 19)?;
+
+    assert!(
+        implementations
+            .as_array()
+            .ok_or("implementations")?
+            .iter()
+            .any(|item| item["uri"] == dependency && item["range"]["start"]["line"] == 2),
+        "{implementations}"
+    );
+
+    let implementations = client.query(&uri, "textDocument/implementation", 1, 38)?;
+
+    assert!(
+        implementations
+            .as_array()
+            .ok_or("implementations")?
+            .iter()
+            .any(|item| item["uri"] == dependency && item["range"]["start"]["line"] == 3),
+        "{implementations}"
+    );
+
+    client.shutdown()
+}
+
+#[test]
+fn extraction_returns_versioned_edits_and_indexing_reports_progress() -> TestResult {
+    let directory = tempfile::tempdir()?;
+
+    let uri = Uri::from_file_path(directory.path().join("main.luau"))
+        .ok_or("URI")?
+        .to_string();
+
+    let mut client = Client::start_with(&json!({"window":{"workDoneProgress":true}}))?;
+    client.open(&uri, "local result = 1 + 2\nreturn result")?;
+    client.diagnostics(&uri)?;
+    let actions = client.request("textDocument/codeAction", json!({"textDocument":{"uri":uri},"range":{"start":{"line":0,"character":15},"end":{"line":0,"character":20}},"context":{"diagnostics":[],"only":["refactor.extract"]}}))?;
+    assert_eq!(actions.as_array().ok_or("actions")?.len(), 1, "{actions}");
+    let document = &actions[0]["edit"]["documentChanges"][0];
+    assert_eq!(document["textDocument"]["version"], 1);
+
+    let replacement = document["edits"][0]["newText"]
+        .as_str()
+        .ok_or("replacement")?;
+
+    let insertion = document["edits"][1]["newText"]
+        .as_str()
+        .ok_or("insertion")?;
+
+    client.change(
+        &uri,
+        2,
+        &format!("{insertion}local result = {replacement}\nreturn result"),
+    )?;
+
+    assert!(!has_errors(&client.diagnostics(&uri)?));
+    client.request("workspace/symbol", json!({"query":"result"}))?;
+    assert!(client.progress.iter().any(|kind| kind == "begin"));
+    assert!(client.progress.iter().any(|kind| kind == "end"));
+
+    client.shutdown()
+}
+
+#[test]
 fn annotated_properties_navigate_to_imported_declarations() -> TestResult {
     let directory = tempfile::tempdir()?;
 
@@ -1024,6 +1343,312 @@ fn incremental_changes_use_sequential_unicode_ranges() -> TestResult {
             .contains("number"),
         "{hover}"
     );
+
+    client.shutdown()
+}
+
+#[test]
+fn require_paths_complete_aliases_relative_paths_and_self() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path();
+    fs::create_dir(root.join("packages"))?;
+    fs::create_dir(root.join("nested"))?;
+
+    fs::write(
+        root.join("packages/Utilities.luau"),
+        "return table.freeze({value = 1})",
+    )?;
+
+    fs::write(root.join("nested/Child.luau"), "return 2")?;
+
+    fs::write(
+        root.join("instar.toml"),
+        "[aliases]\ncustomAlias = 'packages'\n",
+    )?;
+
+    let uri = Uri::from_file_path(root.join("nested/init.luau"))
+        .ok_or("URI")?
+        .to_string();
+
+    let mut client = Client::start()?;
+    client.open(&uri, "return require('')")?;
+    client.diagnostics(&uri)?;
+    let roots = client.query(&uri, "textDocument/completion", 0, 16)?;
+
+    for label in ["./", "../", "@self/", "@customAlias/"] {
+        assert!(
+            roots
+                .as_array()
+                .ok_or("roots")?
+                .iter()
+                .any(|item| item["label"] == label),
+            "{label}: {roots}"
+        );
+    }
+
+    for (version, partial, expected) in [
+        (2, "@customAlias/U", "@customAlias/Utilities"),
+        (3, "./packages/U", "./packages/Utilities"),
+        (4, "@self/Ch", "@self/Child"),
+        (5, "../", "../"),
+    ] {
+        let text = format!("return require('{partial}')");
+        client.change(&uri, version * 2, &text)?;
+        client.diagnostics(&uri)?;
+
+        let items = client.query(
+            &uri,
+            "textDocument/completion",
+            0,
+            u32::try_from(16 + partial.len())?,
+        )?;
+
+        if version == 5 {
+            let folder = format!(
+                "../{}/",
+                root.file_name().ok_or("directory")?.to_string_lossy()
+            );
+
+            assert!(
+                items
+                    .as_array()
+                    .ok_or("folders")?
+                    .iter()
+                    .any(|item| item["label"] == folder),
+                "{items}"
+            );
+
+            continue;
+        }
+
+        let item = items
+            .as_array()
+            .ok_or("items")?
+            .iter()
+            .find(|item| item["label"] == expected)
+            .ok_or_else(|| format!("missing {expected}: {items}"))?;
+
+        assert_eq!(item["textEdit"]["newText"], expected);
+        assert_eq!(item["textEdit"]["range"]["start"]["character"], 16);
+
+        assert_eq!(
+            item["textEdit"]["range"]["end"]["character"],
+            16 + partial.len()
+        );
+
+        client.change(
+            &uri,
+            version * 2 + 1,
+            &format!(
+                "return require('{}')",
+                item["textEdit"]["newText"].as_str().ok_or("text")?
+            ),
+        )?;
+
+        assert!(!has_errors(&client.diagnostics(&uri)?));
+    }
+
+    client.shutdown()
+}
+
+#[test]
+fn missing_modules_offer_import_actions_and_reuse_bindings() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path();
+
+    fs::write(
+        root.join("Utilities.luau"),
+        "return table.freeze({value = 1})",
+    )?;
+
+    let uri = Uri::from_file_path(root.join("main.luau"))
+        .ok_or("URI")?
+        .to_string();
+
+    let workspace = Uri::from_file_path(root).ok_or("URI")?.to_string();
+    let mut client = Client::start()?;
+    client.send(&json!({"jsonrpc":"2.0","method":"workspace/didChangeWorkspaceFolders","params":{"event":{"added":[{"uri":workspace,"name":"workspace"}],"removed":[]}}}))?;
+    client.open(&uri, "--!strict\nprint(Utilities)\nreturn Utilities")?;
+    let diagnostics = client.diagnostics(&uri)?;
+    let completions = client.query(&uri, "textDocument/completion", 2, 16)?;
+
+    assert!(
+        completions
+            .as_array()
+            .ok_or("completions")?
+            .iter()
+            .any(|item| item["label"] == "Utilities" && item["additionalTextEdits"].is_array()),
+        "{completions}"
+    );
+
+    let actions = client.request("textDocument/codeAction", json!({"textDocument":{"uri":uri},"range":{"start":{"line":2,"character":7},"end":{"line":2,"character":16}},"context":{"diagnostics":diagnostics["diagnostics"],"only":["quickfix"]}}))?;
+
+    let action = actions
+        .as_array()
+        .ok_or("actions")?
+        .iter()
+        .find(|action| {
+            action["title"]
+                .as_str()
+                .is_some_and(|title| title.starts_with("Import 'Utilities'"))
+        })
+        .ok_or_else(|| format!("missing import fix: {actions}; {diagnostics}"))?;
+
+    assert_eq!(
+        action["edit"]["documentChanges"][0]["textDocument"]["version"],
+        1
+    );
+
+    let declaration = action["edit"]["documentChanges"][0]["edits"][0]["newText"]
+        .as_str()
+        .ok_or("declaration")?;
+
+    client.change(
+        &uri,
+        2,
+        &format!("--!strict\n{declaration}print(Utilities)\nreturn Utilities"),
+    )?;
+
+    assert!(!has_errors(&client.diagnostics(&uri)?));
+
+    client.change(
+        &uri,
+        3,
+        "local existing = require('./Utilities')\nreturn Utilities",
+    )?;
+
+    client.diagnostics(&uri)?;
+    let completions = client.query(&uri, "textDocument/completion", 1, 16)?;
+
+    let item = completions
+        .as_array()
+        .ok_or("completions")?
+        .iter()
+        .find(|item| item["label"] == "Utilities")
+        .ok_or("missing existing binding")?;
+
+    assert_eq!(item["textEdit"]["newText"], "existing");
+    assert!(item["additionalTextEdits"].is_null());
+
+    client.shutdown()
+}
+
+#[test]
+fn roblox_imports_offer_services_datamodel_paths_and_actions() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path();
+
+    fs::write(
+        root.join("instar.toml"),
+        "[roblox]\nsourcemap = 'sourcemap.json'\n",
+    )?;
+
+    fs::write(
+        root.join("sourcemap.json"),
+        r#"{"name":"Game","className":"DataModel","children":[{"name":"ReplicatedStorage","className":"ReplicatedStorage","children":[{"name":"Utilities","className":"ModuleScript","filePaths":["utilities.luau"]},{"name":"Main","className":"ModuleScript","filePaths":["main.luau"]}]}]}"#,
+    )?;
+
+    fs::write(
+        root.join("utilities.luau"),
+        "return table.freeze({value = 1})",
+    )?;
+
+    support::configure(root)?;
+
+    let uri = Uri::from_file_path(root.join("main.luau"))
+        .ok_or("URI")?
+        .to_string();
+
+    let mut client = Client::start()?;
+    client.open(&uri, "--!strict\nreturn Players")?;
+    let diagnostics = client.diagnostics(&uri)?;
+    let services = client.query(&uri, "textDocument/completion", 1, 14)?;
+
+    let service = services
+        .as_array()
+        .ok_or("services")?
+        .iter()
+        .find(|item| item["label"] == "Players" && item["additionalTextEdits"].is_array())
+        .ok_or_else(|| format!("missing Players: {services}"))?;
+
+    assert_eq!(
+        service["additionalTextEdits"][0]["newText"],
+        "local Players = game:GetService(\"Players\")\n"
+    );
+
+    let actions = client.request("textDocument/codeAction", json!({"textDocument":{"uri":uri},"range":{"start":{"line":1,"character":7},"end":{"line":1,"character":14}},"context":{"diagnostics":diagnostics["diagnostics"],"only":["quickfix"]}}))?;
+
+    assert!(
+        actions
+            .as_array()
+            .ok_or("actions")?
+            .iter()
+            .any(|action| action["title"]
+                .as_str()
+                .is_some_and(|title| title.starts_with("Import 'Players'"))),
+        "{actions}"
+    );
+
+    client.change(&uri, 2, "return Uti")?;
+    client.diagnostics(&uri)?;
+    let modules = client.query(&uri, "textDocument/completion", 0, 10)?;
+
+    for expression in [
+        "require(script.Parent.Utilities)",
+        "require(game:GetService(\"ReplicatedStorage\").Utilities)",
+        "require(\"@game/ReplicatedStorage/Utilities\")",
+        "require(\"@self/../Utilities\")",
+    ] {
+        assert!(
+            modules
+                .as_array()
+                .ok_or("modules")?
+                .iter()
+                .any(|item| item["label"] == "Utilities" && item["detail"] == expression),
+            "{expression}: {modules}"
+        );
+    }
+
+    for (version, partial, expected) in [
+        (3, "@game/Rep", "@game/ReplicatedStorage/"),
+        (
+            5,
+            "@game/ReplicatedStorage/Uti",
+            "@game/ReplicatedStorage/Utilities",
+        ),
+        (7, "@self/../Uti", "@self/../Utilities"),
+    ] {
+        client.change(&uri, version, &format!("return require('{partial}')"))?;
+        client.diagnostics(&uri)?;
+
+        let items = client.query(
+            &uri,
+            "textDocument/completion",
+            0,
+            u32::try_from(16 + partial.len())?,
+        )?;
+
+        assert!(
+            items
+                .as_array()
+                .ok_or("paths")?
+                .iter()
+                .any(|item| item["label"] == expected),
+            "{expected}: {items}"
+        );
+
+        if !expected.ends_with('/') {
+            client.change(
+                &uri,
+                version + 1,
+                &format!(
+                    "--!strict\nlocal value: number = require('{expected}').value\nreturn value"
+                ),
+            )?;
+
+            assert!(!has_errors(&client.diagnostics(&uri)?));
+        }
+    }
 
     client.shutdown()
 }

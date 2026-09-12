@@ -29,6 +29,8 @@ pub(super) struct State {
     roots: std::collections::BTreeSet<PathBuf>,
     files: Option<Vec<PathBuf>>,
     pub(super) index: super::index::Index,
+    pub(super) settings: super::hints::Settings,
+    pub(super) progress: Option<tokio::sync::mpsc::UnboundedSender<(usize, usize)>>,
 }
 
 impl State {
@@ -87,7 +89,16 @@ impl State {
         Ok(Response::Diagnostics(Vec::new()))
     }
 
-    fn workspace(&mut self) -> Result<Vec<PathBuf>> {
+    pub(super) fn environment(
+        &mut self,
+        path: &std::path::Path,
+    ) -> Result<std::sync::Arc<crate::roblox::Environment>> {
+        self.session
+            .environment(&mut self.sources, path)
+            .map_err(failure)
+    }
+
+    pub(super) fn workspace(&mut self) -> Result<Vec<PathBuf>> {
         if self.files.is_none() {
             self.files = Some(workspace::files(&self.roots).map_err(failure)?);
         }
@@ -185,7 +196,7 @@ impl State {
 
         let operation = self.operation(source.path(), position, operation)?;
 
-        let modules = if operation == "references" {
+        let modules = if matches!(operation, "references" | "implementation") {
             let mut modules = self.workspace()?;
 
             if !modules.iter().any(|path| path == source.path()) {
@@ -392,6 +403,36 @@ impl State {
         }
     }
 
+    fn close(&mut self, uri: &Uri) -> Result<()> {
+        let path = path(uri)?;
+
+        if !self.sources.is_open(&path).map_err(failure)? {
+            return Ok(());
+        }
+
+        let source = self.sources.read(&path).map_err(failure)?;
+        self.sources.close(&source).map_err(failure)?;
+        self.documents.remove(source.path());
+        self.changed(source.path());
+
+        Ok(())
+    }
+
+    fn configure(&mut self, settings: &serde_json::Value) -> Result<()> {
+        self.files = None;
+        self.index.files.clear();
+        self.session.refresh();
+
+        self.settings = if settings.is_null() {
+            super::hints::Settings::default()
+        } else {
+            serde_json::from_value(settings.get("instar").unwrap_or(settings).clone())
+                .map_err(failure)?
+        };
+
+        Ok(())
+    }
+
     pub(super) fn handle(&mut self, request: Request) -> Result<Response> {
         if matches!(
             request,
@@ -444,29 +485,19 @@ impl State {
                 self.changed(updated.path());
             }
 
-            Request::Close(parameters) => {
-                if !self
-                    .sources
-                    .is_open(&path(&parameters.text_document.uri)?)
-                    .map_err(failure)?
-                {
-                    return Ok(Response::Diagnostics(Vec::new()));
-                }
-
-                let source = self
-                    .sources
-                    .read(&path(&parameters.text_document.uri)?)
-                    .map_err(failure)?;
-
-                self.sources.close(&source).map_err(failure)?;
-                self.documents.remove(source.path());
-                self.changed(source.path());
-            }
+            Request::Close(parameters) => self.close(&parameters.text_document.uri)?,
 
             Request::Refresh => self.session.refresh(),
+            Request::Configure(settings) => self.configure(&settings)?,
+
+            Request::Hints(parameters) => {
+                return super::hints::hints(self, &parameters).map(Response::Hints);
+            }
+
             Request::Query(parameters, operation) => return self.query(&parameters, operation),
             Request::Rename(parameters) => return self.rename(&parameters),
             Request::Move(parameters) => return self.move_files(parameters),
+            Request::Moving(parameters) => return super::renames::edits(self, &parameters),
 
             Request::Workspace(added, removed) => {
                 for uri in removed {
@@ -499,15 +530,38 @@ impl State {
             }
 
             Request::Format(parameters) => return self.format(&parameters.text_document.uri),
+            Request::Range(parameters) => return super::formatting::range(self, &parameters),
+
+            Request::Resolve(item) => {
+                return super::imports::resolve(self, *item)
+                    .map(Box::new)
+                    .map(Response::Completion);
+            }
+
+            Request::Diagnostic(uri) => {
+                return self
+                    .diagnostics_for(&[path(&uri)?], false)
+                    .map(Response::Diagnostics);
+            }
         }
 
         Ok(Response::Diagnostics(Vec::new()))
     }
 
     pub(super) fn indexed(&mut self) -> Result<()> {
-        for path in self.workspace()? {
-            if self.index.files.contains_key(&path) {
-                continue;
+        let pending = self
+            .workspace()?
+            .into_iter()
+            .filter(|path| !self.index.files.contains_key(path))
+            .collect::<Vec<_>>();
+
+        let total = pending.len();
+
+        for (completed, path) in pending.into_iter().enumerate() {
+            if let Some(progress) = &self.progress {
+                progress
+                    .send((completed, total))
+                    .map_err(|_| Error::request_cancelled())?;
             }
 
             let uri = Uri::from_file_path(&path).ok_or_else(|| failure("invalid workspace URI"))?;
@@ -542,6 +596,14 @@ impl State {
                     dependencies,
                 },
             );
+        }
+
+        if total != 0
+            && let Some(progress) = &self.progress
+        {
+            progress
+                .send((total, total))
+                .map_err(|_| Error::request_cancelled())?;
         }
 
         Ok(())
@@ -629,18 +691,36 @@ impl State {
     }
 
     fn diagnostics(&mut self) -> Result<Vec<PublishDiagnosticsParams>> {
-        let paths = self.documents.keys().cloned().collect::<Vec<_>>();
+        self.diagnostics_for(&self.documents.keys().cloned().collect::<Vec<_>>(), true)
+    }
 
+    fn report(&mut self, paths: &[PathBuf], publish: bool) -> std::io::Result<analysis::Report> {
+        if publish {
+            self.session
+                .analyze(&mut self.sources, paths, &analysis::Options::default())
+        } else {
+            self.session.query(
+                &mut self.sources,
+                paths,
+                &paths[0],
+                LineCol { line: 0, col: 0 },
+                "diagnostics",
+            )
+        }
+    }
+
+    fn diagnostics_for(
+        &mut self,
+        paths: &[PathBuf],
+        publish: bool,
+    ) -> Result<Vec<PublishDiagnosticsParams>> {
         let mut diagnostics = paths
             .iter()
             .map(|path| (path.clone(), Vec::new()))
             .collect::<BTreeMap<_, _>>();
 
         if !paths.is_empty() {
-            match self
-                .session
-                .analyze(&mut self.sources, &paths, &analysis::Options::default())
-            {
+            match self.report(paths, publish) {
                 Ok(report) => {
                     for diagnostic in report.diagnostics {
                         let severity = if diagnostic.is_error {
@@ -730,6 +810,10 @@ impl State {
                 diagnostics,
                 version: document.map(|document| document.version),
             });
+        }
+
+        if !publish {
+            return Ok(publications);
         }
 
         let mut cleared = Vec::new();

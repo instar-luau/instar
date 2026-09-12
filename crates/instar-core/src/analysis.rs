@@ -57,6 +57,7 @@ pub struct EditorEntry {
     pub range: Option<[u32; 4]>,
     pub color: Option<[f32; 4]>,
     pub imports: Option<bool>,
+    pub require: Option<bool>,
     pub caller: Option<[u32; 4]>,
     pub container: Option<[u32; 4]>,
     pub modifiers: Option<u32>,
@@ -101,6 +102,18 @@ pub struct Session {
 }
 
 impl Session {
+    pub(crate) fn environment(
+        &mut self,
+        sources: &mut SourceStore,
+        path: &std::path::Path,
+    ) -> io::Result<std::sync::Arc<crate::roblox::Environment>> {
+        let mut resolver = Resolver::new(sources);
+        let settings = resolver.discovery.roblox(path)?;
+
+        self.native
+            .environment(&mut resolver, settings.as_ref(), Options::default().update)
+    }
+
     /// # Errors
     /// Returns analysis or native query failures.
     pub fn query(
