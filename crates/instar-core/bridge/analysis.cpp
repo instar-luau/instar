@@ -945,8 +945,12 @@ static std::optional<Destination> destination(Luau::Frontend &frontend, Luau::Mo
         if (auto table = Luau::get<Luau::TableType>(Luau::follow(*owner))) {
           auto property = table->props.find(index->index.value);
 
-          if (property != table->props.end() && property->second.location)
-            return Destination{table->definitionModuleName.empty() ? path : table->definitionModuleName, *property->second.location};
+          if (property != table->props.end()) {
+            const auto &location = property->second.location ? property->second.location : property->second.typeLocation;
+
+            if (location)
+              return Destination{table->definitionModuleName.empty() ? path : table->definitionModuleName, *location};
+          }
         }
   }
 
