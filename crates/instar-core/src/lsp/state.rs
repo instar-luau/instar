@@ -196,8 +196,50 @@ impl State {
 
         let operation = self.operation(source.path(), position, operation)?;
 
+        let member = if operation == "implementation" {
+            let scope = self
+                .session
+                .query(
+                    &mut self.sources,
+                    &[source.path().to_owned()],
+                    source.path(),
+                    position,
+                    "scope",
+                )
+                .map_err(failure)?;
+
+            match scope.editor {
+                Some(analysis::EditorResult::Entry(entry)) => {
+                    entry.name.filter(|name| !name.is_empty())
+                }
+
+                _ => None,
+            }
+        } else {
+            None
+        };
+
         let modules = if matches!(operation, "references" | "implementation") {
             let mut modules = self.workspace()?;
+
+            if let Some(member) = member {
+                let mut candidates = Vec::new();
+
+                for path in modules {
+                    let candidate = self.sources.read(&path).map_err(failure)?;
+
+                    if candidate
+                        .bytes()
+                        .windows(member.len())
+                        .any(|bytes| bytes == member.as_bytes())
+                        || candidate.bytes().contains(&b'\\')
+                    {
+                        candidates.push(path);
+                    }
+                }
+
+                modules = candidates;
+            }
 
             if !modules.iter().any(|path| path == source.path()) {
                 modules.push(source.path().to_owned());
@@ -571,22 +613,23 @@ impl State {
                 position: Position::default(),
             };
 
-            let Response::Editor(symbols) = self.query(&parameters, "symbols")? else {
+            let Response::Editor(entries) = self.query(&parameters, "index")? else {
                 return Err(Error::internal_error());
             };
 
-            let Response::Editor(calls) = self.query(&parameters, "calls")? else {
-                return Err(Error::internal_error());
-            };
+            let mut symbols = Vec::new();
+            let mut calls = Vec::new();
+            let mut dependencies = std::collections::BTreeSet::new();
 
-            let Response::Editor(links) = self.query(&parameters, "links")? else {
-                return Err(Error::internal_error());
-            };
-
-            let dependencies = links
-                .into_iter()
-                .filter_map(|entry| entry.native.name.map(PathBuf::from))
-                .collect();
+            for entry in entries {
+                if entry.native.caller.is_some() {
+                    calls.push(entry);
+                } else if entry.native.kind == Some(3) {
+                    dependencies.extend(entry.native.name.map(PathBuf::from));
+                } else {
+                    symbols.push(entry);
+                }
+            }
 
             self.index.files.insert(
                 path,

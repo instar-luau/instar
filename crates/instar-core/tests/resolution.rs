@@ -9,6 +9,105 @@ use instar_core::{
 type TestResult = Result<(), Box<dyn Error>>;
 
 #[test]
+fn index_queries_preserve_symbols_calls_and_dependencies() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let main = directory.path().join("main.luau");
+
+    fs::write(
+        directory.path().join("dependency.luau"),
+        "local function calculate(value: number): number return value + 1 end\nreturn table.freeze({ calculate = calculate })",
+    )?;
+
+    let mut sources = SourceStore::default();
+    let mut session = analysis::Session::default();
+    let mut source = sources.open(&main, 1, "local dependency = require('./dependency')\nlocal function run(value: number): number return dependency.calculate(value) end\nreturn run(1)")?;
+
+    let identity = |entry: &analysis::EditorEntry| {
+        (
+            entry.name.clone(),
+            entry.path.clone(),
+            entry.range,
+            entry.selection,
+            entry.kind,
+            entry.declaration,
+            entry.modifiers,
+            entry.caller,
+            entry.container,
+        )
+    };
+
+    for version in [1, 2] {
+        if version == 2 {
+            source = sources.update(
+                &source,
+                version,
+                "local dependency = require('./dependency')\nreturn dependency.calculate(2)",
+            )?;
+
+            session.change(&main);
+        }
+
+        let mut expected = Vec::new();
+        let mut indexed = Vec::new();
+
+        for operation in ["index", "symbols", "calls", "links"] {
+            let report = session.query(
+                &mut sources,
+                std::slice::from_ref(&main),
+                &main,
+                line_index::LineCol { line: 0, col: 0 },
+                operation,
+            )?;
+
+            assert!(!report.has_errors());
+
+            let Some(analysis::EditorResult::Entries(entries)) = report.editor else {
+                return Err("editor entries".into());
+            };
+
+            assert!(!entries.is_empty(), "{operation}");
+
+            match operation {
+                "index" => indexed.extend(entries.iter().map(identity)),
+
+                "symbols" => {
+                    assert!(
+                        entries
+                            .iter()
+                            .all(|entry| entry.caller.is_none() && entry.kind != Some(3))
+                    );
+
+                    expected.extend(entries.iter().map(identity));
+                }
+
+                "calls" => {
+                    assert!(entries.iter().all(|entry| entry.caller.is_some()));
+                    expected.extend(entries.iter().map(identity));
+                }
+
+                "links" => {
+                    assert!(
+                        entries
+                            .iter()
+                            .all(|entry| entry.kind == Some(3) && entry.caller.is_none())
+                    );
+
+                    expected.extend(entries.iter().map(identity));
+                }
+
+                _ => unreachable!(),
+            }
+        }
+
+        expected.sort();
+        indexed.sort();
+        assert_eq!(indexed, expected);
+    }
+
+    Ok(())
+}
+
+#[test]
 fn sessions_refresh_sources_dependencies_and_configuration() -> TestResult {
     let directory = tempfile::tempdir()?;
     let root = directory.path();
