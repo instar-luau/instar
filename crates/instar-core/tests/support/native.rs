@@ -62,7 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let directory = tempfile::tempdir().unwrap();
     let entry = format!("graft{}", std::env::consts::EXE_SUFFIX);
-    fs::copy(compiled.path().join(&entry), directory.path().join(&entry)).unwrap();
+    fs::hard_link(compiled.path().join(&entry), directory.path().join(&entry)).unwrap();
     fs::write(directory.path().join("response.json"), response).unwrap();
 
     fs::write(
