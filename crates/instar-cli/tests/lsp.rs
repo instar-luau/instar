@@ -211,6 +211,65 @@ fn has_errors(publication: &Value) -> bool {
 }
 
 #[test]
+fn explicit_type_instantiations_preserve_lint_and_editor_analysis() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    fs::write(directory.path().join("instar.toml"), "mode = 'strict'")?;
+
+    fs::write(
+        directory.path().join("types.luau"),
+        "export type Value = number\nreturn table.freeze({})",
+    )?;
+
+    let mut client = Client::start()?;
+    let identity = "const function identity<Value>(value: Value): Value return value end\n";
+
+    for (name, source) in [
+        ("single", format!("{identity}return identity<<number>>(1)")),
+        ("multiple", "local function first<Value, Other>(value: Value, _other: Other): Value return value end\nreturn first<<number, string>>(1, 'value')".into()),
+        ("pack", "local function identity<Values...>(...: Values...): Values... return ... end\nreturn identity<<(number, string)>>(1, 'value')".into()),
+        ("nested", format!("{identity}return identity<<typeof(identity<<number>>(1))>>(2)")),
+        ("annotation", format!("{identity}local value: typeof(identity<<number>>(1)) = 1\nreturn value + value")),
+        ("import", format!("{identity}const types = require('./types')\nreturn identity<<types.Value>>(1)")),
+    ] {
+        let uri = Uri::from_file_path(directory.path().join(format!("{name}.luau")))
+            .ok_or("URI")?.to_string();
+
+        client.open(&uri, &source)?;
+        let diagnostics = client.diagnostics(&uri)?;
+        assert!(!has_errors(&diagnostics), "{name}: {diagnostics}");
+        assert!(diagnostics["diagnostics"].as_array().ok_or("diagnostics")?.iter().all(|diagnostic| diagnostic["code"] != "unused_import"), "{name}: {diagnostics}");
+        assert!(client.query(&uri, "textDocument/documentSymbol", 0, 0)?.is_array());
+    }
+
+    let uri = Uri::from_file_path(directory.path().join("single.luau"))
+        .ok_or("URI")?
+        .to_string();
+
+    client.change(
+        &uri,
+        2,
+        &format!("{identity}return identity<<number>>('wrong')"),
+    )?;
+
+    let diagnostics = client.diagnostics(&uri)?;
+    assert!(has_errors(&diagnostics), "{diagnostics}");
+
+    assert!(
+        diagnostics["diagnostics"]
+            .as_array()
+            .ok_or("diagnostics")?
+            .iter()
+            .all(|diagnostic| !diagnostic["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("Internal error")),
+        "{diagnostics}"
+    );
+
+    client.shutdown()
+}
+
+#[test]
 fn stdio_preserves_snapshots_positions_dependencies_and_shutdown() -> TestResult {
     let directory = tempfile::tempdir()?;
     let root = directory.path();

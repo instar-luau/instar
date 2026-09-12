@@ -1659,6 +1659,72 @@ struct FoldingRanges : Luau::AstVisitor {
   bool visit(Luau::AstTypePack *) override { return true; }
 };
 
+struct EditorSyntax : Luau::AstVisitor {
+  std::string output;
+  std::unordered_set<Luau::AstExprInstantiate *> visited;
+
+  EditorSyntax(Luau::AstNode *root, std::string output) : output(std::move(output)) {
+    root->visit(this);
+  }
+
+  static std::string encode(Luau::AstNode *node) {
+    return EditorSyntax(node, Luau::toJson(node)).output;
+  }
+
+  bool visit(Luau::AstExprInstantiate *node) override {
+    if (!visited.insert(node).second) return false;
+
+    Luau::Json::JsonEmitter result;
+
+    {
+      auto object = result.writeObject();
+      object.writePair("type", "AstExprInstantiate");
+      const auto &location = node->location;
+
+      object.writePair("location", std::to_string(location.begin.line) + "," + std::to_string(location.begin.column) + " - " +
+          std::to_string(location.end.line) + "," + std::to_string(location.end.column));
+
+      result.writeComma();
+      result.writeRaw("\"expr\":");
+      result.writeRaw(encode(node->expr));
+      result.writeComma();
+      result.writeRaw("\"typeArguments\":");
+      auto arguments = result.writeArray();
+
+      for (const auto &argument : node->typeArguments) {
+        result.writeComma();
+        result.writeRaw(encode(argument.type ? static_cast<Luau::AstNode *>(argument.type) : argument.typePack));
+      }
+    }
+
+    auto original = Luau::toJson(node);
+    auto replacement = result.str();
+    size_t position = 0;
+
+    while ((position = output.find(original, position)) != std::string::npos) {
+      output.replace(position, original.size(), replacement);
+      position += replacement.size();
+    }
+
+    return false;
+  }
+
+  bool visit(Luau::AstExprLocal *node) override {
+    if (node->local->annotation) node->local->annotation->visit(this);
+
+    return true;
+  }
+
+  bool visit(Luau::AstTypeReference *node) override {
+    if (node->prefixLocal && node->prefixLocal->annotation) node->prefixLocal->annotation->visit(this);
+
+    return true;
+  }
+
+  bool visit(Luau::AstType *) override { return true; }
+  bool visit(Luau::AstTypePack *) override { return true; }
+};
+
 extern "C" void instar_query(void *handle, void *context, Bytes name, unsigned line, unsigned column,
                               Bytes operation, Annotate output) noexcept {
   std::lock_guard<std::mutex> lock(analysisMutex);
@@ -1739,7 +1805,7 @@ extern "C" void instar_query(void *handle, void *context, Bytes name, unsigned l
       }
     } else if (command == "syntax") {
       auto object = result.writeObject();
-      object.writePair("type", Luau::toJson(source->root, source->commentLocations));
+      object.writePair("type", EditorSyntax(source->root, Luau::toJson(source->root, source->commentLocations)).output);
       std::vector<std::string> globals;
 
       for (const auto &[symbol, binding] : frontend.globals.globalScope->bindings)

@@ -20,7 +20,10 @@ pub(super) fn field<'value>(value: &'value Value, name: &str) -> &'value str {
     value[name].as_str().unwrap_or("")
 }
 pub(super) fn unwrap(mut value: &Value) -> &Value {
-    while matches!(kind(value), "AstExprGroup" | "AstExprTypeAssertion") {
+    while matches!(
+        kind(value),
+        "AstExprGroup" | "AstExprTypeAssertion" | "AstExprInstantiate"
+    ) {
         value = &value["expr"];
     }
 
