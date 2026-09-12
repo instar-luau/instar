@@ -828,6 +828,48 @@ fn imported_type_navigation_and_references_resolve_aliases() -> TestResult {
 }
 
 #[test]
+fn annotated_properties_navigate_to_imported_declarations() -> TestResult {
+    let directory = tempfile::tempdir()?;
+
+    let dependency = Uri::from_file_path(directory.path().join("context.luau"))
+        .ok_or("URI")?
+        .to_string();
+
+    let identifier = Uri::from_file_path(directory.path().join("spectate.luau"))
+        .ok_or("URI")?
+        .to_string();
+
+    fs::write(
+        directory.path().join("context.luau"),
+        "export type Context = {\n    read get_player_index: () -> number,\n    value: number,\n}\nreturn {}",
+    )?;
+
+    let mut client = Client::start()?;
+    client.open(&identifier, "--!strict\nconst shared = require('./context')\nconst function create(context: shared.Context)\n    const index = context.get_player_index()\n    return index + context.value\nend\nreturn create")?;
+    assert!(!has_errors(&client.diagnostics(&identifier)?));
+
+    for method in ["textDocument/definition", "textDocument/declaration"] {
+        let target = client.query(&identifier, method, 3, 30)?;
+        assert_eq!(target["uri"], dependency, "{target}");
+
+        assert_eq!(
+            target["range"],
+            json!({"start":{"line":1,"character":9},"end":{"line":1,"character":25}})
+        );
+
+        let target = client.query(&identifier, method, 4, 29)?;
+        assert_eq!(target["uri"], dependency, "{target}");
+
+        assert_eq!(
+            target["range"],
+            json!({"start":{"line":2,"character":4},"end":{"line":2,"character":9}})
+        );
+    }
+
+    client.shutdown()
+}
+
+#[test]
 fn local_rename_does_not_read_unrelated_projects() -> TestResult {
     let directory = tempfile::tempdir()?;
     let root = directory.path();
