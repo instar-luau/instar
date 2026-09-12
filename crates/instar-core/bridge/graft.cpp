@@ -165,7 +165,7 @@ static void run(lua_State *state, Bytes source, const char *name) {
 }
 
 extern "C" void instar_graft(Bytes source, Bytes request, bool format,
-                             bool lint, size_t limit, void *context,
+                             bool lint, bool compile, size_t limit, void *context,
                              Reply reply) {
   try {
     instar_initialize();
@@ -187,9 +187,10 @@ extern "C" void instar_graft(Bytes source, Bytes request, bool format,
     if (!lua_istable(state, -1))
       throw std::runtime_error("Luau graft must return a module table");
 
-    for (const char *hook : {"format", "lint"}) {
+    for (const char *hook : {"format", "lint", "compile"}) {
       if ((std::string_view(hook) == "format" && !format) ||
-          (std::string_view(hook) == "lint" && !lint))
+          (std::string_view(hook) == "lint" && !lint) ||
+          (std::string_view(hook) == "compile" && !compile))
         continue;
 
       lua_rawgetfield(state, 1, hook);

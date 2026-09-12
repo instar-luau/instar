@@ -533,16 +533,24 @@ fn configure(resolver: &mut Resolver<'_>, node: &mut Node, path: &Path) -> io::R
 
 fn filesystem(resolver: &mut Resolver<'_>, path: &Path, mapping: &mut Mapping) -> io::Result<Node> {
     let path = absolute(path).map_err(io::Error::other)?;
-    let metadata = fs::symlink_metadata(&path)?;
 
-    if metadata.file_type().is_symlink() {
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => Some(metadata),
+        Err(error) if error.kind() == io::ErrorKind::NotFound && resolver.is_file(&path)? => None,
+        Err(error) => return Err(error),
+    };
+
+    if metadata
+        .as_ref()
+        .is_some_and(|metadata| metadata.file_type().is_symlink())
+    {
         return Err(invalid(format!(
             "project symlink is unsupported: {}",
             path.display()
         )));
     }
 
-    if metadata.is_file() && path.to_string_lossy().ends_with(".project.json") {
+    if resolver.is_file(&path)? && path.to_string_lossy().ends_with(".project.json") {
         return project(resolver, &path, mapping);
     }
 
@@ -555,7 +563,7 @@ fn filesystem(resolver: &mut Resolver<'_>, path: &Path, mapping: &mut Mapping) -
         ..Default::default()
     };
 
-    if metadata.is_dir() {
+    if metadata.as_ref().is_some_and(std::fs::Metadata::is_dir) {
         let project_path = path.join("default.project.json");
 
         if project_path.is_file() {
@@ -570,13 +578,7 @@ fn filesystem(resolver: &mut Resolver<'_>, path: &Path, mapping: &mut Mapping) -
 
         node.class_name = "Folder".into();
 
-        let mut paths = fs::read_dir(&path)?
-            .map(|entry| entry.map(|entry| entry.path()))
-            .collect::<io::Result<Vec<_>>>()?;
-
-        paths.sort();
-
-        for path in paths {
+        for path in resolver.entries(&path)? {
             if mapping.ignored(&path) {
                 continue;
             }

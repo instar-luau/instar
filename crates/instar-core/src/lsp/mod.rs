@@ -8,6 +8,7 @@ mod hierarchy;
 mod hints;
 mod imports;
 mod index;
+mod lint;
 mod progress;
 mod refactor;
 mod renames;

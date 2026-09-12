@@ -1937,6 +1937,58 @@ fn semantic_tokens_distinguish_parameters_methods_and_constants() -> TestResult 
 }
 
 #[test]
+fn lint_diagnostics_and_document_fixes_share_configuration() -> TestResult {
+    let directory = tempfile::tempdir()?;
+
+    fs::write(
+        directory.path().join("instar.toml"),
+        "[lint.rules]\nconstant_binding = 'warn'\nunused_variable = 'allow'\n",
+    )?;
+
+    let uri = Uri::from_file_path(directory.path().join("main.luau"))
+        .ok_or("URI")?
+        .to_string();
+
+    let mut client = Client::start()?;
+    client.open(&uri, "local value = 1\nreturn value")?;
+    let diagnostics = client.diagnostics(&uri)?;
+
+    assert!(
+        diagnostics["diagnostics"]
+            .as_array()
+            .ok_or("diagnostics")?
+            .iter()
+            .any(|finding| finding["code"] == "constant_binding")
+    );
+
+    let actions = client.request("textDocument/codeAction", json!({"textDocument":{"uri":uri},"range":{"start":{"line":0,"character":0},"end":{"line":1,"character":12}},"context":{"diagnostics":diagnostics["diagnostics"],"only":["source.fixAll"]}}))?;
+    assert_eq!(actions[0]["kind"], "source.fixAll");
+
+    assert_eq!(
+        actions[0]["edit"]["documentChanges"][0]["textDocument"]["version"],
+        1
+    );
+
+    assert_eq!(
+        actions[0]["edit"]["documentChanges"][0]["edits"][0]["newText"],
+        "const"
+    );
+
+    client.change(&uri, 2, "const value = 1\nreturn value")?;
+    let diagnostics = client.diagnostics(&uri)?;
+
+    assert!(
+        diagnostics["diagnostics"]
+            .as_array()
+            .ok_or("diagnostics")?
+            .iter()
+            .all(|finding| finding["code"] != "constant_binding")
+    );
+
+    client.shutdown()
+}
+
+#[test]
 fn unused_binding_actions_preserve_document_versions() -> TestResult {
     let directory = tempfile::tempdir()?;
 
@@ -1967,7 +2019,7 @@ fn unused_binding_actions_preserve_document_versions() -> TestResult {
             .as_array()
             .ok_or("diagnostics")?
             .iter()
-            .all(|diagnostic| diagnostic["code"] != "LocalUnused")
+            .all(|diagnostic| diagnostic["code"] != "unused_variable")
     );
 
     client.shutdown()

@@ -690,12 +690,16 @@ impl State {
         }])))
     }
 
+    pub(super) fn lint(&mut self, path: &std::path::Path) -> Result<crate::lint::Report> {
+        crate::lint::analyze(&mut self.session, &mut self.sources, path).map_err(failure)
+    }
+
     fn diagnostics(&mut self) -> Result<Vec<PublishDiagnosticsParams>> {
         self.diagnostics_for(&self.documents.keys().cloned().collect::<Vec<_>>(), true)
     }
 
     fn report(&mut self, paths: &[PathBuf], publish: bool) -> std::io::Result<analysis::Report> {
-        if publish {
+        let mut report = if publish {
             self.session
                 .analyze(&mut self.sources, paths, &analysis::Options::default())
         } else {
@@ -706,7 +710,16 @@ impl State {
                 LineCol { line: 0, col: 0 },
                 "diagnostics",
             )
-        }
+        }?;
+
+        report.diagnostics.retain(|diagnostic| {
+            diagnostic
+                .message
+                .split_once(':')
+                .is_none_or(|(code, _)| crate::lint::registry::upstream(code).is_none())
+        });
+
+        Ok(report)
     }
 
     fn diagnostics_for(
@@ -784,6 +797,8 @@ impl State {
                 }
             }
         }
+
+        super::lint::append(self, paths, &mut diagnostics);
 
         let mut publications = Vec::new();
         let mut published = BTreeMap::new();

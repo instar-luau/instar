@@ -33,6 +33,7 @@ unsafe extern "C" {
         request: Bytes,
         format: bool,
         lint: bool,
+        compile: bool,
         limit: usize,
         context: *mut c_void,
         reply: Reply,
@@ -62,7 +63,13 @@ extern "C" fn reply(context: *mut c_void, bytes: Bytes, success: bool) {
     }
 }
 
-fn execute(source: &[u8], request: &[u8], format: bool, lint: bool) -> io::Result<Vec<u8>> {
+fn execute(
+    source: &[u8],
+    request: &[u8],
+    format: bool,
+    lint: bool,
+    compile: bool,
+) -> io::Result<Vec<u8>> {
     let mut result: io::Result<Vec<u8>> = Err(io::Error::other("Luau graft returned no response"));
 
     unsafe {
@@ -71,6 +78,7 @@ fn execute(source: &[u8], request: &[u8], format: bool, lint: bool) -> io::Resul
             request.into(),
             format,
             lint,
+            compile,
             RESPONSE_LIMIT,
             (&raw mut result).cast(),
             reply,
@@ -124,8 +132,8 @@ fn literal(value: &Value, output: &mut String) {
     }
 }
 
-pub(super) fn validate(source: &[u8], format: bool, lint: bool) -> io::Result<()> {
-    execute(source, &[], format, lint).map(|_| ())
+pub(super) fn validate(source: &[u8], format: bool, lint: bool, compile: bool) -> io::Result<()> {
+    execute(source, &[], format, lint, compile).map(|_| ())
 }
 
 pub(super) fn invoke(
@@ -133,10 +141,11 @@ pub(super) fn invoke(
     request: &Request<'_>,
     format: bool,
     lint: bool,
+    compile: bool,
 ) -> io::Result<Vec<u8>> {
     let request = serde_json::to_value(request).map_err(io::Error::other)?;
     let mut chunk = String::from("return ");
     literal(&request, &mut chunk);
 
-    execute(source, chunk.as_bytes(), format, lint)
+    execute(source, chunk.as_bytes(), format, lint, compile)
 }

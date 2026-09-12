@@ -27,6 +27,10 @@ pub struct Loaded {
 }
 
 impl Input {
+    pub fn new(files: Vec<PathBuf>, filename: Option<PathBuf>) -> Self {
+        Self { files, filename }
+    }
+
     pub fn load_selected(
         self,
         mut selected: impl FnMut(&Path) -> io::Result<bool>,

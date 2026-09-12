@@ -36,15 +36,15 @@ fn help_and_version_describe_the_cli() {
 }
 
 #[test]
-fn placeholders_fail_without_protocol_output() {
-    for args in [&["lint"][..], &["lint", "--fix"], &["build"]] {
-        Command::new(env!("CARGO_BIN_EXE_instar"))
-            .args(args)
-            .assert()
-            .failure()
-            .stdout("")
-            .stderr(format!("{}: not implemented\n", args.join(" ")));
-    }
+fn builder_requires_project_configuration() {
+    let directory = tempfile::tempdir().expect("temporary project");
+
+    Command::new(env!("CARGO_BIN_EXE_instar"))
+        .arg("build")
+        .arg(directory.path())
+        .assert()
+        .failure()
+        .stdout("");
 }
 
 #[test]

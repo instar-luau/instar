@@ -65,7 +65,21 @@ type Emit = extern "C" fn(*mut c_void, Bytes, Bytes, Span, bool);
 type Annotate = extern "C" fn(*mut c_void, Bytes, Bytes);
 type Alias = extern "C" fn(*mut c_void, Bytes, Bytes);
 
+pub(crate) fn matches(pattern: &str, source: &str) -> io::Result<bool> {
+    match unsafe {
+        instar_matches(
+            Bytes::new(pattern.as_bytes()),
+            Bytes::new(source.as_bytes()),
+        )
+    } {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(io::Error::other("invalid lint ignore pattern")),
+    }
+}
+
 unsafe extern "C" {
+    fn instar_matches(pattern: Bytes, source: Bytes) -> i32;
     fn instar_aliases(
         source: Bytes,
         executable: bool,

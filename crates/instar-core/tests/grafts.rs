@@ -55,6 +55,46 @@ fn lint_findings_validate_source_ranges() {
     let graft = Graft::load(&directory.path().join("graft.toml"), "example").unwrap();
     assert_eq!(graft.lint(b"return 1").unwrap()[0].rule, "example");
     assert!(graft.lint(b"x").is_err());
+
+    fs::write(
+        directory.path().join("instar.toml"),
+        "[grafts]\nexample = 'graft.toml'\n[lint.rules]\n'example/example' = 'deny'\n",
+    )
+    .unwrap();
+
+    let mut sources = instar_core::source::SourceStore::default();
+
+    let source = sources
+        .open(&directory.path().join("source.luau"), 1, "return 1")
+        .unwrap();
+
+    let report = instar_core::lint::analyze(
+        &mut instar_core::analysis::Session::default(),
+        &mut sources,
+        source.path(),
+    )
+    .unwrap();
+
+    assert_eq!(report.findings.len(), 1);
+    assert_eq!(report.findings[0].rule, "example/example");
+
+    assert_eq!(
+        report.findings[0].level,
+        instar_core::lint::configuration::Level::Deny
+    );
+
+    let source = sources
+        .update(&source, 2, "-- instar: allow(example/example)\nreturn 1")
+        .unwrap();
+
+    let report = instar_core::lint::analyze(
+        &mut instar_core::analysis::Session::default(),
+        &mut sources,
+        source.path(),
+    )
+    .unwrap();
+
+    assert_eq!(report.findings, []);
 }
 
 #[test]

@@ -1,7 +1,9 @@
 pub mod analysis;
+pub mod build;
 pub mod configuration;
 pub mod format;
 pub mod graft;
+pub mod lint;
 pub mod lsp;
 mod luau;
 pub mod project;

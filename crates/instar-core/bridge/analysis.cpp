@@ -1,4 +1,6 @@
 #include "Luau/AstQuery.h"
+#include "Luau/AstJsonEncoder.h"
+#include <regex>
 #include "Luau/Autocomplete.h"
 #include "Luau/JsonEmitter.h"
 #include "Luau/BuiltinDefinitions.h"
@@ -222,6 +224,14 @@ struct Configurations : Luau::ConfigResolver {
     return result;
   }
 };
+
+extern "C" int instar_matches(Bytes pattern, Bytes source) noexcept {
+  try {
+    return std::regex_search(text(source), std::regex(text(pattern))) ? 1 : 0;
+  } catch (const std::exception &) {
+    return -1;
+  }
+}
 
 extern "C" void instar_aliases(Bytes source, bool executable, void *context,
                                Alias alias, Report report) noexcept {
@@ -1599,6 +1609,15 @@ extern "C" void instar_query(void *handle, void *context, Bytes name, unsigned l
             object.writePair("range", coordinates(location));
           }
       }
+    } else if (command == "syntax") {
+      auto object = result.writeObject();
+      object.writePair("type", Luau::toJson(source->root, source->commentLocations));
+      std::vector<std::string> globals;
+
+      for (const auto &[symbol, binding] : frontend.globals.globalScope->bindings)
+        if (symbol.global.value) globals.emplace_back(symbol.global.value);
+
+      object.writePair("parameters", globals);
     } else if (command == "hints") {
       auto array = result.writeArray();
       EditorHints visitor(*module, result);
