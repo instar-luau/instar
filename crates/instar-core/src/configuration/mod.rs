@@ -10,6 +10,18 @@ use std::{collections::BTreeMap, path::PathBuf};
 pub struct InstarConfig {
     #[schemars(
         default,
+        description = "Source builds, bundle output, runtime targets, compilation, and named build profiles."
+    )]
+    pub build: Option<crate::build::configuration::Settings>,
+
+    #[schemars(
+        default,
+        description = "Lint rules, groups, globals, and options. Settings inherit from ancestor configurations."
+    )]
+    pub lint: Option<crate::lint::configuration::Settings>,
+
+    #[schemars(
+        default,
         description = "Checking mode. Inherits from ancestor configurations; defaults to nonstrict. CLI mode and file directives take precedence."
     )]
     pub mode: Option<crate::analysis::Mode>,

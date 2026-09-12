@@ -8,6 +8,7 @@ pub(super) struct Host {
     deallocate: TypedFunc<(u32, u32), ()>,
     format: Option<TypedFunc<(u32, u32), u32>>,
     lint: Option<TypedFunc<(u32, u32), u32>>,
+    compile: Option<TypedFunc<(u32, u32), u32>>,
 }
 
 impl Host {
@@ -15,6 +16,7 @@ impl Host {
         bytes: &[u8],
         format: bool,
         lint: bool,
+        compile: bool,
         configuration: &BTreeMap<String, serde_json::Value>,
     ) -> io::Result<Self> {
         let engine = Engine::default();
@@ -57,6 +59,16 @@ impl Host {
             None
         };
 
+        let compile = if compile {
+            Some(
+                instance
+                    .get_typed_func(&store, "instar_compile")
+                    .map_err(io::Error::other)?,
+            )
+        } else {
+            None
+        };
+
         let mut host = Self {
             store,
             memory,
@@ -64,6 +76,7 @@ impl Host {
             deallocate,
             format,
             lint,
+            compile,
         };
 
         if !configuration.is_empty() {
@@ -105,6 +118,7 @@ impl Host {
         let function = match name {
             "instar_format" => self.format,
             "instar_lint" => self.lint,
+            "instar_compile" => self.compile,
             _ => return Err(io::Error::other("unknown graft hook")),
         };
 

@@ -14,6 +14,18 @@
       },
       "default": null
     },
+    "build": {
+      "description": "Source builds, bundle output, runtime targets, compilation, and named build profiles.\n\nDefault: `unset`.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BuildSettings"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "definitions": {
       "description": "External Luau definition files, resolved relative to this configuration.\n\nDefault: `unset`.",
       "type": [
@@ -70,6 +82,18 @@
         "type": "string"
       }
     },
+    "lint": {
+      "description": "Lint rules, groups, globals, and options. Settings inherit from ancestor configurations.\n\nDefault: `unset`.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LintSettings"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "mode": {
       "description": "Checking mode. Inherits from ancestor configurations; defaults to nonstrict. CLI mode and file directives take precedence.\n\nDefault: `unset`.",
       "anyOf": [
@@ -120,6 +144,194 @@
         }
       },
       "additionalProperties": false
+    },
+    "BuildConstant": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "number",
+          "format": "double"
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "BuildProfile": {
+      "type": "object",
+      "properties": {
+        "constants": {
+          "description": "Override constants by name.\n\nDefault: `{}`.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/BuildConstant"
+          },
+          "default": {}
+        },
+        "entry": {
+          "description": "Override the bundle entry.\n\nDefault: `unset`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "lower": {
+          "description": "Override type lowering.\n\nDefault: `unset`.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "minify": {
+          "description": "Override minification.\n\nDefault: `unset`.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "output": {
+          "description": "Override the output destination.\n\nDefault: `unset`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "shape": {
+          "description": "Override the output shape.\n\nDefault: `unset`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BuildShape"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "target": {
+          "description": "Override the require target.\n\nDefault: `unset`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BuildTarget"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "BuildSettings": {
+      "type": "object",
+      "properties": {
+        "constants": {
+          "description": "Replace reads of these unshadowed global names with scalar constants. Assignments to constants are rejected.\n\nDefault: `{}`.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/BuildConstant"
+          },
+          "default": {}
+        },
+        "entry": {
+          "description": "Bundle entry relative to the build configuration. Required for bundle output.\n\nDefault: `unset`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "external": {
+          "description": "Exact require specifiers supplied by the deployment runtime rather than this build.\n\nDefault: `[]`.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "inputs": {
+          "description": "Input files and directories relative to the build configuration. Required for directory output.\n\nDefault: `[]`.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "languages": {
+          "description": "Input extensions mapped to configured compiling graft names. A leading dot is omitted.\n\nDefault: `{}`.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "lower": {
+          "description": "Remove type-only syntax, assertions, and const declarations while retaining Luau runtime syntax.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "minify": {
+          "description": "Remove comments and unnecessary whitespace. Literal contents and token boundaries are preserved.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "output": {
+          "description": "Output directory or bundle file relative to the build configuration. Required.\n\nDefault: `unset`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "profiles": {
+          "description": "Named overrides for build configuration. Paths remain relative to this configuration.\n\nDefault: `{}`.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/BuildProfile"
+          },
+          "default": {}
+        },
+        "shape": {
+          "description": "Directory output retains project-relative paths; bundle output follows the entry's dependencies.\n\nDefault: `\"directory\"`.",
+          "$ref": "#/$defs/BuildShape",
+          "default": "directory"
+        },
+        "target": {
+          "description": "Require output syntax. Unset uses Roblox strings when Roblox is enabled, otherwise relative paths.\n\nDefault: `unset`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BuildTarget"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "BuildShape": {
+      "type": "string",
+      "enum": [
+        "directory",
+        "bundle"
+      ]
+    },
+    "BuildTarget": {
+      "type": "string",
+      "enum": [
+        "path",
+        "roblox-string",
+        "roblox-instance"
+      ]
     },
     "CallStyle": {
       "type": "string",
@@ -199,6 +411,19 @@
         "always"
       ]
     },
+    "Complexity": {
+      "type": "object",
+      "properties": {
+        "maximum_complexity": {
+          "description": "Maximum permitted cyclomatic complexity.\n\nDefault: `40`.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 40,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
     "Conditional": {
       "type": "object",
       "properties": {
@@ -249,6 +474,17 @@
         "leading"
       ]
     },
+    "Constant": {
+      "type": "object",
+      "properties": {
+        "mutated_tables_stay_local": {
+          "description": "Keep local for bindings whose table fields are mutated.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
     "Constants": {
       "type": "object",
       "properties": {
@@ -273,6 +509,20 @@
         "const",
         "global"
       ]
+    },
+    "Deprecated": {
+      "type": "object",
+      "properties": {
+        "additional": {
+          "description": "Deprecated function names mapped to replacement descriptions.\n\nDefault: `{}`.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        }
+      },
+      "additionalProperties": false
     },
     "Endings": {
       "type": "string",
@@ -373,6 +623,149 @@
         "last",
         "sorted"
       ]
+    },
+    "Level": {
+      "type": "string",
+      "enum": [
+        "allow",
+        "info",
+        "warn",
+        "deny"
+      ]
+    },
+    "LintOptions": {
+      "type": "object",
+      "properties": {
+        "constant_binding": {
+          "description": "Constant binding preferences.\n\nDefault: `{\"mutated_tables_stay_local\":false}`.",
+          "$ref": "#/$defs/Constant",
+          "default": {
+            "mutated_tables_stay_local": false
+          }
+        },
+        "deprecated_function": {
+          "description": "Additional deprecated functions and replacements.\n\nDefault: `{\"additional\":{}}`.",
+          "$ref": "#/$defs/Deprecated",
+          "default": {
+            "additional": {}
+          }
+        },
+        "function_complexity": {
+          "description": "Function complexity limits.\n\nDefault: `{\"maximum_complexity\":40}`.",
+          "$ref": "#/$defs/Complexity",
+          "default": {
+            "maximum_complexity": 40
+          }
+        },
+        "restricted_global": {
+          "description": "Restricted global names mapped to reasons.\n\nDefault: `{}`.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "restricted_import": {
+          "description": "Restricted module paths and reasons.\n\nDefault: `{\"paths\":{}}`.",
+          "$ref": "#/$defs/Restricted",
+          "default": {
+            "paths": {}
+          }
+        },
+        "unused_variable": {
+          "description": "Shared options for unused bindings, functions, and imports.\n\nDefault: `{\"ignore_pattern\":\"^_\",\"loop_variables\":false,\"parameters\":false}`.",
+          "$ref": "#/$defs/LintUnused",
+          "default": {
+            "ignore_pattern": "^_",
+            "loop_variables": false,
+            "parameters": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "LintSettings": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enable linting. Unset enables linting.\n\nDefault: `unset`.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "globals": {
+          "description": "Additional global names available to this project.\n\nDefault: `[]`.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "groups": {
+          "description": "Group levels. Disabled-by-default rules require an individual rule override.\n\nDefault: `{}`.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Level"
+          },
+          "default": {}
+        },
+        "options": {
+          "description": "Options for configurable rules.\n\nDefault: `{\"constant_binding\":{\"mutated_tables_stay_local\":false},\"deprecated_function\":{\"additional\":{}},\"function_complexity\":{\"maximum_complexity\":40},\"restricted_global\":{},\"restricted_import\":{\"paths\":{}},\"unused_variable\":{\"ignore_pattern\":\"^_\",\"loop_variables\":false,\"parameters\":false}}`.",
+          "$ref": "#/$defs/LintOptions",
+          "default": {
+            "constant_binding": {
+              "mutated_tables_stay_local": false
+            },
+            "deprecated_function": {
+              "additional": {}
+            },
+            "function_complexity": {
+              "maximum_complexity": 40
+            },
+            "restricted_global": {},
+            "restricted_import": {
+              "paths": {}
+            },
+            "unused_variable": {
+              "ignore_pattern": "^_",
+              "loop_variables": false,
+              "parameters": false
+            }
+          }
+        },
+        "rules": {
+          "description": "Individual rule levels. Graft rules use graft/rule identifiers.\n\nDefault: `{}`.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Level"
+          },
+          "default": {}
+        }
+      },
+      "additionalProperties": false
+    },
+    "LintUnused": {
+      "type": "object",
+      "properties": {
+        "ignore_pattern": {
+          "description": "Regular expression matching ignored binding names.\n\nDefault: `\"^_\"`.",
+          "type": "string",
+          "default": "^_"
+        },
+        "loop_variables": {
+          "description": "Report unused loop variables.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "parameters": {
+          "description": "Report unused function parameters.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
     },
     "Mode": {
       "type": "string",
@@ -621,6 +1014,20 @@
         "single",
         "preserve"
       ]
+    },
+    "Restricted": {
+      "type": "object",
+      "properties": {
+        "paths": {
+          "description": "Exact module paths mapped to restriction reasons.\n\nDefault: `{}`.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        }
+      },
+      "additionalProperties": false
     },
     "RobloxConfig": {
       "type": "object",

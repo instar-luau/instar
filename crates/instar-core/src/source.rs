@@ -265,6 +265,19 @@ impl SourceStore {
             .is_some_and(|entry| entry.version.is_some()))
     }
 
+    pub(crate) fn children(&self, path: &Path) -> Result<Vec<PathBuf>, SourceError> {
+        let path = absolute(path)?;
+
+        Ok(self
+            .entries
+            .iter()
+            .filter(|(candidate, entry)| {
+                entry.version.is_some() && candidate.parent() == Some(&path)
+            })
+            .map(|(candidate, _)| candidate.clone())
+            .collect())
+    }
+
     pub(crate) fn has_open_descendants(&self, path: &Path) -> Result<bool, SourceError> {
         let path = absolute(path)?;
 

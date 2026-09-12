@@ -42,7 +42,19 @@ impl<'store> Resolver<'store> {
         Ok(source)
     }
 
-    fn is_file(&self, path: &Path) -> io::Result<bool> {
+    pub(crate) fn entries(&self, path: &Path) -> io::Result<Vec<PathBuf>> {
+        let mut paths = fs::read_dir(path)?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<io::Result<Vec<_>>>()?;
+
+        paths.extend(self.sources.children(path).map_err(io::Error::other)?);
+        paths.sort();
+        paths.dedup();
+
+        Ok(paths)
+    }
+
+    pub(crate) fn is_file(&self, path: &Path) -> io::Result<bool> {
         let identity = absolute(path).map_err(io::Error::other)?;
 
         if self.snapshots.contains_key(&identity)
