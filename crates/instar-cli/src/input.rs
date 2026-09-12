@@ -9,7 +9,7 @@ use std::{
 use clap::Args;
 use instar_core::source::{Source, SourceStore};
 
-#[derive(Args)]
+#[derive(Args, Default)]
 pub struct Input {
     /// Files or directories to process; '-' reads original bytes from stdin.
     #[arg(required = true)]

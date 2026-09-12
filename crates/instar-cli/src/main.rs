@@ -56,7 +56,19 @@ fn main() -> ExitCode {
 
         Command::Lint { fix: false } => "lint",
         Command::Lint { fix: true } => "lint --fix",
-        Command::Lsp => "lsp",
+
+        Command::Lsp => {
+            return match instar_core::lsp::run() {
+                Ok(status) => status,
+
+                Err(error) => {
+                    eprintln!("lsp: {error}");
+
+                    ExitCode::FAILURE
+                }
+            };
+        }
+
         Command::Build => "build",
     };
 
