@@ -14,6 +14,15 @@ pub(super) fn server(operations: protocol::FileOperationRegistrationOptions) -> 
             },
         )),
         document_formatting_provider: Some(OneOf::Left(true)),
+        document_range_formatting_provider: Some(OneOf::Left(true)),
+        implementation_provider: Some(protocol::ImplementationProviderCapability::Simple(true)),
+        inlay_hint_provider: Some(OneOf::Left(true)),
+        diagnostic_provider: Some(protocol::DiagnosticServerCapabilities::Options(
+            protocol::DiagnosticOptions {
+                inter_file_dependencies: true,
+                ..protocol::DiagnosticOptions::default()
+            },
+        )),
         document_link_provider: Some(protocol::DocumentLinkOptions {
             resolve_provider: None,
             work_done_progress_options: protocol::WorkDoneProgressOptions::default(),
@@ -25,7 +34,15 @@ pub(super) fn server(operations: protocol::FileOperationRegistrationOptions) -> 
         references_provider: Some(OneOf::Left(true)),
         call_hierarchy_provider: Some(protocol::CallHierarchyServerCapability::Simple(true)),
         completion_provider: Some(protocol::CompletionOptions {
-            trigger_characters: Some(vec![".".into(), ":".into(), "\"".into(), "'".into()]),
+            resolve_provider: Some(true),
+            trigger_characters: Some(vec![
+                ".".into(),
+                ":".into(),
+                "\"".into(),
+                "'".into(),
+                "/".into(),
+                "@".into(),
+            ]),
             ..protocol::CompletionOptions::default()
         }),
         signature_help_provider: Some(protocol::SignatureHelpOptions {
@@ -76,6 +93,7 @@ pub(super) fn server(operations: protocol::FileOperationRegistrationOptions) -> 
             file_operations: Some(protocol::WorkspaceFileOperationsServerCapabilities {
                 did_create: Some(operations.clone()),
                 did_rename: Some(operations.clone()),
+                will_rename: Some(operations.clone()),
                 did_delete: Some(operations),
                 ..protocol::WorkspaceFileOperationsServerCapabilities::default()
             }),

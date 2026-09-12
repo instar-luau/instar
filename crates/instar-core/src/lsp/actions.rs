@@ -20,8 +20,13 @@ pub(super) fn actions(
 ) -> Result<protocol::CodeActionResponse> {
     let mut actions = Vec::new();
 
+    if wants(&parameters, "refactor.extract") {
+        actions.extend(super::refactor::extract(state, &parameters)?);
+    }
+
     if wants(&parameters, "quickfix") {
         actions.extend(fixes(state, &parameters)?);
+        actions.extend(super::imports::fixes(state, &parameters)?);
     }
 
     if wants(&parameters, "source.format")

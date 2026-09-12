@@ -243,7 +243,7 @@ extern "C" void instar_aliases(Bytes source, bool executable, void *context,
     }
 
     for (const auto &entry : configuration.aliases)
-      alias(context, bytes(entry.first), bytes(entry.second.value));
+      alias(context, bytes(entry.second.originalCase), bytes(entry.second.value));
   } catch (const std::exception &error) {
     report(context, {}, bytes(error.what()), {}, true);
   } catch (...) {
@@ -684,7 +684,21 @@ extern "C" void instar_analyze(void **handle, void *context, Read read, Resolve 
       if (!loaded.count(text(modules[index])))
         frontend.queueModuleCheck(text(modules[index]));
 
-    for (const std::string &name : frontend.checkQueuedModules()) {
+    auto pending = frontend.checkQueuedModules();
+
+    for (size_t index = 0; index < count; ++index)
+      pending.push_back(text(modules[index]));
+
+    std::set<std::string> visited;
+
+    for (size_t index = 0; index < pending.size(); ++index) {
+      std::string name = pending[index];
+
+      if (loaded.count(name) || !visited.insert(name).second) continue;
+
+      if (auto trace = frontend.requireTrace.find(name); trace != frontend.requireTrace.end())
+        for (const auto &[dependency, location] : trace->second.requireList) pending.push_back(dependency);
+
       auto checked = frontend.getCheckResult(name, false);
 
       if (!checked) {
@@ -1300,6 +1314,156 @@ struct EditorSymbols : Luau::AstVisitor {
   }
 };
 
+struct EditorImplementations : Luau::AstVisitor {
+  Files &files;
+  Luau::Frontend &frontend;
+  Luau::Module &module;
+  const Luau::SourceModule &source;
+  Luau::Json::JsonEmitter &output;
+  std::string path;
+  Destination target;
+  const Luau::TableType *contract = nullptr;
+
+  EditorImplementations(Files &files, Luau::Frontend &frontend, Luau::Module &module, const Luau::SourceModule &source, Luau::Json::JsonEmitter &output, std::string path, Destination target)
+      : files(files), frontend(frontend), module(module), source(source), output(output), path(std::move(path)), target(std::move(target)) {}
+
+  bool visit(Luau::AstExprFunction *function) override {
+    auto previous = contract;
+    contract = nullptr;
+
+    if (function->returnAnnotation)
+      if (auto pack = module.astResolvedTypePacks.find(function->returnAnnotation))
+        if (auto type = Luau::first(*pack)) contract = Luau::get<Luau::TableType>(Luau::follow(*type));
+
+    function->body->visit(this);
+    contract = previous;
+
+    return false;
+  }
+
+  bool visit(Luau::AstStatLocal *statement) override {
+    auto previous = contract;
+
+    for (size_t index = 0; index < statement->vars.size && index < statement->values.size; ++index)
+      if (auto annotation = statement->vars.data[index]->annotation)
+        if (auto type = module.astResolvedTypes.find(annotation)) {
+          contract = Luau::get<Luau::TableType>(Luau::follow(*type));
+          implement(statement->values.data[index]);
+        }
+
+    contract = previous;
+
+    return true;
+  }
+
+  bool visit(Luau::AstStatReturn *statement) override {
+    if (statement->list.size == 1) implement(statement->list.data[0]);
+
+    return true;
+  }
+
+  bool implement(Luau::AstExpr *expression) {
+    if (!contract || files.physical(contract->definitionModuleName) != files.physical(target.path)) return true;
+
+    if (auto *call = expression->as<Luau::AstExprCall>(); call && call->args.size == 1)
+      if (auto *member = call->func->as<Luau::AstExprIndexName>(); member && member->index == "freeze")
+        if (auto *global = member->expr->as<Luau::AstExprGlobal>(); global && global->name == "table") expression = call->args.data[0];
+
+    auto *table = expression->as<Luau::AstExprTable>();
+
+    if (!table) return true;
+
+    if (contract->definitionLocation == target.location) {
+      output.writeComma();
+      auto object = output.writeObject();
+      object.writePair("path", path);
+      object.writePair("range", coordinates(table->location));
+
+      return true;
+    }
+
+    for (const auto &item : table->items) {
+      if (item.kind != Luau::AstExprTable::Item::Kind::Record) continue;
+
+      auto *key = item.key->as<Luau::AstExprConstantString>();
+
+      if (!key) continue;
+
+      auto property = contract->props.find(std::string(key->value.data, key->value.size));
+
+      if (property == contract->props.end()) continue;
+
+      auto location = property->second.location ? property->second.location : property->second.typeLocation;
+
+      if (!location || *location != target.location) continue;
+
+      auto implementation = destination(frontend, module, source, path, item.value->location.begin, false);
+
+      if (!implementation) continue;
+
+      output.writeComma();
+      auto object = output.writeObject();
+      object.writePair("path", implementation->path);
+      object.writePair("range", coordinates(implementation->location));
+    }
+
+    return true;
+  }
+};
+
+struct EditorHints : Luau::AstVisitor {
+  Luau::Module &module;
+  Luau::Json::JsonEmitter &output;
+  EditorHints(Luau::Module &module, Luau::Json::JsonEmitter &output) : module(module), output(output) {}
+
+  void hint(Luau::Position position, const std::string &description, unsigned kind) {
+    output.writeComma();
+    auto object = output.writeObject();
+    object.writePair("range", coordinates(Luau::Location(position, position)));
+    object.writePair("type", description);
+    object.writePair("kind", kind);
+  }
+
+  void local(Luau::AstLocal *local, unsigned kind) {
+    if (local->annotation) return;
+
+    if (auto scope = Luau::findScopeAtPosition(module, local->location.begin))
+      if (auto type = scope->lookup(local)) hint(local->location.end, Luau::toString(*type), kind);
+  }
+
+  bool visit(Luau::AstStatLocal *statement) override {
+    for (auto *variable : statement->vars) local(variable, 1);
+
+    return true;
+  }
+
+  bool visit(Luau::AstExprFunction *function) override {
+    for (auto *parameter : function->args) local(parameter, 2);
+
+    if (!function->returnAnnotation && function->argLocation)
+      if (auto type = module.astTypes.find(function))
+        if (auto signature = Luau::get<Luau::FunctionType>(Luau::follow(*type)))
+          hint(function->argLocation->end, Luau::toString(signature->retTypes), 3);
+
+    return true;
+  }
+
+  bool visit(Luau::AstExprCall *call) override {
+    if (auto type = module.astTypes.find(call->func))
+      if (auto signature = Luau::get<Luau::FunctionType>(Luau::follow(*type)))
+        for (size_t index = 0; index < call->args.size; ++index) {
+          size_t parameter = index + (call->self ? 1 : 0);
+
+          if (parameter < signature->argNames.size() && signature->argNames[parameter]) {
+            auto *argument = call->args.data[index];
+            hint(argument->location.begin, signature->argNames[parameter]->name, Luau::isConstantLiteral(argument) ? 5 : 4);
+          }
+        }
+
+    return true;
+  }
+};
+
 struct EditorCalls : Luau::AstVisitor {
   Luau::Frontend &frontend;
   Luau::Module &module;
@@ -1384,7 +1548,62 @@ extern "C" void instar_query(void *handle, void *context, Bytes name, unsigned l
 
     if (!module || !source)
       Luau::Json::write(result, nullptr);
-    else if (command == "calls") {
+    else if (command == "diagnostics") {
+      Luau::Json::write(result, nullptr);
+    } else if (command == "extract") {
+      auto array = result.writeArray();
+
+      for (auto *statement : source->root->body) {
+        Luau::AstExpr *expression = nullptr;
+
+        if (auto *local = statement->as<Luau::AstStatLocal>(); local && local->vars.size == 1 && local->values.size == 1)
+          expression = local->values.data[0];
+        else if (auto *returned = statement->as<Luau::AstStatReturn>(); returned && returned->list.size == 1 && !returned->list.data[0]->is<Luau::AstExprCall>() && !returned->list.data[0]->is<Luau::AstExprVarargs>())
+          expression = returned->list.data[0];
+
+        if (!expression || !expression->location.contains(position)) continue;
+
+        result.writeComma();
+        auto object = result.writeObject();
+        object.writePair("range", coordinates(expression->location));
+        object.writePair("selection", coordinates(statement->location));
+      }
+    } else if (command == "implementation") {
+      auto array = result.writeArray();
+      auto target = destination(frontend, *module, *source, path, position, false);
+
+      if (auto type = typeAt(*module, *source, position))
+        if (auto table = Luau::get<Luau::TableType>(Luau::follow(*type))) target = Destination{table->definitionModuleName, table->definitionLocation};
+
+      if (target) {
+        for (const auto &[name, node] : frontend.sourceNodes) {
+          auto checked = frontend.moduleResolver.getModule(name);
+          auto *parsed = frontend.getSourceModule(name);
+
+          if (!checked || !parsed) continue;
+
+          EditorImplementations visitor(session->files, frontend, *checked, *parsed, result, name, *target);
+          parsed->root->visit(&visitor);
+        }
+
+        if (auto type = typeAt(*module, *source, position))
+          if (auto function = Luau::get<Luau::FunctionType>(Luau::follow(*type)); function && function->definition) {
+            result.writeComma();
+            auto object = result.writeObject();
+            const auto &definition = *function->definition;
+            auto location = definition.originalNameLocation;
+
+            if (location.begin == location.end) location = definition.definitionLocation;
+
+            object.writePair("path", definition.definitionModuleName.value_or(path));
+            object.writePair("range", coordinates(location));
+          }
+      }
+    } else if (command == "hints") {
+      auto array = result.writeArray();
+      EditorHints visitor(*module, result);
+      source->root->visit(&visitor);
+    } else if (command == "calls") {
       auto array = result.writeArray();
       EditorCalls visitor(frontend, *module, *source, result, path);
       source->root->visit(&visitor);
@@ -1420,7 +1639,49 @@ extern "C" void instar_query(void *handle, void *context, Bytes name, unsigned l
 
       if (local)
         object.writePair("kind", 13);
-    } else if (command == "completion") {
+    } else if (command == "imports") {
+      auto array = result.writeArray();
+
+      for (auto *statement : source->root->body) {
+        auto *local = statement->as<Luau::AstStatLocal>();
+
+        if (!local || local->vars.size != 1 || local->values.size != 1 || !(local->location.end < position)) continue;
+
+        auto *call = local->values.data[0]->as<Luau::AstExprCall>();
+
+        if (!call || call->args.size != 1) continue;
+
+        std::string category;
+        std::string target;
+
+        if (auto *global = call->func->as<Luau::AstExprGlobal>(); global && global->name == "require") {
+          auto trace = frontend.requireTrace.find(path);
+
+          if (trace != frontend.requireTrace.end())
+            if (auto resolved = trace->second.exprs.find(call->args.data[0])) {
+              category = "module";
+              target = session->files.physical(resolved->name);
+            }
+        } else if (auto *member = call->func->as<Luau::AstExprIndexName>(); member && member->index == "GetService") {
+          auto *global = member->expr->as<Luau::AstExprGlobal>();
+          auto *service = call->args.data[0]->as<Luau::AstExprConstantString>();
+
+          if (global && global->name == "game" && service) {
+            category = "service";
+            target.assign(service->value.data, service->value.size);
+          }
+        }
+
+        if (category.empty()) continue;
+
+        result.writeComma();
+        auto object = result.writeObject();
+        object.writePair("name", local->vars.data[0]->name.value);
+        object.writePair("label", category);
+        object.writePair("type", target);
+        object.writePair("range", coordinates(local->location));
+      }
+    } else if (command == "completion" || command == "completionResolve") {
       auto completions = Luau::autocomplete(frontend, path, position, {});
       auto array = result.writeArray();
 
@@ -1436,16 +1697,36 @@ extern "C" void instar_query(void *handle, void *context, Bytes name, unsigned l
         object.writePair("range", std::vector<unsigned>{line, 0, line, 0});
       }
 
+      for (auto *node : completions.ancestry) {
+        auto *call = node->as<Luau::AstExprCall>();
+
+        if (!call || call->args.size != 1) continue;
+
+        auto *global = call->func->as<Luau::AstExprGlobal>();
+        auto *literal = call->args.data[0]->as<Luau::AstExprConstantString>();
+
+        if (!global || global->name != "require" || !literal || !literal->location.contains(position)) continue;
+
+        result.writeComma();
+        auto object = result.writeObject();
+        object.writePair("require", true);
+        object.writePair("range", coordinates(literal->location));
+      }
+
       for (const auto &[label, completion] : completions.entryMap) {
         result.writeComma();
         auto object = result.writeObject();
         object.writePair("name", label);
-        object.writePair("type", completion.type ? Luau::toString(*completion.type) : std::string{});
-        object.writePair("documentation", completion.documentationSymbol.value_or(""));
+
+        if (command == "completionResolve") {
+          object.writePair("type", completion.type ? Luau::toString(*completion.type) : std::string{});
+          object.writePair("documentation", completion.documentationSymbol.value_or(""));
+        }
+
         object.writePair("insert", completion.insertText.value_or(label));
         object.writePair("deprecated", completion.deprecated);
 
-        if (completion.type)
+        if (command == "completionResolve" && completion.type)
           if (auto function = Luau::get<Luau::FunctionType>(Luau::follow(*completion.type)); function && function->definition)
             object.writePair("documentation_text", documentation(frontend, session->files, {function->definition->definitionModuleName.value_or(path), function->definition->definitionLocation}));
       }
