@@ -102,7 +102,15 @@ impl Client {
         let mut content = vec![0; length.ok_or("missing content length")?];
         self.output.read_exact(&mut content)?;
 
-        Ok(serde_json::from_slice(&content)?)
+        let message: Value = serde_json::from_slice(&content)?;
+
+        if message["method"] == "$/progress"
+            && let Some(kind) = message["params"]["value"]["kind"].as_str()
+        {
+            self.progress.push(kind.into());
+        }
+
+        Ok(message)
     }
 
     fn response(&mut self, identifier: u64) -> Result<Value, Box<dyn Error>> {
@@ -111,12 +119,6 @@ impl Client {
 
             if message["method"] == "window/workDoneProgress/create" {
                 self.send(&json!({"jsonrpc":"2.0","id":message["id"],"result":null}))?;
-            }
-
-            if message["method"] == "$/progress"
-                && let Some(kind) = message["params"]["value"]["kind"].as_str()
-            {
-                self.progress.push(kind.into());
             }
 
             if message["id"] == identifier && message.get("method").is_none() {
@@ -1109,6 +1111,128 @@ fn implementation_navigation_follows_explicit_contract_returns() -> TestResult {
 }
 
 #[test]
+fn implementation_navigation_preserves_multiple_providers_in_large_workspaces() -> TestResult {
+    use std::fmt::Write as StringWrite;
+
+    let directory = tempfile::tempdir()?;
+    fs::write(directory.path().join("instar.toml"), "mode = 'strict'")?;
+
+    fs::write(
+        directory.path().join("contract.luau"),
+        "export type Contract = { read get_value: () -> number }\nreturn {}",
+    )?;
+
+    for name in ["first", "second"] {
+        fs::write(
+            directory.path().join(format!("{name}.luau")),
+            "local shared = require('./contract')\nlocal function create(): shared.Contract\nlocal function get_value() return 1 end\nreturn table.freeze({ get_value = get_value })\nend\nreturn create",
+        )?;
+    }
+
+    let mut unrelated = String::new();
+
+    for index in 0..100 {
+        writeln!(&mut unrelated, "local value{index}: number = {index}")?;
+    }
+
+    unrelated.push_str("return true");
+
+    for index in 0..100 {
+        fs::write(
+            directory.path().join(format!("unrelated{index}.luau")),
+            &unrelated,
+        )?;
+    }
+
+    let root = Uri::from_file_path(directory.path())
+        .ok_or("URI")?
+        .to_string();
+
+    let identifier = Uri::from_file_path(directory.path().join("main.luau"))
+        .ok_or("URI")?
+        .to_string();
+
+    let mut client = Client::start()?;
+    client.send(&json!({"jsonrpc":"2.0","method":"workspace/didChangeWorkspaceFolders","params":{"event":{"added":[{"uri":root,"name":"workspace"}],"removed":[]}}}))?;
+    client.open(&identifier, "local shared = require('./contract')\nlocal function consume(context: shared.Contract)\nreturn context.get_value()\nend\nreturn consume")?;
+    client.diagnostics(&identifier)?;
+
+    for label in ["cold", "warm"] {
+        let started = std::time::Instant::now();
+        let implementations = client.query(&identifier, "textDocument/implementation", 2, 19)?;
+        eprintln!("implementation {label}: {:?}", started.elapsed());
+
+        assert_eq!(
+            implementations.as_array().ok_or("implementations")?.len(),
+            2
+        );
+
+        for name in ["first", "second"] {
+            let expected = Uri::from_file_path(directory.path().join(format!("{name}.luau")))
+                .ok_or("URI")?
+                .to_string();
+
+            assert!(
+                implementations
+                    .as_array()
+                    .ok_or("implementations")?
+                    .iter()
+                    .any(|item| item["uri"] == expected && item["range"]["start"]["line"] == 2),
+                "{implementations}"
+            );
+        }
+    }
+
+    let added = Uri::from_file_path(directory.path().join("unrelated0.luau"))
+        .ok_or("URI")?
+        .to_string();
+
+    client.open(&added, "local shared = require('./contract')\nlocal function create(): shared.Contract\nlocal function read_value() return 2 end\nreturn table.freeze({ get_value = read_value })\nend\nreturn create")?;
+    client.diagnostics(&added)?;
+    let implementations = client.query(&identifier, "textDocument/implementation", 2, 19)?;
+
+    assert!(
+        implementations
+            .as_array()
+            .ok_or("implementations")?
+            .iter()
+            .any(|item| item["uri"] == added),
+        "{implementations}"
+    );
+
+    client.change(&added, 2, "return true")?;
+    client.diagnostics(&added)?;
+    let implementations = client.query(&identifier, "textDocument/implementation", 2, 19)?;
+
+    assert_eq!(
+        implementations.as_array().ok_or("implementations")?.len(),
+        2,
+        "{implementations}"
+    );
+
+    for label in ["cold", "warm"] {
+        let started = std::time::Instant::now();
+        let implementations = client.query(&identifier, "textDocument/implementation", 1, 42)?;
+        eprintln!("contract implementation {label}: {:?}", started.elapsed());
+
+        assert_eq!(
+            implementations.as_array().ok_or("implementations")?.len(),
+            2,
+            "{implementations}"
+        );
+    }
+
+    for label in ["cold", "warm"] {
+        let started = std::time::Instant::now();
+        let symbols = client.request("workspace/symbol", json!({"query":"value99"}))?;
+        eprintln!("workspace symbols {label}: {:?}", started.elapsed());
+        assert_eq!(symbols.as_array().ok_or("symbols")?.len(), 99);
+    }
+
+    client.shutdown()
+}
+
+#[test]
 fn extraction_returns_versioned_edits_and_indexing_reports_progress() -> TestResult {
     let directory = tempfile::tempdir()?;
 
@@ -1140,8 +1264,102 @@ fn extraction_returns_versioned_edits_and_indexing_reports_progress() -> TestRes
 
     assert!(!has_errors(&client.diagnostics(&uri)?));
     client.request("workspace/symbol", json!({"query":"result"}))?;
+
+    while !client.progress.iter().any(|kind| kind == "end") {
+        let message = client.receive()?;
+        assert_ne!(message["method"], "window/logMessage", "{message}");
+    }
+
     assert!(client.progress.iter().any(|kind| kind == "begin"));
-    assert!(client.progress.iter().any(|kind| kind == "end"));
+
+    client.shutdown()
+}
+
+#[test]
+fn asserted_module_members_navigate_to_concrete_definitions() -> TestResult {
+    let directory = tempfile::tempdir()?;
+
+    let dependency = Uri::from_file_path(directory.path().join("factory.luau"))
+        .ok_or("URI")?
+        .to_string();
+
+    let identifier = Uri::from_file_path(directory.path().join("main.luau"))
+        .ok_or("URI")?
+        .to_string();
+
+    let implementation = "const Factory = {}\ntype Contract = { read new: <T>(value: T) -> T }\nfunction Factory.new<T>(value: T): T\n    return value\nend\nreturn table.freeze(Factory) :: Contract";
+    fs::write(directory.path().join("factory.luau"), implementation)?;
+    let mut client = Client::start()?;
+
+    client.open(
+        &identifier,
+        "const Factory = require('./factory')\nreturn Factory.new",
+    )?;
+
+    assert!(!has_errors(&client.diagnostics(&identifier)?));
+    let target = client.query(&identifier, "textDocument/definition", 1, 16)?;
+    assert_eq!(target["uri"], dependency, "{target}");
+
+    assert_eq!(
+        target["range"],
+        json!({"start":{"line":2,"character":17},"end":{"line":2,"character":20}})
+    );
+
+    let typed = client.query(&identifier, "textDocument/typeDefinition", 1, 16)?;
+    assert_ne!(typed, target);
+    client.open(&dependency, implementation)?;
+    assert!(!has_errors(&client.diagnostics(&dependency)?));
+
+    client.change(
+        &dependency,
+        2,
+        &implementation.replace("function Factory.new", "\nfunction Factory.new"),
+    )?;
+
+    assert!(!has_errors(&client.diagnostics(&dependency)?));
+    let target = client.query(&identifier, "textDocument/definition", 1, 16)?;
+    assert_eq!(target["range"]["start"]["line"], 3, "{target}");
+
+    client.shutdown()
+}
+
+#[test]
+fn reexported_members_follow_aliases_and_assertions() -> TestResult {
+    let directory = tempfile::tempdir()?;
+
+    fs::write(
+        directory.path().join("factory.luau"),
+        "const Factory = {}\nfunction Factory.create(): number return 1 end\ntype Contract = { read create: () -> number }\nconst exposed: Contract = Factory\nreturn table.freeze((exposed :: Contract))",
+    )?;
+
+    fs::write(
+        directory.path().join("forward.luau"),
+        "const imported = require('./factory')\nconst forwarded = imported\nreturn forwarded",
+    )?;
+
+    let dependency = Uri::from_file_path(directory.path().join("factory.luau"))
+        .ok_or("URI")?
+        .to_string();
+
+    let identifier = Uri::from_file_path(directory.path().join("main.luau"))
+        .ok_or("URI")?
+        .to_string();
+
+    let mut client = Client::start()?;
+
+    client.open(
+        &identifier,
+        "const Factory = require('./forward')\nreturn Factory.create",
+    )?;
+
+    assert!(!has_errors(&client.diagnostics(&identifier)?));
+    let target = client.query(&identifier, "textDocument/definition", 1, 17)?;
+    assert_eq!(target["uri"], dependency, "{target}");
+
+    assert_eq!(
+        target["range"],
+        json!({"start":{"line":1,"character":17},"end":{"line":1,"character":23}})
+    );
 
     client.shutdown()
 }

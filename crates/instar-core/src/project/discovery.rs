@@ -25,6 +25,9 @@ pub(crate) struct Discovery {
     configurations: BTreeMap<PathBuf, Vec<Configuration>>,
     aliases: BTreeMap<PathBuf, BTreeMap<String, Alias>>,
     contents: BTreeMap<PathBuf, Option<Vec<u8>>>,
+    projects: BTreeMap<PathBuf, InstarConfig>,
+    definitions: BTreeMap<PathBuf, Vec<PathBuf>>,
+    environments: BTreeMap<PathBuf, Option<crate::configuration::RobloxConfig>>,
 }
 
 impl Discovery {
@@ -62,6 +65,24 @@ impl Discovery {
         }
 
         Ok(self.contents[path].as_deref())
+    }
+
+    fn project(&mut self, path: &Path) -> io::Result<Option<&InstarConfig>> {
+        if !self.projects.contains_key(path) {
+            let Some(contents) = self.contents(path)? else {
+                return Ok(None);
+            };
+
+            let configuration = InstarConfig::parse(
+                std::str::from_utf8(contents)
+                    .map_err(|error| io::Error::other(format!("{}: {error}", path.display())))?,
+            )
+            .map_err(|error| io::Error::other(format!("{}: {error}", path.display())))?;
+
+            self.projects.insert(path.to_owned(), configuration);
+        }
+
+        Ok(self.projects.get(path))
     }
 
     pub(crate) fn configurations(&mut self, from: &Path) -> io::Result<&[Configuration]> {
@@ -118,19 +139,15 @@ impl Discovery {
 
                 let path = ancestor.join("instar.toml");
 
-                if let Some(contents) = self.contents(&path)? {
-                    let configuration = InstarConfig::parse(
-                        std::str::from_utf8(contents).map_err(io::Error::other)?,
-                    )
-                    .map_err(|error| io::Error::other(format!("{}: {error}", path.display())))?;
-
-                    if let Some(mode) = configuration.mode {
-                        configurations.push(Configuration {
-                            path,
-                            bytes: serde_json::to_vec(&serde_json::json!({"languageMode": mode}))?,
-                            aliases: Some(BTreeMap::new()),
-                        });
-                    }
+                if let Some(mode) = self
+                    .project(&path)?
+                    .and_then(|configuration| configuration.mode)
+                {
+                    configurations.push(Configuration {
+                        path,
+                        bytes: serde_json::to_vec(&serde_json::json!({"languageMode": mode}))?,
+                        aliases: Some(BTreeMap::new()),
+                    });
                 }
             }
 
@@ -146,23 +163,22 @@ impl Discovery {
             .parent()
             .ok_or_else(|| io::Error::other("module has no parent"))?;
 
+        if let Some(definitions) = self.definitions.get(directory) {
+            return Ok(definitions.clone());
+        }
+
         let mut definitions = Vec::new();
 
         for ancestor in directory.ancestors().collect::<Vec<_>>().into_iter().rev() {
             let path = ancestor.join("instar.toml");
 
-            let Some(contents) = self.contents(&path)? else {
+            let Some(configuration) = self.project(&path)? else {
                 continue;
             };
 
-            let contents = std::str::from_utf8(contents).map_err(io::Error::other)?;
-
-            let configuration = InstarConfig::parse(contents)
-                .map_err(|error| io::Error::other(format!("{}: {error}", path.display())))?;
-
-            if let Some(configured) = configuration.definitions {
+            if let Some(configured) = &configuration.definitions {
                 definitions = configured
-                    .into_iter()
+                    .iter()
                     .map(|path| absolute(&ancestor.join(path)).map_err(io::Error::other))
                     .collect::<io::Result<Vec<_>>>()?;
             }
@@ -170,6 +186,9 @@ impl Discovery {
 
         let mut seen = std::collections::BTreeSet::new();
         definitions.retain(|path| seen.insert(path.clone()));
+
+        self.definitions
+            .insert(directory.to_owned(), definitions.clone());
 
         Ok(definitions)
     }
@@ -182,26 +201,26 @@ impl Discovery {
             .parent()
             .ok_or_else(|| io::Error::other("module has no parent"))?;
 
+        if let Some(environment) = self.environments.get(directory) {
+            return Ok(environment.clone());
+        }
+
         let mut result = None;
 
         for ancestor in directory.ancestors().collect::<Vec<_>>().into_iter().rev() {
             let path = ancestor.join("instar.toml");
 
-            let Some(contents) = self.contents(&path)? else {
+            let Some(configuration) = self.project(&path)? else {
                 continue;
             };
 
-            let configuration =
-                InstarConfig::parse(std::str::from_utf8(contents).map_err(io::Error::other)?)
-                    .map_err(|error| io::Error::other(format!("{}: {error}", path.display())))?;
-
-            if let Some(configuration) = configuration.roblox {
+            if let Some(configuration) = &configuration.roblox {
                 let merged = result.get_or_insert_with(crate::configuration::RobloxConfig::default);
 
                 for (target, value) in [
-                    (&mut merged.cache, configuration.cache),
-                    (&mut merged.project, configuration.project),
-                    (&mut merged.sourcemap, configuration.sourcemap),
+                    (&mut merged.cache, &configuration.cache),
+                    (&mut merged.project, &configuration.project),
+                    (&mut merged.sourcemap, &configuration.sourcemap),
                 ] {
                     if let Some(value) = value {
                         *target = Some(absolute(&ancestor.join(value)).map_err(io::Error::other)?);
@@ -213,10 +232,13 @@ impl Discovery {
                 }
 
                 if configuration.revision.is_some() {
-                    merged.revision = configuration.revision;
+                    merged.revision.clone_from(&configuration.revision);
                 }
             }
         }
+
+        self.environments
+            .insert(directory.to_owned(), result.clone());
 
         Ok(result)
     }
@@ -227,14 +249,10 @@ impl Discovery {
 
             let path = directory.join("instar.toml");
 
-            if let Some(contents) = self.contents(&path)? {
-                let contents = std::str::from_utf8(contents)
-                    .map_err(|error| io::Error::other(format!("{}: {error}", path.display())))?;
-
-                let configuration = InstarConfig::parse(contents)
-                    .map_err(|error| io::Error::other(format!("{}: {error}", path.display())))?;
-
-                let configured = configuration.aliases.unwrap_or_default();
+            if let Some(configured) = self
+                .project(&path)?
+                .and_then(|configuration| configuration.aliases.as_ref())
+            {
                 let validation = serde_json::to_vec(&serde_json::json!({"aliases": &configured}))?;
 
                 luau::aliases(&validation, false)
@@ -582,4 +600,126 @@ fn merge(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discovery_reuses_configuration_snapshots_and_directory_settings() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let root = directory.path();
+        let nested = root.join("nested");
+        fs::create_dir(&nested)?;
+
+        fs::write(
+            root.join("instar.toml"),
+            "mode = 'strict'\ndefinitions = ['shared.d.luau', 'shared.d.luau']\n[aliases]\nmodules = 'modules'\n[roblox]\ncache = 'cache'\nlevel = 'None'\n",
+        )?;
+
+        fs::write(
+            nested.join("instar.toml"),
+            "definitions = []\n[roblox]\nsourcemap = 'map.json'\n",
+        )?;
+
+        let mut discovery = Discovery::default();
+        let started = std::time::Instant::now();
+
+        for index in 0..100 {
+            let path = root.join(format!("source{index}.luau"));
+            assert_eq!(discovery.definitions(&path)?, [root.join("shared.d.luau")]);
+            let environment = discovery.roblox(&path)?.expect("environment");
+            assert_eq!(environment.cache, Some(root.join("cache")));
+
+            assert_eq!(
+                environment.level,
+                Some(crate::configuration::RobloxLevel::None)
+            );
+
+            assert_eq!(environment.sourcemap, None);
+            let path = nested.join(format!("source{index}.luau"));
+            assert_eq!(discovery.definitions(&path)?, Vec::<PathBuf>::new());
+            let environment = discovery.roblox(&path)?.expect("environment");
+            assert_eq!(environment.cache, Some(root.join("cache")));
+            assert_eq!(environment.sourcemap, Some(nested.join("map.json")));
+        }
+
+        eprintln!("configuration discovery: {:?}", started.elapsed());
+        assert_eq!(discovery.projects.len(), 2);
+        assert_eq!(discovery.definitions.len(), 2);
+        assert_eq!(discovery.environments.len(), 2);
+
+        let path = nested.join("main.luau");
+        assert!(discovery.alias_names(&path)?.contains("modules"));
+        let configurations = discovery.configurations(&path)?;
+
+        assert!(
+            configurations
+                .iter()
+                .any(|configuration| configuration.bytes == br#"{"languageMode":"strict"}"#)
+        );
+
+        fs::write(
+            nested.join("instar.toml"),
+            "definitions = ['replacement.d.luau']\n[roblox]\ncache = 'replacement'\n",
+        )?;
+
+        assert_eq!(discovery.definitions(&path)?, Vec::<PathBuf>::new());
+
+        assert_eq!(
+            discovery.roblox(&path)?.expect("environment").sourcemap,
+            Some(nested.join("map.json"))
+        );
+
+        let mut refreshed = Discovery::default();
+
+        assert_eq!(
+            refreshed.definitions(&path)?,
+            [nested.join("replacement.d.luau")]
+        );
+
+        let environment = refreshed.roblox(&path)?.expect("environment");
+        assert_eq!(environment.cache, Some(nested.join("replacement")));
+        assert_eq!(environment.sourcemap, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn discovery_refreshes_missing_and_invalid_configurations() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("main.luau");
+        let configuration = directory.path().join("instar.toml");
+        let mut discovery = Discovery::default();
+        assert_eq!(discovery.roblox(&path)?, None);
+        assert_eq!(discovery.definitions(&path)?, Vec::<PathBuf>::new());
+        fs::write(&configuration, "[roblox]\n")?;
+        assert_eq!(discovery.roblox(&path)?, None);
+        assert!(Discovery::default().roblox(&path)?.is_some());
+
+        fs::write(&configuration, "definitions = 1\n")?;
+        let mut invalid = Discovery::default();
+
+        for error in [
+            invalid.definitions(&path).unwrap_err(),
+            invalid.roblox(&path).unwrap_err(),
+        ] {
+            assert!(
+                error
+                    .to_string()
+                    .contains(&configuration.display().to_string()),
+                "{error}"
+            );
+        }
+
+        fs::write(&configuration, "definitions = []\n")?;
+
+        assert_eq!(
+            Discovery::default().definitions(&path)?,
+            Vec::<PathBuf>::new()
+        );
+
+        Ok(())
+    }
 }
