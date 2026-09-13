@@ -46,5 +46,5 @@ def "main publish" [
 
     let manifest = $directory | path join checksums.txt
     $"($checksums)\n" | save --force $manifest
-    gh release create $tag ...$archives $manifest --verify-tag --generate-notes
+    gh release create $tag ...$archives $manifest --verify-tag
 }
