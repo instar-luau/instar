@@ -698,7 +698,7 @@ impl Session {
         let mut dependencies = BTreeMap::new();
 
         let text = if let Some(graft) = configuration.frontend(path) {
-            let compilation = graft.compile(&input)?;
+            let compilation = graft.compile_at(path, &input)?;
 
             for dependency in compilation.dependencies {
                 let path = paths::absolute(
