@@ -264,15 +264,12 @@ fn extract(bytes: &[u8], destination: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn validate(directory: &Path, name: &str, version: &Version) -> io::Result<()> {
+fn validate(directory: &Path, name: &str) -> io::Result<()> {
     let path = directory.join("instar.toml");
-    let manifest = Manifest::read(&path)?;
 
-    if manifest.name != name
-        || Version::parse(&manifest.version).map_err(io::Error::other)? != *version
-    {
+    if Manifest::read(&path)?.name != name {
         return Err(io::Error::other(
-            "graft project identity or version does not match its release",
+            "graft project identity does not match its release",
         ));
     }
 
@@ -294,7 +291,7 @@ fn project(
 
     match fs::symlink_metadata(&destination) {
         Ok(metadata) if metadata.is_dir() => {
-            validate(&destination, name, version)?;
+            validate(&destination, name)?;
 
             return Ok(destination);
         }
@@ -314,7 +311,7 @@ fn project(
     fs::create_dir_all(&parent)?;
     let temporary = tempfile::tempdir_in(&parent)?;
     extract(&bytes, temporary.path())?;
-    validate(temporary.path(), name, version)?;
+    validate(temporary.path(), name)?;
     fs::rename(temporary.path(), &destination)?;
 
     Ok(destination)
@@ -424,7 +421,7 @@ mod tests {
     use std::io::Write;
     use zip::{ZipWriter, write::SimpleFileOptions};
 
-    const METADATA: &str = "[graft]\nname='example'\nversion='0.2.1'\nprotocol=1\nruntime='luau'\nentry='dist/module.luau'\nlint=true\n";
+    const METADATA: &str = "[graft]\nname='example'\nprotocol=1\nruntime='luau'\nentry='dist/module.luau'\nlint=true\n";
     const MODULE: &str = "return table.freeze({lint=function() return {} end})";
 
     fn archive(files: &[(&str, &str)]) -> Vec<u8> {
@@ -660,7 +657,7 @@ mod tests {
 
         fs::write(
             installed.join("instar.toml"),
-            METADATA.replace("0.2.1", "0.2.2"),
+            METADATA.replace("name='example'", "name='another'"),
         )
         .unwrap();
 
@@ -686,7 +683,6 @@ mod tests {
 
         for (metadata, module) in [
             (METADATA.replace("name='example'", "name='another'"), MODULE),
-            (METADATA.replace("0.2.1", "0.2.2"), MODULE),
             (METADATA.replace("protocol=1", "protocol=2"), MODULE),
             (
                 METADATA.replace("dist/module.luau", "../module.luau"),

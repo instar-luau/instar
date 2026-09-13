@@ -45,12 +45,11 @@ fn project_configuration_validates_dependencies_and_metadata() {
         );
     }
 
-    let metadata = "[graft]\nname='example'\nversion='0.2.1'\nprotocol=1\nruntime='wasm'\nentry='dist/module.wasm'\nformat=true\nlint=true\ncompile=true\n";
+    let metadata = "[graft]\nname='example'\nprotocol=1\nruntime='wasm'\nentry='dist/module.wasm'\nformat=true\nlint=true\ncompile=true\n";
     assert!(InstarConfig::parse(metadata).is_ok());
 
     for invalid in [
-        metadata.replace("version='0.2.1'", "version=1"),
-        metadata.replace("0.2.1", "invalid"),
+        format!("{metadata}version='0.2.1'\n"),
         metadata.replace("protocol=1\n", ""),
         metadata.replace("protocol=1", "protocol=2"),
         metadata.replace("dist/module.wasm", "../module.wasm"),
@@ -324,9 +323,9 @@ fn manifest_identity_exports_and_entry_boundaries_are_checked() {
     assert!(Graft::load(&path, "another").is_err());
 
     for manifest in [
-        "[graft]\nname='example'\nversion='0.2.1'\nprotocol=2\nruntime='wasm'\nentry='module.wasm'\nformat=true",
-        "[graft]\nname='example'\nversion='0.2.1'\nprotocol=1\nruntime='wasm'\nentry='../module.wasm'\nformat=true",
-        "[graft]\nname='example'\nversion='0.2.1'\nprotocol=1\nruntime='wasm'\nentry='module.wasm'\nlint=true",
+        "[graft]\nname='example'\nprotocol=2\nruntime='wasm'\nentry='module.wasm'\nformat=true",
+        "[graft]\nname='example'\nprotocol=1\nruntime='wasm'\nentry='../module.wasm'\nformat=true",
+        "[graft]\nname='example'\nprotocol=1\nruntime='wasm'\nentry='module.wasm'\nlint=true",
     ] {
         fs::write(&path, manifest).unwrap();
         assert!(Graft::load(&path, "example").is_err());
@@ -341,7 +340,7 @@ fn runtime_is_required_and_validated() {
     for runtime in ["", "runtime='unknown'\n"] {
         fs::write(
             &path,
-            format!("[graft]\nname='example'\nversion='0.2.1'\nprotocol=1\n{runtime}entry='module.wasm'\nlint=true"),
+            format!("[graft]\nname='example'\nprotocol=1\n{runtime}entry='module.wasm'\nlint=true"),
         )
         .unwrap();
 
@@ -356,7 +355,7 @@ fn runtime_is_required_and_validated() {
     for runtime in ["luau", "wasm"] {
         fs::write(
             &path,
-            format!("[graft]\nname='example'\nversion='0.2.1'\nprotocol=1\nruntime='{runtime}'\nentry='../module'\nlint=true"),
+            format!("[graft]\nname='example'\nprotocol=1\nruntime='{runtime}'\nentry='../module'\nlint=true"),
         )
         .unwrap();
 
@@ -370,7 +369,7 @@ fn runtime_is_required_and_validated() {
 
     fs::write(
         &path,
-        "[graft]\nname='example'\nversion='0.2.1'\nprotocol=1\nruntime='native'\nentry='module'\nlint=true",
+        "[graft]\nname='example'\nprotocol=1\nruntime='native'\nentry='module'\nlint=true",
     )
     .unwrap();
 
@@ -384,7 +383,7 @@ fn runtime_is_required_and_validated() {
     for runtime in ["luau", "wasm"] {
         fs::write(
             &path,
-            format!("[graft]\nname='example'\nversion='0.2.1'\nprotocol=1\nruntime='{runtime}'\nlint=true"),
+            format!("[graft]\nname='example'\nprotocol=1\nruntime='{runtime}'\nlint=true"),
         )
         .unwrap();
 

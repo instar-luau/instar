@@ -1579,16 +1579,11 @@
         "runtime": {
           "description": "Runtime responsible for executing the entry point.",
           "$ref": "#/$defs/Runtime"
-        },
-        "version": {
-          "description": "Semantic version of the graft project.",
-          "type": "string"
         }
       },
       "additionalProperties": false,
       "required": [
         "name",
-        "version",
         "protocol",
         "runtime"
       ]

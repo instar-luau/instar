@@ -39,9 +39,6 @@ pub struct Manifest {
     /// Graft identifier used by project configuration.
     pub name: String,
 
-    /// Semantic version of the graft project.
-    pub version: String,
-
     /// Graft protocol version.
     pub protocol: u32,
 
@@ -81,7 +78,6 @@ impl Manifest {
 
     pub(crate) fn validate(&self) -> io::Result<()> {
         component(&self.name)?;
-        semver::Version::parse(&self.version).map_err(io::Error::other)?;
 
         if self.protocol != 1 || !self.format && !self.lint && !self.compile {
             return Err(io::Error::other("graft protocol or hooks are invalid"));
@@ -258,20 +254,20 @@ impl Dependency {
             }
         }
 
-        let (version, path) = versions.into_iter().max().ok_or_else(|| {
-            io::Error::other(format!(
-                "graft {name} ({repo} {version}) is not cached; run instar graft install"
-            ))
-        })?;
+        let path = versions
+            .into_iter()
+            .max()
+            .map(|(_, path)| path)
+            .ok_or_else(|| {
+                io::Error::other(format!(
+                    "graft {name} ({repo} {version}) is not cached; run instar graft install"
+                ))
+            })?
+            .join("instar.toml");
 
-        let path = path.join("instar.toml");
-        let manifest = Manifest::read(&path)?;
-
-        if manifest.name != name
-            || semver::Version::parse(&manifest.version).map_err(io::Error::other)? != version
-        {
+        if Manifest::read(&path)?.name != name {
             return Err(io::Error::other(
-                "cached graft identity or version does not match its directory",
+                "cached graft identity does not match its directory",
             ));
         }
 
