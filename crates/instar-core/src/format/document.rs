@@ -45,7 +45,7 @@ impl<'source> Document<'source> {
         Self::Indent(Box::new(self))
     }
 
-    pub(super) fn owned(self) -> Document<'static> {
+    pub(crate) fn owned(self) -> Document<'static> {
         match self {
             Self::Text(text) => Document::Text(Cow::Owned(text.into_owned())),
             Self::Line => Document::Line,
