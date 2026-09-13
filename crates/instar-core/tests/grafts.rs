@@ -319,7 +319,7 @@ fn runtime_is_required_and_validated() {
         );
     }
 
-    for runtime in ["native", "luau", "wasm"] {
+    for runtime in ["luau", "wasm"] {
         fs::write(
             &path,
             format!("[graft]\nname='example'\nversion='0.2.1'\nprotocol=1\nruntime='{runtime}'\nentry='../module'\nlint=true"),
@@ -331,6 +331,34 @@ fn runtime_is_required_and_validated() {
                 .unwrap_err()
                 .to_string()
                 .contains("inside")
+        );
+    }
+
+    fs::write(
+        &path,
+        "[graft]\nname='example'\nversion='0.2.1'\nprotocol=1\nruntime='native'\nentry='module'\nlint=true",
+    )
+    .unwrap();
+
+    assert!(
+        Graft::load(&path, "example")
+            .unwrap_err()
+            .to_string()
+            .contains("must not define an entry")
+    );
+
+    for runtime in ["luau", "wasm"] {
+        fs::write(
+            &path,
+            format!("[graft]\nname='example'\nversion='0.2.1'\nprotocol=1\nruntime='{runtime}'\nlint=true"),
+        )
+        .unwrap();
+
+        assert!(
+            Graft::load(&path, "example")
+                .unwrap_err()
+                .to_string()
+                .contains("require an entry")
         );
     }
 }

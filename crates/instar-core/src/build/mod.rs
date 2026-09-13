@@ -6,6 +6,7 @@ mod mapping;
 mod output;
 mod paths;
 mod project;
+mod rules;
 mod syntax;
 mod transform;
 
@@ -248,19 +249,19 @@ impl Session {
         self.compiled
             .retain(|path, _| inputs.snapshots.contains_key(path));
 
-        let mut stages = vec![
-            "compile".into(),
-            "constants".into(),
-            "resolve".into(),
-            "validate".into(),
-            "rewrite".into(),
-        ];
+        let mut stages = vec!["compile".into(), "constants".into()];
+
+        if configuration.settings.rules != configuration::Rules::default() {
+            stages.push("rules".into());
+        }
+
+        stages.extend(["resolve".into(), "validate".into(), "rewrite".into()]);
 
         if configuration.settings.shape == Shape::Bundle {
             stages.push("bundle".into());
         }
 
-        if configuration.settings.lower {
+        if configuration.settings.lower || configuration.settings.rules.remove_types {
             stages.push("lower".into());
         }
 
@@ -454,7 +455,7 @@ impl Session {
                 self.compile(original, bytes, configuration, key, snapshots)?
             };
 
-            let mut module = self.module(&path, &text, configuration)?;
+            let mut module = self.module(&path, &text, configuration, environment)?;
 
             module.dependencies =
                 graph::dependencies(&module, environment, &configuration.settings.external)?;
@@ -612,6 +613,7 @@ impl Session {
         path: &Path,
         text: &Text,
         configuration: &Configuration,
+        environment: &crate::roblox::Environment,
     ) -> io::Result<graph::Module> {
         transform::validate(&text.text)?;
         let source = self.snapshot(path, &text.text)?;
@@ -619,6 +621,29 @@ impl Session {
         let transformed = transform::constants(text, &source, &document, &configuration.settings)?;
 
         let document = if transformed.text == text.text {
+            document
+        } else {
+            self.snapshot(path, &transformed.text)?;
+
+            syntax::parse(&mut self.analysis, &mut self.sources, path)?
+        };
+
+        let source = self.snapshot(path, &transformed.text)?;
+
+        let transformed = rules::apply(
+            &transformed,
+            &source,
+            &document,
+            &configuration.settings.rules,
+            rules::Project {
+                path,
+                root: &configuration.root,
+                environment,
+                files: &configuration.files,
+            },
+        )?;
+
+        let document = if transformed.text == source.text().map_err(io::Error::other)? {
             document
         } else {
             self.snapshot(path, &transformed.text)?;
@@ -846,7 +871,7 @@ fn emit(
     configuration: &Configuration,
     originals: &BTreeMap<PathBuf, String>,
 ) -> io::Result<()> {
-    if configuration.settings.lower {
+    if configuration.settings.lower || configuration.settings.rules.remove_types {
         text = transform::lower(text)?;
     }
 
