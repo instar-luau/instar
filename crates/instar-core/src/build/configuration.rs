@@ -1,6 +1,7 @@
 use crate::{configuration::InstarConfig, source::absolute};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
 use std::{
     collections::BTreeMap,
     fs, io,

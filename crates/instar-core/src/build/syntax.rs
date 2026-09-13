@@ -2,6 +2,7 @@ use crate::{
     analysis::{EditorResult, Session},
     source::{PositionEncoding, Source, SourceStore},
 };
+
 use serde_json::Value;
 use std::{io, ops::Range, path::Path};
 

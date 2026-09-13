@@ -1,8 +1,10 @@
 use super::{Context, replace_keep_lines, span, text};
+
 use crate::build::{
     configuration::{RemoveCalls, Rules},
     mapping::Edit,
 };
+
 use vermis::{Kind, Parts, View};
 
 pub(super) fn apply(

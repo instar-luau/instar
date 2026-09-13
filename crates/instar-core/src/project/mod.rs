@@ -1,6 +1,8 @@
 mod discovery;
+
 /// Require path resolution using source and configuration snapshots.
 pub mod resolution;
+
 /// Inherited source inclusion and exclusion patterns.
 pub mod selection;
 

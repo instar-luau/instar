@@ -86,6 +86,7 @@ pub struct Unused {
     /// Regular expression matching ignored binding names.
     pub ignore_pattern: String,
 }
+
 impl Default for Unused {
     fn default() -> Self {
         Self {
@@ -95,6 +96,7 @@ impl Default for Unused {
         }
     }
 }
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 /// Project-specific deprecated function declarations.
@@ -102,6 +104,7 @@ pub struct Deprecated {
     /// Deprecated function names mapped to replacement descriptions.
     pub additional: BTreeMap<String, String>,
 }
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 /// Modules whose imports should produce a lint finding.
@@ -109,6 +112,7 @@ pub struct Restricted {
     /// Exact module paths mapped to restriction reasons.
     pub paths: BTreeMap<String, String>,
 }
+
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 /// Threshold for function control-flow complexity.
@@ -116,6 +120,7 @@ pub struct Complexity {
     /// Maximum permitted cyclomatic complexity.
     pub maximum_complexity: u32,
 }
+
 impl Default for Complexity {
     fn default() -> Self {
         Self {
@@ -123,6 +128,7 @@ impl Default for Complexity {
         }
     }
 }
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 /// Treatment of table mutation when suggesting constant bindings.

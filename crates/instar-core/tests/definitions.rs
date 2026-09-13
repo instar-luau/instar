@@ -6,6 +6,7 @@ use instar_core::{
     project::resolution::Resolver,
     source::SourceStore,
 };
+
 use std::{error::Error, fs};
 
 type TestResult = Result<(), Box<dyn Error>>;

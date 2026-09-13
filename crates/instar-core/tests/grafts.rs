@@ -5,10 +5,12 @@ use instar_core::{
     graft::{self, Graft},
     project::Configuration,
 };
+
 use std::fs;
 
 #[path = "support/graft.rs"]
 mod support;
+
 use support::{fixture, module};
 
 #[path = "support/native.rs"]

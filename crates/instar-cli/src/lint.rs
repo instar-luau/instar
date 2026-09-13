@@ -1,11 +1,13 @@
 use crate::input::Input;
 use clap::Args;
+
 use instar_core::{
     analysis,
     lint::{self, configuration::Level},
     project::selection::{Scope, Selection},
     source::{PositionEncoding, Source, SourceStore},
 };
+
 use std::{
     io::{self, Write},
     path::PathBuf,

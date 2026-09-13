@@ -1,6 +1,7 @@
 //! Build planning, artifact publication, and incremental rebuild behavior.
 
 use assert_cmd::Command;
+
 use std::{
     error::Error,
     fs,

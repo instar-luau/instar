@@ -1,5 +1,6 @@
 use super::{Plan, paths};
 use serde::{Deserialize, Serialize};
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -31,6 +32,7 @@ struct Lock {
     path: PathBuf,
     file: Option<fs::File>,
 }
+
 impl Drop for Lock {
     fn drop(&mut self) {
         drop(self.file.take());

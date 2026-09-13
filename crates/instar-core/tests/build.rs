@@ -4,6 +4,7 @@ use instar_core::{
     build::{Classification, Session},
     graft::Graft,
 };
+
 use std::{error::Error, fs, path::Path};
 
 type TestResult = Result<(), Box<dyn Error>>;

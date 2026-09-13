@@ -5,12 +5,15 @@ use super::{
     paths,
     syntax::{array, field, kind, nodes, quote, range, unwrap},
 };
+
 use crate::{
     roblox::Environment,
     source::{PositionEncoding, Source},
 };
+
 use serde::Serialize;
 use serde_json::Value;
+
 use std::{
     collections::BTreeMap,
     io,

@@ -1,4 +1,5 @@
 use super::EditorEntry;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},

@@ -3,6 +3,7 @@ use crate::configuration::InstarConfig;
 use semver::Version;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+
 use std::{
     collections::BTreeMap,
     fs,
