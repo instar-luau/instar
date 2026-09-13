@@ -376,8 +376,8 @@ pub struct Mapping {
 }
 
 impl Mapping {
-    pub(crate) fn to_original(&self, offset: usize) -> Option<usize> {
-        if offset < self.start || offset > self.end {
+    pub(crate) fn to_original(&self, offset: usize, inclusive_end: bool) -> Option<usize> {
+        if offset < self.start || offset > self.end || !inclusive_end && offset == self.end {
             return None;
         }
 
@@ -388,7 +388,10 @@ impl Mapping {
     }
 
     pub(crate) fn to_generated(&self, offset: usize) -> Option<usize> {
-        if offset < self.original_start || offset > self.original_end {
+        if self.original_start == self.original_end
+            || offset < self.original_start
+            || offset >= self.original_end
+        {
             return None;
         }
 
@@ -450,7 +453,6 @@ impl Graft {
                 .dependencies
                 .iter()
                 .any(|path| path.as_os_str().is_empty())
-            || (!result.source.is_empty() && result.mappings.is_empty())
         {
             return Err(io::Error::other("invalid graft compilation response"));
         }
@@ -459,9 +461,10 @@ impl Graft {
         let mut previous_original = 0;
 
         for mapping in &result.mappings {
-            if mapping.start != previous
+            if mapping.start < previous
                 || mapping.start == mapping.end
-                || mapping.original_start != previous_original
+                || mapping.original_start < previous_original
+                || mapping.original_start == mapping.original_end
                 || result.source.get(mapping.start..mapping.end).is_none()
                 || original
                     .get(mapping.original_start..mapping.original_end)
@@ -472,12 +475,6 @@ impl Graft {
 
             previous = mapping.end;
             previous_original = mapping.original_end;
-        }
-
-        if !result.source.is_empty()
-            && (previous != result.source.len() || previous_original != original.len())
-        {
-            return Err(io::Error::other("incomplete graft compilation mappings"));
         }
 
         if !vermis::parse(result.source.as_bytes().into())

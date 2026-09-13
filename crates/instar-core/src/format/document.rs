@@ -11,6 +11,7 @@ pub(crate) enum Document<'source> {
     Group(Box<Self>),
     Flat(Box<Self>),
     Indent(Box<Self>),
+    Dedent(Box<Self>),
     Sequence(Vec<Self>),
 }
 
@@ -55,6 +56,7 @@ impl<'source> Document<'source> {
             Self::Group(inner) => Document::Group(Box::new(inner.owned())),
             Self::Flat(inner) => Document::Flat(Box::new(inner.owned())),
             Self::Indent(inner) => Document::Indent(Box::new(inner.owned())),
+            Self::Dedent(inner) => Document::Dedent(Box::new(inner.owned())),
 
             Self::Choice(first, second) => {
                 Document::Choice(Box::new(first.owned()), Box::new(second.owned()))
@@ -74,6 +76,7 @@ impl<'source> Document<'source> {
             Self::Group(inner)
             | Self::Flat(inner)
             | Self::Indent(inner)
+            | Self::Dedent(inner)
             | Self::Choice(inner, _) => inner.flattened(),
 
             Self::Sequence(parts) => Self::sequence(parts.into_iter().map(Self::flattened)),
@@ -90,6 +93,7 @@ impl<'source> Document<'source> {
             Self::Group(inner)
             | Self::Flat(inner)
             | Self::Indent(inner)
+            | Self::Dedent(inner)
             | Self::Choice(inner, _) => inner.width(),
 
             Self::Sequence(parts) => parts
@@ -152,6 +156,7 @@ pub(crate) fn render(document: &Document<'_>, options: &super::Options) -> Strin
             }
 
             Document::Indent(inner) => pending.push((depth + 1, flat, inner)),
+            Document::Dedent(inner) => pending.push((depth.saturating_sub(1), flat, inner)),
             Document::Flat(inner) => pending.push((depth, true, inner)),
 
             Document::Group(inner) => pending.push((

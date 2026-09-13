@@ -33,6 +33,7 @@ enum Layout {
     Choice(Box<Self>, Box<Self>),
     Group(Box<Self>),
     Indent(Box<Self>),
+    Dedent(Box<Self>),
     Sequence(Vec<Self>),
 
     Host {
@@ -86,6 +87,7 @@ impl Layout {
 
             Self::Group(inner) => Document::Group(Box::new(inner.document(source, options)?)),
             Self::Indent(inner) => Document::Indent(Box::new(inner.document(source, options)?)),
+            Self::Dedent(inner) => Document::Dedent(Box::new(inner.document(source, options)?)),
 
             Self::Sequence(parts) => Document::Sequence(
                 parts
@@ -185,13 +187,23 @@ fn substitute<'source>(
         Document::Flat(inner) => {
             let (inner, found) = substitute(*inner, marker, replacement);
 
-            (Document::Flat(Box::new(inner)), found)
+            if found {
+                (inner, true)
+            } else {
+                (Document::Flat(Box::new(inner)), false)
+            }
         }
 
         Document::Indent(inner) => {
             let (inner, found) = substitute(*inner, marker, replacement);
 
             (Document::Indent(Box::new(inner)), found)
+        }
+
+        Document::Dedent(inner) => {
+            let (inner, found) = substitute(*inner, marker, replacement);
+
+            (Document::Dedent(Box::new(inner)), found)
         }
 
         Document::Sequence(parts) => {

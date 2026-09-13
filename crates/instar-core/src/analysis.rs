@@ -226,7 +226,10 @@ impl Session {
         operation: &str,
     ) -> io::Result<Report> {
         let mut resolver = Resolver::new(sources);
-        let position = resolver.generated_position(path, position)?;
+
+        let Some(position) = resolver.generated_position(path, position)? else {
+            return Ok(Report::default());
+        };
 
         let mut report = self
             .native
@@ -287,8 +290,10 @@ pub fn analyze(
 }
 
 fn map_report(resolver: &Resolver<'_>, path: &Path, report: &mut Report) -> io::Result<()> {
-    for diagnostic in &mut report.diagnostics {
-        let [line, column, end_line, end_column] = resolver.original_range(
+    let mut diagnostics = Vec::with_capacity(report.diagnostics.len());
+
+    for mut diagnostic in std::mem::take(&mut report.diagnostics) {
+        let Some([line, column, end_line, end_column]) = resolver.original_range(
             &diagnostic.path,
             [
                 diagnostic.line,
@@ -296,19 +301,34 @@ fn map_report(resolver: &Resolver<'_>, path: &Path, report: &mut Report) -> io::
                 diagnostic.end_line,
                 diagnostic.end_column,
             ],
-        )?;
+        )?
+        else {
+            continue;
+        };
 
         diagnostic.line = line;
         diagnostic.column = column;
         diagnostic.end_line = end_line;
         diagnostic.end_column = end_column;
 
-        for related in &mut diagnostic.related {
-            related.range = resolver.original_range(&related.path, related.range)?;
+        let mut related_diagnostics = Vec::with_capacity(diagnostic.related.len());
+
+        for mut related in diagnostic.related {
+            let Some(range) = resolver.original_range(&related.path, related.range)? else {
+                continue;
+            };
+
+            related.range = range;
+            related_diagnostics.push(related);
         }
+
+        diagnostic.related = related_diagnostics;
+        diagnostics.push(diagnostic);
     }
 
-    let map_entry = |entry: &mut EditorEntry| -> io::Result<()> {
+    report.diagnostics = diagnostics;
+
+    let map_entry = |entry: &mut EditorEntry| -> io::Result<bool> {
         let path = entry.path.as_deref().unwrap_or(path);
 
         for coordinates in [
@@ -320,20 +340,35 @@ fn map_report(resolver: &Resolver<'_>, path: &Path, report: &mut Report) -> io::
         .into_iter()
         .flatten()
         {
-            *coordinates = resolver.original_range(path, *coordinates)?;
+            let Some(mapped) = resolver.original_range(path, *coordinates)? else {
+                return Ok(false);
+            };
+
+            *coordinates = mapped;
         }
 
-        Ok(())
+        Ok(true)
     };
 
-    match &mut report.editor {
+    match report.editor.take() {
         Some(EditorResult::Entries(entries)) => {
-            for entry in entries {
-                map_entry(entry)?;
+            let mut mapped = Vec::with_capacity(entries.len());
+
+            for mut entry in entries {
+                if map_entry(&mut entry)? {
+                    mapped.push(entry);
+                }
+            }
+
+            report.editor = Some(EditorResult::Entries(mapped));
+        }
+
+        Some(EditorResult::Entry(mut entry)) => {
+            if map_entry(&mut entry)? {
+                report.editor = Some(EditorResult::Entry(entry));
             }
         }
 
-        Some(EditorResult::Entry(entry)) => map_entry(entry)?,
         None => {}
     }
 
