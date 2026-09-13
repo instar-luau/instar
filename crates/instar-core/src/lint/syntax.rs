@@ -13,12 +13,15 @@ use std::{
 pub(super) fn kind(value: &Value) -> &str {
     value["type"].as_str().unwrap_or("")
 }
+
 pub(super) fn array(value: &Value) -> &[Value] {
     value.as_array().map_or(&[], Vec::as_slice)
 }
+
 pub(super) fn field<'value>(value: &'value Value, name: &str) -> &'value str {
     value[name].as_str().unwrap_or("")
 }
+
 pub(super) fn unwrap(mut value: &Value) -> &Value {
     while matches!(
         kind(value),
@@ -29,6 +32,7 @@ pub(super) fn unwrap(mut value: &Value) -> &Value {
 
     value
 }
+
 pub(super) fn number(value: &Value) -> Option<f64> {
     let value = unwrap(value);
 
@@ -42,6 +46,7 @@ pub(super) fn number(value: &Value) -> Option<f64> {
         None
     }
 }
+
 pub(super) fn truth(value: &Value) -> Option<bool> {
     let value = unwrap(value);
 
@@ -56,6 +61,7 @@ pub(super) fn truth(value: &Value) -> Option<bool> {
         _ => None,
     }
 }
+
 pub(super) fn global(value: &Value) -> Option<String> {
     let value = unwrap(value);
 
@@ -71,15 +77,19 @@ pub(super) fn global(value: &Value) -> Option<String> {
         _ => None,
     }
 }
+
 pub(super) fn local(value: &Value) -> Option<&str> {
     (kind(value) == "AstExprLocal").then(|| field(&value["local"], "location"))
 }
+
 pub(super) fn comparison(value: &Value) -> bool {
     kind(value) == "AstExprBinary" && field(value, "op").starts_with("Compare")
 }
+
 pub(super) fn call(value: &Value, name: &str) -> bool {
     kind(value) == "AstExprCall" && global(&value["func"]).as_deref() == Some(name)
 }
+
 pub(super) fn expands(value: &Value) -> bool {
     matches!(kind(value), "AstExprCall" | "AstExprVarargs")
 }
@@ -89,6 +99,7 @@ pub(super) struct Node<'value> {
     pub parent: &'value Value,
     pub scope: &'value Value,
 }
+
 fn collect<'value>(
     value: &'value Value,
     parent: &'value Value,
@@ -239,6 +250,7 @@ impl<'value> Context<'value> {
     pub(super) fn span(&self, value: &Value) -> Option<Range<usize>> {
         self.location(field(value, "location"))
     }
+
     pub(super) fn location(&self, location: &str) -> Option<Range<usize>> {
         let (start, end) = location.split_once(" - ")?;
 
@@ -262,11 +274,13 @@ impl<'value> Context<'value> {
         (range.start <= range.end && self.source.bytes().get(range.clone()).is_some())
             .then_some(range)
     }
+
     pub(super) fn text(&self, value: &Value) -> &str {
         self.span(value)
             .and_then(|range| self.source.text().ok()?.get(range))
             .unwrap_or("")
     }
+
     pub(super) fn same(&self, left: &Value, right: &Value) -> bool {
         if kind(left) != kind(right) {
             return false;
@@ -281,11 +295,13 @@ impl<'value> Context<'value> {
 
         !left.is_empty() && left == right
     }
+
     pub(super) fn emit(&mut self, rule: &str, node: &Value, message: impl Into<String>) {
         if let Some(range) = self.span(node) {
             self.emit_range(rule, range, message, Vec::new());
         }
     }
+
     pub(super) fn emit_range(
         &mut self,
         rule: &str,
@@ -329,6 +345,7 @@ impl<'value> Context<'value> {
             edits,
         });
     }
+
     pub(super) fn fix(&mut self, rule: &str, node: &Value, replacement: String) {
         if let Some(range) = self.span(node) {
             let edits = if self
@@ -353,6 +370,7 @@ impl<'value> Context<'value> {
             );
         }
     }
+
     fn suppressions(&mut self) {
         for range in self.comments.clone() {
             let text = self

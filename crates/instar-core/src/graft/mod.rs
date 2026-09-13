@@ -205,6 +205,7 @@ impl Graft {
 
         Ok(result)
     }
+
     /// # Errors
     /// Returns invalid manifests, unsupported versions, or inaccessible artifacts.
     pub fn load(path: &Path, name: &str) -> io::Result<Self> {

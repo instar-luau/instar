@@ -574,6 +574,7 @@ impl Session {
 
         Ok(())
     }
+
     fn snapshot(&mut self, path: &Path, text: &str) -> io::Result<Arc<Source>> {
         if self.sources.is_open(path).map_err(io::Error::other)? {
             let source = self.sources.read(path).map_err(io::Error::other)?;
@@ -796,6 +797,7 @@ fn language(path: &Path, configuration: &Configuration) -> bool {
                 || configuration.settings.languages.contains_key(extension)
         })
 }
+
 fn logical(path: &Path, configuration: &Configuration) -> PathBuf {
     if path
         .extension()
@@ -807,6 +809,7 @@ fn logical(path: &Path, configuration: &Configuration) -> PathBuf {
         path.to_owned()
     }
 }
+
 fn insert(
     artifacts: &mut BTreeMap<PathBuf, Vec<u8>>,
     path: PathBuf,
@@ -835,6 +838,7 @@ fn insert(
 
     Ok(())
 }
+
 fn emit(
     artifacts: &mut BTreeMap<PathBuf, Vec<u8>>,
     path: PathBuf,

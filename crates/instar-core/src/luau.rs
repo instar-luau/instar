@@ -31,12 +31,14 @@ impl Bytes {
             size: bytes.len(),
         }
     }
+
     fn absent() -> Self {
         Self {
             data: ptr::null(),
             size: 0,
         }
     }
+
     unsafe fn slice<'value>(self) -> &'value [u8] {
         if self.size == 0 {
             &[]
@@ -44,6 +46,7 @@ impl Bytes {
             unsafe { slice::from_raw_parts(self.data, self.size) }
         }
     }
+
     unsafe fn string(self) -> io::Result<String> {
         std::str::from_utf8(unsafe { self.slice() })
             .map(str::to_owned)

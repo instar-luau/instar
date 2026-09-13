@@ -97,12 +97,15 @@ pub(super) fn nodes(value: &Value) -> Vec<&Value> {
 pub(super) fn kind(value: &Value) -> &str {
     value["type"].as_str().unwrap_or_default()
 }
+
 pub(super) fn field<'value>(value: &'value Value, name: &str) -> &'value str {
     value[name].as_str().unwrap_or_default()
 }
+
 pub(super) fn array(value: &Value) -> &[Value] {
     value.as_array().map_or(&[], Vec::as_slice)
 }
+
 pub(super) fn unwrap(mut value: &Value) -> &Value {
     while matches!(kind(value), "AstExprGroup" | "AstExprTypeAssertion") {
         value = &value["expr"];
@@ -110,6 +113,7 @@ pub(super) fn unwrap(mut value: &Value) -> &Value {
 
     value
 }
+
 pub(super) fn range(source: &Source, value: &Value) -> io::Result<Range<usize>> {
     let (start, end) = field(value, "location")
         .split_once(" - ")
@@ -135,6 +139,7 @@ pub(super) fn range(source: &Source, value: &Value) -> io::Result<Range<usize>> 
 
     Ok(position(start)?..position(end)?)
 }
+
 pub(super) fn quote(value: &str) -> String {
     use std::fmt::Write;
     let mut result = String::from("\"");
