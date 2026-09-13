@@ -15,6 +15,10 @@ all = { level = "deny", priority = -1 }
 cargo = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
 
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+clone_on_ref_ptr = "deny"
+
 [workspace.lints.rust]
 deprecated_safe = { level = "deny", priority = -1 }
 let_underscore = { level = "deny", priority = -1 }
@@ -22,6 +26,10 @@ rust_2018_idioms = { level = "deny", priority = -1 }
 unsafe_code = "deny"
 unused = { level = "deny", priority = -1 }
 warnings = { level = "deny", priority = -1 }
+
+missing_docs = "deny"
+unreachable_pub = "deny"
+unsafe_op_in_unsafe_fn = "deny"
 
 [workspace.metadata.release]
 publish = false
