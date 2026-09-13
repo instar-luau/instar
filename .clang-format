@@ -1,3 +1,9 @@
+AccessModifierOffset: 0
+AlignAfterOpenBracket: DontAlign
+AllowShortFunctionsOnASingleLine:
+  Other: false
 ColumnLimit: 120
+IndentExternBlock: Indent
 IndentWidth: 4
 InsertBraces: true
+NamespaceIndentation: All
