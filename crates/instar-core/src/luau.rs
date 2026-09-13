@@ -13,17 +13,18 @@ use std::{
 };
 
 use crate::{
-    analysis::{Annotation, Diagnostic, Options, Report},
+    analysis::{Annotation, Diagnostic, EditorEntry, EditorResult, Options, Report},
     project::resolution::Resolver,
 };
 
 const BUILD_CONSTANT_DEFINITIONS: &str = "@instar/build/constants.d.luau";
+const ROBLOX_DEFINITIONS: &str = "@instar/roblox.d.luau";
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct Bytes {
-    data: *const u8,
-    size: usize,
+pub(crate) struct Bytes {
+    pub(crate) data: *const u8,
+    pub(crate) size: usize,
 }
 
 impl Bytes {
@@ -41,38 +42,224 @@ impl Bytes {
         }
     }
 
-    unsafe fn slice<'value>(self) -> &'value [u8] {
+    unsafe fn slice<'value>(self) -> io::Result<&'value [u8]> {
         if self.size == 0 {
-            &[]
+            Ok(&[])
+        } else if self.data.is_null() {
+            Err(io::Error::other("native byte range is invalid"))
         } else {
-            unsafe { slice::from_raw_parts(self.data, self.size) }
+            Ok(unsafe { slice::from_raw_parts(self.data, self.size) })
         }
     }
 
     unsafe fn string(self) -> io::Result<String> {
-        std::str::from_utf8(unsafe { self.slice() })
+        std::str::from_utf8(unsafe { self.slice()? })
             .map(str::to_owned)
             .map_err(io::Error::other)
     }
 }
 
-type Read = extern "C" fn(*mut c_void, Bytes) -> Bytes;
-type Resolve = extern "C" fn(*mut c_void, Bytes, Bytes, u32) -> Bytes;
-type Environment = extern "C" fn(*mut c_void, Bytes, Bytes, usize) -> Bytes;
-type Configuration = extern "C" fn(*mut c_void, Bytes, usize) -> Bytes;
-
 #[repr(C)]
-struct Span {
+#[derive(Clone, Copy)]
+struct Position {
     line: u32,
     column: u32,
-    end_line: u32,
-    end_column: u32,
-    related: bool,
 }
 
-type Emit = extern "C" fn(*mut c_void, Bytes, Bytes, Span, bool);
-type Annotate = extern "C" fn(*mut c_void, Bytes, Bytes);
-type Alias = extern "C" fn(*mut c_void, Bytes, Bytes);
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Range {
+    begin: Position,
+    end: Position,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Module {
+    name: Bytes,
+    source: Bytes,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Configuration {
+    module: Bytes,
+    path: Bytes,
+    source: Bytes,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct RobloxClass {
+    name: Bytes,
+    service: i32,
+    creatable: i32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct RobloxNode {
+    name: Bytes,
+    class_name: Bytes,
+    parent: usize,
+    has_parent: i32,
+}
+
+type ReadCallback = extern "C" fn(*mut c_void, Bytes) -> Bytes;
+type Resolve = extern "C" fn(*mut c_void, Bytes, Range, Bytes) -> Bytes;
+type ReportCallback = extern "C" fn(*mut c_void, Bytes, Bytes, Range, i32);
+type TypeCallback = extern "C" fn(*mut c_void, Bytes);
+type CompletionCallback = extern "C" fn(*mut c_void, Bytes, Bytes, Bytes, Bytes, u32, i32);
+type SignatureCallback = extern "C" fn(*mut c_void, Bytes, *const Bytes, usize, u32);
+type DestinationCallback = extern "C" fn(*mut c_void, Bytes, Range, Bytes);
+type CallCallback = extern "C" fn(*mut c_void, Bytes, Range, Bytes, Range, i32, Range);
+type AnnotationCallback = extern "C" fn(*mut c_void, Bytes, Position, Bytes);
+type AliasCallback = extern "C" fn(*mut c_void, Bytes, Bytes);
+type FailureCallback = extern "C" fn(*mut c_void, Bytes);
+
+unsafe extern "C" {
+    fn instar_engine_create(
+        modules: *const Module,
+        count: usize,
+        context: *mut c_void,
+        reader: Option<ReadCallback>,
+        resolver: Option<Resolve>,
+        configurations: *const Configuration,
+        configuration_count: usize,
+        mode: i32,
+        old_solver: i32,
+    ) -> *mut c_void;
+
+    fn instar_engine_destroy(engine: *mut c_void);
+
+    fn instar_engine_load_definitions(
+        engine: *mut c_void,
+        definitions: *const Module,
+        definition_count: usize,
+        target_paths: *const Bytes,
+        target_count: usize,
+        all_targets: i32,
+        context: *mut c_void,
+        failure: Option<FailureCallback>,
+    ) -> i32;
+
+    fn instar_engine_prepare_roblox(
+        engine: *mut c_void,
+        enumerations: *const Bytes,
+        enumeration_count: usize,
+        classes: *const RobloxClass,
+        class_count: usize,
+        nodes: *const RobloxNode,
+        node_count: usize,
+        context: *mut c_void,
+        failure: Option<FailureCallback>,
+    ) -> i32;
+
+    fn instar_engine_check(
+        engine: *mut c_void,
+        context: *mut c_void,
+        report: Option<ReportCallback>,
+        failure: Option<FailureCallback>,
+    );
+
+    fn instar_engine_type_at(
+        engine: *mut c_void,
+        path: Bytes,
+        position: Position,
+        context: *mut c_void,
+        report: Option<TypeCallback>,
+        failure: Option<FailureCallback>,
+    );
+
+    fn instar_engine_hover(
+        engine: *mut c_void,
+        path: Bytes,
+        position: Position,
+        context: *mut c_void,
+        report: Option<TypeCallback>,
+        failure: Option<FailureCallback>,
+    );
+
+    fn instar_engine_complete(
+        engine: *mut c_void,
+        path: Bytes,
+        position: Position,
+        context: *mut c_void,
+        report: Option<CompletionCallback>,
+        failure: Option<FailureCallback>,
+    );
+
+    fn instar_engine_signature(
+        engine: *mut c_void,
+        path: Bytes,
+        position: Position,
+        context: *mut c_void,
+        report: Option<SignatureCallback>,
+        failure: Option<FailureCallback>,
+    );
+
+    fn instar_engine_definition(
+        engine: *mut c_void,
+        path: Bytes,
+        position: Position,
+        context: *mut c_void,
+        report: Option<DestinationCallback>,
+        failure: Option<FailureCallback>,
+    );
+
+    fn instar_engine_type_definition(
+        engine: *mut c_void,
+        path: Bytes,
+        position: Position,
+        context: *mut c_void,
+        report: Option<DestinationCallback>,
+        failure: Option<FailureCallback>,
+    );
+
+    fn instar_engine_implementations(
+        engine: *mut c_void,
+        path: Bytes,
+        position: Position,
+        context: *mut c_void,
+        report: Option<DestinationCallback>,
+        failure: Option<FailureCallback>,
+    );
+
+    fn instar_engine_references(
+        engine: *mut c_void,
+        path: Bytes,
+        position: Position,
+        context: *mut c_void,
+        report: Option<DestinationCallback>,
+        failure: Option<FailureCallback>,
+    );
+
+    fn instar_engine_annotations(
+        engine: *mut c_void,
+        path: Bytes,
+        context: *mut c_void,
+        report: Option<AnnotationCallback>,
+        failure: Option<FailureCallback>,
+    );
+
+    fn instar_engine_calls(
+        engine: *mut c_void,
+        path: Bytes,
+        context: *mut c_void,
+        report: Option<CallCallback>,
+        failure: Option<FailureCallback>,
+    );
+
+    fn instar_parse_aliases(
+        source: Bytes,
+        executable: i32,
+        context: *mut c_void,
+        alias: Option<AliasCallback>,
+        failure: Option<FailureCallback>,
+    );
+
+    fn instar_matches(pattern: Bytes, source: Bytes) -> i32;
+}
 
 pub(crate) fn matches(pattern: &str, source: &str) -> io::Result<bool> {
     match unsafe {
@@ -87,58 +274,28 @@ pub(crate) fn matches(pattern: &str, source: &str) -> io::Result<bool> {
     }
 }
 
-unsafe extern "C" {
-    fn instar_matches(pattern: Bytes, source: Bytes) -> i32;
-    fn instar_aliases(
-        source: Bytes,
-        executable: bool,
-        context: *mut c_void,
-        alias: Alias,
-        report: Emit,
-    );
-    fn instar_destroy(session: *mut c_void);
-    fn instar_query(
-        session: *mut c_void,
-        context: *mut c_void,
-        path: Bytes,
-        line: u32,
-        column: u32,
-        operation: Bytes,
-        output: Annotate,
-    );
-    fn instar_analyze(
-        session: *mut *mut c_void,
-        context: *mut c_void,
-        read: Read,
-        resolve: Resolve,
-        configuration: Configuration,
-        report: Emit,
-        annotate: Annotate,
-        modules: *const Bytes,
-        count: usize,
-        definitions: *const Bytes,
-        definition_count: usize,
-        configuration_types: Bytes,
-        environment: Environment,
-        mode: Bytes,
-        old_solver: bool,
-        annotations: bool,
-        changed: *const Bytes,
-        changed_count: usize,
-    );
-}
-
 struct Context<'resolver, 'store> {
     resolver: &'resolver mut Resolver<'store>,
-    buffer: Vec<u8>,
     environment: std::sync::Arc<crate::roblox::Environment>,
     constants: Vec<u8>,
+    buffer: Vec<u8>,
     report: Report,
     error: Option<io::Error>,
+    annotations: Vec<NativeAnnotation>,
+}
+
+#[derive(Clone)]
+struct NativeAnnotation {
+    path: String,
+    position: Position,
+    text: Vec<u8>,
 }
 
 impl Context<'_, '_> {
-    fn call(&mut self, operation: impl FnOnce(&mut Self) -> io::Result<Option<Vec<u8>>>) -> Bytes {
+    fn call_bytes(
+        &mut self,
+        operation: impl FnOnce(&mut Self) -> io::Result<Option<Vec<u8>>>,
+    ) -> Bytes {
         if self.error.is_some() {
             return Bytes::absent();
         }
@@ -165,12 +322,24 @@ impl Context<'_, '_> {
             }
         }
     }
+
+    fn call(&mut self, operation: impl FnOnce(&mut Self) -> io::Result<()>) {
+        if self.error.is_some() {
+            return;
+        }
+
+        match catch_unwind(AssertUnwindSafe(|| operation(self))) {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => self.error = Some(error),
+            Err(_) => self.error = Some(io::Error::other("native callback panicked")),
+        }
+    }
 }
 
 extern "C" fn read(context: *mut c_void, name: Bytes) -> Bytes {
     let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
 
-    context.call(|context| {
+    context.call_bytes(|context| {
         let name = unsafe { name.string()? };
 
         if name == BUILD_CONSTANT_DEFINITIONS {
@@ -193,155 +362,245 @@ extern "C" fn read(context: *mut c_void, name: Bytes) -> Bytes {
     })
 }
 
-extern "C" fn resolve(context: *mut c_void, from: Bytes, specifier: Bytes, kind: u32) -> Bytes {
+extern "C" fn resolve(context: *mut c_void, from: Bytes, range: Range, specifier: Bytes) -> Bytes {
     let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
 
-    context.call(|context| {
+    context.call_bytes(|context| {
         let from = unsafe { from.string()? };
 
         let specifier = unsafe { specifier.string()? };
 
-        let path = if kind == 0 {
-            context
-                .environment
-                .require(context.resolver, Path::new(&from), &specifier)?
-        } else {
-            context
-                .environment
-                .resolve(Path::new(&from), &specifier, kind)
-        };
+        let path = context
+            .environment
+            .require(context.resolver, Path::new(&from), &specifier)?;
+
+        let _ = range;
 
         path.map(|path| module_name(&path).map(String::into_bytes))
             .transpose()
     })
 }
 
-extern "C" fn configuration(context: *mut c_void, name: Bytes, index: usize) -> Bytes {
+extern "C" fn failure(context: *mut c_void, message: Bytes) {
     let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
 
     context.call(|context| {
-        let name = unsafe { name.string()? };
+        context.error = Some(io::Error::other(unsafe { message.string()? }));
 
-        context
-            .resolver
-            .discovery
-            .configurations(&context.environment.configuration(Path::new(&name)))?
-            .get(index)
-            .map(|configuration| -> io::Result<_> {
-                let mut bytes = module_name(&configuration.path)?.into_bytes();
-                bytes.push(0);
-                bytes.extend_from_slice(&configuration.bytes);
-
-                Ok(bytes)
-            })
-            .transpose()
-    })
-}
-
-extern "C" fn metadata(context: *mut c_void, category: Bytes, name: Bytes, index: usize) -> Bytes {
-    let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
-
-    context.call(|context| {
-        let category = unsafe { category.string()? };
-
-        let name = unsafe { name.string()? };
-
-        let environment = &context.environment;
-
-        let value = match category.as_str() {
-            "enabled" => environment.enabled.then(String::new),
-
-            "definitions" => environment.enabled.then(|| environment.definitions.clone()),
-
-            "enumeration" => environment.enumerations.get(index).cloned(),
-            "class" => environment.classes.get(index).cloned(),
-
-            "node" => environment.nodes.get(index).map(|node| {
-                format!(
-                    "{}\0{}\0{}",
-                    node.name,
-                    node.class_name,
-                    node.parent
-                        .map(|parent| parent.to_string())
-                        .unwrap_or_default()
-                )
-            }),
-
-            "script" => environment
-                .node(Path::new(&name))
-                .map(|index| index.to_string()),
-
-            "kind" => environment.enabled.then(|| {
-                environment.node(Path::new(&name)).map_or_else(
-                    || {
-                        if name.ends_with(".server.lua") || name.ends_with(".server.luau") {
-                            "Script"
-                        } else if name.ends_with(".client.lua") || name.ends_with(".client.luau") {
-                            "LocalScript"
-                        } else {
-                            "ModuleScript"
-                        }
-                        .to_owned()
-                    },
-                    |index| environment.nodes[index].class_name.clone(),
-                )
-            }),
-
-            "path" => Some(module_name(&environment.source(Path::new(&name)))?),
-            _ => None,
-        };
-
-        Ok(value.map(String::into_bytes))
-    })
-}
-
-extern "C" fn emit(context: *mut c_void, name: Bytes, message: Bytes, span: Span, is_error: bool) {
-    let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
-
-    context.call(|context| {
-        if span.related {
-            if let Some(diagnostic) = context.report.diagnostics.last_mut() {
-                diagnostic.related.push(crate::analysis::RelatedDiagnostic {
-                    path: context
-                        .environment
-                        .source(Path::new(&unsafe { name.string()? })),
-                    range: [span.line, span.column, span.end_line, span.end_column],
-                    message: String::from_utf8_lossy(unsafe { message.slice() }).into_owned(),
-                });
-            }
-
-            return Ok(None);
-        }
-
-        context.report.diagnostics.push(Diagnostic {
-            path: context
-                .environment
-                .source(Path::new(&unsafe { name.string()? })),
-            line: span.line,
-            column: span.column,
-            end_line: span.end_line,
-            end_column: span.end_column,
-            message: String::from_utf8_lossy(unsafe { message.slice() }).into_owned(),
-            is_error,
-            related: Vec::new(),
-        });
-
-        Ok(None)
+        Ok(())
     });
 }
 
-extern "C" fn annotate(context: *mut c_void, name: Bytes, text: Bytes) {
+extern "C" fn report(
+    context: *mut c_void,
+    path: Bytes,
+    message: Bytes,
+    range: Range,
+    is_error: i32,
+) {
     let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
 
     context.call(|context| {
-        context.report.annotations.push(Annotation {
-            path: context
-                .environment
-                .source(Path::new(&unsafe { name.string()? })),
-            bytes: unsafe { text.slice() }.to_vec(),
+        let path = unsafe { path.string()? };
+
+        context.report.diagnostics.push(Diagnostic {
+            path: context.environment.source(Path::new(&path)),
+            line: range.begin.line,
+            column: range.begin.column,
+            end_line: range.end.line,
+            end_column: range.end.column,
+            message: String::from_utf8_lossy(unsafe { message.slice()? }).into_owned(),
+            is_error: is_error != 0,
+            related: Vec::new(),
         });
 
-        Ok(None)
+        Ok(())
+    });
+}
+
+fn empty_entry() -> EditorEntry {
+    EditorEntry {
+        name: None,
+        description: None,
+        documentation: None,
+        documentation_text: None,
+        path: None,
+        range: None,
+        color: None,
+        imports: None,
+        require: None,
+        caller: None,
+        container: None,
+        modifiers: None,
+        selection: None,
+        kind: None,
+        declaration: None,
+        insert: None,
+        deprecated: None,
+        label: None,
+        active: None,
+        parameters: None,
+        error: None,
+    }
+}
+
+extern "C" fn type_result(context: *mut c_void, description: Bytes) {
+    let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
+
+    context.call(|context| {
+        let mut entry = empty_entry();
+
+        entry.description = Some(unsafe { description.string()? });
+
+        context.report.editor = Some(EditorResult::Entry(Box::new(entry)));
+
+        Ok(())
+    });
+}
+
+extern "C" fn completion_result(
+    context: *mut c_void,
+    label: Bytes,
+    description: Bytes,
+    documentation: Bytes,
+    insert: Bytes,
+    kind: u32,
+    deprecated: i32,
+) {
+    let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
+
+    context.call(|context| {
+        let mut entry = empty_entry();
+
+        entry.label = Some(unsafe { label.string()? });
+
+        entry.description = Some(unsafe { description.string()? });
+
+        entry.documentation = Some(unsafe { documentation.string()? });
+
+        entry.insert = Some(unsafe { insert.string()? });
+
+        entry.kind = Some(kind);
+        entry.deprecated = Some(deprecated != 0);
+
+        match &mut context.report.editor {
+            Some(EditorResult::Entries(entries)) => entries.push(entry),
+            _ => context.report.editor = Some(EditorResult::Entries(vec![entry])),
+        }
+
+        Ok(())
+    });
+}
+
+extern "C" fn signature_result(
+    context: *mut c_void,
+    description: Bytes,
+    parameters: *const Bytes,
+    count: usize,
+    active: u32,
+) {
+    let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
+
+    context.call(|context| {
+        if count != 0 && parameters.is_null() {
+            return Err(io::Error::other("native signature parameters are invalid"));
+        }
+
+        let mut entry = empty_entry();
+
+        entry.description = Some(unsafe { description.string()? });
+
+        entry.parameters = Some(
+            (0..count)
+                .map(|index| unsafe { (*parameters.add(index)).string() })
+                .collect::<io::Result<Vec<_>>>()?,
+        );
+
+        entry.active = Some(active);
+        context.report.editor = Some(EditorResult::Entry(Box::new(entry)));
+
+        Ok(())
+    });
+}
+
+fn range_values(range: Range) -> [u32; 4] {
+    [
+        range.begin.line,
+        range.begin.column,
+        range.end.line,
+        range.end.column,
+    ]
+}
+
+extern "C" fn destination_result(context: *mut c_void, path: Bytes, range: Range, name: Bytes) {
+    let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
+
+    context.call(|context| {
+        let mut entry = empty_entry();
+
+        entry.path = Some(PathBuf::from(unsafe { path.string()? }));
+
+        entry.range = Some(range_values(range));
+
+        entry.name = Some(unsafe { name.string()? });
+
+        match &mut context.report.editor {
+            Some(EditorResult::Entries(entries)) => entries.push(entry),
+            _ => context.report.editor = Some(EditorResult::Entries(vec![entry])),
+        }
+
+        Ok(())
+    });
+}
+
+extern "C" fn call_result(
+    context: *mut c_void,
+    path: Bytes,
+    range: Range,
+    name: Bytes,
+    caller: Range,
+    has_container: i32,
+    container: Range,
+) {
+    let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
+
+    context.call(|context| {
+        let mut entry = empty_entry();
+
+        entry.path = Some(PathBuf::from(unsafe { path.string()? }));
+
+        entry.range = Some(range_values(range));
+
+        entry.name = Some(unsafe { name.string()? });
+
+        entry.caller = Some(range_values(caller));
+        entry.container = (has_container != 0).then(|| range_values(container));
+
+        match &mut context.report.editor {
+            Some(EditorResult::Entries(entries)) => entries.push(entry),
+            _ => context.report.editor = Some(EditorResult::Entries(vec![entry])),
+        }
+
+        Ok(())
+    });
+}
+
+extern "C" fn annotation_result(
+    context: *mut c_void,
+    path: Bytes,
+    position: Position,
+    text: Bytes,
+) {
+    let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
+
+    context.call(|context| {
+        context.annotations.push(NativeAnnotation {
+            path: unsafe { path.string()? },
+            position,
+            text: unsafe { text.slice()?.to_vec() },
+        });
+
+        Ok(())
     });
 }
 
@@ -366,32 +625,52 @@ fn module_name(path: &Path) -> io::Result<String> {
         })
 }
 
-fn names(resolver: &mut Resolver<'_>, paths: &[PathBuf]) -> io::Result<Vec<String>> {
-    paths
-        .iter()
-        .map(|path| {
-            resolver
-                .load(path)
-                .and_then(|source| module_name(source.path()))
-        })
-        .collect()
+struct OwnedModule {
+    name: Vec<u8>,
+    source: Vec<u8>,
+}
+
+impl OwnedModule {
+    fn ffi(&self) -> Module {
+        Module {
+            name: Bytes::new(&self.name),
+            source: Bytes::new(&self.source),
+        }
+    }
+}
+
+struct OwnedConfiguration {
+    module: Vec<u8>,
+    path: Vec<u8>,
+    source: Vec<u8>,
+}
+
+impl OwnedConfiguration {
+    fn ffi(&self) -> Configuration {
+        Configuration {
+            module: Bytes::new(&self.module),
+            path: Bytes::new(&self.path),
+            source: Bytes::new(&self.source),
+        }
+    }
+}
+
+struct NativeEngine(*mut c_void);
+
+impl Drop for NativeEngine {
+    fn drop(&mut self) {
+        unsafe { instar_engine_destroy(self.0) };
+    }
 }
 
 #[derive(Default)]
 pub(crate) struct Session {
-    handle: *mut c_void,
     changed: Vec<PathBuf>,
     refresh: bool,
     query: Option<(PathBuf, line_index::LineCol, String)>,
 
     environments:
         BTreeMap<crate::configuration::RobloxConfig, std::sync::Arc<crate::roblox::Environment>>,
-}
-
-impl Drop for Session {
-    fn drop(&mut self) {
-        unsafe { instar_destroy(self.handle) };
-    }
 }
 
 impl Session {
@@ -425,16 +704,19 @@ impl Session {
         options: &Options,
     ) -> io::Result<Report> {
         let changed = std::mem::take(&mut self.changed);
+        let refresh = std::mem::take(&mut self.refresh);
 
-        let incremental = !std::mem::take(&mut self.refresh)
-            && !options.update
-            && (!changed.is_empty() || self.query.is_some());
-
-        if !incremental {
+        if refresh || options.update {
             self.environments.clear();
         }
 
-        let mut groups = BTreeMap::new();
+        let mut groups: Vec<(
+            Vec<PathBuf>,
+            Vec<PathBuf>,
+            Vec<u8>,
+            Option<std::sync::Arc<crate::roblox::Environment>>,
+            Vec<PathBuf>,
+        )> = Vec::new();
 
         for path in modules {
             let source = resolver.load(path)?;
@@ -473,25 +755,45 @@ impl Session {
             let environment = if configuration {
                 None
             } else {
-                resolver.discovery.roblox(&path)?
+                let settings = resolver.discovery.roblox(&path)?;
+
+                Some(self.environment(resolver, settings.as_ref(), options.update)?)
             };
 
-            groups
-                .entry((definitions, documentation, constants, environment))
-                .or_insert_with(Vec::new)
-                .push(path);
+            let group = groups.iter_mut().find(|group| {
+                group.0 == definitions
+                    && group.1 == documentation
+                    && group.2 == constants
+                    && match (&group.3, &environment) {
+                        (None, None) => true,
+                        (Some(left), Some(right)) => std::sync::Arc::ptr_eq(left, right),
+                        _ => false,
+                    }
+            });
+
+            if let Some(group) = group {
+                group.4.push(path);
+            } else {
+                groups.push((
+                    definitions,
+                    documentation,
+                    constants,
+                    environment,
+                    vec![path],
+                ));
+            }
         }
 
         let mut report = Report::default();
 
-        for ((definitions, documentation, constants, environment), modules) in groups {
+        for (definitions, documentation, constants, environment, modules) in groups {
             let result = self.analyze_group(
                 resolver,
                 &modules,
                 (&definitions, &documentation, &constants),
                 environment.as_ref(),
                 options,
-                incremental.then_some(changed.as_slice()),
+                &changed,
             )?;
 
             report.diagnostics.extend(result.diagnostics);
@@ -542,117 +844,320 @@ impl Session {
         Ok(environment)
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the native analysis call keeps its borrowed inputs together"
-    )]
     fn analyze_group(
         &mut self,
         resolver: &mut Resolver<'_>,
         modules: &[PathBuf],
         assets: (&[PathBuf], &[PathBuf], &[u8]),
-        settings: Option<&crate::configuration::RobloxConfig>,
+        environment: Option<&std::sync::Arc<crate::roblox::Environment>>,
         options: &Options,
-        changed: Option<&[PathBuf]>,
+        _changed: &[PathBuf],
     ) -> io::Result<Report> {
         let (definitions, documentation, constants) = assets;
-        let environment = self.environment(resolver, settings, options.update)?;
-        let mut changed_names = Vec::new();
+        let environment = environment.cloned().unwrap_or_default();
+        let mut module_values = Vec::new();
+        let mut module_names = Vec::new();
 
-        for path in changed.unwrap_or_default() {
-            changed_names.push(module_name(path)?);
+        for path in modules {
+            let source = resolver.load(path)?;
+            let name = module_name(source.path())?;
+            module_names.push(name.clone());
 
-            if let Some(index) = environment.node(path) {
-                changed_names.push(module_name(&environment.identity(index))?);
+            module_values.push(OwnedModule {
+                name: name.into_bytes(),
+                source: source.bytes().to_vec(),
+            });
+        }
+
+        let mut definition_values = Vec::new();
+        let mut loaded_definitions = std::collections::BTreeSet::new();
+
+        for path in definitions {
+            let source = resolver.load(path)?;
+            let name = module_name(source.path())?;
+
+            if loaded_definitions.insert(name.clone()) {
+                definition_values.push(OwnedModule {
+                    name: name.into_bytes(),
+                    source: source.bytes().to_vec(),
+                });
             }
         }
 
-        let changed_values = changed_names
-            .iter()
-            .map(|name| Bytes::new(name.as_bytes()))
-            .collect::<Vec<_>>();
-
-        let mut definition_names = names(resolver, definitions)?;
-
-        if !constants.is_empty() {
-            definition_names.push(BUILD_CONSTANT_DEFINITIONS.to_owned());
+        if !constants.is_empty() && loaded_definitions.insert(BUILD_CONSTANT_DEFINITIONS.to_owned())
+        {
+            definition_values.push(OwnedModule {
+                name: BUILD_CONSTANT_DEFINITIONS.as_bytes().to_vec(),
+                source: constants.to_vec(),
+            });
         }
 
-        let definitions: Vec<_> = definition_names
-            .iter()
-            .map(|name| Bytes::new(name.as_bytes()))
-            .collect();
+        if environment.enabled && loaded_definitions.insert(ROBLOX_DEFINITIONS.to_owned()) {
+            definition_values.push(OwnedModule {
+                name: ROBLOX_DEFINITIONS.as_bytes().to_vec(),
+                source: environment.definitions.as_bytes().to_vec(),
+            });
+        }
 
-        let names = names(resolver, modules)?;
+        let mut configuration_values = Vec::new();
 
-        let modules: Vec<_> = names
-            .iter()
-            .map(|name| Bytes::new(name.as_bytes()))
-            .collect();
+        for path in modules {
+            for configuration in resolver.discovery.configurations(path)? {
+                let name = module_name(&configuration.path)?;
+
+                if configuration_values
+                    .iter()
+                    .all(|value: &OwnedConfiguration| value.path != name.as_bytes())
+                {
+                    configuration_values.push(OwnedConfiguration {
+                        module: Vec::new(),
+                        path: name.into_bytes(),
+                        source: configuration.bytes.clone(),
+                    });
+                }
+            }
+        }
 
         let mut context = Context {
             resolver,
-            buffer: Vec::new(),
             environment,
             constants: constants.to_vec(),
+            buffer: Vec::new(),
             report: Report::default(),
             error: None,
+            annotations: Vec::new(),
         };
 
-        unsafe {
-            instar_analyze(
-                ptr::from_mut(&mut self.handle),
-                ptr::from_mut(&mut context).cast(),
-                read,
-                resolve,
-                configuration,
-                emit,
-                annotate,
-                modules.as_ptr(),
-                modules.len(),
-                definitions.as_ptr(),
-                definitions.len(),
-                Bytes::new(include_bytes!("../bridge/configuration.d.luau")),
-                metadata,
-                options.mode.map_or_else(Bytes::absent, |mode| {
-                    Bytes::new(match mode {
-                        crate::analysis::Mode::Strict => b"strict",
-                        crate::analysis::Mode::Nonstrict => b"nonstrict",
-                        crate::analysis::Mode::Nocheck => b"nocheck",
-                    })
-                }),
-                options.old_solver,
-                options.annotations,
-                changed.map_or(ptr::null(), |_| changed_values.as_ptr()),
-                changed_values.len(),
-            );
+        let native_modules: Vec<_> = module_values.iter().map(OwnedModule::ffi).collect();
+
+        let native_configurations: Vec<_> = configuration_values
+            .iter()
+            .map(OwnedConfiguration::ffi)
+            .collect();
+
+        let context_pointer = ptr::from_mut(&mut context).cast();
+
+        let mode = match options.mode {
+            None => 0,
+            Some(crate::analysis::Mode::Strict) => 1,
+            Some(crate::analysis::Mode::Nonstrict) => 2,
+            Some(crate::analysis::Mode::Nocheck) => 3,
+        };
+
+        let engine = unsafe {
+            instar_engine_create(
+                native_modules.as_ptr(),
+                native_modules.len(),
+                context_pointer,
+                Some(read),
+                Some(resolve),
+                native_configurations.as_ptr(),
+                native_configurations.len(),
+                mode,
+                i32::from(options.old_solver),
+            )
+        };
+
+        if engine.is_null() {
+            return Err(io::Error::other("native engine initialization failed"));
         }
 
-        if context.error.is_none()
-            && self
-                .query
-                .as_ref()
-                .is_some_and(|(path, _, _)| names.iter().any(|name| Path::new(name) == path))
-            && let Some((path, position, operation)) = self.query.take()
-        {
-            let name = module_name(&path)?;
+        let engine = NativeEngine(engine);
+        let native_definitions: Vec<_> = definition_values.iter().map(OwnedModule::ffi).collect();
 
-            unsafe {
-                instar_query(
-                    self.handle,
-                    ptr::from_mut(&mut context).cast(),
-                    Bytes::new(name.as_bytes()),
-                    position.line,
-                    position.col,
-                    Bytes::new(operation.as_bytes()),
-                    editor,
-                );
+        let definitions_result = unsafe {
+            instar_engine_load_definitions(
+                engine.0,
+                native_definitions.as_ptr(),
+                native_definitions.len(),
+                ptr::null(),
+                0,
+                1,
+                context_pointer,
+                Some(failure),
+            )
+        };
+
+        if definitions_result == 0 {
+            return Err(context
+                .error
+                .take()
+                .unwrap_or_else(|| io::Error::other("native definitions failed")));
+        }
+
+        let configuration_targets: Vec<_> = module_values
+            .iter()
+            .zip(modules)
+            .filter_map(|(module, path)| {
+                (crate::project::ConfigKind::from_path(path)
+                    == Some(crate::project::ConfigKind::Luau))
+                .then_some(Bytes::new(&module.name))
+            })
+            .collect();
+
+        if !configuration_targets.is_empty() {
+            let configuration_definition = OwnedModule {
+                name: b"configuration.d.luau".to_vec(),
+                source: include_bytes!("../bridge/configuration.d.luau").to_vec(),
+            };
+
+            let native_configuration_definition = configuration_definition.ffi();
+
+            let result = unsafe {
+                instar_engine_load_definitions(
+                    engine.0,
+                    &native_configuration_definition,
+                    1,
+                    configuration_targets.as_ptr(),
+                    configuration_targets.len(),
+                    0,
+                    context_pointer,
+                    Some(failure),
+                )
+            };
+
+            if result == 0 {
+                return Err(context
+                    .error
+                    .take()
+                    .unwrap_or_else(|| io::Error::other("configuration definitions failed")));
             }
         }
 
-        if let Some(error) = context.error {
-            *self = Self::default();
+        if context.environment.enabled {
+            let enumerations: Vec<_> = context
+                .environment
+                .enumerations
+                .iter()
+                .map(|value| Bytes::new(value.as_bytes()))
+                .collect();
 
+            let mut classes = Vec::new();
+
+            for value in &context.environment.classes {
+                let mut fields = value.split('\0');
+                let name = fields.next().unwrap_or_default().as_bytes().to_vec();
+                let flags = fields.next().unwrap_or_default().as_bytes();
+
+                classes.push((
+                    name,
+                    flags.first() == Some(&b'1'),
+                    flags.get(1) == Some(&b'1'),
+                ));
+            }
+
+            let native_classes: Vec<_> = classes
+                .iter()
+                .map(|(name, service, creatable)| RobloxClass {
+                    name: Bytes::new(name),
+                    service: i32::from(*service),
+                    creatable: i32::from(*creatable),
+                })
+                .collect();
+
+            let native_nodes: Vec<_> = context
+                .environment
+                .nodes
+                .iter()
+                .map(|node| RobloxNode {
+                    name: Bytes::new(node.name.as_bytes()),
+                    class_name: Bytes::new(node.class_name.as_bytes()),
+                    parent: node.parent.unwrap_or_default(),
+                    has_parent: i32::from(node.parent.is_some()),
+                })
+                .collect();
+
+            let result = unsafe {
+                instar_engine_prepare_roblox(
+                    engine.0,
+                    enumerations.as_ptr(),
+                    enumerations.len(),
+                    native_classes.as_ptr(),
+                    native_classes.len(),
+                    native_nodes.as_ptr(),
+                    native_nodes.len(),
+                    context_pointer,
+                    Some(failure),
+                )
+            };
+
+            if result == 0 {
+                return Err(context
+                    .error
+                    .take()
+                    .unwrap_or_else(|| io::Error::other("Roblox metadata failed")));
+            }
+        }
+
+        unsafe {
+            instar_engine_check(engine.0, context_pointer, Some(report), Some(failure));
+        }
+
+        if let Some(error) = context.error.take() {
+            return Err(error);
+        }
+
+        if options.annotations {
+            for name in &module_names {
+                unsafe {
+                    instar_engine_annotations(
+                        engine.0,
+                        Bytes::new(name.as_bytes()),
+                        context_pointer,
+                        Some(annotation_result),
+                        Some(failure),
+                    );
+                }
+            }
+
+            if let Some(error) = context.error.take() {
+                return Err(error);
+            }
+
+            for module in &module_values {
+                let insertions: Vec<_> = context
+                    .annotations
+                    .iter()
+                    .filter(|annotation| annotation.path.as_bytes() == module.name.as_slice())
+                    .cloned()
+                    .collect();
+
+                if insertions.is_empty() {
+                    continue;
+                }
+
+                let mut bytes = module.source.clone();
+
+                let mut offsets = insertions
+                    .iter()
+                    .map(|annotation| {
+                        line_column_offset(&bytes, annotation.position)
+                            .map(|offset| (offset, annotation.text.clone()))
+                    })
+                    .collect::<io::Result<Vec<_>>>()?;
+
+                offsets.sort_by(|left, right| right.0.cmp(&left.0));
+
+                for (offset, text) in offsets {
+                    bytes.splice(offset..offset, text);
+                }
+
+                context.report.annotations.push(Annotation {
+                    path: context.environment.source(Path::new(
+                        std::str::from_utf8(&module.name).map_err(io::Error::other)?,
+                    )),
+                    bytes,
+                });
+            }
+        }
+
+        if let Some((path, position, operation)) = self.query.take()
+            && module_names.iter().any(|name| Path::new(name) == path)
+        {
+            query_engine(&engine, &mut context, &path, position, &operation)?;
+        }
+
+        if let Some(error) = context.error.take() {
             return Err(error);
         }
 
@@ -670,7 +1175,7 @@ impl Session {
         if !external_documentation.is_empty() {
             let documentation = std::sync::Arc::new(external_documentation);
 
-            for name in names {
+            for name in module_names {
                 context
                     .report
                     .documentation
@@ -682,30 +1187,200 @@ impl Session {
     }
 }
 
-extern "C" fn editor(context: *mut c_void, _: Bytes, payload: Bytes) {
-    let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
+fn line_column_offset(source: &[u8], position: Position) -> io::Result<usize> {
+    let mut offset = 0;
 
-    context.call(|context| {
-        context.report.editor =
-            serde_json::from_slice(unsafe { payload.slice() }).map_err(io::Error::other)?;
-
-        let normalize = |entry: &mut crate::analysis::EditorEntry| {
-            if let Some(path) = &mut entry.path {
-                *path = context.environment.source(path);
-            }
+    for _ in 0..position.line {
+        let Some(relative) = source
+            .get(offset..)
+            .and_then(|value| value.iter().position(|byte| *byte == b'\n'))
+        else {
+            return Err(io::Error::other(
+                "native annotation position is outside the source",
+            ));
         };
 
-        match &mut context.report.editor {
-            Some(crate::analysis::EditorResult::Entries(entries)) => {
-                entries.iter_mut().for_each(normalize);
-            }
+        offset += relative + 1;
+    }
 
-            Some(crate::analysis::EditorResult::Entry(entry)) => normalize(entry),
-            None => {}
+    let line_end = source
+        .get(offset..)
+        .and_then(|value| value.iter().position(|byte| *byte == b'\n'))
+        .map_or(source.len(), |relative| offset + relative);
+
+    let column = usize::try_from(position.column).map_err(io::Error::other)?;
+
+    if offset + column > line_end {
+        return Err(io::Error::other(
+            "native annotation position is outside the source",
+        ));
+    }
+
+    Ok(offset + column)
+}
+
+fn query_engine(
+    engine: &NativeEngine,
+    context: &mut Context<'_, '_>,
+    path: &Path,
+    position: line_index::LineCol,
+    operation: &str,
+) -> io::Result<()> {
+    let path = module_name(path)?;
+
+    let position = Position {
+        line: position.line,
+        column: position.col,
+    };
+
+    let context_pointer = ptr::from_mut(context).cast();
+    let path_bytes = Bytes::new(path.as_bytes());
+
+    match operation {
+        "type" => unsafe {
+            instar_engine_type_at(
+                engine.0,
+                path_bytes,
+                position,
+                context_pointer,
+                Some(type_result),
+                Some(failure),
+            )
+        },
+
+        "hover" => unsafe {
+            instar_engine_hover(
+                engine.0,
+                path_bytes,
+                position,
+                context_pointer,
+                Some(type_result),
+                Some(failure),
+            )
+        },
+
+        "complete" | "completion" => unsafe {
+            instar_engine_complete(
+                engine.0,
+                path_bytes,
+                position,
+                context_pointer,
+                Some(completion_result),
+                Some(failure),
+            )
+        },
+
+        "signature" => unsafe {
+            instar_engine_signature(
+                engine.0,
+                path_bytes,
+                position,
+                context_pointer,
+                Some(signature_result),
+                Some(failure),
+            )
+        },
+
+        "definition" => unsafe {
+            instar_engine_definition(
+                engine.0,
+                path_bytes,
+                position,
+                context_pointer,
+                Some(destination_result),
+                Some(failure),
+            )
+        },
+
+        "type_definition" => unsafe {
+            instar_engine_type_definition(
+                engine.0,
+                path_bytes,
+                position,
+                context_pointer,
+                Some(destination_result),
+                Some(failure),
+            )
+        },
+
+        "implementation" | "implementations" => unsafe {
+            instar_engine_implementations(
+                engine.0,
+                path_bytes,
+                position,
+                context_pointer,
+                Some(destination_result),
+                Some(failure),
+            )
+        },
+
+        "references" => unsafe {
+            instar_engine_references(
+                engine.0,
+                path_bytes,
+                position,
+                context_pointer,
+                Some(destination_result),
+                Some(failure),
+            )
+        },
+
+        "annotations" => unsafe {
+            instar_engine_annotations(
+                engine.0,
+                path_bytes,
+                context_pointer,
+                Some(annotation_result),
+                Some(failure),
+            )
+        },
+
+        "calls" => unsafe {
+            instar_engine_calls(
+                engine.0,
+                path_bytes,
+                context_pointer,
+                Some(call_result),
+                Some(failure),
+            )
+        },
+
+        _ => {
+            return Err(io::Error::other(format!(
+                "unsupported native query: {operation}"
+            )));
         }
+    }
 
-        Ok(None)
-    });
+    if let Some(error) = context.error.take() {
+        return Err(error);
+    }
+
+    if operation == "annotations" {
+        let entries = context
+            .annotations
+            .drain(..)
+            .map(|annotation| {
+                let mut entry = empty_entry();
+                entry.path = Some(PathBuf::from(annotation.path));
+
+                entry.range = Some([
+                    annotation.position.line,
+                    annotation.position.column,
+                    annotation.position.line,
+                    annotation.position.column,
+                ]);
+
+                entry.description = Some(String::from_utf8_lossy(&annotation.text).into_owned());
+
+                entry
+            })
+            .collect();
+
+        context.report.editor = Some(EditorResult::Entries(entries));
+    }
+
+    Ok(())
 }
 
 #[derive(Default)]
@@ -732,32 +1407,29 @@ extern "C" fn alias(context: *mut c_void, name: Bytes, target: Bytes) {
     }
 }
 
-extern "C" fn alias_error(context: *mut c_void, _: Bytes, message: Bytes, _: Span, _: bool) {
+extern "C" fn alias_failure(context: *mut c_void, message: Bytes) {
     let context = unsafe { &mut *context.cast::<Aliases>() };
 
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        String::from_utf8_lossy(unsafe { message.slice() }).into_owned()
-    }));
-
-    context.error = Some(result.unwrap_or_else(|_| "configuration callback panicked".into()));
+    context.error = Some(match unsafe { message.string() } {
+        Ok(message) => message,
+        Err(error) => error.to_string(),
+    });
 }
 
 pub(crate) fn aliases(source: &[u8], executable: bool) -> io::Result<BTreeMap<String, String>> {
     let mut aliases = Aliases::default();
 
     unsafe {
-        instar_aliases(
+        instar_parse_aliases(
             Bytes::new(source),
-            executable,
+            i32::from(executable),
             ptr::from_mut(&mut aliases).cast(),
-            alias,
-            alias_error,
+            Some(alias),
+            Some(alias_failure),
         );
     }
 
-    if let Some(error) = aliases.error {
-        return Err(io::Error::other(error));
-    }
-
-    Ok(aliases.values)
+    aliases
+        .error
+        .map_or(Ok(aliases.values), |error| Err(io::Error::other(error)))
 }
