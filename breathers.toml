@@ -1,3 +1,6 @@
 #:schema https://raw.githubusercontent.com/0hirume/breathers/main/schema.json
 
 exclude = ["target", "vendor"]
+
+[nushell]
+match_arms = false
