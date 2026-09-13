@@ -93,7 +93,12 @@ impl Layout {
     }
 }
 
-pub(super) fn format(source: &[u8], reply: &[u8], options: &Options) -> io::Result<Vec<u8>> {
+pub(super) fn format(
+    source: &[u8],
+    reply: &[u8],
+    options: &Options,
+    validate: bool,
+) -> io::Result<Vec<u8>> {
     let reply: Reply = serde_json::from_slice(reply).map_err(io::Error::other)?;
 
     if reply.version != 1 {
@@ -109,7 +114,9 @@ pub(super) fn format(source: &[u8], reply: &[u8], options: &Options) -> io::Resu
         output.push_str(options.line_endings.text());
     }
 
-    crate::format::validate(source, output.as_bytes())?;
+    if validate {
+        crate::format::validate(source, output.as_bytes())?;
+    }
 
     Ok(output.into_bytes())
 }

@@ -49,9 +49,6 @@ pub struct Settings {
     /// Remove comments and unnecessary whitespace. Literal contents and token boundaries are preserved.
     pub minify: bool,
 
-    /// Input extensions mapped to configured compiling graft names. A leading dot is omitted.
-    pub languages: BTreeMap<String, String>,
-
     /// Named overrides for build configuration. Paths remain relative to this configuration.
     pub profiles: BTreeMap<String, Profile>,
 }
@@ -448,6 +445,16 @@ pub(super) struct Configuration {
     pub sourcemap: Option<PathBuf>,
 }
 
+impl Configuration {
+    pub(super) fn frontend(&self, path: &Path) -> Option<&crate::graft::Graft> {
+        self.grafts.values().find(|graft| graft.owns(path))
+    }
+
+    pub(super) fn has_frontends(&self) -> bool {
+        self.grafts.values().any(crate::graft::Graft::is_frontend)
+    }
+}
+
 pub(super) fn discover(from: &Path, profile: Option<&str>) -> io::Result<Configuration> {
     let from = absolute(from).map_err(io::Error::other)?;
 
@@ -527,15 +534,15 @@ pub(super) fn discover(from: &Path, profile: Option<&str>) -> io::Result<Configu
         grafts.insert(name, graft);
     }
 
-    for (extension, name) in &settings.languages {
-        if extension.is_empty()
-            || !extension.bytes().all(|byte| byte.is_ascii_alphanumeric())
-            || matches!(extension.as_str(), "lua" | "luau")
-            || !grafts.get(name).is_some_and(crate::graft::Graft::compiles)
-        {
-            return Err(io::Error::other(format!(
-                "invalid build language or compiling graft: {extension} = {name}"
-            )));
+    let mut extensions = BTreeMap::new();
+
+    for (name, graft) in &grafts {
+        for extension in graft.extensions() {
+            if let Some(previous) = extensions.insert(extension, name) {
+                return Err(io::Error::other(format!(
+                    "grafts {previous} and {name} both own .{extension}"
+                )));
+            }
         }
     }
 

@@ -148,7 +148,7 @@ fn generated_schema_matches_the_configuration_model() -> TestResult {
     assert_eq!(schema["additionalProperties"], false);
 
     for field in [
-        "analyze", "build", "format", "graft", "grafts", "include", "exclude", "lint",
+        "analyze", "build", "format", "grafts", "include", "exclude", "lint",
     ] {
         assert!(schema["properties"].get(field).is_some());
     }
@@ -247,7 +247,7 @@ fn nested_configuration_overrides() -> TestResult {
     assert_eq!(options.functions.parameters.indentation, 2);
 
     assert_eq!(
-        configuration.format(b"function f(a) end")?,
+        configuration.format(&root.join("nested/main.luau"), b"function f(a) end")?,
         b"function f(\n\t\ta\n)\nend"
     );
 

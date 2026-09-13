@@ -48,10 +48,6 @@ pub struct InstarConfig {
     #[schemars(default)]
     pub grafts: Option<BTreeMap<String, crate::graft::Dependency>>,
 
-    /// Identity, protocol, runtime, and hooks exported by this graft project.
-    #[schemars(default)]
-    pub graft: Option<crate::graft::Manifest>,
-
     /// Source selection patterns relative to this configuration. Explicit file inputs bypass selection; an empty list clears inherited patterns.
     #[schemars(default)]
     pub include: Option<Vec<String>>,
@@ -139,10 +135,6 @@ impl InstarConfig {
             dependency
                 .validate(name)
                 .map_err(toml_edit::de::Error::custom)?;
-        }
-
-        if let Some(manifest) = &configuration.graft {
-            manifest.validate().map_err(toml_edit::de::Error::custom)?;
         }
 
         Ok(configuration)

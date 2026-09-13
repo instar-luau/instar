@@ -33,15 +33,15 @@ pub(super) fn offsets(source: &Source, range: protocol::Range) -> Result<std::op
     Ok(start..end)
 }
 
-fn fragment(configuration: &Configuration, text: &str) -> Result<String> {
-    if let Ok(output) = configuration.format(text.as_bytes()) {
+fn fragment(configuration: &Configuration, path: &std::path::Path, text: &str) -> Result<String> {
+    if let Ok(output) = configuration.format(path, text.as_bytes()) {
         return String::from_utf8(output).map_err(internal_error);
     }
 
     let wrapped = format!("return {text}");
 
     let output = configuration
-        .format(wrapped.as_bytes())
+        .format(path, wrapped.as_bytes())
         .map_err(internal_error)?;
 
     let tree = vermis::parse(output.as_slice().into());
@@ -92,11 +92,11 @@ pub(super) fn range(
 
     let configuration = Configuration::discover(source.path(), None).map_err(internal_error)?;
 
-    if !configuration.options.enabled {
+    if !configuration.options.enabled || configuration.frontend(source.path()).is_some() {
         return Ok(Response::Edits(None));
     }
 
-    let formatted = fragment(&configuration, &text[selected.clone()])?;
+    let formatted = fragment(&configuration, source.path(), &text[selected.clone()])?;
 
     if formatted == text[selected.clone()] {
         return Ok(Response::Edits(None));

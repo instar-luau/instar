@@ -8,7 +8,10 @@ use clap::Args;
 
 use instar_core::{
     analysis,
-    project::selection::{Scope, Selection},
+    project::{
+        Configuration,
+        selection::{Scope, Selection},
+    },
 };
 
 use crate::input::Input;
@@ -54,21 +57,25 @@ pub(super) fn diagnostics(diagnostics: &[analysis::Diagnostic]) {
 
 impl Analyze {
     pub(super) fn run(self) -> io::Result<ExitCode> {
-        let mut selections = BTreeMap::new();
+        let mut configurations = BTreeMap::new();
 
         let mut input = self.input.load_selected(|path| {
             let path = std::path::absolute(path)?;
 
-            let directory = path
-                .parent()
+            let configuration_path = instar_core::project::nearest_configuration(&path)
+                .or_else(|| path.parent().map(std::path::Path::to_owned))
                 .ok_or_else(|| io::Error::other("source has no parent"))?;
 
-            let selection = match selections.entry(directory.to_owned()) {
+            let (selection, configuration) = match configurations.entry(configuration_path) {
                 Entry::Occupied(entry) => entry.into_mut(),
-                Entry::Vacant(entry) => entry.insert(Selection::discover(&path, Scope::Analyze)?),
+
+                Entry::Vacant(entry) => entry.insert((
+                    Selection::discover(&path, Scope::Analyze)?,
+                    Configuration::discover_frontends(&path)?,
+                )),
             };
 
-            selection.includes(&path)
+            Ok(configuration.language(&path) && selection.includes(&path)?)
         })?;
 
         let modules = input

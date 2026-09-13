@@ -5,17 +5,30 @@ use std::{
     sync::Arc,
 };
 
-use crate::source::{Source, SourceStore, absolute};
+use crate::{
+    graft::Mapping,
+    source::{PositionEncoding, Source, SourceStore, absolute},
+};
+
+use line_index::LineCol;
 
 struct Node {
     is_directory: bool,
     module: Option<PathBuf>,
 }
 
+struct Lowering {
+    original: Arc<Source>,
+    generated: Arc<Source>,
+    mappings: Vec<Mapping>,
+}
+
 /// Module resolution using consistent source and configuration snapshots.
 pub struct Resolver<'store> {
     sources: &'store mut SourceStore,
     snapshots: BTreeMap<PathBuf, Arc<Source>>,
+    lowerings: BTreeMap<PathBuf, Lowering>,
+    configurations: BTreeMap<PathBuf, super::Configuration>,
     pub(crate) discovery: super::discovery::Discovery,
 }
 
@@ -25,8 +38,27 @@ impl<'store> Resolver<'store> {
         Self {
             sources,
             snapshots: BTreeMap::new(),
+            lowerings: BTreeMap::new(),
+            configurations: BTreeMap::new(),
             discovery: super::discovery::Discovery::default(),
         }
+    }
+
+    fn configuration(&mut self, path: &Path) -> io::Result<&super::Configuration> {
+        let directory = path
+            .parent()
+            .ok_or_else(|| io::Error::other("source has no parent"))?
+            .to_owned();
+
+        if !self.configurations.contains_key(&directory) {
+            let configuration = super::Configuration::discover_frontends(path)?;
+            self.configurations.insert(directory.clone(), configuration);
+        }
+
+        Ok(self
+            .configurations
+            .get(&directory)
+            .expect("configuration inserted"))
     }
 
     /// # Errors
@@ -38,10 +70,124 @@ impl<'store> Resolver<'store> {
             return Ok(Arc::clone(source));
         }
 
-        let source = self.sources.read(&path).map_err(io::Error::other)?;
+        let original = self.sources.read(&path).map_err(io::Error::other)?;
+
+        let compilation = if matches!(
+            path.extension().and_then(|extension| extension.to_str()),
+            Some("lua" | "luau") | None
+        ) {
+            None
+        } else {
+            self.configuration(&path)?
+                .frontend(&path)
+                .map(|graft| graft.compile(original.bytes()))
+                .transpose()?
+        };
+
+        let source = if let Some(compilation) = compilation {
+            let generated = Arc::new(
+                Source::new(path.clone(), compilation.source.into_bytes())
+                    .map_err(io::Error::other)?,
+            );
+
+            self.lowerings.insert(
+                path.clone(),
+                Lowering {
+                    original,
+                    generated: Arc::clone(&generated),
+                    mappings: compilation.mappings,
+                },
+            );
+
+            generated
+        } else {
+            original
+        };
+
         self.snapshots.insert(path, Arc::clone(&source));
 
         Ok(source)
+    }
+
+    pub(crate) fn generated_position(
+        &mut self,
+        path: &Path,
+        position: LineCol,
+    ) -> io::Result<LineCol> {
+        let path = absolute(path).map_err(io::Error::other)?;
+        self.load(&path)?;
+
+        let Some(lowering) = self.lowerings.get(&path) else {
+            return Ok(position);
+        };
+
+        let offset = usize::from(
+            lowering
+                .original
+                .offset(position, PositionEncoding::Utf8)
+                .map_err(io::Error::other)?,
+        );
+
+        let offset = lowering
+            .mappings
+            .iter()
+            .find_map(|mapping| mapping.to_generated(offset))
+            .ok_or_else(|| io::Error::other("graft mapping does not cover editor position"))?;
+
+        lowering
+            .generated
+            .position(
+                u32::try_from(offset).map_err(io::Error::other)?.into(),
+                PositionEncoding::Utf8,
+            )
+            .map_err(io::Error::other)
+    }
+
+    pub(crate) fn original_range(
+        &self,
+        path: &Path,
+        coordinates: [u32; 4],
+    ) -> io::Result<[u32; 4]> {
+        let path = absolute(path).map_err(io::Error::other)?;
+
+        let Some(lowering) = self.lowerings.get(&path) else {
+            return Ok(coordinates);
+        };
+
+        let map = |position: LineCol| -> io::Result<LineCol> {
+            let offset = usize::from(
+                lowering
+                    .generated
+                    .offset(position, PositionEncoding::Utf8)
+                    .map_err(io::Error::other)?,
+            );
+
+            let offset = lowering
+                .mappings
+                .iter()
+                .find_map(|mapping| mapping.to_original(offset))
+                .ok_or_else(|| io::Error::other("graft mapping does not cover generated range"))?;
+
+            lowering
+                .original
+                .position(
+                    u32::try_from(offset).map_err(io::Error::other)?.into(),
+                    PositionEncoding::Utf8,
+                )
+                .map_err(io::Error::other)
+        };
+
+        let start = map(LineCol {
+            line: coordinates[0],
+            col: coordinates[1],
+        })?;
+
+        let end = map(LineCol {
+            line: coordinates[2],
+            col: coordinates[3],
+        })?;
+
+        Ok([start.line, start.col, end.line, end.col])
     }
 
     pub(crate) fn entries(&self, path: &Path) -> io::Result<Vec<PathBuf>> {
@@ -71,11 +217,17 @@ impl<'store> Resolver<'store> {
     /// # Errors
     /// Returns filesystem, configuration and ambiguous-module failures.
     pub fn resolve(&mut self, from: &Path, specifier: &str) -> io::Result<Option<PathBuf>> {
+        let extensions = self
+            .configuration(from)?
+            .frontend_extensions()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+
         let Some((origin, target)) = self.namespace(from, specifier)? else {
             return Ok(None);
         };
 
-        self.walk(&origin, &target)
+        self.walk(&origin, &target, &extensions)
     }
 
     pub(crate) fn namespace(
@@ -167,7 +319,12 @@ impl<'store> Resolver<'store> {
         Ok(Some((origin, target)))
     }
 
-    fn walk(&self, origin: &Path, target: &Path) -> io::Result<Option<PathBuf>> {
+    fn walk(
+        &self,
+        origin: &Path,
+        target: &Path,
+        extensions: &[String],
+    ) -> io::Result<Option<PathBuf>> {
         use std::path::Component;
 
         let (mut current, remaining) = match target.strip_prefix(origin) {
@@ -181,7 +338,7 @@ impl<'store> Resolver<'store> {
                 module: None,
             }
         } else {
-            let Some(node) = self.node(&current)? else {
+            let Some(node) = self.node(&current, extensions)? else {
                 return Ok(None);
             };
 
@@ -216,7 +373,7 @@ impl<'store> Resolver<'store> {
                 }
             }
 
-            let Some(next) = self.node(&current)? else {
+            let Some(next) = self.node(&current, extensions)? else {
                 return Ok(None);
             };
 
@@ -228,28 +385,60 @@ impl<'store> Resolver<'store> {
             .transpose()
     }
 
-    fn node(&self, target: &Path) -> io::Result<Option<Node>> {
+    fn node(&self, target: &Path, extensions: &[String]) -> io::Result<Option<Node>> {
         let mut candidates = Vec::new();
 
         if target.file_name().is_some_and(|name| name != "init") {
-            for suffix in [".luau", ".lua"] {
-                let mut path = target.as_os_str().to_owned();
-                path.push(suffix);
-                let path = PathBuf::from(path);
+            for extension in ["luau", "lua"] {
+                let path = target.with_added_extension(extension);
 
                 if self.is_file(&path)? {
                     candidates.push(path);
+                }
+            }
+
+            let mut generated = false;
+
+            for path in &candidates {
+                generated |= self.snapshots.contains_key(path)
+                    || self.sources.is_open(path).map_err(io::Error::other)?;
+            }
+
+            if !generated {
+                for extension in extensions {
+                    let path = target.with_added_extension(extension);
+
+                    if self.is_file(&path)? {
+                        candidates.push(path);
+                    }
                 }
             }
         }
 
         let mut initializers = Vec::new();
 
-        for filename in ["init.luau", "init.lua"] {
-            let path = target.join(filename);
+        for extension in ["luau", "lua"] {
+            let path = target.join("init").with_added_extension(extension);
 
             if self.is_file(&path)? {
                 initializers.push(path);
+            }
+        }
+
+        let mut generated = false;
+
+        for path in &initializers {
+            generated |= self.snapshots.contains_key(path)
+                || self.sources.is_open(path).map_err(io::Error::other)?;
+        }
+
+        if !generated {
+            for extension in extensions {
+                let path = target.join("init").with_added_extension(extension);
+
+                if self.is_file(&path)? {
+                    initializers.push(path);
+                }
             }
         }
 

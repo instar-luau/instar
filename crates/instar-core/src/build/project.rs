@@ -65,11 +65,7 @@ fn extension(value: &mut Value, configuration: &Configuration) -> io::Result<()>
             .ok_or_else(|| io::Error::other("project source must be a string"))?,
     );
 
-    if path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| configuration.settings.languages.contains_key(extension))
-    {
+    if configuration.frontend(path).is_some() {
         *value = Value::String(path.with_extension("luau").to_string_lossy().into_owned());
     }
 
@@ -125,13 +121,7 @@ fn rewrite(
                     .map_err(io::Error::other)?
                     .to_owned();
 
-                if original
-                    .extension()
-                    .and_then(|extension| extension.to_str())
-                    .is_some_and(|extension| {
-                        configuration.settings.languages.contains_key(extension)
-                    })
-                {
+                if configuration.frontend(&original).is_some() {
                     relative.set_extension("luau");
                 }
 

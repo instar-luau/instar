@@ -32,11 +32,11 @@ fn execute(directory: &Path, source: &str, condition: &str) -> TestResult {
     )?;
 
     fs::write(
-        directory.join("instar.toml"),
-        "[graft]\nname = 'example'\nprotocol = 1\nruntime = 'luau'\nentry = 'module.luau'\nlint = true\n",
+        directory.join("graft.toml"),
+        "name = 'example'\nprotocol = 1\nruntime = 'luau'\nentry = 'module.luau'\nlint = true\n",
     )?;
 
-    Graft::load(&directory.join("instar.toml"), "example")?.lint(b"")?;
+    Graft::load(&directory.join("graft.toml"), "example")?.lint(b"")?;
 
     Ok(())
 }
@@ -124,6 +124,28 @@ fn bundles_preserve_literals_caching_hygiene_and_lazy_initialization() -> TestRe
 
     assert_eq!(map["version"], 3);
     assert_eq!(map["sources"].as_array().ok_or("sources")?.len(), 2);
+
+    Ok(())
+}
+
+#[test]
+fn bundles_preserve_global_loadstring() -> TestResult {
+    let directory = project(
+        "[build]\ninputs = ['source']\nentry = 'source/main.luau'\nshape = 'bundle'\noutput = 'output/bundle.luau'\n",
+    );
+
+    fs::write(
+        directory.path().join("source/main.luau"),
+        "return loadstring('return 1')()",
+    )?;
+
+    let plan = Session::default().plan(directory.path(), None)?;
+    assert!(!plan.has_errors(), "{}", plan.json()?);
+
+    assert!(
+        std::str::from_utf8(plan.contents(Path::new("bundle.luau")).ok_or("bundle")?)?
+            .contains("loadstring")
+    );
 
     Ok(())
 }
@@ -612,13 +634,12 @@ fn roblox_native_rules_use_services_and_mounted_module_paths() -> TestResult {
 #[test]
 fn graft_compilation_exposes_dependencies_and_validated_source_mappings() -> TestResult {
     let directory = project(
-        "[grafts]\nexample = { path = '.' }\n[build]\ninputs = ['source']\nentry = 'source/main.luau'\nshape = 'bundle'\noutput = 'output/bundle.luau'\n[build.languages]\ncustom = 'example'\n",
+        "[grafts]\nexample = { path = '.' }\n[build]\ninputs = ['source']\nentry = 'source/main.luau'\nshape = 'bundle'\noutput = 'output/bundle.luau'\n",
     );
 
     fs::write(
-        directory.path().join("instar.toml"),
-        fs::read_to_string(directory.path().join("instar.toml"))?
-            + "\n[graft]\nname = 'example'\nprotocol = 1\nruntime = 'luau'\nentry = 'compiler.luau'\ncompile = true\n",
+        directory.path().join("graft.toml"),
+        "name = 'example'\nprotocol = 1\nruntime = 'luau'\nentry = 'compiler.luau'\ncompile = true\nextensions = ['custom']\n",
     )?;
 
     fs::write(
@@ -740,15 +761,14 @@ fn output_overlap_and_destination_collisions_are_rejected() -> TestResult {
 #[test]
 fn compiling_grafts_participate_in_roblox_instance_mapping() -> TestResult {
     let directory = project(
-        "[grafts]\nexample = { path = '.' }\n[build]\ninputs = ['source']\noutput = 'output'\n[build.languages]\ncustom = 'example'\n[analyze.roblox]\nproject = 'default.project.json'\n",
+        "[grafts]\nexample = { path = '.' }\n[build]\ninputs = ['source']\noutput = 'output'\n[analyze.roblox]\nproject = 'default.project.json'\n",
     );
 
     support::configure(directory.path())?;
 
     fs::write(
-        directory.path().join("instar.toml"),
-        fs::read_to_string(directory.path().join("instar.toml"))?
-            + "\n[graft]\nname = 'example'\nprotocol = 1\nruntime = 'luau'\nentry = 'compiler.luau'\ncompile = true\n",
+        directory.path().join("graft.toml"),
+        "name = 'example'\nprotocol = 1\nruntime = 'luau'\nentry = 'compiler.luau'\ncompile = true\nextensions = ['custom']\n",
     )?;
 
     fs::write(
