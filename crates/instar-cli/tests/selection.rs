@@ -1,3 +1,5 @@
+//! Inherited inclusion and exclusion of source paths.
+
 use std::{error::Error, fs};
 
 use assert_cmd::Command;

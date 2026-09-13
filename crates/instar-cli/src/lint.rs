@@ -10,36 +10,43 @@ use std::{
     io::{self, Write},
     path::PathBuf,
     process::ExitCode,
+    sync::Arc,
 };
 
 #[derive(Args)]
-pub struct Lint {
+pub(super) struct Lint {
+    /// Files or directories to lint; '-' reads original bytes from stdin.
     #[arg(required_unless_present_any = ["list", "explain"])]
     files: Vec<PathBuf>,
 
+    /// Module filename for stdin, used for imports and configuration.
     #[arg(long)]
     filename: Option<PathBuf>,
 
+    /// Apply safe fixes and verify their resulting source.
     #[arg(long)]
     fix: bool,
 
+    /// List built-in lint rules and their default levels.
     #[arg(long, conflicts_with = "explain")]
     list: bool,
 
+    /// Show the description and default level of a built-in rule.
     #[arg(long)]
     explain: Option<String>,
 }
 
-fn diagnostics(report: &lint::Report, source: &Source) -> io::Result<bool> {
-    for diagnostic in &report.diagnostics {
-        eprintln!(
-            "{}({},{}): {}",
-            diagnostic.path.display(),
-            diagnostic.line + 1,
-            diagnostic.column + 1,
-            diagnostic.message
-        );
+fn level(level: Level) -> &'static str {
+    match level {
+        Level::Allow => "allow",
+        Level::Info => "info",
+        Level::Warn => "warn",
+        Level::Deny => "deny",
     }
+}
+
+fn diagnostics(report: &lint::Report, source: &Source) -> io::Result<bool> {
+    crate::analyze::diagnostics(&report.diagnostics);
 
     for finding in &report.findings {
         let position = source
@@ -52,11 +59,11 @@ fn diagnostics(report: &lint::Report, source: &Source) -> io::Result<bool> {
             .map_err(io::Error::other)?;
 
         eprintln!(
-            "{}({},{}): {:?}: {}: {}",
+            "{}({},{}): {}: {}: {}",
             source.path().display(),
             position.line + 1,
             position.col + 1,
-            finding.level,
+            level(finding.level),
             finding.rule,
             finding.message
         );
@@ -70,12 +77,15 @@ fn diagnostics(report: &lint::Report, source: &Source) -> io::Result<bool> {
 }
 
 impl Lint {
-    pub fn run(self) -> io::Result<ExitCode> {
+    pub(super) fn run(self) -> io::Result<ExitCode> {
         if self.list {
             for rule in lint::registry::RULES {
                 println!(
-                    "{} [{}] {:?}: {}",
-                    rule.name, rule.group, rule.level, rule.description
+                    "{} [{}] {}: {}",
+                    rule.name,
+                    rule.group,
+                    level(rule.level),
+                    rule.description
                 );
             }
 
@@ -87,8 +97,11 @@ impl Lint {
                 .ok_or_else(|| io::Error::other(format!("unknown lint rule: {name}")))?;
 
             println!(
-                "{}\nGroup: {}\nDefault: {:?}\n\n{}",
-                rule.name, rule.group, rule.level, rule.description
+                "{}\nGroup: {}\nDefault: {}\n\n{}",
+                rule.name,
+                rule.group,
+                level(rule.level),
+                rule.description
             );
 
             return Ok(ExitCode::SUCCESS);
@@ -103,7 +116,7 @@ impl Lint {
         for source in &input.sources {
             let result = (|| -> io::Result<bool> {
                 let mut report = lint::analyze(&mut session, &mut input.store, source.path())?;
-                let mut measured = source.clone();
+                let mut measured = Arc::clone(source);
 
                 if self.fix {
                     let edits = lint::edits(&report.findings)?;

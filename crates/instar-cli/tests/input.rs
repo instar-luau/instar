@@ -1,3 +1,5 @@
+//! Source traversal, standard input, and input deduplication.
+
 use std::{error::Error, fs};
 
 use assert_cmd::Command;

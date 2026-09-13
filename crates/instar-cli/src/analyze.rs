@@ -10,7 +10,7 @@ use instar_core::{analysis, project::selection::Selection};
 use crate::input::Input;
 
 #[derive(Args)]
-pub struct Analyze {
+pub(super) struct Analyze {
     #[command(flatten)]
     input: Input,
 
@@ -26,12 +26,30 @@ pub struct Analyze {
     #[arg(long)]
     annotate: bool,
 
-    #[arg(long, help = "Refresh downloaded Roblox assets before analysis")]
+    /// Refresh downloaded Roblox assets before analysis.
+    #[arg(long)]
     update: bool,
 }
 
+pub(super) fn diagnostics(diagnostics: &[analysis::Diagnostic]) {
+    for diagnostic in diagnostics {
+        eprintln!(
+            "{}({},{}): {}: {}",
+            diagnostic.path.display(),
+            diagnostic.line + 1,
+            diagnostic.column + 1,
+            if diagnostic.is_error {
+                "error"
+            } else {
+                "warning"
+            },
+            diagnostic.message
+        );
+    }
+}
+
 impl Analyze {
-    pub fn run(self) -> io::Result<ExitCode> {
+    pub(super) fn run(self) -> io::Result<ExitCode> {
         let mut selections = BTreeMap::new();
 
         let mut input = self.input.load_selected(|path| {
@@ -69,15 +87,7 @@ impl Analyze {
 
         let report = analysis::Session::default().analyze(&mut input.store, &modules, &options)?;
 
-        for diagnostic in &report.diagnostics {
-            eprintln!(
-                "{}({},{}): {}",
-                diagnostic.path.display(),
-                diagnostic.line + 1,
-                diagnostic.column + 1,
-                diagnostic.message
-            );
-        }
+        diagnostics(&report.diagnostics);
 
         let mut output = io::stdout().lock();
 

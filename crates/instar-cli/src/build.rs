@@ -3,29 +3,25 @@ use instar_core::build::{self, Plan, Session};
 use std::{io, path::PathBuf, process::ExitCode, thread, time::Duration};
 
 #[derive(Args)]
-pub struct Build {
-    #[arg(help = "Project directory or instar.toml path")]
+pub(super) struct Build {
+    /// Project directory or instar.toml path.
     path: Option<PathBuf>,
 
-    #[arg(long, help = "Named build profile")]
+    /// Named build profile.
+    #[arg(long)]
     profile: Option<String>,
 
-    #[arg(
-        long,
-        conflicts_with = "watch",
-        help = "Print the build plan as JSON without publishing outputs"
-    )]
+    /// Print the build plan as JSON without publishing outputs.
+    #[arg(long, conflicts_with = "watch")]
     plan: bool,
 
-    #[arg(
-        long,
-        help = "Rebuild changed inputs while retaining the last successful output on errors"
-    )]
+    /// Rebuild changed inputs while retaining the last successful output on errors.
+    #[arg(long)]
     watch: bool,
 }
 
 impl Build {
-    pub fn run(self) -> io::Result<ExitCode> {
+    pub(super) fn run(self) -> io::Result<ExitCode> {
         let from = self.path.unwrap_or(std::env::current_dir()?);
         let mut session = Session::default();
 

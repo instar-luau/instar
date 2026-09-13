@@ -9,8 +9,8 @@ use std::{
 use clap::Args;
 use instar_core::source::{Source, SourceStore};
 
-#[derive(Args, Default)]
-pub struct Input {
+#[derive(Default, Args)]
+pub(super) struct Input {
     /// Files or directories to process; '-' reads original bytes from stdin.
     #[arg(required = true)]
     files: Vec<PathBuf>,
@@ -20,18 +20,18 @@ pub struct Input {
     filename: Option<PathBuf>,
 }
 
-pub struct Loaded {
-    pub store: SourceStore,
-    pub sources: Vec<Arc<Source>>,
-    pub standard_input: Option<PathBuf>,
+pub(super) struct Loaded {
+    pub(super) store: SourceStore,
+    pub(super) sources: Vec<Arc<Source>>,
+    pub(super) standard_input: Option<PathBuf>,
 }
 
 impl Input {
-    pub fn new(files: Vec<PathBuf>, filename: Option<PathBuf>) -> Self {
+    pub(super) fn new(files: Vec<PathBuf>, filename: Option<PathBuf>) -> Self {
         Self { files, filename }
     }
 
-    pub fn load_selected(
+    pub(super) fn load_selected(
         self,
         mut selected: impl FnMut(&Path) -> io::Result<bool>,
     ) -> io::Result<Loaded> {
@@ -81,23 +81,7 @@ impl Input {
                     continue;
                 }
 
-                let mut children = Vec::new();
-
-                for entry in fs::read_dir(&path)? {
-                    let path = entry?.path();
-                    let metadata = inspect(&path)?;
-
-                    if metadata.is_dir()
-                        || matches!(
-                            path.extension().and_then(|extension| extension.to_str()),
-                            Some("lua" | "luau")
-                        )
-                    {
-                        children.push(path);
-                    }
-                }
-
-                children.sort();
+                let children = instar_core::source::children(&path)?;
                 pending.extend(children.into_iter().rev().map(|path| (path, false)));
             } else {
                 return Err(io::Error::other(format!(

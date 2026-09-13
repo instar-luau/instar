@@ -1,3 +1,5 @@
+//! Build planning, artifact publication, and incremental rebuild behavior.
+
 use assert_cmd::Command;
 use std::{
     error::Error,
@@ -6,7 +8,7 @@ use std::{
     process::{Child, ChildStderr, Stdio},
 };
 
-type Result = std::result::Result<(), Box<dyn Error>>;
+type TestResult = Result<(), Box<dyn Error>>;
 
 struct Watcher {
     child: Child,
@@ -33,7 +35,7 @@ impl Watcher {
 }
 
 #[test]
-fn watch_rebuilds_additions_removals_and_configuration_after_errors() -> Result {
+fn watch_rebuilds_additions_removals_and_configuration_after_errors() -> TestResult {
     let directory = tempfile::tempdir()?;
     let configuration = directory.path().join("instar.toml");
 
@@ -81,7 +83,7 @@ fn watch_rebuilds_additions_removals_and_configuration_after_errors() -> Result 
 }
 
 #[test]
-fn plans_do_not_publish_and_builds_report_failures() -> Result {
+fn plans_do_not_publish_and_builds_report_failures() -> TestResult {
     let directory = tempfile::tempdir()?;
 
     fs::write(
@@ -135,7 +137,7 @@ fn plans_do_not_publish_and_builds_report_failures() -> Result {
 }
 
 #[test]
-fn profiles_select_bundle_destinations() -> Result {
+fn profiles_select_bundle_destinations() -> TestResult {
     let directory = tempfile::tempdir()?;
 
     fs::write(

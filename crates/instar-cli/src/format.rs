@@ -12,7 +12,7 @@ use instar_core::project::Configuration;
 use crate::input::Input;
 
 #[derive(Args)]
-pub struct Format {
+pub(super) struct Format {
     #[command(flatten)]
     input: Input,
 
@@ -51,7 +51,7 @@ fn configuration<'cache>(
 }
 
 impl Format {
-    pub fn run(self) -> io::Result<ExitCode> {
+    pub(super) fn run(self) -> io::Result<ExitCode> {
         let mut configurations = BTreeMap::new();
 
         let input = self.input.load_selected(|path| {

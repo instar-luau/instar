@@ -1,3 +1,5 @@
+//! Command-line analysis, checking modes, and source input behavior.
+
 use std::fs;
 
 use assert_cmd::Command;
