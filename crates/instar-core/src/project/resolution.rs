@@ -113,12 +113,12 @@ impl<'store> Resolver<'store> {
         &mut self,
         path: &Path,
         position: LineCol,
-    ) -> io::Result<LineCol> {
+    ) -> io::Result<Option<LineCol>> {
         let path = absolute(path).map_err(io::Error::other)?;
         self.load(&path)?;
 
         let Some(lowering) = self.lowerings.get(&path) else {
-            return Ok(position);
+            return Ok(Some(position));
         };
 
         let offset = usize::from(
@@ -128,11 +128,13 @@ impl<'store> Resolver<'store> {
                 .map_err(io::Error::other)?,
         );
 
-        let offset = lowering
+        let Some(offset) = lowering
             .mappings
             .iter()
             .find_map(|mapping| mapping.to_generated(offset))
-            .ok_or_else(|| io::Error::other("graft mapping does not cover editor position"))?;
+        else {
+            return Ok(None);
+        };
 
         lowering
             .generated
@@ -140,6 +142,7 @@ impl<'store> Resolver<'store> {
                 u32::try_from(offset).map_err(io::Error::other)?.into(),
                 PositionEncoding::Utf8,
             )
+            .map(Some)
             .map_err(io::Error::other)
     }
 
@@ -147,14 +150,14 @@ impl<'store> Resolver<'store> {
         &self,
         path: &Path,
         coordinates: [u32; 4],
-    ) -> io::Result<[u32; 4]> {
+    ) -> io::Result<Option<[u32; 4]>> {
         let path = absolute(path).map_err(io::Error::other)?;
 
         let Some(lowering) = self.lowerings.get(&path) else {
-            return Ok(coordinates);
+            return Ok(Some(coordinates));
         };
 
-        let map = |position: LineCol| -> io::Result<LineCol> {
+        let map = |position: LineCol, inclusive_end: bool| -> io::Result<Option<LineCol>> {
             let offset = usize::from(
                 lowering
                     .generated
@@ -162,11 +165,13 @@ impl<'store> Resolver<'store> {
                     .map_err(io::Error::other)?,
             );
 
-            let offset = lowering
+            let Some(offset) = lowering
                 .mappings
                 .iter()
-                .find_map(|mapping| mapping.to_original(offset))
-                .ok_or_else(|| io::Error::other("graft mapping does not cover generated range"))?;
+                .find_map(|mapping| mapping.to_original(offset, inclusive_end))
+            else {
+                return Ok(None);
+            };
 
             lowering
                 .original
@@ -174,20 +179,35 @@ impl<'store> Resolver<'store> {
                     u32::try_from(offset).map_err(io::Error::other)?.into(),
                     PositionEncoding::Utf8,
                 )
+                .map(Some)
                 .map_err(io::Error::other)
         };
 
-        let start = map(LineCol {
-            line: coordinates[0],
-            col: coordinates[1],
-        })?;
+        let point = coordinates[..2] == coordinates[2..];
 
-        let end = map(LineCol {
-            line: coordinates[2],
-            col: coordinates[3],
-        })?;
+        let Some(start) = map(
+            LineCol {
+                line: coordinates[0],
+                col: coordinates[1],
+            },
+            false,
+        )?
+        else {
+            return Ok(None);
+        };
 
-        Ok([start.line, start.col, end.line, end.col])
+        let Some(end) = map(
+            LineCol {
+                line: coordinates[2],
+                col: coordinates[3],
+            },
+            !point,
+        )?
+        else {
+            return Ok(None);
+        };
+
+        Ok(Some([start.line, start.col, end.line, end.col]))
     }
 
     pub(crate) fn entries(&self, path: &Path) -> io::Result<Vec<PathBuf>> {
