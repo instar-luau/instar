@@ -1,3 +1,5 @@
+//! Command-line entry point for the Instar Luau toolchain.
+
 mod analyze;
 mod build;
 mod format;
@@ -8,6 +10,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
+/// Analyze, build, format, and lint Luau projects.
 #[derive(Parser)]
 #[command(name = "instar", version)]
 struct Cli {
@@ -17,66 +20,38 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Check Luau source and optionally emit inferred type annotations.
     Analyze(analyze::Analyze),
 
+    /// Prepare or publish compiled project outputs.
+    Build(build::Build),
+
+    /// Format Luau source using inherited project settings.
     Format(format::Format),
 
+    /// Report lint findings or apply safe fixes.
     Lint(lint::Lint),
 
+    /// Run the language server over standard input and output.
     Lsp,
-    Build(build::Build),
 }
 
 fn main() -> ExitCode {
-    match Cli::parse().command {
-        Command::Analyze(arguments) => match arguments.run() {
-            Ok(status) => status,
+    let (name, result) = match Cli::parse().command {
+        Command::Analyze(arguments) => ("analyze", arguments.run()),
+        Command::Build(arguments) => ("build", arguments.run()),
+        Command::Format(arguments) => ("format", arguments.run()),
+        Command::Lint(arguments) => ("lint", arguments.run()),
+        Command::Lsp => ("lsp", instar_core::lsp::run()),
+    };
 
-            Err(error) => {
-                eprintln!("analyze: {error}");
+    match result {
+        Ok(status) => status,
 
-                ExitCode::FAILURE
-            }
-        },
+        Err(error) => {
+            eprintln!("{name}: {error}");
 
-        Command::Format(arguments) => match arguments.run() {
-            Ok(status) => status,
-
-            Err(error) => {
-                eprintln!("format: {error}");
-
-                ExitCode::FAILURE
-            }
-        },
-
-        Command::Lint(arguments) => match arguments.run() {
-            Ok(status) => status,
-
-            Err(error) => {
-                eprintln!("lint: {error}");
-
-                ExitCode::FAILURE
-            }
-        },
-
-        Command::Lsp => match instar_core::lsp::run() {
-            Ok(status) => status,
-
-            Err(error) => {
-                eprintln!("lsp: {error}");
-
-                ExitCode::FAILURE
-            }
-        },
-
-        Command::Build(arguments) => match arguments.run() {
-            Ok(status) => status,
-
-            Err(error) => {
-                eprintln!("build: {error}");
-
-                ExitCode::FAILURE
-            }
-        },
+            ExitCode::FAILURE
+        }
     }
 }

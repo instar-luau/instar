@@ -1,3 +1,5 @@
+//! Graft execution, protocol validation, and transformation behavior.
+
 use assert_cmd::Command;
 use std::fs;
 

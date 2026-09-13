@@ -1,3 +1,5 @@
+//! Loading and resolving external Luau definition sources.
+
 use assert_cmd::Command;
 use std::fs;
 

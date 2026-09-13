@@ -1,3 +1,5 @@
+//! Formatter output, configuration, and source preservation.
+
 use std::{error::Error, fs};
 
 use assert_cmd::Command;

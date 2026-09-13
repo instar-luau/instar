@@ -1,3 +1,5 @@
+//! Language-server requests, document synchronization, and editor results.
+
 use std::{
     error::Error,
     fs,

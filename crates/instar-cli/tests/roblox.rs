@@ -1,13 +1,15 @@
+//! Opt-in Roblox environments and instance-to-source mappings.
+
 #[path = "../../instar-core/tests/support/roblox.rs"]
 mod support;
 
 use assert_cmd::Command;
 use std::{error::Error, fs};
 
-type Result = std::result::Result<(), Box<dyn Error>>;
+type TestResult = Result<(), Box<dyn Error>>;
 
 #[test]
-fn update_is_exposed_and_preserves_standard_luau() -> Result {
+fn update_is_exposed_and_preserves_standard_luau() -> TestResult {
     let directory = tempfile::tempdir()?;
 
     let help = Command::new(assert_cmd::cargo::cargo_bin!("instar"))
@@ -28,7 +30,7 @@ fn update_is_exposed_and_preserves_standard_luau() -> Result {
 }
 
 #[test]
-fn analyzes_instance_imports_from_sourcemaps_and_editor_input() -> Result {
+fn analyzes_instance_imports_from_sourcemaps_and_editor_input() -> TestResult {
     let directory = tempfile::tempdir()?;
     let root = directory.path();
 

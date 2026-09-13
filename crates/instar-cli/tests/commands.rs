@@ -1,3 +1,5 @@
+//! Command dispatch, help text, and argument validation.
+
 use assert_cmd::Command;
 
 #[test]

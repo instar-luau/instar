@@ -1,7 +1,9 @@
+//! Lint findings, configured levels, and safe source fixes.
+
 use assert_cmd::Command;
 use std::{error::Error, fs};
 
-type Result = std::result::Result<(), Box<dyn Error>>;
+type TestResult = Result<(), Box<dyn Error>>;
 
 #[test]
 fn rules_and_explanations_are_available_without_inputs() {
@@ -32,7 +34,7 @@ fn rules_and_explanations_are_available_without_inputs() {
 }
 
 #[test]
-fn lint_reports_levels_and_applies_safe_fixes() -> Result {
+fn lint_reports_levels_and_applies_safe_fixes() -> TestResult {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("source.luau");
     fs::write(&path, "local value = 1\nreturn 2\n")?;
@@ -73,7 +75,7 @@ fn lint_reports_levels_and_applies_safe_fixes() -> Result {
 }
 
 #[test]
-fn named_input_is_fixed_without_writing_its_path() -> Result {
+fn named_input_is_fixed_without_writing_its_path() -> TestResult {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("source.luau");
     fs::write(&path, "return 3")?;
