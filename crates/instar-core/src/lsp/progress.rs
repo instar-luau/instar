@@ -1,4 +1,4 @@
-use super::{Response, Result, failure, protocol};
+use super::{Response, Result, internal_error, protocol};
 use std::{pin::Pin, task::Poll};
 use tokio::sync::{mpsc, oneshot};
 use tower_lsp_server::{Bounded, Client, NotCancellable, OngoingProgress};
@@ -43,7 +43,7 @@ pub(super) async fn wait(
                     progress.finish().await;
                 }
 
-                return response.map_err(failure)?;
+                return response.map_err(internal_error)?;
             }
 
             Event::Progress(mut completed, mut total) => {
@@ -69,7 +69,7 @@ pub(super) async fn wait(
 
                 if let Some(progress) = &progress.0 {
                     let percentage = u32::try_from(completed.saturating_mul(100) / total.max(1))
-                        .map_err(failure)?;
+                        .map_err(internal_error)?;
 
                     progress
                         .report_with_message(format!("{completed}/{total} files"), percentage)

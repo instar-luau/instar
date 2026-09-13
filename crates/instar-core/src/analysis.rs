@@ -1,93 +1,193 @@
-use std::{io, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    io,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 use crate::{luau, project::resolution::Resolver, source::SourceStore};
 
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
-)]
+/// Type-checking mode supplied to Luau.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
+    /// Check inferred and annotated types strictly.
     Strict,
+
+    /// Use Luau's permissive type-checking mode.
     Nonstrict,
+
+    /// Skip type checking while retaining parsing and enabled lint checks.
     Nocheck,
 }
 
+/// Per-operation overrides for native analysis.
 #[derive(Default)]
 pub struct Options {
+    /// Override the configured checking mode.
     pub mode: Option<Mode>,
+
+    /// Select Luau's legacy type solver.
     pub old_solver: bool,
+
+    /// Produce source annotated with inferred types.
     pub annotations: bool,
+
+    /// Refresh downloaded Roblox assets for enabled environments.
     pub update: bool,
 }
 
+/// A source location providing context for another diagnostic.
 pub struct RelatedDiagnostic {
+    /// Source containing the related location.
     pub path: PathBuf,
+
+    /// Native start line, start column, end line, and end column.
     pub range: [u32; 4],
+
+    /// Explanation of the related location.
     pub message: String,
 }
 
+/// A native analysis error or warning with its source range.
 pub struct Diagnostic {
+    /// Source that produced the diagnostic.
     pub path: PathBuf,
+
+    /// Native starting line.
     pub line: u32,
+
+    /// Native starting column.
     pub column: u32,
+
+    /// Native ending line.
     pub end_line: u32,
+
+    /// Native ending column.
     pub end_column: u32,
+
+    /// Diagnostic text returned by Luau.
     pub message: String,
+
+    /// Whether the diagnostic contributes to analysis failure.
     pub is_error: bool,
+
+    /// Additional locations explaining this diagnostic.
     pub related: Vec<RelatedDiagnostic>,
 }
 
+/// Source rewritten with inferred type annotations.
 pub struct Annotation {
+    /// Original source path.
     pub path: PathBuf,
+
+    /// Annotated source bytes.
     pub bytes: Vec<u8>,
 }
 
-pub type Documentation = std::collections::BTreeMap<String, serde_json::Value>;
+/// Documentation records indexed by their native symbol identifiers.
+pub type Documentation = BTreeMap<String, serde_json::Value>;
 
-#[derive(Clone, serde::Deserialize)]
+/// Operation-specific data returned by a native editor query.
+#[derive(Clone, Deserialize)]
 pub struct EditorEntry {
+    /// Symbol or binding name.
     pub name: Option<String>,
 
+    /// Type display or serialized syntax payload for the requested operation.
     #[serde(rename = "type")]
     pub description: Option<String>,
 
+    /// Symbol identifier used to look up documentation.
     pub documentation: Option<String>,
+
+    /// Documentation supplied directly by the query.
     pub documentation_text: Option<String>,
+
+    /// Source containing the result.
     pub path: Option<PathBuf>,
+
+    /// Native source range for the result.
     pub range: Option<[u32; 4]>,
+
+    /// Red, green, blue, and alpha components of a color literal.
     pub color: Option<[f32; 4]>,
+
+    /// Whether the result represents an imported binding.
     pub imports: Option<bool>,
+
+    /// Whether the result represents a require operation.
     pub require: Option<bool>,
+
+    /// Native source range of the calling expression.
     pub caller: Option<[u32; 4]>,
+
+    /// Native source range of the enclosing declaration.
     pub container: Option<[u32; 4]>,
+
+    /// Operation-specific semantic modifier bits.
     pub modifiers: Option<u32>,
+
+    /// Native source range selecting the symbol name.
     pub selection: Option<[u32; 4]>,
+
+    /// Operation-specific symbol or token kind.
     pub kind: Option<u32>,
+
+    /// Whether this occurrence declares the symbol.
     pub declaration: Option<bool>,
+
+    /// Suggested completion insertion text.
     pub insert: Option<String>,
+
+    /// Whether the symbol is deprecated.
     pub deprecated: Option<bool>,
+
+    /// Display label for the result.
     pub label: Option<String>,
+
+    /// Active signature parameter index.
     pub active: Option<u32>,
+
+    /// Parameter labels or operation-specific binding names.
     pub parameters: Option<Vec<String>>,
+
+    /// Query-specific failure description.
     pub error: Option<String>,
 }
 
-#[derive(serde::Deserialize)]
+/// Single-result and list-result forms of native editor queries.
+#[derive(Deserialize)]
 #[serde(untagged)]
 pub enum EditorResult {
+    /// A query returning multiple entries.
     Entries(Vec<EditorEntry>),
+
+    /// A query returning one entry.
     Entry(Box<EditorEntry>),
 }
 
+/// Diagnostics and optional outputs from an analysis operation.
 #[derive(Default)]
 pub struct Report {
+    /// Errors and warnings produced while checking the requested modules.
     pub diagnostics: Vec<Diagnostic>,
+
+    /// Annotated sources when annotation output was requested.
     pub annotations: Vec<Annotation>,
-    pub documentation: std::collections::BTreeMap<PathBuf, std::sync::Arc<Documentation>>,
+
+    /// Shared documentation indexed by source path.
+    pub documentation: BTreeMap<PathBuf, Arc<Documentation>>,
+
+    /// Result of an optional editor query.
     pub editor: Option<EditorResult>,
 }
 
 impl Report {
+    /// Whether any diagnostic is classified as an error.
     #[must_use]
     pub fn has_errors(&self) -> bool {
         self.diagnostics
@@ -96,6 +196,7 @@ impl Report {
     }
 }
 
+/// Reusable native analysis state with explicit source invalidation.
 #[derive(Default)]
 pub struct Session {
     native: luau::Session,
@@ -105,8 +206,8 @@ impl Session {
     pub(crate) fn environment(
         &mut self,
         sources: &mut SourceStore,
-        path: &std::path::Path,
-    ) -> io::Result<std::sync::Arc<crate::roblox::Environment>> {
+        path: &Path,
+    ) -> io::Result<Arc<crate::roblox::Environment>> {
         let mut resolver = Resolver::new(sources);
         let settings = resolver.discovery.roblox(path)?;
 
@@ -120,7 +221,7 @@ impl Session {
         &mut self,
         sources: &mut SourceStore,
         modules: &[PathBuf],
-        path: &std::path::Path,
+        path: &Path,
         position: line_index::LineCol,
         operation: &str,
     ) -> io::Result<Report> {
@@ -133,11 +234,13 @@ impl Session {
         )
     }
 
+    /// Invalidate cached native state after environment or configuration changes.
     pub fn refresh(&mut self) {
         self.native.refresh();
     }
 
-    pub fn change(&mut self, path: &std::path::Path) {
+    /// Invalidate one source and its dependent native analysis state.
+    pub fn change(&mut self, path: &Path) {
         self.native.change(path);
     }
 

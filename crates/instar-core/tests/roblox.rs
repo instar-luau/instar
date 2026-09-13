@@ -1,3 +1,5 @@
+//! Opt-in Roblox environments and instance-to-source mappings.
+
 #[path = "support/roblox.rs"]
 mod support;
 
@@ -8,7 +10,7 @@ use instar_core::{
 };
 use std::{error::Error, fs, path::Path};
 
-type Result = std::result::Result<(), Box<dyn Error>>;
+type TestResult = Result<(), Box<dyn Error>>;
 
 fn checker()
 -> impl FnMut(&Path, &str, bool) -> std::result::Result<analysis::Report, Box<dyn Error>> {
@@ -33,7 +35,7 @@ fn checker()
     }
 }
 
-fn batch(root: &Path, cases: &[(String, bool)]) -> Result {
+fn batch(root: &Path, cases: &[(String, bool)]) -> TestResult {
     support::configure(root)?;
 
     let paths = cases
@@ -98,7 +100,7 @@ fn valid(report: &analysis::Report) {
 }
 
 #[test]
-fn cached_environment_is_explicit_and_contains_datatypes_and_documented_signatures() -> Result {
+fn cached_environment_is_explicit_and_contains_datatypes_and_documented_signatures() -> TestResult {
     let mut check = checker();
     let directory = tempfile::tempdir()?;
     let root = directory.path();
@@ -133,7 +135,7 @@ fn cached_environment_is_explicit_and_contains_datatypes_and_documented_signatur
 }
 
 #[test]
-fn independent_roblox_snippets_preserve_types() -> Result {
+fn independent_roblox_snippets_preserve_types() -> TestResult {
     let directory = tempfile::tempdir()?;
     let root = directory.path();
     fs::write(root.join("instar.toml"), "[roblox]")?;
@@ -254,7 +256,7 @@ fn datatype_signatures_preserve_operators_packs_and_nullable_seats() -> Vec<(Str
 }
 
 #[test]
-fn mappings_preserve_imports_properties_and_script_kinds() -> Result {
+fn mappings_preserve_imports_properties_and_script_kinds() -> TestResult {
     let mut check = checker();
     let directory = tempfile::tempdir()?;
     let root = directory.path();
@@ -333,7 +335,7 @@ fn mappings_preserve_imports_properties_and_script_kinds() -> Result {
 }
 
 #[test]
-fn security_levels_filter_inaccessible_members() -> Result {
+fn security_levels_filter_inaccessible_members() -> TestResult {
     let mut check = checker();
     let directory = tempfile::tempdir()?;
     let root = directory.path();
@@ -427,7 +429,7 @@ fn security_levels_filter_inaccessible_members() -> Result {
 }
 
 #[test]
-fn levels_inherit_and_validate() -> Result {
+fn levels_inherit_and_validate() -> TestResult {
     let mut check = checker();
 
     assert!(
@@ -473,7 +475,7 @@ fn predicates_and_class_lookups_use_cached_metadata() -> Vec<(String, bool)> {
 }
 
 #[test]
-fn projects_apply_nested_settings_metadata_and_ignore_patterns() -> Result {
+fn projects_apply_nested_settings_metadata_and_ignore_patterns() -> TestResult {
     let mut check = checker();
     let directory = tempfile::tempdir()?;
     let root = directory.path();
@@ -528,7 +530,7 @@ fn projects_apply_nested_settings_metadata_and_ignore_patterns() -> Result {
 }
 
 #[test]
-fn additional_definitions_and_upstream_configuration_remain_separate() -> Result {
+fn additional_definitions_and_upstream_configuration_remain_separate() -> TestResult {
     let mut check = checker();
     let directory = tempfile::tempdir()?;
     let root = directory.path();

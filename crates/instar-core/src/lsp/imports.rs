@@ -1,4 +1,4 @@
-use super::{Response, Result, failure, path, protocol, state::State};
+use super::{Response, Result, internal_error, path, protocol, state::State};
 use crate::{project::resolution::Resolver, source::PositionEncoding};
 use line_index::LineCol;
 use std::{
@@ -11,7 +11,7 @@ pub(super) fn complete(
     parameters: &protocol::TextDocumentPositionParams,
 ) -> Result<Vec<protocol::CompletionItem>> {
     let Response::Editor(entries) = state.query(parameters, "completion")? else {
-        return Err(tower_lsp_server::jsonrpc::Error::internal_error());
+        return Err(super::internal_error("unexpected worker response"));
     };
 
     if let Some(range) = entries
@@ -90,14 +90,15 @@ pub(super) fn resolve(
         return Ok(item);
     };
 
-    let context: Context = serde_json::from_value(data).map_err(failure)?;
+    let context: Context = serde_json::from_value(data)
+        .map_err(|error| super::Error::invalid_params(error.to_string()))?;
 
     if state.version(&path(&context.position.text_document.uri)?) != context.version {
         return Err(tower_lsp_server::jsonrpc::Error::content_modified());
     }
 
     let Response::Editor(entries) = state.query(&context.position, "completionResolve")? else {
-        return Err(tower_lsp_server::jsonrpc::Error::internal_error());
+        return Err(super::internal_error("unexpected worker response"));
     };
 
     if let Some(entry) = entries
@@ -157,7 +158,7 @@ fn word(
     source: &crate::source::Source,
     cursor: protocol::Position,
 ) -> Result<(protocol::Range, &str)> {
-    let text = source.text().map_err(failure)?;
+    let text = source.text().map_err(internal_error)?;
 
     let offset = usize::from(
         source
@@ -168,7 +169,7 @@ fn word(
                 },
                 PositionEncoding::Utf16,
             )
-            .map_err(failure)?,
+            .map_err(internal_error)?,
     );
 
     let identifier = |character: u8| character.is_ascii_alphanumeric() || character == b'_';
@@ -187,11 +188,11 @@ fn word(
     let position = |offset| {
         source
             .position(
-                line_index::TextSize::try_from(offset).map_err(failure)?,
+                line_index::TextSize::try_from(offset).map_err(internal_error)?,
                 PositionEncoding::Utf16,
             )
             .map(|position| protocol::Position::new(position.line, position.col))
-            .map_err(failure)
+            .map_err(internal_error)
     };
 
     Ok((
@@ -209,9 +210,9 @@ fn modules(
     let source = state
         .sources
         .read(&path(&parameters.text_document.uri)?)
-        .map_err(failure)?;
+        .map_err(internal_error)?;
 
-    let text = source.text().map_err(failure)?;
+    let text = source.text().map_err(internal_error)?;
 
     if text.starts_with("#!") && insertion.line == 0 {
         insertion.line = 1;
@@ -220,7 +221,7 @@ fn modules(
     let (range, prefix) = word(&source, parameters.position)?;
 
     let Response::Editor(existing) = state.query(parameters, "imports")? else {
-        return Err(tower_lsp_server::jsonrpc::Error::internal_error());
+        return Err(super::internal_error("unexpected worker response"));
     };
 
     for entry in &existing {
@@ -284,15 +285,23 @@ struct Import {
 
 fn roots(state: &mut State, from: &Path) -> Result<BTreeMap<String, PathBuf>> {
     let mut resolver = Resolver::new(&mut state.sources);
-    let mut names = resolver.discovery.alias_names(from).map_err(failure)?;
+
+    let mut names = resolver
+        .discovery
+        .alias_names(from)
+        .map_err(internal_error)?;
+
     names.insert("self".into());
     let mut roots = BTreeMap::new();
 
     for name in names {
         let prefix = format!("@{name}");
 
-        if let Some((_, target)) = resolver.namespace(from, &prefix).map_err(failure)? {
-            roots.insert(prefix, crate::source::absolute(&target).map_err(failure)?);
+        if let Some((_, target)) = resolver.namespace(from, &prefix).map_err(internal_error)? {
+            roots.insert(
+                prefix,
+                crate::source::absolute(&target).map_err(internal_error)?,
+            );
         }
     }
 
@@ -307,7 +316,7 @@ fn identity(target: &Path) -> PathBuf {
     }
 }
 
-fn quoted(value: &str, quote: char) -> String {
+pub(super) fn quoted(value: &str, quote: char) -> String {
     let escaped = value
         .chars()
         .map(|character| {
@@ -380,15 +389,16 @@ fn candidates(
 
     for root in roots.values() {
         if root.is_dir() && !targets.iter().any(|path| path.starts_with(root)) {
-            targets
-                .extend(super::workspace::files(&BTreeSet::from([root.clone()])).map_err(failure)?);
+            targets.extend(
+                super::workspace::files(&BTreeSet::from([root.clone()])).map_err(internal_error)?,
+            );
         }
     }
 
     let mut resolver = Resolver::new(&mut state.sources);
 
     for prefix in roots.keys() {
-        if let Some(target) = resolver.resolve(from, prefix).map_err(failure)? {
+        if let Some(target) = resolver.resolve(from, prefix).map_err(internal_error)? {
             targets.insert(target);
         }
     }
@@ -593,10 +603,10 @@ fn paths(
     let source = state
         .sources
         .read(&path(&parameters.text_document.uri)?)
-        .map_err(failure)?;
+        .map_err(internal_error)?;
 
     let offsets = super::formatting::offsets(&source, range)?;
-    let text = source.text().map_err(failure)?;
+    let text = source.text().map_err(internal_error)?;
     let literal = &text[offsets.clone()];
 
     let Some(quote) = literal
@@ -703,18 +713,18 @@ fn filesystem(
 ) -> Result<()> {
     let Some((_, directory)) = Resolver::new(&mut state.sources)
         .namespace(from, prefix)
-        .map_err(failure)?
+        .map_err(internal_error)?
     else {
         return Ok(());
     };
 
-    let directory = crate::source::absolute(&directory).map_err(failure)?;
+    let directory = crate::source::absolute(&directory).map_err(internal_error)?;
     let mut entries = BTreeSet::new();
 
     match std::fs::read_dir(&directory) {
         Ok(children) => {
             for child in children {
-                let child = child.map_err(failure)?;
+                let child = child.map_err(internal_error)?;
                 entries.insert(child.path());
             }
         }
@@ -725,7 +735,7 @@ fn filesystem(
                 std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
             ) => {}
 
-        Err(error) => return Err(failure(error)),
+        Err(error) => return Err(internal_error(error)),
     }
 
     for target in state.workspace()? {
@@ -745,7 +755,7 @@ fn filesystem(
             || state
                 .sources
                 .has_open_descendants(&target)
-                .map_err(failure)?;
+                .map_err(internal_error)?;
 
         if folder {
             choices.insert(
@@ -799,9 +809,9 @@ pub(super) fn fixes(
     let source = state
         .sources
         .read(&path(&parameters.text_document.uri)?)
-        .map_err(failure)?;
+        .map_err(internal_error)?;
 
-    let text = source.text().map_err(failure)?;
+    let text = source.text().map_err(internal_error)?;
     let mut actions = Vec::new();
     let mut seen = BTreeSet::new();
 

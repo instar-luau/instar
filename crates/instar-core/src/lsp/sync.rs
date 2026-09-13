@@ -1,4 +1,4 @@
-use super::{Result, failure, protocol};
+use super::{Result, internal_error, protocol};
 use crate::source::{PositionEncoding, Source};
 use line_index::LineCol;
 use tower_lsp_server::jsonrpc::Error;
@@ -7,12 +7,12 @@ pub(super) fn apply(
     source: &Source,
     changes: Vec<protocol::TextDocumentContentChangeEvent>,
 ) -> Result<String> {
-    let mut text = source.text().map_err(failure)?.to_owned();
+    let mut text = source.text().map_err(internal_error)?.to_owned();
 
     for change in changes {
         if let Some(range) = change.range {
-            let snapshot =
-                Source::new(source.path().to_owned(), text.as_bytes().to_vec()).map_err(failure)?;
+            let snapshot = Source::new(source.path().to_owned(), text.as_bytes().to_vec())
+                .map_err(internal_error)?;
 
             let offset = |position: protocol::Position| {
                 snapshot
@@ -24,7 +24,7 @@ pub(super) fn apply(
                         PositionEncoding::Utf16,
                     )
                     .map(usize::from)
-                    .map_err(failure)
+                    .map_err(|error| Error::invalid_params(error.to_string()))
             };
 
             let start = offset(range.start)?;
@@ -50,7 +50,7 @@ mod tests {
     #[test]
     fn malformed_changes_preserve_the_snapshot() -> Result<()> {
         let source = Source::new("main.luau".into(), "😀\r\nreturn 1".as_bytes().to_vec())
-            .map_err(failure)?;
+            .map_err(internal_error)?;
 
         for (start, end) in [(1, 2), (2, 0), (0, 99)] {
             let change = protocol::TextDocumentContentChangeEvent {
@@ -63,7 +63,7 @@ mod tests {
             };
 
             assert!(apply(&source, vec![change]).is_err());
-            assert_eq!(source.text().map_err(failure)?, "😀\r\nreturn 1");
+            assert_eq!(source.text().map_err(internal_error)?, "😀\r\nreturn 1");
         }
 
         Ok(())

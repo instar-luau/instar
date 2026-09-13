@@ -1,4 +1,4 @@
-use super::{EditorEntry, Response, Result, failure, path, protocol, state::State};
+use super::{EditorEntry, Response, Result, internal_error, path, protocol, state::State};
 use std::collections::BTreeMap;
 
 fn item(entry: &EditorEntry) -> Option<protocol::CallHierarchyItem> {
@@ -44,7 +44,7 @@ pub(super) fn prepare(
     state.indexed()?;
 
     let Response::Editor(entries) = state.query(parameters, "definition")? else {
-        return Err(tower_lsp_server::jsonrpc::Error::internal_error());
+        return Err(super::internal_error("unexpected worker response"));
     };
 
     Ok(entries
@@ -74,8 +74,10 @@ pub(super) fn calls(
     let mut grouped = BTreeMap::new();
 
     for (path, file) in &state.index.files {
-        let source = state.sources.read(path).map_err(failure)?;
-        let uri = protocol::Uri::from_file_path(path).ok_or_else(|| failure("invalid call URI"))?;
+        let source = state.sources.read(path).map_err(internal_error)?;
+
+        let uri = protocol::Uri::from_file_path(path)
+            .ok_or_else(|| internal_error("invalid call URI"))?;
 
         for call in &file.calls {
             let Some(callee) = call
@@ -114,10 +116,11 @@ pub(super) fn calls(
             } else {
                 let end = source
                     .position(
-                        line_index::TextSize::try_from(source.bytes().len()).map_err(failure)?,
+                        line_index::TextSize::try_from(source.bytes().len())
+                            .map_err(internal_error)?,
                         crate::source::PositionEncoding::Utf16,
                     )
-                    .map_err(failure)?;
+                    .map_err(internal_error)?;
 
                 protocol::CallHierarchyItem {
                     name: path

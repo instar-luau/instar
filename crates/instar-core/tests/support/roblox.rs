@@ -1,6 +1,6 @@
 use std::{fs, io, path::Path};
 
-pub fn configure(root: &Path) -> io::Result<()> {
+pub(super) fn configure(root: &Path) -> io::Result<()> {
     let directory = root.join("cache");
     fs::create_dir_all(&directory)?;
     let revision = "0000000000000000000000000000000000000000";

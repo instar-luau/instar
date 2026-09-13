@@ -10,19 +10,52 @@ use std::{
     },
 };
 
-use line_index::{LineCol, LineIndex, WideEncoding, WideLineCol};
-use text_size::{TextRange, TextSize};
+use line_index::{LineCol, LineIndex, TextRange, TextSize, WideEncoding, WideLineCol};
 
 static REVISION: AtomicU64 = AtomicU64::new(0);
 
+/// # Errors
+/// Returns directory enumeration or child metadata failures.
+pub fn children(directory: &Path) -> io::Result<Vec<PathBuf>> {
+    let mut children = Vec::new();
+
+    for entry in fs::read_dir(directory)? {
+        let path = entry?.path();
+
+        let metadata = fs::metadata(&path).map_err(|error| {
+            io::Error::new(error.kind(), format!("{}: {error}", path.display()))
+        })?;
+
+        if metadata.is_dir()
+            || matches!(
+                path.extension().and_then(|extension| extension.to_str()),
+                Some("lua" | "luau")
+            )
+        {
+            children.push(path);
+        }
+    }
+
+    children.sort();
+
+    Ok(children)
+}
+
 #[derive(Clone, Copy, Debug)]
+/// Units used to measure columns in source positions.
 pub enum PositionEncoding {
+    /// Count UTF-8 bytes.
     Utf8,
+
+    /// Count UTF-16 code units.
     Utf16,
+
+    /// Count Unicode scalar values.
     Utf32,
 }
 
 #[derive(Debug)]
+/// Immutable source bytes with a unique revision and a position index.
 pub struct Source {
     path: PathBuf,
     revision: u64,
@@ -31,35 +64,47 @@ pub struct Source {
 }
 
 #[derive(Debug, thiserror::Error)]
+/// Failure to load, access, or update a source snapshot.
 pub enum SourceError {
+    /// A filesystem operation failed for a source path.
     #[error("{path}: {source}")]
     Io {
+        /// Path involved in the failed operation.
         path: PathBuf,
+        /// Underlying filesystem error.
         #[source]
         source: io::Error,
     },
 
+    /// The source path does not refer to a regular file.
     #[error("source is not a regular file: {0}")]
     NotFile(PathBuf),
 
+    /// A text operation encountered invalid UTF-8 bytes.
     #[error("source requires valid UTF-8: {0}")]
     Encoding(#[from] str::Utf8Error),
 
+    /// The source length or revision exceeds its representation.
     #[error("source exceeds the line-index or revision representation")]
     Capacity,
 
+    /// A range or position is outside valid source boundaries.
     #[error("invalid source range or text position")]
     Range,
 
+    /// An operation used a superseded snapshot.
     #[error("source revision is no longer current")]
     Stale,
 
+    /// An editor document already owns this path.
     #[error("document is already open")]
     AlreadyOpen,
 
+    /// An editor operation targeted a closed document.
     #[error("document is not open")]
     NotOpen,
 
+    /// An edit did not advance the editor document version.
     #[error("document version must increase")]
     Version,
 }
@@ -87,16 +132,19 @@ impl Source {
     }
 
     #[must_use]
+    /// Absolute path identifying this source.
     pub fn path(&self) -> &Path {
         &self.path
     }
 
     #[must_use]
+    /// Unique revision assigned when this snapshot was created.
     pub const fn revision(&self) -> u64 {
         self.revision
     }
 
     #[must_use]
+    /// Original source bytes, including any invalid UTF-8 sequences.
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
     }
@@ -116,6 +164,7 @@ impl Source {
     }
 
     #[must_use]
+    /// Parse the snapshot without copying its source bytes.
     pub fn parse(&self) -> vermis::Tree<'_> {
         vermis::parse(self.bytes().into())
     }
@@ -228,6 +277,7 @@ struct Entry {
 }
 
 #[derive(Debug, Default)]
+/// Cached disk snapshots and versioned editor documents.
 pub struct SourceStore {
     entries: BTreeMap<PathBuf, Entry>,
 }

@@ -1,18 +1,23 @@
 mod discovery;
+/// Require path resolution using source and configuration snapshots.
 pub mod resolution;
+/// Inherited source inclusion and exclusion patterns.
 pub mod selection;
 
-use crate::configuration::{InstarConfig, format::Options};
+use crate::configuration::format::Options;
 use selection::Selection;
-use std::{
-    io,
-    path::{Path, PathBuf},
-};
+use std::{io, path::Path};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Supported project configuration formats.
 pub enum ConfigKind {
+    /// An `instar.toml` configuration.
     Instar,
+
+    /// A declarative `.luaurc` configuration.
     Luaurc,
+
+    /// An executable Luau configuration.
     Luau,
 }
 
@@ -25,6 +30,7 @@ const CONFIG_FILES: [(&str, ConfigKind); 4] = [
 
 impl ConfigKind {
     #[must_use]
+    /// Identify a supported configuration by its file name.
     pub fn from_path(path: &Path) -> Option<Self> {
         let filename = path.file_name()?;
 
@@ -34,70 +40,15 @@ impl ConfigKind {
     }
 }
 
-#[derive(Debug)]
-pub struct ConfigFile {
-    pub path: PathBuf,
-    pub kind: ConfigKind,
-    pub bytes: Vec<u8>,
-}
-
-#[derive(Debug)]
-pub struct Project {
-    root: PathBuf,
-    files: Vec<ConfigFile>,
-    instar: Option<InstarConfig>,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum ProjectError {
-    #[error("{path}: {source}")]
-    Io {
-        path: PathBuf,
-        #[source]
-        source: io::Error,
-    },
-
-    #[error("{path}: {source}")]
-    Encoding {
-        path: PathBuf,
-        #[source]
-        source: std::str::Utf8Error,
-    },
-
-    #[error("{path}: {source}")]
-    Toml {
-        path: PathBuf,
-        #[source]
-        source: toml_edit::de::Error,
-    },
-
-    #[error("project root is not a directory: {0}")]
-    NotDirectory(PathBuf),
-
-    #[error("configuration is not a regular file: {0}")]
-    NotFile(PathBuf),
-}
-
-impl Project {
-    #[must_use]
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
-
-    #[must_use]
-    pub fn files(&self) -> &[ConfigFile] {
-        &self.files
-    }
-
-    #[must_use]
-    pub const fn instar(&self) -> Option<&InstarConfig> {
-        self.instar.as_ref()
-    }
-}
-
+/// Resolved formatting settings, source selection, and loaded grafts.
 pub struct Configuration {
+    /// Effective formatter options after inheritance.
     pub options: Options,
+
+    /// Effective source inclusion and exclusion rules.
     pub selection: Selection,
+
+    /// Formatting grafts in execution order.
     pub grafts: Vec<crate::graft::Graft>,
 }
 

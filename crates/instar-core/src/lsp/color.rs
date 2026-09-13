@@ -52,7 +52,7 @@ pub(super) fn presentations(
 
     let bytes = channels
         .iter()
-        .map(|channel| channel.parse::<u8>().map_err(super::failure))
+        .map(|channel| channel.parse::<u8>().map_err(super::internal_error))
         .collect::<Result<Vec<_>>>()?;
 
     let labels = [

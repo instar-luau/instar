@@ -1,4 +1,4 @@
-use super::{Response, Result, failure, path, protocol, state::State};
+use super::{Response, Result, internal_error, path, protocol, state::State};
 use crate::{
     project::Configuration,
     source::{PositionEncoding, Source},
@@ -16,7 +16,7 @@ pub(super) fn offsets(source: &Source, range: protocol::Range) -> Result<std::op
                 PositionEncoding::Utf16,
             )
             .map(usize::from)
-            .map_err(failure)
+            .map_err(|error| tower_lsp_server::jsonrpc::Error::invalid_params(error.to_string()))
     };
 
     let start = offset(range.start)?;
@@ -33,39 +33,43 @@ pub(super) fn offsets(source: &Source, range: protocol::Range) -> Result<std::op
 
 fn fragment(configuration: &Configuration, text: &str) -> Result<String> {
     if let Ok(output) = configuration.format(text.as_bytes()) {
-        return String::from_utf8(output).map_err(failure);
+        return String::from_utf8(output).map_err(internal_error);
     }
 
     let wrapped = format!("return {text}");
-    let output = configuration.format(wrapped.as_bytes()).map_err(failure)?;
+
+    let output = configuration
+        .format(wrapped.as_bytes())
+        .map_err(internal_error)?;
+
     let tree = vermis::parse(output.as_slice().into());
 
     let block = tree
         .root_view()
         .and_then(|root| root.children().next())
-        .ok_or_else(|| failure("missing formatted expression"))?;
+        .ok_or_else(|| internal_error("missing formatted expression"))?;
 
     if block.children().count() != 1 {
-        return Err(failure("selection contains statements"));
+        return Err(internal_error("selection contains statements"));
     }
 
     let Some(vermis::Parts::Return { values }) =
         block.children().next().and_then(vermis::View::parts)
     else {
-        return Err(failure("selection is not an expression"));
+        return Err(internal_error("selection is not an expression"));
     };
 
     if values.clone().count() != 1 {
-        return Err(failure("selection contains multiple expressions"));
+        return Err(internal_error("selection contains multiple expressions"));
     }
 
     let expression = values
         .clone()
         .next()
-        .ok_or_else(|| failure("missing expression"))?;
+        .ok_or_else(|| internal_error("missing expression"))?;
 
     String::from_utf8(output[expression.span().start..expression.span().end].to_vec())
-        .map_err(failure)
+        .map_err(internal_error)
 }
 
 pub(super) fn range(
@@ -75,16 +79,16 @@ pub(super) fn range(
     let source = state
         .sources
         .read(&path(&parameters.text_document.uri)?)
-        .map_err(failure)?;
+        .map_err(internal_error)?;
 
-    let text = source.text().map_err(failure)?;
+    let text = source.text().map_err(internal_error)?;
     let selected = offsets(&source, parameters.range)?;
 
     if selected.is_empty() {
         return Ok(Response::Edits(None));
     }
 
-    let configuration = Configuration::discover(source.path(), None).map_err(failure)?;
+    let configuration = Configuration::discover(source.path(), None).map_err(internal_error)?;
 
     if !configuration.options.enabled {
         return Ok(Response::Edits(None));
@@ -127,7 +131,7 @@ pub(super) fn range(
     let replacement = format!("{leading}{formatted}{ending}");
     let mut output = text.to_owned();
     output.replace_range(selected.clone(), &replacement);
-    crate::format::validate(source.bytes(), output.as_bytes()).map_err(failure)?;
+    crate::format::validate(source.bytes(), output.as_bytes()).map_err(internal_error)?;
 
     Ok(Response::Edits((replacement != text[selected]).then(
         || {

@@ -1,8 +1,10 @@
+//! Project configuration parsing, inheritance, and schema consistency.
+
 use std::{error::Error, fs, path::Path};
 
 use instar_core::{
     configuration::{InstarConfig, format::Whitespace},
-    project::{ConfigKind, Configuration, Project, ProjectError},
+    project::{ConfigKind, Configuration},
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -34,10 +36,8 @@ project = "default.project.json"
 sourcemap = "sourcemap.json"
 "#;
     fs::write(root.path().join("instar.toml"), text)?;
-    let project = Project::load(root.path())?;
-    assert_eq!(project.root(), root.path());
-    assert_eq!(project.files().len(), 4);
-    let config = project.instar().ok_or("missing Instar config")?;
+    let config = InstarConfig::parse(text)?;
+    Configuration::discover(&root.path().join("src/main.luau"), None)?;
     assert_eq!(config.include.as_ref().ok_or("missing include")?.len(), 2);
 
     assert_eq!(
@@ -54,7 +54,7 @@ sourcemap = "sourcemap.json"
     assert_eq!(aliases.len(), 2);
 
     assert_eq!(
-        project.root().join(&aliases["shared"]),
+        root.path().join(&aliases["shared"]),
         root.path().join("./src/shared")
     );
 
@@ -70,11 +70,9 @@ sourcemap = "sourcemap.json"
         Some(Path::new("sourcemap.json"))
     );
 
-    assert!(
-        project
-            .files()
-            .iter()
-            .any(|file| file.bytes == b"error('do not execute')\xff")
+    assert_eq!(
+        fs::read(root.path().join(".config.luau"))?,
+        b"error('do not execute')\xff"
     );
 
     for name in [".luaurc", ".config.luau", "config.luau", "instar.toml"] {
@@ -89,7 +87,8 @@ sourcemap = "sourcemap.json"
 #[test]
 fn omission_and_invalid_configuration_remain_distinct() -> TestResult {
     let root = tempfile::tempdir()?;
-    assert!(Project::load(root.path())?.instar().is_none());
+    let source = root.path().join("main.luau");
+    Configuration::discover(&source, None)?;
     let empty = InstarConfig::parse("")?;
     assert!(empty.include.is_none() && empty.exclude.is_none() && empty.definitions.is_none());
     assert!(empty.aliases.is_none() && empty.roblox.is_none());
@@ -109,23 +108,28 @@ fn omission_and_invalid_configuration_remain_distinct() -> TestResult {
         "[broken",
     ] {
         fs::write(root.path().join("instar.toml"), text)?;
-        let error = Project::load(root.path()).expect_err("invalid config accepted");
-        assert!(matches!(error, ProjectError::Toml { .. }));
+        assert!(InstarConfig::parse(text).is_err());
+
+        let error = Configuration::discover(&source, None)
+            .err()
+            .ok_or("invalid config accepted")?;
+
         assert!(error.to_string().contains("instar.toml"));
-        assert!(error.source().is_some());
     }
 
     fs::write(root.path().join("instar.toml"), [255])?;
 
-    assert!(matches!(
-        Project::load(root.path()),
-        Err(ProjectError::Encoding { .. })
-    ));
+    assert_eq!(
+        Configuration::discover(&source, None)
+            .err()
+            .ok_or("invalid encoding accepted")?
+            .kind(),
+        std::io::ErrorKind::InvalidData
+    );
 
     fs::remove_file(root.path().join("instar.toml"))?;
     fs::create_dir(root.path().join("instar.toml"))?;
-    assert!(Project::load(root.path()).is_err());
-    assert!(Project::load(&root.path().join("missing")).is_err());
+    assert!(Configuration::discover(&source, None).is_err());
 
     Ok(())
 }

@@ -121,116 +121,83 @@ impl Names {
         self.scopes.pop();
     }
 
-    #[allow(clippy::too_many_lines)]
-    fn visit(&mut self, view: View<'_, '_>) {
-        match view.parts() {
-            Some(Parts::Block { .. }) => self.scoped(view),
+    fn function(&mut self, view: View<'_, '_>) {
+        let Some(Parts::Function {
+            name,
+            generics,
+            parameters,
+            returns,
+            body,
+            ..
+        }) = view.parts()
+        else {
+            unreachable!("function syntax expected");
+        };
 
-            Some(Parts::Local { bindings, values }) => {
-                for value in values {
-                    self.visit(value);
-                }
+        self.generics(generics);
 
-                for binding in bindings.clone() {
-                    self.annotation(binding);
-                }
-
-                for binding in bindings {
-                    self.binding(binding);
-                }
-            }
-
-            Some(Parts::Assignment {
-                targets, values, ..
-            }) => {
-                for value in values {
-                    self.visit(value);
-                }
-
-                for target in targets {
-                    if target.kind() == Kind::Name {
-                        self.write(target);
-
-                        if view.kind() == Kind::CompoundAssignment {
-                            self.read(target);
+        if let Some(name) = name {
+            if let Some(Parts::FunctionName { path, method }) = name.parts() {
+                if let Some(first) = path.clone().next() {
+                    if path.count() == 1 && method.is_none() {
+                        if view.kind() == Kind::LocalFunction {
+                            self.declare(first);
+                        } else {
+                            self.write(first);
                         }
                     } else {
-                        self.mutate(target);
-                        self.visit(target);
+                        self.read(first);
                     }
                 }
+            } else if view.kind() == Kind::LocalFunction {
+                self.declare(name);
             }
+        }
 
-            Some(Parts::Function {
-                name,
-                generics,
-                parameters,
-                returns,
-                body,
-                ..
-            }) => {
-                self.generics(generics);
+        for parameter in parameters.children() {
+            self.annotation(parameter);
+        }
 
-                if let Some(name) = name {
-                    if let Some(Parts::FunctionName { path, method }) = name.parts() {
-                        if let Some(first) = path.clone().next() {
-                            if path.count() == 1 && method.is_none() {
-                                if view.kind() == Kind::LocalFunction {
-                                    self.declare(first);
-                                } else {
-                                    self.write(first);
-                                }
-                            } else {
-                                self.read(first);
-                            }
-                        }
-                    } else if view.kind() == Kind::LocalFunction {
-                        self.declare(name);
-                    }
-                }
+        if let Some(returns) = returns {
+            self.visit(returns);
+        }
 
-                for parameter in parameters.children() {
-                    self.annotation(parameter);
-                }
+        self.scopes.push(HashMap::new());
 
-                if let Some(returns) = returns {
-                    self.visit(returns);
-                }
-
-                self.scopes.push(HashMap::new());
-
-                if view.kind() == Kind::Method
-                    || name.is_some_and(|name| {
-                        matches!(
-                            name.parts(),
-                            Some(Parts::FunctionName {
-                                method: Some(_),
-                                ..
-                            })
-                        )
+        if view.kind() == Kind::Method
+            || name.is_some_and(|name| {
+                matches!(
+                    name.parts(),
+                    Some(Parts::FunctionName {
+                        method: Some(_),
+                        ..
                     })
-                {
-                    self.bindings.insert(view.span().start, Binding::default());
+                )
+            })
+        {
+            self.bindings.insert(view.span().start, Binding::default());
 
-                    self.scopes
-                        .last_mut()
-                        .expect("scope exists")
-                        .insert("self".to_owned(), view.span().start);
-                }
+            self.scopes
+                .last_mut()
+                .expect("scope exists")
+                .insert("self".to_owned(), view.span().start);
+        }
 
-                for parameter in parameters.children() {
-                    self.binding(parameter);
-                }
+        for parameter in parameters.children() {
+            self.binding(parameter);
+        }
 
-                if let Some(body) = body {
-                    for statement in body.children() {
-                        self.visit(statement);
-                    }
-                }
-
-                self.scopes.pop();
+        if let Some(body) = body {
+            for statement in body.children() {
+                self.visit(statement);
             }
+        }
 
+        self.scopes.pop();
+    }
+
+    fn iteration(&mut self, view: View<'_, '_>) {
+        match view.parts() {
             Some(Parts::NumericFor {
                 binding,
                 start,
@@ -293,21 +260,72 @@ impl Names {
                 self.scopes.pop();
             }
 
-            Some(Parts::Call { callee, arguments }) => {
-                if let Some(Parts::Field { receiver, name }) = callee.parts()
-                    && receiver.text() == "table"
-                    && matches!(
-                        name.text().to_string().as_str(),
-                        "insert" | "remove" | "sort" | "clear" | "move"
-                    )
-                    && let Some(value) = arguments.children().next()
-                {
-                    self.mutate(value);
+            _ => unreachable!("iteration syntax expected"),
+        }
+    }
+
+    fn call(&mut self, callee: View<'_, '_>, arguments: View<'_, '_>) {
+        if let Some(Parts::Field { receiver, name }) = callee.parts()
+            && receiver.text() == "table"
+            && matches!(
+                name.text().to_string().as_str(),
+                "insert" | "remove" | "sort" | "clear" | "move"
+            )
+            && let Some(value) = arguments.children().next()
+        {
+            self.mutate(value);
+        }
+
+        self.visit(callee);
+        self.visit(arguments);
+    }
+
+    fn visit(&mut self, view: View<'_, '_>) {
+        match view.parts() {
+            Some(Parts::Block { .. }) => self.scoped(view),
+
+            Some(Parts::Local { bindings, values }) => {
+                for value in values {
+                    self.visit(value);
                 }
 
-                self.visit(callee);
-                self.visit(arguments);
+                for binding in bindings.clone() {
+                    self.annotation(binding);
+                }
+
+                for binding in bindings {
+                    self.binding(binding);
+                }
             }
+
+            Some(Parts::Assignment {
+                targets, values, ..
+            }) => {
+                for value in values {
+                    self.visit(value);
+                }
+
+                for target in targets {
+                    if target.kind() == Kind::Name {
+                        self.write(target);
+
+                        if view.kind() == Kind::CompoundAssignment {
+                            self.read(target);
+                        }
+                    } else {
+                        self.mutate(target);
+                        self.visit(target);
+                    }
+                }
+            }
+
+            Some(Parts::Function { .. }) => self.function(view),
+
+            Some(Parts::NumericFor { .. } | Parts::GenericFor { .. } | Parts::Repeat { .. }) => {
+                self.iteration(view);
+            }
+
+            Some(Parts::Call { callee, arguments }) => self.call(callee, arguments),
 
             Some(Parts::MethodCall {
                 receiver,

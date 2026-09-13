@@ -14,10 +14,16 @@ struct Manifest {
     files: BTreeSet<PathBuf>,
 }
 
-#[derive(Default, Debug, Serialize)]
+#[derive(Debug, Default, Serialize)]
+/// Artifact counts after publishing a build plan.
 pub struct Outcome {
+    /// Artifacts written with new contents.
     pub written: usize,
+
+    /// Artifacts whose existing contents already matched.
     pub unchanged: usize,
+
+    /// Previously owned artifacts pruned from the output.
     pub removed: usize,
 }
 

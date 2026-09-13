@@ -1,4 +1,6 @@
+/// Inherited lint settings and rule-specific options.
 pub mod configuration;
+/// Built-in rule names, groups, defaults, and explanations.
 pub mod registry;
 mod rules;
 mod syntax;
@@ -12,25 +14,47 @@ use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, io, path::Path};
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+/// Replacement of a half-open byte range in the original source.
 pub struct Edit {
+    /// First byte replaced by this edit.
     pub start: usize,
+
+    /// First byte after the replaced range.
     pub end: usize,
+
+    /// Replacement source text.
     pub text: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+/// A lint finding with its configured severity and optional fixes.
 pub struct Finding {
+    /// Built-in rule name or graft-qualified rule name.
     pub rule: String,
+
+    /// Severity after configuration and suppression processing.
     pub level: Level,
+
+    /// Explanation of the finding.
     pub message: String,
+
+    /// Starting source byte offset.
     pub start: usize,
+
+    /// Exclusive ending source byte offset.
     pub end: usize,
+
+    /// Safe replacement edits offered for this finding.
     pub edits: Vec<Edit>,
 }
 
 #[derive(Default)]
+/// Findings and native syntax diagnostics for a source snapshot.
 pub struct Report {
+    /// Normalized configured lint findings.
     pub findings: Vec<Finding>,
+
+    /// Native syntax failures that can prevent safe fixes.
     pub diagnostics: Vec<analysis::Diagnostic>,
 }
 

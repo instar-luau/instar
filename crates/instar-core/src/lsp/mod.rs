@@ -137,7 +137,7 @@ fn identifier(name: &str) -> bool {
         .contains(&name)
 }
 
-fn failure(error: impl Display) -> Error {
+fn internal_error(error: impl Display) -> Error {
     Error {
         message: error.to_string().into(),
         ..Error::internal_error()
@@ -164,7 +164,7 @@ fn moved(uri: &Uri, old: &std::path::Path, new: &Uri) -> Result<Option<Uri>> {
 
     Uri::from_file_path(path(new)?.join(suffix))
         .map(Some)
-        .ok_or_else(|| failure("invalid renamed URI"))
+        .ok_or_else(|| internal_error("invalid renamed URI"))
 }
 
 struct Backend {
@@ -218,7 +218,7 @@ impl Backend {
                 reply,
                 progress,
             })
-            .map_err(failure)?;
+            .map_err(internal_error)?;
 
         let response = progress::wait(receiver, events, &self.client, token).await;
 
@@ -238,7 +238,7 @@ impl Backend {
     ) -> Result<Vec<EditorEntry>> {
         match self.request(Request::Query(parameters, operation)).await? {
             Response::Editor(entries) => Ok(entries),
-            _ => Err(Error::internal_error()),
+            _ => Err(internal_error("unexpected worker response")),
         }
     }
 
@@ -398,14 +398,14 @@ impl LanguageServer for Backend {
         );
 
         if let Some(workspace) = parameters.capabilities.workspace {
-            let mut registrations = self.registrations.lock().map_err(failure)?;
+            let mut registrations = self.registrations.lock().map_err(internal_error)?;
 
             if workspace
                 .did_change_watched_files
                 .and_then(|capabilities| capabilities.dynamic_registration)
                 == Some(true)
             {
-                registrations.push(protocol::Registration { id: "files".into(), method: "workspace/didChangeWatchedFiles".into(), register_options: Some(r#"{"watchers":[{"globPattern":"**/.luaurc"},{"globPattern":"**/.config.luau"},{"globPattern":"**/instar.toml"},{"globPattern":"**/*.{lua,luau,json}"}]}"#.parse().map_err(failure)?) });
+                registrations.push(protocol::Registration { id: "files".into(), method: "workspace/didChangeWatchedFiles".into(), register_options: Some(r#"{"watchers":[{"globPattern":"**/.luaurc"},{"globPattern":"**/.config.luau"},{"globPattern":"**/instar.toml"},{"globPattern":"**/*.{lua,luau,json}"}]}"#.parse().map_err(internal_error)?) });
             }
 
             if workspace
@@ -421,7 +421,10 @@ impl LanguageServer for Backend {
             }
         }
 
-        #[allow(deprecated)]
+        #[expect(
+            deprecated,
+            reason = "Clients without workspace folders still supply the legacy root URI"
+        )]
         let roots = parameters.workspace_folders.map_or_else(
             || parameters.root_uri.into_iter().collect(),
             |folders| folders.into_iter().map(|folder| folder.uri).collect(),
@@ -494,10 +497,13 @@ impl LanguageServer for Backend {
     ) -> Result<Option<protocol::WorkspaceSymbolResponse>> {
         let Response::Editor(entries) = self.request(Request::Symbols(parameters.query)).await?
         else {
-            return Err(Error::internal_error());
+            return Err(internal_error("unexpected worker response"));
         };
 
-        #[allow(deprecated)]
+        #[expect(
+            deprecated,
+            reason = "The protocol symbol type still requires its deprecated compatibility field"
+        )]
         let symbols = entries
             .into_iter()
             .filter_map(|entry| {
@@ -543,7 +549,7 @@ impl LanguageServer for Backend {
     ) -> Result<Option<protocol::WorkspaceEdit>> {
         match self.request(Request::Moving(parameters)).await? {
             Response::Rename(edit) => Ok(Some(edit)),
-            _ => Err(Error::internal_error()),
+            _ => Err(internal_error("unexpected worker response")),
         }
     }
 
@@ -577,7 +583,7 @@ impl LanguageServer for Backend {
     ) -> Result<Option<Vec<protocol::InlayHint>>> {
         match self.request(Request::Hints(parameters)).await? {
             Response::Hints(hints) => Ok(Some(hints)),
-            _ => Err(Error::internal_error()),
+            _ => Err(internal_error("unexpected worker response")),
         }
     }
 
@@ -587,7 +593,7 @@ impl LanguageServer for Backend {
     ) -> Result<Option<Vec<TextEdit>>> {
         match self.request(Request::Range(parameters)).await? {
             Response::Edits(edits) => Ok(edits),
-            _ => Err(Error::internal_error()),
+            _ => Err(internal_error("unexpected worker response")),
         }
     }
 
@@ -600,7 +606,7 @@ impl LanguageServer for Backend {
         let Response::Diagnostics(publications) =
             self.request(Request::Diagnostic(uri.clone())).await?
         else {
-            return Err(Error::internal_error());
+            return Err(internal_error("unexpected worker response"));
         };
 
         let requested = path(&uri)?;
@@ -614,7 +620,7 @@ impl LanguageServer for Backend {
         Ok(self
             .diagnostics
             .lock()
-            .map_err(failure)?
+            .map_err(internal_error)?
             .report(&requested, items, parameters.previous_result_id.as_deref())
             .into())
     }
@@ -767,7 +773,7 @@ impl LanguageServer for Backend {
     ) -> Result<Option<protocol::WorkspaceEdit>> {
         match self.request(Request::Rename(parameters)).await? {
             Response::Rename(edit) => Ok(Some(edit)),
-            _ => Err(Error::internal_error()),
+            _ => Err(internal_error("unexpected worker response")),
         }
     }
 
@@ -780,7 +786,7 @@ impl LanguageServer for Backend {
             .await?
         {
             Response::Completions(items) => Ok(Some(protocol::CompletionResponse::Array(items))),
-            _ => Err(Error::internal_error()),
+            _ => Err(internal_error("unexpected worker response")),
         }
     }
 
@@ -790,7 +796,7 @@ impl LanguageServer for Backend {
     ) -> Result<protocol::CompletionItem> {
         match self.request(Request::Resolve(Box::new(item))).await? {
             Response::Completion(item) => Ok(*item),
-            _ => Err(Error::internal_error()),
+            _ => Err(internal_error("unexpected worker response")),
         }
     }
 
@@ -803,7 +809,7 @@ impl LanguageServer for Backend {
             .await?
         {
             Response::Prepared(items) => Ok(Some(items)),
-            _ => Err(Error::internal_error()),
+            _ => Err(internal_error("unexpected worker response")),
         }
     }
 
@@ -816,7 +822,7 @@ impl LanguageServer for Backend {
             .await?
         {
             Response::Incoming(items) => Ok(Some(items)),
-            _ => Err(Error::internal_error()),
+            _ => Err(internal_error("unexpected worker response")),
         }
     }
 
@@ -829,7 +835,7 @@ impl LanguageServer for Backend {
             .await?
         {
             Response::Outgoing(items) => Ok(Some(items)),
-            _ => Err(Error::internal_error()),
+            _ => Err(internal_error("unexpected worker response")),
         }
     }
 
@@ -926,7 +932,10 @@ impl LanguageServer for Backend {
             )
             .await?;
 
-        #[allow(deprecated)]
+        #[expect(
+            deprecated,
+            reason = "The protocol document symbol type still requires its deprecated compatibility field"
+        )]
         let symbols = entries
             .into_iter()
             .filter_map(|entry| {
@@ -1053,7 +1062,7 @@ impl LanguageServer for Backend {
     ) -> Result<Option<protocol::CodeActionResponse>> {
         match self.request(Request::Actions(parameters)).await? {
             Response::Actions(actions) => Ok(Some(actions)),
-            _ => Err(Error::internal_error()),
+            _ => Err(internal_error("unexpected worker response")),
         }
     }
 
@@ -1063,7 +1072,7 @@ impl LanguageServer for Backend {
     ) -> Result<Option<Vec<TextEdit>>> {
         match self.request(Request::Format(parameters)).await? {
             Response::Edits(edits) => Ok(edits),
-            _ => Err(Error::internal_error()),
+            _ => Err(internal_error("unexpected worker response")),
         }
     }
 }

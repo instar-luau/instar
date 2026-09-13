@@ -1,3 +1,5 @@
+//! Builds and links Instar's native Luau bridge.
+
 use std::{env, path::PathBuf};
 
 fn main() {

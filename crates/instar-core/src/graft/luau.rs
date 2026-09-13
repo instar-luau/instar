@@ -1,4 +1,7 @@
-#![allow(unsafe_code)]
+#![expect(
+    unsafe_code,
+    reason = "This module owns the graft VM FFI and native buffer lifetimes"
+)]
 
 use super::{RESPONSE_LIMIT, Request};
 use serde_json::Value;

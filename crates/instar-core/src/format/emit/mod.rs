@@ -265,7 +265,6 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
         })
     }
 
-    #[allow(clippy::too_many_lines)]
     pub(in crate::format) fn node(
         &self,
         view: View<'tree, 'source>,
@@ -313,7 +312,100 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
             .parts()
             .ok_or_else(|| io::Error::other("unsupported syntax shape"))?;
 
-        let document = match parts {
+        self.layout(view, parts)
+    }
+
+    fn layout(
+        &self,
+        view: View<'tree, 'source>,
+        parts: Parts<'tree, 'source>,
+    ) -> io::Result<Document<'source>> {
+        match parts {
+            Parts::Markup { .. }
+            | Parts::Tag { .. }
+            | Parts::MarkupName { .. }
+            | Parts::MarkupAttributes { .. }
+            | Parts::MarkupChildren { .. }
+            | Parts::MarkupAttribute { .. }
+            | Parts::MarkupSpread { .. }
+            | Parts::MarkupInferred { .. }
+            | Parts::MarkupExpression { .. }
+            | Parts::Root { .. }
+            | Parts::Block { .. } => self.fundamentals(view, &parts),
+
+            Parts::Local { .. }
+            | Parts::Assignment { .. }
+            | Parts::CallStatement { .. }
+            | Parts::Binding { .. }
+            | Parts::Parameters { .. } => self.bindings(view, parts),
+
+            Parts::Arguments { .. } => self.invocation(view, parts),
+            Parts::Function { .. } => self.function(view, &parts),
+
+            Parts::Returns { .. }
+            | Parts::FunctionName { .. }
+            | Parts::If { .. }
+            | Parts::Branch { .. }
+            | Parts::Body { .. } => self.branches(view, parts),
+
+            Parts::While { .. }
+            | Parts::Repeat { .. }
+            | Parts::NumericFor { .. }
+            | Parts::GenericFor { .. }
+            | Parts::Return { .. } => self.loops(parts),
+
+            Parts::Export { .. }
+            | Parts::TypeAlias { .. }
+            | Parts::Declaration { .. }
+            | Parts::ClassDeclaration { .. }
+            | Parts::Class { .. }
+            | Parts::Property { .. }
+            | Parts::Extends { .. } => self.declarations(view, parts),
+
+            Parts::Leaf
+            | Parts::Attributes { .. }
+            | Parts::Attribute { .. }
+            | Parts::Generics { .. }
+            | Parts::Generic { .. }
+            | Parts::Variadic { .. }
+            | Parts::Unary { .. }
+            | Parts::Binary { .. }
+            | Parts::Group { .. }
+            | Parts::TypeOf { .. }
+            | Parts::Call { .. } => self.expressions(view, parts),
+
+            Parts::MethodCall { .. }
+            | Parts::Field { .. }
+            | Parts::Index { .. }
+            | Parts::Instantiate { .. }
+            | Parts::Assertion { .. }
+            | Parts::Conditional { .. }
+            | Parts::Interpolation { .. } => self.access(view, parts),
+
+            Parts::Table { .. } | Parts::TableField { .. } => self.tables(view, parts),
+
+            Parts::TypeName { .. }
+            | Parts::TypeTable { .. }
+            | Parts::TypeField { .. }
+            | Parts::TypeFunction { .. }
+            | Parts::TypeGroup { .. } => self.types(view, parts),
+
+            Parts::TypePack { .. }
+            | Parts::VariadicType { .. }
+            | Parts::TypeParameter { .. }
+            | Parts::TypeArguments { .. }
+            | Parts::TypeUnion { .. }
+            | Parts::TypeIntersection { .. }
+            | Parts::TypeOptional { .. } => self.packs(view, parts),
+        }
+    }
+
+    fn fundamentals(
+        &self,
+        view: View<'tree, 'source>,
+        parts: &Parts<'tree, 'source>,
+    ) -> io::Result<Document<'source>> {
+        match parts {
             Parts::Markup { .. }
             | Parts::Tag { .. }
             | Parts::MarkupName { .. }
@@ -323,12 +415,22 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
             | Parts::MarkupSpread { .. }
             | Parts::MarkupInferred { .. }
             | Parts::MarkupExpression { .. } => {
-                return Err(io::Error::other("formatting requires Luau syntax"));
+                Err(io::Error::other("formatting requires Luau syntax"))
             }
 
-            Parts::Root { .. } => return self.root(),
-            Parts::Block { .. } => return self.block(view, view.span().start, view.span().end),
+            Parts::Root { .. } => self.root(),
+            Parts::Block { .. } => self.block(view, view.span().start, view.span().end),
 
+            _ => unreachable!(),
+        }
+    }
+
+    fn bindings(
+        &self,
+        view: View<'tree, 'source>,
+        parts: Parts<'tree, 'source>,
+    ) -> io::Result<Document<'source>> {
+        let document = match parts {
             Parts::Local { bindings, values } => {
                 let initialized = values.clone().next().is_some();
 
@@ -380,6 +482,18 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
                 );
             }
 
+            _ => unreachable!(),
+        };
+
+        Ok(document)
+    }
+
+    fn invocation(
+        &self,
+        view: View<'tree, 'source>,
+        parts: Parts<'tree, 'source>,
+    ) -> io::Result<Document<'source>> {
+        match parts {
             Parts::Arguments { values } => {
                 if let Some(value) = values
                     .clone()
@@ -405,7 +519,7 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
 
                 let arguments = self.arguments(values)?;
 
-                return Ok(Document::sequence([
+                Ok(Document::sequence([
                     Document::text(
                         if matches!(
                             self.options.spacing.function_names,
@@ -417,9 +531,19 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
                         },
                     ),
                     arguments,
-                ]));
+                ]))
             }
 
+            _ => unreachable!(),
+        }
+    }
+
+    fn function(
+        &self,
+        view: View<'tree, 'source>,
+        parts: &Parts<'tree, 'source>,
+    ) -> io::Result<Document<'source>> {
+        let document = match *parts {
             Parts::Function {
                 attributes,
                 name,
@@ -510,6 +634,18 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
                 Document::sequence(documents).group()
             }
 
+            _ => unreachable!(),
+        };
+
+        Ok(document)
+    }
+
+    fn branches(
+        &self,
+        view: View<'tree, 'source>,
+        parts: Parts<'tree, 'source>,
+    ) -> io::Result<Document<'source>> {
+        let document = match parts {
             Parts::Returns { annotation } => self.node(annotation)?,
 
             Parts::FunctionName { path, method } => Document::sequence([
@@ -589,6 +725,14 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
                 Document::sequence(documents)
             }
 
+            _ => unreachable!(),
+        };
+
+        Ok(document)
+    }
+
+    fn loops(&self, parts: Parts<'tree, 'source>) -> io::Result<Document<'source>> {
+        let document = match parts {
             Parts::While { condition, body } => Document::sequence([
                 Document::text("while "),
                 self.node(condition)?,
@@ -652,6 +796,18 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
             ])
             .group(),
 
+            _ => unreachable!(),
+        };
+
+        Ok(document)
+    }
+
+    fn declarations(
+        &self,
+        view: View<'tree, 'source>,
+        parts: Parts<'tree, 'source>,
+    ) -> io::Result<Document<'source>> {
+        let document = match parts {
             Parts::Export {
                 attributes,
                 declaration,
@@ -727,6 +883,18 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
                 Document::sequence([Document::text(" extends "), self.node(superclass)?])
             }
 
+            _ => unreachable!(),
+        };
+
+        Ok(document)
+    }
+
+    fn expressions(
+        &self,
+        view: View<'tree, 'source>,
+        parts: Parts<'tree, 'source>,
+    ) -> io::Result<Document<'source>> {
+        let document = match parts {
             Parts::Leaf | Parts::Attributes { .. } | Parts::Attribute { .. } => {
                 Document::text(self.text(view))
             }
@@ -776,6 +944,18 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
                 Document::sequence([self.node(callee)?, self.node(arguments)?])
             }
 
+            _ => unreachable!(),
+        };
+
+        Ok(document)
+    }
+
+    fn access(
+        &self,
+        view: View<'tree, 'source>,
+        parts: Parts<'tree, 'source>,
+    ) -> io::Result<Document<'source>> {
+        let document = match parts {
             Parts::MethodCall {
                 receiver,
                 method,
@@ -841,6 +1021,18 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
                     .collect::<io::Result<Vec<_>>>()?,
             ),
 
+            _ => unreachable!(),
+        };
+
+        Ok(document)
+    }
+
+    fn tables(
+        &self,
+        view: View<'tree, 'source>,
+        parts: Parts<'tree, 'source>,
+    ) -> io::Result<Document<'source>> {
+        let document = match parts {
             Parts::Table { fields } => {
                 let text = self.text(view);
 
@@ -883,6 +1075,18 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
                 .group()
             }
 
+            _ => unreachable!(),
+        };
+
+        Ok(document)
+    }
+
+    fn types(
+        &self,
+        view: View<'tree, 'source>,
+        parts: Parts<'tree, 'source>,
+    ) -> io::Result<Document<'source>> {
+        let document = match parts {
             Parts::TypeName {
                 namespace,
                 name,
@@ -954,6 +1158,18 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
                 Document::text(")"),
             ]),
 
+            _ => unreachable!(),
+        };
+
+        Ok(document)
+    }
+
+    fn packs(
+        &self,
+        view: View<'tree, 'source>,
+        parts: Parts<'tree, 'source>,
+    ) -> io::Result<Document<'source>> {
+        let document = match parts {
             Parts::TypePack { types } => {
                 return self.delimited(
                     "(",
@@ -984,6 +1200,8 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
             Parts::TypeOptional { annotation } => {
                 Document::sequence([self.node(annotation)?, Document::text("?")])
             }
+
+            _ => unreachable!(),
         };
 
         Ok(document)

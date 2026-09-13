@@ -1,10 +1,12 @@
+//! Lint findings, configured levels, and safe source fixes.
+
 use instar_core::{analysis, lint, source::SourceStore};
 use std::{error::Error, fmt::Write, fs};
 
 #[path = "support/roblox.rs"]
 mod support;
 
-type Result = std::result::Result<(), Box<dyn Error>>;
+type TestResult = Result<(), Box<dyn Error>>;
 
 const CASES: &[(&str, &str)] = &[
     (
@@ -291,7 +293,7 @@ const QUIET: &[(&str, &str)] = &[
 ];
 
 #[test]
-fn registered_rules_report_their_triggering_cases() -> Result {
+fn registered_rules_report_their_triggering_cases() -> TestResult {
     let directory = tempfile::tempdir()?;
     let mut settings = String::from("[lint.rules]\n");
 
@@ -330,7 +332,7 @@ fn registered_rules_report_their_triggering_cases() -> Result {
 }
 
 #[test]
-fn registered_rules_accept_their_nearby_cases() -> Result {
+fn registered_rules_accept_their_nearby_cases() -> TestResult {
     let directory = tempfile::tempdir()?;
     let mut settings = String::from("[lint.rules]\n");
 
@@ -363,7 +365,7 @@ fn registered_rules_accept_their_nearby_cases() -> Result {
 }
 
 #[test]
-fn grouped_expressions_keep_their_rule_meaning() -> Result {
+fn grouped_expressions_keep_their_rule_meaning() -> TestResult {
     let directory = tempfile::tempdir()?;
 
     for (rule, text) in [
@@ -390,7 +392,7 @@ fn grouped_expressions_keep_their_rule_meaning() -> Result {
 }
 
 #[test]
-fn settings_inherit_options_and_validate_names() -> Result {
+fn settings_inherit_options_and_validate_names() -> TestResult {
     let directory = tempfile::tempdir()?;
     let nested = directory.path().join("nested");
     fs::create_dir(&nested)?;
@@ -471,7 +473,7 @@ fn settings_inherit_options_and_validate_names() -> Result {
 }
 
 #[test]
-fn edits_reject_conflicts_invalid_ranges_and_stale_files() -> Result {
+fn edits_reject_conflicts_invalid_ranges_and_stale_files() -> TestResult {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("source.luau");
     fs::write(&path, "return 1")?;
@@ -519,7 +521,7 @@ fn edits_reject_conflicts_invalid_ranges_and_stale_files() -> Result {
 }
 
 #[test]
-fn binding_fixes_preserve_global_reads_and_type_imports() -> Result {
+fn binding_fixes_preserve_global_reads_and_type_imports() -> TestResult {
     let directory = tempfile::tempdir()?;
 
     fs::write(
@@ -565,7 +567,7 @@ fn binding_fixes_preserve_global_reads_and_type_imports() -> Result {
 }
 
 #[test]
-fn fixes_preserve_comments_unicode_and_are_idempotent() -> Result {
+fn fixes_preserve_comments_unicode_and_are_idempotent() -> TestResult {
     let directory = tempfile::tempdir()?;
     let mut sources = SourceStore::default();
 
@@ -593,7 +595,7 @@ fn fixes_preserve_comments_unicode_and_are_idempotent() -> Result {
 }
 
 #[test]
-fn configuration_and_suppression_apply_to_snapshots() -> Result {
+fn configuration_and_suppression_apply_to_snapshots() -> TestResult {
     let directory = tempfile::tempdir()?;
     let mut sources = SourceStore::default();
 
@@ -621,7 +623,7 @@ fn configuration_and_suppression_apply_to_snapshots() -> Result {
 }
 
 #[test]
-fn roblox_rules_require_the_environment() -> Result {
+fn roblox_rules_require_the_environment() -> TestResult {
     let directory = tempfile::tempdir()?;
     fs::write(directory.path().join("instar.toml"), "[roblox]\n")?;
     support::configure(directory.path())?;

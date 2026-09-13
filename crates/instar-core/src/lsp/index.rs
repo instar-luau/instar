@@ -16,7 +16,7 @@ pub(super) struct Index {
 }
 
 impl Index {
-    pub fn invalidate(&mut self, path: &Path) {
+    pub(super) fn invalidate(&mut self, path: &Path) {
         let mut changed = BTreeSet::from([path.to_owned()]);
 
         loop {

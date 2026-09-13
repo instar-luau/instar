@@ -1,4 +1,4 @@
-use super::{Response, Result, failure, path, protocol, state::State};
+use super::{Response, Result, internal_error, path, protocol, state::State};
 use std::collections::BTreeSet;
 
 pub(super) fn extract(
@@ -15,7 +15,7 @@ pub(super) fn extract(
     };
 
     let Response::Editor(entries) = state.query(&position, "extract")? else {
-        return Err(tower_lsp_server::jsonrpc::Error::internal_error());
+        return Err(super::internal_error("unexpected worker response"));
     };
 
     let Some(entry) = entries.into_iter().find(|entry| {
@@ -34,13 +34,13 @@ pub(super) fn extract(
     let source = state
         .sources
         .read(&path(&parameters.text_document.uri)?)
-        .map_err(failure)?;
+        .map_err(internal_error)?;
 
     let offsets = super::formatting::offsets(&source, parameters.range)?;
-    let text = source.text().map_err(failure)?;
+    let text = source.text().map_err(internal_error)?;
 
     let Response::Editor(tokens) = state.query(&position, "tokens")? else {
-        return Err(tower_lsp_server::jsonrpc::Error::internal_error());
+        return Err(super::internal_error("unexpected worker response"));
     };
 
     let names = tokens

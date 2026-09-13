@@ -1,3 +1,5 @@
+//! Graft execution, protocol validation, and transformation behavior.
+
 use instar_core::{configuration::format::Options, graft::Graft, project::Configuration};
 use std::fs;
 

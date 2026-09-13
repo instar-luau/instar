@@ -1,4 +1,7 @@
-#![allow(unsafe_code)]
+#![expect(
+    unsafe_code,
+    reason = "This module owns the native Luau FFI and its callback lifetimes"
+)]
 
 use std::{
     collections::BTreeMap,

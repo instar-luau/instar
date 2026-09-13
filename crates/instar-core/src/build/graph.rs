@@ -19,21 +19,39 @@ use std::{
     sync::Arc,
 };
 
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
+/// Resolution outcome for a require dependency.
 pub enum Classification {
+    /// Resolved to a module included in the build.
     Internal,
+
+    /// Explicitly provided by the deployment runtime.
     External,
+
+    /// Determined by an expression at runtime.
     Dynamic,
+
+    /// A static require that could not be resolved.
     Unresolved,
 }
 
 #[derive(Clone, Debug, Serialize)]
+/// A require occurrence and its resolved build target.
 pub struct Dependency {
+    /// Resolution outcome for this require.
     pub classification: Classification,
+
+    /// Static module specifier when available.
     pub specifier: Option<String>,
+
+    /// Resolved logical module path when available.
     pub target: Option<PathBuf>,
+
+    /// Starting source byte offset of the require.
     pub start: usize,
+
+    /// Exclusive ending source byte offset of the require.
     pub end: usize,
 
     #[serde(skip)]

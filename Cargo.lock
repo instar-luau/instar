@@ -613,7 +613,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "text-size",
  "thiserror",
  "tokio",
  "toml_edit",

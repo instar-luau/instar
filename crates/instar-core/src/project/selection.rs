@@ -7,6 +7,7 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde_json::Value;
 
 #[derive(Default)]
+/// Inherited source patterns with their declaring configuration directories.
 pub struct Selection {
     include: Option<Patterns>,
     exclude: Option<Patterns>,

@@ -1,10 +1,29 @@
+//! Source revisions, filesystem input, and Unicode position conversion.
+
 use std::{error::Error, fs, sync::Arc};
 
 use instar_core::source::{PositionEncoding, SourceError, SourceStore};
-use line_index::LineCol;
-use text_size::{TextRange, TextSize};
+use line_index::{LineCol, TextRange, TextSize};
 
 type TestResult = Result<(), Box<dyn Error>>;
+
+#[test]
+fn directory_children_include_sorted_sources_and_directories() -> TestResult {
+    let root = tempfile::tempdir()?;
+
+    for name in ["z.luau", "a.lua", "ignored.txt", "ignored.LUA", "é.luau"] {
+        fs::write(root.path().join(name), "")?;
+    }
+
+    fs::create_dir(root.path().join("nested"))?;
+    fs::write(root.path().join("nested/child.luau"), "")?;
+    let expected = ["a.lua", "nested", "z.luau", "é.luau"].map(|name| root.path().join(name));
+    assert_eq!(instar_core::source::children(root.path())?, expected);
+    assert!(instar_core::source::children(&root.path().join("missing")).is_err());
+    assert!(instar_core::source::children(&root.path().join("a.lua")).is_err());
+
+    Ok(())
+}
 
 #[test]
 fn editor_revisions_override_disk_until_closed() -> TestResult {
