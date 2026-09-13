@@ -93,14 +93,14 @@ impl Configuration {
                 return Ok(source.to_vec());
             }
 
-            return graft.format(source, &self.options);
+            return graft.format_at(path, source, &self.options);
         }
 
         let mut output = crate::format::format(source, &self.options)?;
 
         if self.options.enabled {
             for graft in self.grafts.iter().filter(|graft| !graft.is_frontend()) {
-                output = graft.format(&output, &self.options)?;
+                output = graft.format_at(path, &output, &self.options)?;
             }
         }
 

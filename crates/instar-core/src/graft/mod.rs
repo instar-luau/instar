@@ -319,6 +319,10 @@ pub struct Graft {
 struct Request<'value> {
     version: u32,
     hook: &'value str,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<&'value Path>,
+
     source: &'value str,
     configuration: &'value BTreeMap<String, serde_json::Value>,
     settings: Option<&'value Options>,
@@ -439,12 +443,21 @@ impl Graft {
     /// # Errors
     /// Returns execution, syntax, dependency, or source mapping errors.
     pub fn compile(&self, source: &[u8]) -> io::Result<Compilation> {
+        self.compile_path(None, source)
+    }
+
+    pub(crate) fn compile_at(&self, path: &Path, source: &[u8]) -> io::Result<Compilation> {
+        self.compile_path(Some(path), source)
+    }
+
+    fn compile_path(&self, path: Option<&Path>, source: &[u8]) -> io::Result<Compilation> {
         if !self.compile {
             return Err(io::Error::other("graft exports no compile hook"));
         }
 
-        let result: Compilation = serde_json::from_slice(&self.invoke("compile", source, None)?)
-            .map_err(io::Error::other)?;
+        let result: Compilation =
+            serde_json::from_slice(&self.invoke("compile", path, source, None)?)
+                .map_err(io::Error::other)?;
 
         let original = std::str::from_utf8(source).map_err(io::Error::other)?;
 
@@ -577,10 +590,17 @@ impl Graft {
         })
     }
 
-    fn invoke(&self, hook: &str, source: &[u8], settings: Option<&Options>) -> io::Result<Vec<u8>> {
+    fn invoke(
+        &self,
+        hook: &str,
+        path: Option<&Path>,
+        source: &[u8],
+        settings: Option<&Options>,
+    ) -> io::Result<Vec<u8>> {
         let request = Request {
             version: 1,
             hook,
+            path,
             source: std::str::from_utf8(source).map_err(io::Error::other)?,
             configuration: &self.configuration,
             settings,
@@ -610,13 +630,31 @@ impl Graft {
     /// # Errors
     /// Returns execution failures, malformed layouts, or unsafe formatting output.
     pub fn format(&self, source: &[u8], options: &Options) -> io::Result<Vec<u8>> {
+        self.format_path(None, source, options)
+    }
+
+    pub(crate) fn format_at(
+        &self,
+        path: &Path,
+        source: &[u8],
+        options: &Options,
+    ) -> io::Result<Vec<u8>> {
+        self.format_path(Some(path), source, options)
+    }
+
+    fn format_path(
+        &self,
+        path: Option<&Path>,
+        source: &[u8],
+        options: &Options,
+    ) -> io::Result<Vec<u8>> {
         if !self.format {
             return Ok(source.to_vec());
         }
 
         layout::format(
             source,
-            &self.invoke("format", source, Some(options))?,
+            &self.invoke("format", path, source, Some(options))?,
             options,
             !self.is_frontend(),
         )
@@ -625,11 +663,19 @@ impl Graft {
     /// # Errors
     /// Returns execution failures, malformed findings, or invalid source ranges.
     pub fn lint(&self, source: &[u8]) -> io::Result<Vec<Finding>> {
+        self.lint_path(None, source)
+    }
+
+    pub(crate) fn lint_at(&self, path: &Path, source: &[u8]) -> io::Result<Vec<Finding>> {
+        self.lint_path(Some(path), source)
+    }
+
+    fn lint_path(&self, path: Option<&Path>, source: &[u8]) -> io::Result<Vec<Finding>> {
         if !self.lint {
             return Ok(Vec::new());
         }
 
-        let reply = self.invoke("lint", source, None)?;
+        let reply = self.invoke("lint", path, source, None)?;
         let findings: Vec<Finding> = serde_json::from_slice(&reply).map_err(io::Error::other)?;
         let source = std::str::from_utf8(source).map_err(io::Error::other)?;
 

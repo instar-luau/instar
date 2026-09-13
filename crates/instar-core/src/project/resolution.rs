@@ -80,7 +80,7 @@ impl<'store> Resolver<'store> {
         } else {
             self.configuration(&path)?
                 .frontend(&path)
-                .map(|graft| graft.compile(original.bytes()))
+                .map(|graft| graft.compile_at(&path, original.bytes()))
                 .transpose()?
         };
 

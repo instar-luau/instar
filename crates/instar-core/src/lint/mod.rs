@@ -159,7 +159,7 @@ pub fn analyze(
     }
 
     for (name, graft) in configuration.grafts {
-        for finding in graft.lint(source.bytes())? {
+        for finding in graft.lint_at(source.path(), source.bytes())? {
             context.emit_range(
                 &format!("{name}/{}", finding.rule),
                 finding.start..finding.end,
