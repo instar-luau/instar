@@ -80,7 +80,7 @@ pub(super) fn luau(source: &str, hook: &str) -> tempfile::TempDir {
 
     fs::write(
         directory.path().join("instar.toml"),
-        format!("[graft]\nname='example'\nversion='0.2.1'\nprotocol=1\nruntime='luau'\nentry='module.luau'\n{hook}=true\n"),
+        format!("[graft]\nname='example'\nprotocol=1\nruntime='luau'\nentry='module.luau'\n{hook}=true\n"),
     )
     .unwrap();
 
@@ -99,7 +99,7 @@ pub(super) fn fixture(reply: &str, hook: &str) -> tempfile::TempDir {
 
     fs::write(
         directory.path().join("instar.toml"),
-        format!("[graft]\nname = 'example'\nversion = '0.2.1'\nprotocol = 1\nruntime = 'wasm'\nentry = 'module.wasm'\n{capability} = true\n"),
+        format!("[graft]\nname = 'example'\nprotocol = 1\nruntime = 'wasm'\nentry = 'module.wasm'\n{capability} = true\n"),
     )
     .unwrap();
 

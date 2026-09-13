@@ -67,7 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     fs::write(
         directory.path().join("instar.toml"),
-        "[graft]\nname='example'\nversion='0.2.1'\nprotocol=1\nruntime='native'\nformat=true\nlint=true\n",
+        "[graft]\nname='example'\nprotocol=1\nruntime='native'\nformat=true\nlint=true\n",
     )
     .unwrap();
 

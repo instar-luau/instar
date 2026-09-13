@@ -33,7 +33,7 @@ fn execute(directory: &Path, source: &str, condition: &str) -> TestResult {
 
     fs::write(
         directory.join("instar.toml"),
-        "[graft]\nname = 'example'\nversion = '0.2.1'\nprotocol = 1\nruntime = 'luau'\nentry = 'module.luau'\nlint = true\n",
+        "[graft]\nname = 'example'\nprotocol = 1\nruntime = 'luau'\nentry = 'module.luau'\nlint = true\n",
     )?;
 
     Graft::load(&directory.join("instar.toml"), "example")?.lint(b"")?;
@@ -618,7 +618,7 @@ fn graft_compilation_exposes_dependencies_and_validated_source_mappings() -> Tes
     fs::write(
         directory.path().join("instar.toml"),
         fs::read_to_string(directory.path().join("instar.toml"))?
-            + "\n[graft]\nname = 'example'\nversion = '0.2.1'\nprotocol = 1\nruntime = 'luau'\nentry = 'compiler.luau'\ncompile = true\n",
+            + "\n[graft]\nname = 'example'\nprotocol = 1\nruntime = 'luau'\nentry = 'compiler.luau'\ncompile = true\n",
     )?;
 
     fs::write(
@@ -748,7 +748,7 @@ fn compiling_grafts_participate_in_roblox_instance_mapping() -> TestResult {
     fs::write(
         directory.path().join("instar.toml"),
         fs::read_to_string(directory.path().join("instar.toml"))?
-            + "\n[graft]\nname = 'example'\nversion = '0.2.1'\nprotocol = 1\nruntime = 'luau'\nentry = 'compiler.luau'\ncompile = true\n",
+            + "\n[graft]\nname = 'example'\nprotocol = 1\nruntime = 'luau'\nentry = 'compiler.luau'\ncompile = true\n",
     )?;
 
     fs::write(
