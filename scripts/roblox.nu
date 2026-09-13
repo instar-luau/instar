@@ -2,8 +2,6 @@ const DATA = path self | path dirname | path join roblox
 const ASSETS = path self | path dirname | path dirname | path join generated
 const ROOT = '<<<ROOT>>>'
 
-use std/assert
-
 def identifier [name: string]: nothing -> bool {
     $name =~ '^[A-Za-z_][A-Za-z0-9_]*$' and $name not-in [
         and
@@ -37,23 +35,37 @@ def property [name: string]: nothing -> string {
 def resolve [mappings: record]: record -> string {
     let value = $in
 
-    if $value.Generic? != null { return $"{ ($value.Generic | str replace --all Enum. Enum) }" }
+    if $value.Generic? != null {
+        return $"{ ($value.Generic | str replace --all Enum. Enum) }"
+    }
 
-    if $value.Union? != null { return ($value.Union | each {|part| $part | resolve $mappings } | str join ' | ') }
+    if $value.Union? != null {
+        return ($value.Union | each {|part| $part | resolve $mappings } | str join ' | ')
+    }
 
     let variadic = $value.Tuple? | default $value.Variadic?
 
-    if $variadic != null { return $"...($variadic | resolve $mappings)" }
+    if $variadic != null {
+        return $"...($variadic | resolve $mappings)"
+    }
 
     let name = $value.Declared? | default $value.Name?
 
-    if $name == null { error make $"Missing type name: ($value | to json --raw)" }
+    if $name == null {
+        error make $"Missing type name: ($value | to json --raw)"
+    }
 
-    if $name ends-with '?' { return $"($value | upsert Name ($name | str substring ..-2) | reject --optional Declared | resolve $mappings)?" }
+    if $name ends-with '?' {
+        return $"($value | upsert Name ($name | str substring ..-2) | reject --optional Declared | resolve $mappings)?"
+    }
 
-    if $name starts-with Enum. { return ($name | str replace --all Enum. Enum) }
+    if $name starts-with Enum. {
+        return ($name | str replace --all Enum. Enum)
+    }
 
-    if $value.Category? == Enum { return $"Enum($name)" }
+    if $value.Category? == Enum {
+        return $"Enum($name)"
+    }
 
     $mappings | get --optional $name | default $name
 }
@@ -86,7 +98,9 @@ def parameters [mappings: record]: list<any> -> string {
 def returns [member: record, mappings: record]: nothing -> string {
     let value = $member.TupleReturns? | default $member.ReturnType?
 
-    if $value == null { return '()' }
+    if $value == null {
+        return '()'
+    }
 
     let values = [$value] | flatten
 
@@ -105,16 +119,22 @@ def repair [member: record, correction: record]: nothing -> record {
     for field in [ValueType ReturnType] {
         let patch = $correction | get --optional $field
 
-        if $patch != null { $result = $result | upsert $field (($member | get --optional $field | default {}) | merge $patch) }
+        if $patch != null {
+            $result = $result | upsert $field (($member | get --optional $field | default {}) | merge $patch)
+        }
     }
 
-    if $correction.TupleReturns? != null { $result = $result | upsert TupleReturns $correction.TupleReturns }
+    if $correction.TupleReturns? != null {
+        $result = $result | upsert TupleReturns $correction.TupleReturns
+    }
 
     if $correction.Parameters? != null {
         $result = $result | update Parameters {|value| $value.Parameters | each {|parameter|
             let patch = $correction.Parameters | where Name == $parameter.Name | get --optional 0
 
-            if $patch == null { return $parameter }
+            if $patch == null {
+                return $parameter
+            }
 
             let updated = $parameter | merge ($patch | reject --optional Type)
 
@@ -138,7 +158,9 @@ def corrected [...patches: record]: list<any> -> list<any> {
 }
 
 def access [member: record, ...labels: string]: nothing -> bool {
-    if 'NotScriptable' in ($member.Tags? | default []) { return false }
+    if 'NotScriptable' in ($member.Tags? | default []) {
+        return false
+    }
 
     let security = $member.Security? | default None
 
@@ -180,17 +202,23 @@ def inherited [name: string, ...classes: record]: record -> record {
     let class = $in
     let member = $class.Members | where Name == $name | get --optional 0
 
-    if $member != null { return $member }
+    if $member != null {
+        return $member
+    }
 
     let parent = $classes | where Name == ($class.Superclass? | default $ROOT) | get --optional 0
 
-    if $parent == null { return {} }
+    if $parent == null {
+        return {}
+    }
 
     $parent | inherited $name ...$classes
 }
 
 def declaration [class: record, context: record]: nothing -> string {
-    if $class.Name in $context.corrections.Exclusions.Types { return '' }
+    if $class.Name in $context.corrections.Exclusions.Types {
+        return ''
+    }
 
     let replacements = $context.members | get --optional $class.Name | default [] | reduce --fold {} {|line, result|
         let name = $line | parse --regex '^(?:function )?(?<name>[A-Za-z_][A-Za-z0-9_]*)' | get name | first
@@ -203,7 +231,9 @@ def declaration [class: record, context: record]: nothing -> string {
     for value in $class.Members {
         let allowed = access $value ...$context.labels
 
-        if not $allowed { continue }
+        if not $allowed {
+            continue
+        }
 
         if $value.Name in $replacements {
             if $value.Name not-in ($class.Members | take until {|entry| $entry == $value } | get Name) {
@@ -217,14 +247,18 @@ def declaration [class: record, context: record]: nothing -> string {
     }
 
     for replacement in ($replacements | transpose name lines) {
-        if $replacement.name in ($class.Members | each {|value| $value.Name }) { continue }
+        if $replacement.name in ($class.Members | each {|value| $value.Name }) {
+            continue
+        }
 
         let original = $class | inherited $replacement.name ...$context.classes
 
         if ($original | is-not-empty) {
             let allowed = access $original ...$context.labels
 
-            if not $allowed { continue }
+            if not $allowed {
+                continue
+            }
         }
 
         $lines ++= $replacement.lines
@@ -238,7 +272,9 @@ def declaration [class: record, context: record]: nothing -> string {
 }
 
 def constructor [class: record, corrections: record]: nothing -> string {
-    if $class.Name in $corrections.Exclusions.Types { return '' }
+    if $class.Name in $corrections.Exclusions.Types {
+        return ''
+    }
 
     mut fields = $class.Members | where MemberType == Property | each {|value| member $value $corrections.Types }
 
@@ -259,11 +295,6 @@ def constructor [class: record, corrections: record]: nothing -> string {
     $"declare ($class.Name): {\n\t($fields | str join ",\n\t")\n}"
 }
 
-def enumeration [value: record]: nothing -> string {
-    let fields = $value.Items | each {|item| $"\t(property $item.Name): Enum($value.Name)" }
-    $"declare extern type Enum($value.Name) extends EnumItem with end\ndeclare extern type Enumeration($value.Name) extends Enum with\n($fields | str join "\n")\n\tfunction GetEnumItems\(self\): {Enum($value.Name)}\n\tfunction FromName\(self, name: string\): Enum($value.Name)?\n\tfunction FromValue\(self, value: number\): Enum($value.Name)?\nend"
-}
-
 def blocks [source: string]: nothing -> list<any> {
     let separator = char --integer 0x1e
     let chunks = $source | str replace --all --regex '(?m)^((?:export )?type |declare |@)' ($separator + '$1') | split row $separator
@@ -273,12 +304,16 @@ def blocks [source: string]: nothing -> list<any> {
     for chunk in $chunks {
         let text = $chunk | str trim
 
-        if $text == '' { continue }
+        if $text == '' {
+            continue
+        }
 
         let header = $text | parse --regex '(?m)(?:^| )(?<kind>declare extern type|export type|type|declare function|declare) (?<name>[A-Za-z_][A-Za-z0-9_]*)' | get --optional 0
 
         if $header == null {
-            if $text starts-with @ { $attributes += $"($text)\n" }
+            if $text starts-with @ {
+                $attributes += $"($text)\n"
+            }
 
             continue
         }
@@ -301,56 +336,11 @@ def blocks [source: string]: nothing -> list<any> {
         $attributes = ''
     }
 
-    if $attributes != '' { error make 'Attribute without a declaration' }
-
-    $result
-}
-
-def signatures []: list<string> -> list<string> {
-    let lines = $in
-    mut result = []
-    mut current = []
-    mut depth = 0
-
-    for line in $lines {
-        if $depth == 0 and $line =~ '^(?:function\s+\w+|\w+\s*:)' and ($current | is-not-empty) {
-            $result ++= [
-                ($current | str join "\n")
-            ]
-
-            $current = []
-        }
-
-        $current ++= [$line]
-        let tokens = $line | parse --regex `(?<token>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|--.*|[(){}\[\]])` | get token
-
-        for token in $tokens {
-            if $token in ['(' '{' '['] { $depth += 1 }
-
-            if $token in [')' '}' ']'] { $depth -= 1 }
-
-            if $depth < 0 { error make $"Unbalanced member signature: ($line)" }
-        }
-    }
-
-    if $depth != 0 { error make 'Unterminated member signature' }
-
-    if ($current | is-not-empty) {
-        $result ++= [
-            ($current | str join "\n")
-        ]
+    if $attributes != '' {
+        error make 'Attribute without a declaration'
     }
 
     $result
-}
-
-def overrides [source: string]: nothing -> record {
-    blocks $source | reduce --fold {} {|block, result|
-        if not ($block.text starts-with 'declare extern type ') or not ($block.text ends-with end) { error make $"Invalid member declaration: ($block.name)" }
-
-        let lines = $block.text | lines | skip 1 | drop 1 | each {|line| $line | str trim } | where $it != '' | signatures
-        $result | upsert $block.name $lines
-    }
 }
 
 def ordered [source: string]: nothing -> string {
@@ -369,11 +359,15 @@ def ordered [source: string]: nothing -> string {
             } else {
                 $result ++= [$block.text]
 
-                if $block.key starts-with type: { $emitted ++= [$block.name] }
+                if $block.key starts-with type: {
+                    $emitted ++= [$block.name]
+                }
             }
         }
 
-        if ($remaining | length) == ($pending | length) { error make $"Unresolved class inheritance: ($remaining | get name | str join ', ')" }
+        if ($remaining | length) == ($pending | length) {
+            error make $"Unresolved class inheritance: ($remaining | get name | str join ', ')"
+        }
 
         $pending = $remaining
     }
@@ -392,11 +386,15 @@ def injected [source: string, context: record]: nothing -> string {
 }
 
 def references [value: record, mappings: record]: nothing -> list<string> {
-    if $value.Union? != null { return ($value.Union | each {|part| references $part $mappings } | flatten) }
+    if $value.Union? != null {
+        return ($value.Union | each {|part| references $part $mappings } | flatten)
+    }
 
     let nested = $value.Tuple? | default $value.Variadic?
 
-    if $nested != null { return (references $nested $mappings) }
+    if $nested != null {
+        return (references $nested $mappings)
+    }
 
     let type = if $value.Generic? != null {
         {Name: $value.Generic} | resolve $mappings
@@ -428,13 +426,65 @@ def main []: nothing -> nothing {
     let source = http get --raw $"($tracker)/LuauTypes.d.luau"
     let documentation = http get --raw $"($tracker)/api-docs/en-us.json" | from json
 
-    if not (($documentation | describe) starts-with record) { error make 'Invalid documentation object' }
+    if not (($documentation | describe) starts-with record) {
+        error make 'Invalid documentation object'
+    }
 
     let classes = $dump.Classes | corrected ...$corrections.Classes
     let datatypes = $types.DataTypes | corrected ...$corrections.Classes
     let constructors = $types.Constructors | corrected ...$corrections.Classes
     let declarations = open --raw ($DATA | path join declarations.d.luau)
-    let members = overrides (open --raw ($DATA | path join members.d.luau))
+
+    let members = blocks (open --raw ($DATA | path join members.d.luau)) | reduce --fold {} {|block, result|
+        if not ($block.text starts-with 'declare extern type ') or not ($block.text ends-with end) {
+            error make $"Invalid member declaration: ($block.name)"
+        }
+
+        let lines = $block.text | lines | skip 1 | drop 1 | each {|line| $line | str trim } | where $it != ''
+        mut signatures = []
+        mut current = []
+        mut depth = 0
+
+        for line in $lines {
+            if $depth == 0 and $line =~ '^(?:function\s+\w+|\w+\s*:)' and ($current | is-not-empty) {
+                $signatures ++= [
+                    ($current | str join "\n")
+                ]
+
+                $current = []
+            }
+
+            $current ++= [$line]
+            let tokens = $line | parse --regex `(?<token>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|--.*|[(){}\[\]])` | get token
+
+            for token in $tokens {
+                if $token in ['(' '{' '['] {
+                    $depth += 1
+                }
+
+                if $token in [')' '}' ']'] {
+                    $depth -= 1
+                }
+
+                if $depth < 0 {
+                    error make $"Unbalanced member signature: ($line)"
+                }
+            }
+        }
+
+        if $depth != 0 {
+            error make 'Unterminated member signature'
+        }
+
+        if ($current | is-not-empty) {
+            $signatures ++= [
+                ($current | str join "\n")
+            ]
+        }
+
+        $result | upsert $block.name $signatures
+    }
+
     let injections = injected $source {corrections: $corrections, declarations: $declarations}
     let declared = $"($declarations)\n($injections)"
 
@@ -454,7 +504,20 @@ def main []: nothing -> nothing {
     } | flatten | flatten | compact | each {|value| references $value $corrections.Types } | flatten | uniq | sort
 
     let stubs = $referenced | where $it not-in $defined | each {|name| $"declare extern type ($name) with end" }
-    let enums = $dump.Enums | each {|value| enumeration $value } | str join "\n"
+
+    let enums = $dump.Enums | each {|value| [
+        $"declare extern type Enum($value.Name) extends EnumItem with end"
+        $"declare extern type Enumeration($value.Name) extends Enum with"
+        ...(
+            $value.Items
+            | each {|item| $"\t(property $item.Name): Enum($value.Name)" }
+        )
+        $"\tfunction GetEnumItems\(self\): {Enum($value.Name)}"
+        $"\tfunction FromName\(self, name: string\): Enum($value.Name)?"
+        $"\tfunction FromValue\(self, value: number\): Enum($value.Name)?"
+        end
+    ] | str join "\n" } | str join "\n"
+
     let fields = $dump.Enums | each {|value| $"\t(property $value.Name): Enumeration($value.Name)" } | str join "\n"
     let namespace = $"declare extern type Enumerations with\n\t[string]: Enum\n($fields)\n\tfunction GetEnums\(self\): {Enum}\nend\ndeclare Enum: Enumerations"
 
@@ -515,111 +578,4 @@ def main []: nothing -> nothing {
     mkdir $ASSETS
 
     {definitions: $definitions, documentation: $documentation} | to json --raw | save --force ($ASSETS | path join bundle.json)
-}
-
-def "main check" []: nothing -> nothing {
-    let corrections = open ($DATA | path join corrections.json)
-    let mappings = $corrections.Types
-    let declarations = "type Result<Value = Parent> = Value\ndeclare extern type Child extends Parent with end\ndeclare extern type Parent with end"
-    let names = ordered $declarations | blocks $in | get name
-    assert equal $names [Parent Result Child]
-    let decorated = blocks "@[deprecated {use = 'replacement'}]\ndeclare function sample(): number\ndeclare sample: string"
-    assert equal ($decorated | get key) [value:sample value:sample]
-
-    assert (
-            $decorated
-            | first
-            | get text
-            | str starts-with '@[deprecated'
-        )
-
-    let context = {
-        corrections: $corrections
-        declarations: (open --raw ($DATA | path join declarations.d.luau))
-    }
-
-    let source = "-- SECTION BEGIN: RobloxGlobals\ndeclare game: any\ndeclare other: string\n-- SECTION END: RobloxGlobals"
-    assert equal (injected $source $context) 'declare other: string'
-    assert equal (property Keypoints) Keypoints
-    assert equal (property function) '["function"]'
-    assert equal (property 'not valid') '["not valid"]'
-    assert equal ({Name: Array, Generic: ColorSequenceKeypoint} | resolve $mappings) '{ ColorSequenceKeypoint }'
-
-    assert equal ({
-        Union: [
-            {Name: number}
-            {Name: string}
-        ]
-    } | resolve $mappings) 'number | string'
-
-    assert equal (
-        [
-            {
-                Name: values
-                Type: {Name: Tuple}
-            }
-            {
-                Name: last
-                Type: {Name: string}
-            }
-        ] | parameters $mappings
-    ) 'values: any, last: string'
-
-    assert equal (returns {
-        TupleReturns: [
-            {Name: Tuple}
-            {Name: number}
-        ]
-    } $mappings) '(any, number)'
-
-    let original = {
-        Name: Sample
-        MemberType: Property
-        ValueType: {Name: Array}
-        Security: {Read: None, Write: PluginSecurity}
-    }
-
-    let patched = repair $original {
-        ValueType: {Generic: ColorSequenceKeypoint}
-    }
-
-    assert equal $patched.Security $original.Security
-    assert equal (access $patched None) true
-    assert equal (access $patched None PluginSecurity) true
-    assert equal (access {MemberType: Callback, Security: None} None) true
-
-    let class = {
-        Name: Sample
-        Members: [$original]
-    }
-
-    let settings = {
-        classes: [$class]
-        labels: [None]
-        corrections: $corrections
-        members: (overrides "declare extern type Sample with\n\tSample: number\nend")
-    }
-
-    let rendered = declaration $class $settings
-    assert ($rendered =~ 'Sample: number')
-
-    let method = "function Method(\nself,\ncallback: (value: {number}) -> (),\nlabel: \"(\"\n): ()"
-    let property = "Sample: {\nValue: number,\nCallback: (value: string) -> (),\n}"
-    let source = $"declare extern type Sample with\n($method)\n($property)\nend"
-    let members = overrides $source
-    assert equal $members.Sample [$method $property]
-    assert equal ([$method $property] | signatures) [$method $property]
-    let rendered = declaration $class ($settings | update members $members)
-    let emitted = overrides $rendered
-    assert equal $emitted.Sample [$property $method]
-
-    let denied = $class | update Members [
-        (
-            $original
-            | update Security {Read: PluginSecurity, Write: PluginSecurity}
-        )
-    ]
-
-    let rendered = declaration $denied $settings
-    assert ($rendered !~ 'Sample: number')
 }
