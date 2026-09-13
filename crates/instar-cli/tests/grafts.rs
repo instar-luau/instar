@@ -22,8 +22,21 @@ fn graft_layouts_reach_standard_output_checks_and_file_writes() {
         ),
     ] {
         let root = directory.path();
-        fs::write(root.join("instar.toml"), "[grafts]\nexample = 'graft.toml'").unwrap();
+
+        fs::write(
+            root.join("instar.toml"),
+            fs::read_to_string(root.join("instar.toml")).unwrap()
+                + "\n[grafts]\nexample = { path = '.' }",
+        )
+        .unwrap();
+
         fs::write(root.join("source.luau"), "local value=1").unwrap();
+
+        Command::new(env!("CARGO_BIN_EXE_instar"))
+            .current_dir(root)
+            .args(["graft", "install"])
+            .assert()
+            .success();
 
         Command::new(env!("CARGO_BIN_EXE_instar"))
             .current_dir(root)
@@ -79,7 +92,14 @@ fn invalid_graft_output_leaves_files_untouched() {
         ),
     ] {
         let root = directory.path();
-        fs::write(root.join("instar.toml"), "[grafts]\nexample = 'graft.toml'").unwrap();
+
+        fs::write(
+            root.join("instar.toml"),
+            fs::read_to_string(root.join("instar.toml")).unwrap()
+                + "\n[grafts]\nexample = { path = '.' }",
+        )
+        .unwrap();
+
         fs::write(root.join("source.luau"), "return 1").unwrap();
 
         Command::new(env!("CARGO_BIN_EXE_instar"))

@@ -3,6 +3,7 @@
 mod analyze;
 mod build;
 mod format;
+mod graft;
 mod input;
 mod lint;
 
@@ -29,6 +30,9 @@ enum Command {
     /// Format Luau source using inherited project settings.
     Format(format::Format),
 
+    /// Install graft project dependencies.
+    Graft(graft::Graft),
+
     /// Report lint findings or apply safe fixes.
     Lint(lint::Lint),
 
@@ -41,6 +45,7 @@ fn main() -> ExitCode {
         Command::Analyze(arguments) => ("analyze", arguments.run()),
         Command::Build(arguments) => ("build", arguments.run()),
         Command::Format(arguments) => ("format", arguments.run()),
+        Command::Graft(arguments) => ("graft", arguments.run()),
         Command::Lint(arguments) => ("lint", arguments.run()),
         Command::Lsp => ("lsp", instar_core::lsp::run()),
     };
