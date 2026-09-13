@@ -14,6 +14,13 @@ struct Reply {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Replacement {
+    marker: String,
+    document: Layout,
+}
+
+#[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Layout {
     Empty,
@@ -33,6 +40,11 @@ enum Layout {
         end: usize,
         #[serde(default)]
         parse: Parse,
+    },
+
+    Template {
+        source: String,
+        replacements: Vec<Replacement>,
     },
 }
 
@@ -89,7 +101,116 @@ impl Layout {
                 options,
                 matches!(parse, Parse::Expression),
             )?,
+
+            Self::Template {
+                source: template,
+                replacements,
+            } => {
+                let mut document = crate::format::fragment(&template, options, false)?.owned();
+
+                for replacement in replacements {
+                    if replacement.marker.is_empty()
+                        || template.matches(&replacement.marker).count() != 1
+                    {
+                        return Err(io::Error::other("invalid graft template marker"));
+                    }
+
+                    let replacement_document = replacement.document.document(source, options)?;
+
+                    let (replaced, found) =
+                        substitute(document, &replacement.marker, &replacement_document);
+
+                    if !found {
+                        return Err(io::Error::other("missing graft template marker"));
+                    }
+
+                    document = replaced;
+                }
+
+                document
+            }
         })
+    }
+}
+
+fn substitute<'source>(
+    document: Document<'source>,
+    marker: &str,
+    replacement: &Document<'source>,
+) -> (Document<'source>, bool) {
+    match document {
+        Document::Text(text) => {
+            let text = text.into_owned();
+            let mut parts = Vec::new();
+            let mut remaining = text.as_str();
+            let mut found = false;
+
+            while let Some(index) = remaining.find(marker) {
+                if index > 0 {
+                    parts.push(Document::Text(remaining[..index].to_owned().into()));
+                }
+
+                parts.push(replacement.clone());
+                remaining = &remaining[index + marker.len()..];
+                found = true;
+            }
+
+            if !found {
+                return (Document::Text(text.into()), false);
+            }
+
+            if !remaining.is_empty() {
+                parts.push(Document::Text(remaining.to_owned().into()));
+            }
+
+            (Document::Sequence(parts), true)
+        }
+
+        Document::Choice(first, second) => {
+            let (first, first_found) = substitute(*first, marker, replacement);
+            let (second, second_found) = substitute(*second, marker, replacement);
+
+            (
+                Document::Choice(Box::new(first), Box::new(second)),
+                first_found || second_found,
+            )
+        }
+
+        Document::Group(inner) => {
+            let (inner, found) = substitute(*inner, marker, replacement);
+
+            (Document::Group(Box::new(inner)), found)
+        }
+
+        Document::Flat(inner) => {
+            let (inner, found) = substitute(*inner, marker, replacement);
+
+            (Document::Flat(Box::new(inner)), found)
+        }
+
+        Document::Indent(inner) => {
+            let (inner, found) = substitute(*inner, marker, replacement);
+
+            (Document::Indent(Box::new(inner)), found)
+        }
+
+        Document::Sequence(parts) => {
+            let mut found = false;
+
+            let parts = parts
+                .into_iter()
+                .map(|part| {
+                    let (part, part_found) = substitute(part, marker, replacement);
+                    found |= part_found;
+
+                    part
+                })
+                .collect();
+
+            (Document::Sequence(parts), found)
+        }
+
+        other => (other, false),
     }
 }
 

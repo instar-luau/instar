@@ -226,7 +226,20 @@ fn formatting_uses_the_host_renderer_and_configuration_pipeline() {
 
 #[test]
 fn frontend_formatting_bypasses_luau_parsing() {
-    let directory = native::fixture(r#"{"version":1,"document":{"source":[0,9]}}"#);
+    let reply = serde_json::json!({
+        "version": 1,
+        "document": {
+            "template": {
+                "source": "const function Example()\nreturn __markup__\nend",
+                "replacements": [{
+                    "marker": "__markup__",
+                    "document": {"source": [32, 41]},
+                }],
+            },
+        },
+    });
+
+    let directory = native::fixture(&reply.to_string());
 
     fs::write(
         directory.path().join("graft.toml"),
@@ -236,7 +249,7 @@ fn frontend_formatting_bypasses_luau_parsing() {
 
     fs::write(
         directory.path().join("instar.toml"),
-        "[grafts]\nexample={path='.'}",
+        "[grafts]\nexample={path='.'}\n[format.indentation]\nstyle='spaces'",
     )
     .unwrap();
 
@@ -244,8 +257,10 @@ fn frontend_formatting_bypasses_luau_parsing() {
     let configuration = Configuration::discover(&path, None).unwrap();
 
     assert_eq!(
-        configuration.format(&path, b"<frame />").unwrap(),
-        b"<frame />\n"
+        configuration
+            .format(&path, b"const function Example()\nreturn <frame />\nend")
+            .unwrap(),
+        b"const function Example()\n    return <frame />\nend\n"
     );
 }
 
