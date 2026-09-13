@@ -551,7 +551,11 @@ impl super::Configuration {
             grafts: grafts
                 .into_iter()
                 .map(|(name, (dependency, directory))| {
-                    crate::graft::Graft::load(&dependency.resolve(&directory, &name)?, &name)
+                    crate::graft::Graft::load_with_configuration(
+                        &dependency.resolve(&directory, &name)?,
+                        &name,
+                        dependency.configuration(),
+                    )
                 })
                 .collect::<io::Result<Vec<_>>>()?,
         })

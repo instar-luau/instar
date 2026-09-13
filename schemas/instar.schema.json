@@ -1148,6 +1148,11 @@
           "description": "A project directory relative to the declaring configuration.",
           "type": "object",
           "properties": {
+            "configuration": {
+              "description": "Project settings merged over the graft's defaults.",
+              "type": "object",
+              "additionalProperties": true
+            },
             "path": {
               "description": "Directory containing the graft project's instar.toml.",
               "type": "string"
@@ -1162,6 +1167,11 @@
           "description": "A GitHub project installed into Instar's graft cache.",
           "type": "object",
           "properties": {
+            "configuration": {
+              "description": "Project settings merged over the graft's defaults.",
+              "type": "object",
+              "additionalProperties": true
+            },
             "repo": {
               "description": "GitHub owner and repository separated by a slash.",
               "type": "string"

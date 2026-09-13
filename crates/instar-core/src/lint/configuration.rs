@@ -229,8 +229,12 @@ pub(crate) fn discover(sources: &mut SourceStore, path: &Path) -> io::Result<Con
         grafts: grafts
             .into_iter()
             .map(|(name, (dependency, directory))| {
-                crate::graft::Graft::load(&dependency.resolve(&directory, &name)?, &name)
-                    .map(|graft| (name, graft))
+                crate::graft::Graft::load_with_configuration(
+                    &dependency.resolve(&directory, &name)?,
+                    &name,
+                    dependency.configuration(),
+                )
+                .map(|graft| (name, graft))
             })
             .collect::<io::Result<_>>()?,
     })
