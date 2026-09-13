@@ -471,7 +471,9 @@ impl super::Configuration {
             selection,
             grafts: grafts
                 .into_iter()
-                .map(|(name, path)| crate::graft::Graft::load(&path, &name))
+                .map(|(name, (dependency, directory))| {
+                    crate::graft::Graft::load(&dependency.resolve(&directory, &name)?, &name)
+                })
                 .collect::<io::Result<Vec<_>>>()?,
         })
     }
@@ -481,27 +483,19 @@ fn merge(
     merged: &mut serde_json::Map<String, serde_json::Value>,
     text: &str,
     selection: &mut Selection,
-    grafts: &mut BTreeMap<String, PathBuf>,
+    grafts: &mut BTreeMap<String, (crate::graft::Dependency, PathBuf)>,
     configuration: &Path,
 ) -> io::Result<()> {
-    crate::configuration::InstarConfig::parse(text).map_err(io::Error::other)?;
+    let parsed = crate::configuration::InstarConfig::parse(text).map_err(io::Error::other)?;
     let mut value: serde_json::Value = toml_edit::de::from_str(text).map_err(io::Error::other)?;
     selection.merge(&value, configuration)?;
 
-    if let Some(entries) = value.get("grafts").and_then(serde_json::Value::as_object) {
-        for (name, path) in entries {
-            let path = path
-                .as_str()
-                .ok_or_else(|| io::Error::other("graft manifest path must be a string"))?;
+    for (name, dependency) in parsed.grafts.unwrap_or_default() {
+        let directory = configuration
+            .parent()
+            .ok_or_else(|| io::Error::other("configuration has no parent"))?;
 
-            grafts.insert(
-                name.clone(),
-                configuration
-                    .parent()
-                    .ok_or_else(|| io::Error::other("configuration has no parent"))?
-                    .join(path),
-            );
-        }
+        grafts.insert(name, (dependency, directory.to_owned()));
     }
 
     value = value

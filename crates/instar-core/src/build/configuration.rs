@@ -184,15 +184,16 @@ pub(super) fn discover(from: &Path, profile: Option<&str>) -> io::Result<Configu
 
             files.insert(path, bytes);
 
-            for (name, path) in parsed.grafts.unwrap_or_default() {
-                manifests.insert(name, super::paths::absolute(&parent.join(path))?);
+            for (name, dependency) in parsed.grafts.unwrap_or_default() {
+                manifests.insert(name, (dependency, parent.to_owned()));
             }
         }
     }
 
     let mut grafts = BTreeMap::new();
 
-    for (name, path) in manifests {
+    for (name, (dependency, directory)) in manifests {
+        let path = super::paths::absolute(&dependency.resolve(&directory, &name)?)?;
         let graft = crate::graft::Graft::load(&path, &name)?;
         files.insert(path, fs::read(graft.manifest())?);
         files.insert(graft.entry().to_owned(), fs::read(graft.entry())?);

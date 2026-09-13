@@ -13,7 +13,7 @@ fn help_and_version_describe_the_cli() {
 
     let help = String::from_utf8(output.stdout).expect("help is UTF-8");
 
-    for name in ["analyze", "format", "lint", "lsp", "build"] {
+    for name in ["analyze", "format", "lint", "lsp", "build", "graft"] {
         assert!(
             help.lines()
                 .any(|line| line.split_whitespace().next() == Some(name)),
@@ -35,6 +35,32 @@ fn help_and_version_describe_the_cli() {
     Command::new(env!("CARGO_BIN_EXE_instar"))
         .assert()
         .failure();
+}
+
+#[test]
+fn graft_install_requires_configuration_and_exposes_help() {
+    Command::new(env!("CARGO_BIN_EXE_instar"))
+        .args(["graft", "install", "--help"])
+        .assert()
+        .success();
+
+    let directory = tempfile::tempdir().expect("temporary project");
+
+    Command::new(env!("CARGO_BIN_EXE_instar"))
+        .current_dir(directory.path())
+        .args(["graft", "install"])
+        .assert()
+        .failure()
+        .stdout("");
+
+    std::fs::write(directory.path().join("instar.toml"), "").unwrap();
+
+    Command::new(env!("CARGO_BIN_EXE_instar"))
+        .current_dir(directory.path())
+        .args(["graft", "install"])
+        .assert()
+        .success()
+        .stdout("");
 }
 
 #[test]

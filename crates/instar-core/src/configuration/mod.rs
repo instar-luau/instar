@@ -3,7 +3,7 @@ pub mod format;
 mod schema;
 
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::Error};
 use std::{collections::BTreeMap, path::PathBuf};
 
 pub(crate) fn overlay(
@@ -43,9 +43,13 @@ pub struct InstarConfig {
     #[schemars(default)]
     pub format: Option<format::Options>,
 
-    /// Graft names mapped to manifest paths relative to this configuration. Entries inherit by name and run in name order.
+    /// Graft projects loaded from local paths or installed GitHub releases. Entries inherit by name and run in name order.
     #[schemars(default)]
-    pub grafts: Option<BTreeMap<String, PathBuf>>,
+    pub grafts: Option<BTreeMap<String, crate::graft::Dependency>>,
+
+    /// Identity, protocol, runtime, and hooks exported by this graft project.
+    #[schemars(default)]
+    pub graft: Option<crate::graft::Manifest>,
 
     /// Source selection patterns relative to this configuration. Explicit file inputs bypass selection; an empty list clears inherited patterns.
     #[schemars(default)]
@@ -118,6 +122,18 @@ impl InstarConfig {
     /// # Errors
     /// Returns invalid TOML, unknown fields or field-type errors with TOML spans.
     pub fn parse(text: &str) -> Result<Self, toml_edit::de::Error> {
-        toml_edit::de::from_str(text)
+        let configuration: Self = toml_edit::de::from_str(text)?;
+
+        for (name, dependency) in configuration.grafts.iter().flatten() {
+            dependency
+                .validate(name)
+                .map_err(toml_edit::de::Error::custom)?;
+        }
+
+        if let Some(manifest) = &configuration.graft {
+            manifest.validate().map_err(toml_edit::de::Error::custom)?;
+        }
+
+        Ok(configuration)
     }
 }

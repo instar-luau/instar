@@ -20,6 +20,9 @@ fn project(configuration: &str) -> tempfile::TempDir {
 }
 
 fn execute(directory: &Path, source: &str, condition: &str) -> TestResult {
+    let project = tempfile::tempdir_in(directory)?;
+    let directory = project.path();
+
     fs::write(
         directory.join("module.luau"),
         format!(
@@ -28,11 +31,11 @@ fn execute(directory: &Path, source: &str, condition: &str) -> TestResult {
     )?;
 
     fs::write(
-        directory.join("graft.toml"),
-        "name = 'example'\nversion = 1\nruntime = 'luau'\nentry = 'module.luau'\nlint = true\n",
+        directory.join("instar.toml"),
+        "[graft]\nname = 'example'\nversion = '0.2.1'\nprotocol = 1\nruntime = 'luau'\nentry = 'module.luau'\nlint = true\n",
     )?;
 
-    Graft::load(&directory.join("graft.toml"), "example")?.lint(b"")?;
+    Graft::load(&directory.join("instar.toml"), "example")?.lint(b"")?;
 
     Ok(())
 }
@@ -278,12 +281,13 @@ fn graph_classifies_unresolved_dynamic_and_external_requires() -> TestResult {
 #[test]
 fn graft_compilation_exposes_dependencies_and_validated_source_mappings() -> TestResult {
     let directory = project(
-        "[grafts]\nexample = 'graft.toml'\n[build]\ninputs = ['source']\nentry = 'source/main.luau'\nshape = 'bundle'\noutput = 'output/bundle.luau'\n[build.languages]\ncustom = 'example'\n",
+        "[grafts]\nexample = { path = '.' }\n[build]\ninputs = ['source']\nentry = 'source/main.luau'\nshape = 'bundle'\noutput = 'output/bundle.luau'\n[build.languages]\ncustom = 'example'\n",
     );
 
     fs::write(
-        directory.path().join("graft.toml"),
-        "name = 'example'\nversion = 1\nruntime = 'luau'\nentry = 'compiler.luau'\ncompile = true\n",
+        directory.path().join("instar.toml"),
+        fs::read_to_string(directory.path().join("instar.toml"))?
+            + "\n[graft]\nname = 'example'\nversion = '0.2.1'\nprotocol = 1\nruntime = 'luau'\nentry = 'compiler.luau'\ncompile = true\n",
     )?;
 
     fs::write(
@@ -405,14 +409,15 @@ fn output_overlap_and_destination_collisions_are_rejected() -> TestResult {
 #[test]
 fn compiling_grafts_participate_in_roblox_instance_mapping() -> TestResult {
     let directory = project(
-        "[grafts]\nexample = 'graft.toml'\n[build]\ninputs = ['source']\noutput = 'output'\n[build.languages]\ncustom = 'example'\n[roblox]\nproject = 'default.project.json'\n",
+        "[grafts]\nexample = { path = '.' }\n[build]\ninputs = ['source']\noutput = 'output'\n[build.languages]\ncustom = 'example'\n[analyze.roblox]\nproject = 'default.project.json'\n",
     );
 
     support::configure(directory.path())?;
 
     fs::write(
-        directory.path().join("graft.toml"),
-        "name = 'example'\nversion = 1\nruntime = 'luau'\nentry = 'compiler.luau'\ncompile = true\n",
+        directory.path().join("instar.toml"),
+        fs::read_to_string(directory.path().join("instar.toml"))?
+            + "\n[graft]\nname = 'example'\nversion = '0.2.1'\nprotocol = 1\nruntime = 'luau'\nentry = 'compiler.luau'\ncompile = true\n",
     )?;
 
     fs::write(

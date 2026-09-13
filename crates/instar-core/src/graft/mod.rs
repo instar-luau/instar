@@ -1,9 +1,13 @@
+mod install;
 mod layout;
 mod luau;
 mod native;
 mod wasm;
 
-use crate::configuration::format::Options;
+pub use install::install;
+
+use crate::configuration::{InstarConfig, format::Options};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -13,7 +17,7 @@ use std::{
 
 const RESPONSE_LIMIT: usize = 64 * 1024 * 1024;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 /// Execution environment selected by a graft manifest.
 pub enum Runtime {
@@ -27,15 +31,18 @@ pub enum Runtime {
     Wasm,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 /// Graft identity, entry point, exported hooks, and default configuration.
 pub struct Manifest {
     /// Graft identifier used by project configuration.
     pub name: String,
 
+    /// Semantic version of the graft project.
+    pub version: String,
+
     /// Graft protocol version.
-    pub version: u32,
+    pub protocol: u32,
 
     /// Runtime responsible for executing the entry point.
     pub runtime: Runtime,
@@ -58,6 +65,190 @@ pub struct Manifest {
     /// Default settings passed to exported hooks.
     #[serde(default)]
     pub configuration: BTreeMap<String, serde_json::Value>,
+}
+
+impl Manifest {
+    fn read(path: &Path) -> io::Result<Self> {
+        InstarConfig::parse(&fs::read_to_string(path)?)
+            .map_err(io::Error::other)?
+            .graft
+            .ok_or_else(|| {
+                io::Error::other(format!("{}: missing [graft] metadata", path.display()))
+            })
+    }
+
+    pub(crate) fn validate(&self) -> io::Result<()> {
+        component(&self.name)?;
+        semver::Version::parse(&self.version).map_err(io::Error::other)?;
+
+        if self.protocol != 1 || !self.format && !self.lint && !self.compile {
+            return Err(io::Error::other("graft protocol or hooks are invalid"));
+        }
+
+        if self.entry.as_os_str().is_empty()
+            || self
+                .entry
+                .components()
+                .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
+        {
+            return Err(io::Error::other(
+                "graft entry must remain inside its project directory",
+            ));
+        }
+
+        Ok(())
+    }
+}
+
+/// A local graft project or an installed GitHub release requirement.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum Dependency {
+    /// A project directory relative to the declaring configuration.
+    Local {
+        /// Directory containing the graft project's instar.toml.
+        path: PathBuf,
+    },
+
+    /// A GitHub project installed into Instar's graft cache.
+    Remote {
+        /// GitHub owner and repository separated by a slash.
+        repo: String,
+        /// Exact semantic version or an explicit compatible version requirement.
+        version: String,
+    },
+}
+
+fn component(value: &str) -> io::Result<()> {
+    let stem = value
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+
+    if value.is_empty()
+        || value == "."
+        || value == ".."
+        || value.ends_with('.')
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte))
+        || matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && matches!(stem.as_bytes()[3], b'1'..=b'9'))
+    {
+        return Err(io::Error::other(format!(
+            "invalid graft path component: {value}"
+        )));
+    }
+
+    Ok(())
+}
+
+fn requirement(value: &str) -> io::Result<semver::VersionReq> {
+    let value = if let Ok(version) = semver::Version::parse(value) {
+        format!("={version}")
+    } else {
+        value.to_owned()
+    };
+
+    semver::VersionReq::parse(&value).map_err(io::Error::other)
+}
+
+fn cache() -> io::Result<PathBuf> {
+    dirs::cache_dir()
+        .map(|path| path.join("instar").join("grafts"))
+        .ok_or_else(|| io::Error::other("cannot locate the graft cache directory"))
+}
+
+impl Dependency {
+    pub(crate) fn validate(&self, name: &str) -> io::Result<()> {
+        component(name)?;
+
+        match self {
+            Self::Local { path } if path.as_os_str().is_empty() => {
+                Err(io::Error::other("graft project path is empty"))
+            }
+
+            Self::Local { .. } => Ok(()),
+
+            Self::Remote { repo, version } => {
+                let parts = repo.split('/').collect::<Vec<_>>();
+
+                if parts.len() != 2 {
+                    return Err(io::Error::other("graft repository must be owner/repo"));
+                }
+
+                for part in parts {
+                    component(part)?;
+                }
+
+                requirement(version)?;
+
+                Ok(())
+            }
+        }
+    }
+
+    pub(crate) fn resolve(&self, directory: &Path, name: &str) -> io::Result<PathBuf> {
+        self.validate(name)?;
+
+        match self {
+            Self::Local { path } => Ok(directory.join(path).join("instar.toml")),
+            Self::Remote { .. } => self.cached(&cache()?, name),
+        }
+    }
+
+    fn cached(&self, cache: &Path, name: &str) -> io::Result<PathBuf> {
+        let Self::Remote { repo, version } = self else {
+            return Err(io::Error::other("expected a remote graft"));
+        };
+
+        let exact = semver::Version::parse(version).ok();
+        let requirement = requirement(version)?;
+        let directory = cache.join(repo).join(name);
+
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => Some(entries),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        };
+
+        let mut versions = Vec::new();
+
+        for entry in entries.into_iter().flatten() {
+            let entry = entry?;
+
+            if entry.file_type()?.is_dir()
+                && let Some(text) = entry.file_name().to_str()
+                && let Ok(version) = semver::Version::parse(text)
+                && requirement.matches(&version)
+                && exact.as_ref().is_none_or(|exact| exact == &version)
+            {
+                versions.push((version, entry.path()));
+            }
+        }
+
+        let (version, path) = versions.into_iter().max().ok_or_else(|| {
+            io::Error::other(format!(
+                "graft {name} ({repo} {version}) is not cached; run instar graft install"
+            ))
+        })?;
+
+        let path = path.join("instar.toml");
+        let manifest = Manifest::read(&path)?;
+
+        if manifest.name != name
+            || semver::Version::parse(&manifest.version).map_err(io::Error::other)? != version
+        {
+            return Err(io::Error::other(
+                "cached graft identity or version does not match its directory",
+            ));
+        }
+
+        Ok(path)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -209,28 +400,13 @@ impl Graft {
     /// # Errors
     /// Returns invalid manifests, unsupported versions, or inaccessible artifacts.
     pub fn load(path: &Path, name: &str) -> io::Result<Self> {
-        let manifest: Manifest =
-            toml_edit::de::from_str(&fs::read_to_string(path)?).map_err(io::Error::other)?;
+        let manifest = Manifest::read(path)?;
 
-        if manifest.name != name
-            || manifest.version != 1
-            || !manifest.format && !manifest.lint && !manifest.compile
-        {
+        if manifest.name != name {
             return Err(io::Error::other(format!(
-                "{}: graft name, version, or hooks are invalid",
+                "{}: graft name does not match {name}",
                 path.display()
             )));
-        }
-
-        if manifest.entry.as_os_str().is_empty()
-            || manifest
-                .entry
-                .components()
-                .any(|component| !matches!(component, Component::Normal(_) | Component::CurDir))
-        {
-            return Err(io::Error::other(
-                "graft entry must remain inside its manifest directory",
-            ));
         }
 
         let directory = path
