@@ -1,15 +1,18 @@
 use super::{
     EditorEntry, Request, Response, documentation, internal_error, moved, path, workspace,
 };
+
 use crate::{
     analysis,
     project::Configuration,
     source::{PositionEncoding, SourceStore},
 };
+
 use line_index::LineCol;
 use std::{collections::BTreeMap, path::PathBuf};
 use tokio::sync::oneshot;
 use tower_lsp_server::ls_types as protocol;
+
 use tower_lsp_server::{
     jsonrpc::{Error, Result},
     ls_types::{

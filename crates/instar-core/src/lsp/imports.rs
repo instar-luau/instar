@@ -1,6 +1,7 @@
 use super::{Response, Result, internal_error, path, protocol, state::State};
 use crate::{project::resolution::Resolver, source::PositionEncoding};
 use line_index::LineCol;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},

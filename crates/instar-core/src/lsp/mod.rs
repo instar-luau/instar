@@ -35,6 +35,7 @@ use crate::analysis;
 use state::State;
 use tokio::sync::oneshot;
 use tower_lsp_server::ls_types as protocol;
+
 use tower_lsp_server::{
     Client, LanguageServer, LspService, Server,
     jsonrpc::{Error, Result},

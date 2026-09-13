@@ -1,5 +1,6 @@
 /// Formatter settings and layout policies.
 pub mod format;
+
 mod schema;
 
 use schemars::JsonSchema;

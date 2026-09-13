@@ -60,6 +60,7 @@ type Read = extern "C" fn(*mut c_void, Bytes) -> Bytes;
 type Resolve = extern "C" fn(*mut c_void, Bytes, Bytes, u32) -> Bytes;
 type Environment = extern "C" fn(*mut c_void, Bytes, Bytes, usize) -> Bytes;
 type Configuration = extern "C" fn(*mut c_void, Bytes, usize) -> Bytes;
+
 #[repr(C)]
 struct Span {
     line: u32,

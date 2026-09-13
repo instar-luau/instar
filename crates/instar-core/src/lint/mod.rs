@@ -1,7 +1,9 @@
 /// Inherited lint settings and rule-specific options.
 pub mod configuration;
+
 /// Built-in rule names, groups, defaults, and explanations.
 pub mod registry;
+
 mod rules;
 mod syntax;
 
@@ -9,6 +11,7 @@ use crate::{
     analysis,
     source::{Source, SourceStore},
 };
+
 use configuration::Level;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, io, path::Path};

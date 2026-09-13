@@ -1,8 +1,10 @@
 use super::{Response, Result, internal_error, path, protocol, state::State};
+
 use crate::{
     project::Configuration,
     source::{PositionEncoding, Source},
 };
+
 use line_index::LineCol;
 
 pub(super) fn offsets(source: &Source, range: protocol::Range) -> Result<std::ops::Range<usize>> {

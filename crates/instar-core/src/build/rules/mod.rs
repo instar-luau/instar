@@ -12,14 +12,17 @@ use super::{
     configuration::Rules,
     mapping::{Edit, Text},
 };
+
 use crate::{roblox::Environment, source::Source};
 use serde_json::Value;
+
 use std::{
     collections::BTreeMap,
     io,
     ops::Range,
     path::{Path, PathBuf},
 };
+
 use vermis::{Kind, Parts, Tree, View};
 
 #[derive(Clone, Copy)]

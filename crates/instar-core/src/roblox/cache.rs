@@ -1,6 +1,7 @@
 use super::{Metadata, invalid};
 use crate::analysis::Documentation;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+
 use std::{
     collections::BTreeMap,
     fs,
@@ -11,6 +12,7 @@ use std::{
 
 const LEVELS: [&str; 4] = ["none", "local", "plugin", "roblox"];
 const INTERVAL: u64 = 24 * 60 * 60;
+
 const LATEST: &str =
     "https://api.github.com/repos/instar-luau/instar/commits?path=generated/bundle.json";
 

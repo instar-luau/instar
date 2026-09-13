@@ -1,6 +1,8 @@
 mod bundle;
+
 /// Build settings and profile overrides.
 pub mod configuration;
+
 mod graph;
 mod mapping;
 mod output;
@@ -14,11 +16,13 @@ use crate::{
     analysis,
     source::{Source, SourceStore},
 };
+
 use configuration::{Configuration, Shape, Target};
 pub use graph::{Classification, Dependency};
 use mapping::Text;
 pub use output::Outcome;
 use serde::Serialize;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs, io,

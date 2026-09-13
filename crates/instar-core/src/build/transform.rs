@@ -3,6 +3,7 @@ use super::{
     mapping::{Edit, Text},
     syntax::{array, field, kind, nodes, quote, range},
 };
+
 use crate::source::Source;
 use serde_json::Value;
 use std::{collections::BTreeSet, io};

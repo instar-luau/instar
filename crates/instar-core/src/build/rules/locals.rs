@@ -1,15 +1,19 @@
 use super::{Context, identifier, replace_keep_lines};
+
 use crate::build::{
     configuration::Rules,
     mapping::Edit,
     syntax::{array, field, kind, nodes, range, unwrap},
 };
+
 use serde_json::Value;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
     ops::Range,
 };
+
 use vermis::{Kind, Parts};
 
 pub(super) fn apply(

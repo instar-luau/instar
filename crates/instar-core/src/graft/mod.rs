@@ -9,6 +9,7 @@ pub use install::install;
 use crate::configuration::{InstarConfig, format::Options};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
 use std::{
     collections::BTreeMap,
     fs, io,

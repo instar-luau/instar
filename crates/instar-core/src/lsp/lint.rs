@@ -1,4 +1,5 @@
 use super::{Result, internal_error, path, protocol, state::State};
+
 use crate::{
     lint::{Edit, Finding, configuration::Level},
     source::{PositionEncoding, Source},

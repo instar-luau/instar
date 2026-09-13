@@ -3,8 +3,10 @@ use super::{
     configuration::{Level, Settings},
     registry,
 };
+
 use crate::source::{PositionEncoding, Source};
 use serde_json::Value;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     ops::Range,
@@ -160,6 +162,7 @@ pub(super) struct Context<'value> {
     suppressions: BTreeMap<u32, BTreeSet<String>>,
     file_suppressions: BTreeSet<String>,
 }
+
 impl<'value> Context<'value> {
     pub(super) fn new(
         source: &'value Source,

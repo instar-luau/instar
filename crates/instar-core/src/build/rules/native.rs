@@ -1,9 +1,11 @@
 use super::{Context, identifier, plain_string, replace_keep_lines, span, text};
+
 use crate::build::{
     configuration::Rules,
     mapping::Edit,
     syntax::{field, kind, nodes, quote},
 };
+
 use std::collections::BTreeMap;
 use vermis::{Kind, Parts, View};
 

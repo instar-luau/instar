@@ -2,6 +2,7 @@ use crate::{
     configuration::format::Options,
     format::document::{self, Document},
 };
+
 use serde::Deserialize;
 use std::io;
 

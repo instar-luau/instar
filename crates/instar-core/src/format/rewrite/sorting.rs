@@ -2,6 +2,7 @@ use crate::{
     configuration::format::{Grouping, Indexer, Options, Order},
     format::emit::Emitter,
 };
+
 use std::{cmp::Ordering, io, ops::Range};
 use vermis::{Kind, Parts, TokenKind, Tree, View};
 

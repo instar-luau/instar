@@ -10,6 +10,7 @@ use std::{io, ops::Range};
 use vermis::{Children, Kind, Parts, TokenKind, Tree, View};
 
 use super::{Options, document::Document};
+
 use crate::configuration::format::{
     CallStyle, Collapse, Expansion, Parentheses, Semicolons, Separation,
 };
