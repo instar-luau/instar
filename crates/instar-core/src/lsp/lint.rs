@@ -1,4 +1,4 @@
-use super::{Result, failure, path, protocol, state::State};
+use super::{Result, internal_error, path, protocol, state::State};
 use crate::{
     lint::{Edit, Finding, configuration::Level},
     source::{PositionEncoding, Source},
@@ -8,10 +8,10 @@ fn range(source: &Source, start: usize, end: usize) -> Result<protocol::Range> {
     let position = |offset| {
         let position = source
             .position(
-                u32::try_from(offset).map_err(failure)?.into(),
+                u32::try_from(offset).map_err(internal_error)?.into(),
                 PositionEncoding::Utf16,
             )
-            .map_err(failure)?;
+            .map_err(internal_error)?;
 
         Ok(protocol::Position::new(position.line, position.col))
     };
@@ -41,7 +41,7 @@ pub(super) fn append(
 }
 
 fn diagnostics(state: &mut State, path: &std::path::Path) -> Result<Vec<protocol::Diagnostic>> {
-    let source = state.sources.read(path).map_err(failure)?;
+    let source = state.sources.read(path).map_err(internal_error)?;
 
     state
         .lint(path)?
@@ -74,7 +74,7 @@ fn action(
     kind: protocol::CodeActionKind,
     edits: &[Edit],
 ) -> Result<protocol::CodeActionOrCommand> {
-    crate::lint::apply(source, edits).map_err(failure)?;
+    crate::lint::apply(source, edits).map_err(internal_error)?;
 
     let edits = edits
         .iter()
@@ -114,7 +114,7 @@ pub(super) fn actions(
     all: bool,
 ) -> Result<protocol::CodeActionResponse> {
     let path = path(&parameters.text_document.uri)?;
-    let source = state.sources.read(&path).map_err(failure)?;
+    let source = state.sources.read(&path).map_err(internal_error)?;
     let report = state.lint(&path)?;
     let mut actions = Vec::new();
 
@@ -135,13 +135,14 @@ pub(super) fn actions(
             ) {
                 format!(
                     "Prefix '{}' with '_'",
-                    &source.text().map_err(failure)?[finding.start..finding.end]
+                    &source.text().map_err(internal_error)?[finding.start..finding.end]
                 )
             } else {
                 format!("Fix {}", finding.rule)
             };
 
-            let edits = crate::lint::edits(std::slice::from_ref(finding)).map_err(failure)?;
+            let edits =
+                crate::lint::edits(std::slice::from_ref(finding)).map_err(internal_error)?;
 
             if let Ok(action) = action(
                 state,

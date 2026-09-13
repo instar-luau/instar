@@ -1,10 +1,12 @@
+//! Build planning, artifact publication, and incremental rebuild behavior.
+
 use instar_core::{
     build::{Classification, Session},
     graft::Graft,
 };
 use std::{error::Error, fs, path::Path};
 
-type Result = std::result::Result<(), Box<dyn Error>>;
+type TestResult = Result<(), Box<dyn Error>>;
 
 #[path = "support/roblox.rs"]
 mod support;
@@ -17,7 +19,7 @@ fn project(configuration: &str) -> tempfile::TempDir {
     directory
 }
 
-fn execute(directory: &Path, source: &str, condition: &str) -> Result {
+fn execute(directory: &Path, source: &str, condition: &str) -> TestResult {
     fs::write(
         directory.join("module.luau"),
         format!(
@@ -36,7 +38,7 @@ fn execute(directory: &Path, source: &str, condition: &str) -> Result {
 }
 
 #[test]
-fn directory_plans_rewrite_aliases_copy_assets_and_publish_incrementally() -> Result {
+fn directory_plans_rewrite_aliases_copy_assets_and_publish_incrementally() -> TestResult {
     let directory = project(
         "[aliases]\nvalue = 'source/value'\n[build]\ninputs = ['source']\noutput = 'output'\n",
     );
@@ -81,7 +83,7 @@ fn directory_plans_rewrite_aliases_copy_assets_and_publish_incrementally() -> Re
 }
 
 #[test]
-fn bundles_preserve_literals_caching_hygiene_and_lazy_initialization() -> Result {
+fn bundles_preserve_literals_caching_hygiene_and_lazy_initialization() -> TestResult {
     let directory = project(
         "[build]\nentry = 'source/main.luau'\nshape = 'bundle'\noutput = 'output/bundle.luau'\n",
     );
@@ -123,7 +125,7 @@ fn bundles_preserve_literals_caching_hygiene_and_lazy_initialization() -> Result
 }
 
 #[test]
-fn bundles_handle_false_nil_failed_loads_cycles_and_yields() -> Result {
+fn bundles_handle_false_nil_failed_loads_cycles_and_yields() -> TestResult {
     let directory = project(
         "[build]\nentry = 'source/main.luau'\nshape = 'bundle'\noutput = 'output/bundle.luau'\n",
     );
@@ -163,7 +165,7 @@ fn bundles_handle_false_nil_failed_loads_cycles_and_yields() -> Result {
 }
 
 #[test]
-fn constants_lowering_minification_and_profiles_share_mappings() -> Result {
+fn constants_lowering_minification_and_profiles_share_mappings() -> TestResult {
     let directory = project(
         "[build]\nentry = 'source/main.luau'\nshape = 'bundle'\noutput = 'output/development.luau'\n[build.constants]\nVALUE = 7\n[build.profiles.production]\noutput = 'output/bundle.luau'\nlower = true\nminify = true\n",
     );
@@ -205,7 +207,7 @@ fn constants_lowering_minification_and_profiles_share_mappings() -> Result {
 }
 
 #[test]
-fn failures_preserve_outputs_and_pruning_only_removes_owned_files() -> Result {
+fn failures_preserve_outputs_and_pruning_only_removes_owned_files() -> TestResult {
     let directory = project("[build]\ninputs = ['source']\noutput = 'output'\n");
     let source = directory.path().join("source/main.luau");
     fs::write(&source, "return 1")?;
@@ -234,7 +236,7 @@ fn failures_preserve_outputs_and_pruning_only_removes_owned_files() -> Result {
 }
 
 #[test]
-fn graph_classifies_unresolved_dynamic_and_external_requires() -> Result {
+fn graph_classifies_unresolved_dynamic_and_external_requires() -> TestResult {
     let directory =
         project("[build]\ninputs = ['source']\noutput = 'output'\nexternal = ['@provided']\n");
 
@@ -274,7 +276,7 @@ fn graph_classifies_unresolved_dynamic_and_external_requires() -> Result {
 }
 
 #[test]
-fn graft_compilation_exposes_dependencies_and_validated_source_mappings() -> Result {
+fn graft_compilation_exposes_dependencies_and_validated_source_mappings() -> TestResult {
     let directory = project(
         "[grafts]\nexample = 'graft.toml'\n[build]\ninputs = ['source']\nentry = 'source/main.luau'\nshape = 'bundle'\noutput = 'output/bundle.luau'\n[build.languages]\ncustom = 'example'\n",
     );
@@ -316,7 +318,7 @@ fn graft_compilation_exposes_dependencies_and_validated_source_mappings() -> Res
 }
 
 #[test]
-fn roblox_builds_generate_project_paths_and_reject_unsafe_realms() -> Result {
+fn roblox_builds_generate_project_paths_and_reject_unsafe_realms() -> TestResult {
     let directory = project(
         "[build]\ninputs = ['source']\noutput = 'output'\n[roblox]\nproject = 'default.project.json'\n",
     );
@@ -384,7 +386,7 @@ fn roblox_builds_generate_project_paths_and_reject_unsafe_realms() -> Result {
 }
 
 #[test]
-fn output_overlap_and_destination_collisions_are_rejected() -> Result {
+fn output_overlap_and_destination_collisions_are_rejected() -> TestResult {
     let directory = project("[build]\ninputs = ['source']\noutput = 'source/output'\n");
     fs::write(directory.path().join("source/main.luau"), "return 1")?;
     assert!(Session::default().plan(directory.path(), None).is_err());
@@ -401,7 +403,7 @@ fn output_overlap_and_destination_collisions_are_rejected() -> Result {
 }
 
 #[test]
-fn compiling_grafts_participate_in_roblox_instance_mapping() -> Result {
+fn compiling_grafts_participate_in_roblox_instance_mapping() -> TestResult {
     let directory = project(
         "[grafts]\nexample = 'graft.toml'\n[build]\ninputs = ['source']\noutput = 'output'\n[build.languages]\ncustom = 'example'\n[roblox]\nproject = 'default.project.json'\n",
     );
@@ -458,7 +460,7 @@ fn compiling_grafts_participate_in_roblox_instance_mapping() -> Result {
 }
 
 #[test]
-fn lowering_preserves_contextual_names_and_source_locations() -> Result {
+fn lowering_preserves_contextual_names_and_source_locations() -> TestResult {
     let directory =
         project("[build]\ninputs = ['source']\noutput = 'output'\nlower = true\nminify = true\n");
 
@@ -490,7 +492,7 @@ fn lowering_preserves_contextual_names_and_source_locations() -> Result {
 }
 
 #[test]
-fn publication_rejects_new_inputs_and_unowned_output() -> Result {
+fn publication_rejects_new_inputs_and_unowned_output() -> TestResult {
     let directory = project("[build]\ninputs = ['source']\noutput = 'output'\n");
     fs::write(directory.path().join("source/main.luau"), "return 1")?;
     let mut session = Session::default();
@@ -512,7 +514,7 @@ fn publication_rejects_new_inputs_and_unowned_output() -> Result {
 }
 
 #[test]
-fn bundles_prune_invalid_unreachable_modules() -> Result {
+fn bundles_prune_invalid_unreachable_modules() -> TestResult {
     let directory = project(
         "[build]\ninputs = ['source']\nentry = 'source/main.luau'\nshape = 'bundle'\noutput = 'output/bundle.luau'\n",
     );
@@ -533,7 +535,7 @@ fn bundles_prune_invalid_unreachable_modules() -> Result {
 
 #[cfg(windows)]
 #[test]
-fn metadata_publication_failure_rolls_back_artifacts_and_snapshots() -> Result {
+fn metadata_publication_failure_rolls_back_artifacts_and_snapshots() -> TestResult {
     let directory = project("[build]\ninputs = ['source']\noutput = 'output'\n");
     let source = directory.path().join("source/main.luau");
     fs::write(&source, "return 1")?;

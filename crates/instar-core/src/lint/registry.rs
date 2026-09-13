@@ -1,14 +1,23 @@
 use super::configuration::Level;
 
+/// Metadata for a built-in lint rule.
 pub struct Rule {
+    /// Stable configuration identifier.
     pub name: &'static str,
+
+    /// Group used for severity overrides.
     pub group: &'static str,
+
+    /// Default reporting level.
     pub level: Level,
+
+    /// Explanation shown in rule listings and help.
     pub description: &'static str,
 }
 
 macro_rules! rules {
     ($($name:literal, $group:literal, $level:ident, $description:literal;)*) => {
+        /// Built-in lint rules in registration order.
         pub const RULES: &[Rule] = &[$(Rule { name: $name, group: $group, level: Level::$level, description: $description }),*];
     };
 }
@@ -81,6 +90,7 @@ rules! {
 }
 
 #[must_use]
+/// Look up a built-in rule by its configuration identifier.
 pub fn find(name: &str) -> Option<&'static Rule> {
     RULES.iter().find(|rule| rule.name == name)
 }

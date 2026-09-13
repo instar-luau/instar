@@ -2,6 +2,7 @@ use super::InstarConfig;
 
 impl InstarConfig {
     #[must_use]
+    /// Generate the JSON schema for supported project configuration.
     pub fn schema() -> schemars::Schema {
         let mut schema = schemars::schema_for!(Self);
 

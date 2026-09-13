@@ -1,9 +1,18 @@
-use super::{Response, Result, failure, imports, moved, path, protocol, state::State};
+use super::{Response, Result, imports, internal_error, moved, path, protocol, state::State};
 
 fn relocated(uri: &protocol::Uri, files: &[protocol::FileRename]) -> Result<protocol::Uri> {
     for file in files {
-        let old = path(&file.old_uri.parse().map_err(failure)?)?;
-        let new = file.new_uri.parse().map_err(failure)?;
+        let old = path(
+            &file
+                .old_uri
+                .parse::<protocol::Uri>()
+                .map_err(|error| super::Error::invalid_params(error.to_string()))?,
+        )?;
+
+        let new = file
+            .new_uri
+            .parse::<protocol::Uri>()
+            .map_err(|error| super::Error::invalid_params(error.to_string()))?;
 
         if let Some(uri) = moved(uri, &old, &new)? {
             return Ok(uri);
@@ -22,11 +31,11 @@ pub(super) fn edits(
     let mut documents = Vec::new();
 
     for module in modules {
-        let uri =
-            protocol::Uri::from_file_path(&module).ok_or_else(|| failure("invalid module URI"))?;
+        let uri = protocol::Uri::from_file_path(&module)
+            .ok_or_else(|| internal_error("invalid module URI"))?;
 
         let destination = relocated(&uri, &parameters.files)?;
-        let source = state.sources.read(&module).map_err(failure)?;
+        let source = state.sources.read(&module).map_err(internal_error)?;
 
         let Response::Editor(links) = state.query(
             &protocol::TextDocumentPositionParams {
@@ -36,7 +45,7 @@ pub(super) fn edits(
             "links",
         )?
         else {
-            return Err(tower_lsp_server::jsonrpc::Error::internal_error());
+            return Err(super::internal_error("unexpected worker response"));
         };
 
         let mut edits = Vec::new();
@@ -61,7 +70,7 @@ pub(super) fn edits(
             };
 
             let offsets = super::formatting::offsets(&source, location.range)?;
-            let literal = &source.text().map_err(failure)?[offsets];
+            let literal = &source.text().map_err(internal_error)?[offsets];
 
             let Some(quote) = literal
                 .chars()
@@ -79,20 +88,9 @@ pub(super) fn edits(
                 continue;
             };
 
-            let escaped = specifier
-                .chars()
-                .map(|character| {
-                    if character == quote || character == '\\' || character.is_control() {
-                        character.escape_default().to_string()
-                    } else {
-                        character.to_string()
-                    }
-                })
-                .collect::<String>();
-
             edits.push(protocol::OneOf::Left(protocol::TextEdit {
                 range: location.range,
-                new_text: format!("{quote}{escaped}{quote}"),
+                new_text: imports::quoted(&specifier, quote),
             }));
         }
 

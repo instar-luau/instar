@@ -62,7 +62,7 @@ struct Class {
 }
 
 impl Environment {
-    pub fn load(
+    pub(crate) fn load(
         resolver: &mut Resolver<'_>,
         configuration: &RobloxConfig,
         update: bool,
@@ -192,11 +192,11 @@ impl Environment {
         Ok(index)
     }
 
-    pub fn identity(&self, index: usize) -> PathBuf {
+    pub(crate) fn identity(&self, index: usize) -> PathBuf {
         self.origin.join(index.to_string())
     }
 
-    pub fn node(&self, path: &Path) -> Option<usize> {
+    pub(crate) fn node(&self, path: &Path) -> Option<usize> {
         self.files.get(path).copied().or_else(|| {
             (path.parent()? == self.origin)
                 .then(|| path.file_name()?.to_str()?.parse::<usize>().ok())
@@ -205,19 +205,19 @@ impl Environment {
         })
     }
 
-    pub fn readable(&self, path: &Path) -> bool {
+    pub(crate) fn readable(&self, path: &Path) -> bool {
         self.node(path)
             .is_none_or(|index| !self.nodes[index].file_paths.is_empty())
     }
 
-    pub fn source(&self, path: &Path) -> PathBuf {
+    pub(crate) fn source(&self, path: &Path) -> PathBuf {
         self.node(path)
             .and_then(|index| self.nodes[index].file_paths.first())
             .cloned()
             .unwrap_or_else(|| path.to_owned())
     }
 
-    pub fn configuration(&self, path: &Path) -> PathBuf {
+    pub(crate) fn configuration(&self, path: &Path) -> PathBuf {
         let source = self.source(path);
 
         if source.parent() == Some(&self.origin) {
@@ -275,7 +275,7 @@ impl Environment {
         Some(index)
     }
 
-    pub fn resolve(&self, from: &Path, name: &str, kind: u32) -> Option<PathBuf> {
+    pub(crate) fn resolve(&self, from: &Path, name: &str, kind: u32) -> Option<PathBuf> {
         let index = match kind {
             1 => match name {
                 "script" => self.node(from)?,

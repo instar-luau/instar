@@ -1,29 +1,42 @@
+/// Formatter settings and layout policies.
 pub mod format;
 mod schema;
 
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf};
 
+pub(crate) fn overlay(
+    under: &mut serde_json::Map<String, serde_json::Value>,
+    over: serde_json::Map<String, serde_json::Value>,
+) {
+    for (key, value) in over {
+        match (under.get_mut(&key), value) {
+            (Some(serde_json::Value::Object(under)), serde_json::Value::Object(over)) => {
+                overlay(under, over);
+            }
+
+            (_, value) => {
+                under.insert(key, value);
+            }
+        }
+    }
+}
+
+/// Settings read from an `instar.toml` project configuration.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct InstarConfig {
-    #[schemars(
-        default,
-        description = "Source builds, bundle output, runtime targets, compilation, and named build profiles."
-    )]
+    /// Source builds, bundle output, runtime targets, compilation, and named build profiles.
+    #[schemars(default)]
     pub build: Option<crate::build::configuration::Settings>,
 
-    #[schemars(
-        default,
-        description = "Lint rules, groups, globals, and options. Settings inherit from ancestor configurations."
-    )]
+    /// Lint rules, groups, globals, and options. Settings inherit from ancestor configurations.
+    #[schemars(default)]
     pub lint: Option<crate::lint::configuration::Settings>,
 
-    #[schemars(
-        default,
-        description = "Checking mode. Inherits from ancestor configurations; defaults to nonstrict. CLI mode and file directives take precedence."
-    )]
+    /// Checking mode. Inherits from ancestor configurations; defaults to nonstrict. CLI mode and file directives take precedence.
+    #[schemars(default)]
     pub mode: Option<crate::analysis::Mode>,
 
     /// Formatter settings. Ancestor settings merge field by field; absent settings use their documented defaults.
@@ -50,28 +63,23 @@ pub struct InstarConfig {
     #[schemars(default)]
     pub aliases: Option<BTreeMap<String, PathBuf>>,
 
-    #[schemars(
-        default,
-        description = "Downloaded Roblox types, instance mappings, and analysis permissions."
-    )]
+    /// Downloaded Roblox types, instance mappings, and analysis permissions.
+    #[schemars(default)]
     pub roblox: Option<RobloxConfig>,
 }
 
+/// Opt-in Roblox environment and generated-asset selection.
 #[derive(
-    Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize, JsonSchema, serde::Serialize,
+    Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, JsonSchema,
 )]
 #[serde(deny_unknown_fields)]
 pub struct RobloxConfig {
-    #[schemars(
-        default,
-        description = "Roblox cache directory, relative to this configuration. Defaults to the platform cache directory under instar/roblox."
-    )]
+    /// Roblox cache directory, relative to this configuration. Defaults to the platform cache directory under instar/roblox.
+    #[schemars(default)]
     pub cache: Option<PathBuf>,
 
-    #[schemars(
-        default,
-        description = "Full commit hash of the generated Roblox assets. Unset checks for updates every 24 hours."
-    )]
+    /// Full commit hash of the generated Roblox assets. Unset checks for updates every 24 hours.
+    #[schemars(default)]
     pub revision: Option<String>,
 
     /// Rojo project path relative to this configuration.
@@ -82,33 +90,27 @@ pub struct RobloxConfig {
     #[schemars(default)]
     pub sourcemap: Option<PathBuf>,
 
-    #[schemars(
-        default,
-        description = "Roblox API security level. Inherits from ancestor configurations; defaults to PluginSecurity."
-    )]
+    /// Roblox API security level. Inherits from ancestor configurations; defaults to `PluginSecurity`.
+    #[schemars(default)]
     pub level: Option<RobloxLevel>,
 }
 
+/// Permission level used to select accessible Roblox API members.
 #[derive(
-    Debug,
-    Default,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Deserialize,
-    JsonSchema,
-    serde::Serialize,
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, JsonSchema,
 )]
 pub enum RobloxLevel {
+    /// Members available to ordinary experience scripts.
     None,
+
+    /// Members additionally available to local user scripts.
     LocalUserSecurity,
 
+    /// Members additionally available to Studio plugins.
     #[default]
     PluginSecurity,
 
+    /// Members additionally available to Roblox internal scripts.
     RobloxScriptSecurity,
 }
 

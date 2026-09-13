@@ -1,23 +1,27 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
-#[derive(serde::Serialize)]
+/// Characters used for each indentation level.
 pub enum Whitespace {
+    /// Indent with tab characters.
     #[default]
     Tabs,
 
+    /// Indent with space characters.
     Spaces,
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
-#[derive(serde::Serialize)]
+/// Line-ending sequence emitted by the formatter.
 pub enum Endings {
+    /// Emit a line feed.
     #[default]
     Unix,
 
+    /// Emit a carriage return followed by a line feed.
     Windows,
 }
 
@@ -30,85 +34,117 @@ impl Endings {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-#[derive(serde::Serialize)]
+/// Delimiter selection for short string literals.
 pub enum Quotes {
+    /// Minimize escapes, preferring double quotes on ties.
     #[default]
     PreferDouble,
 
+    /// Minimize escapes, preferring single quotes on ties.
     PreferSingle,
+
+    /// Use double quotes.
     Double,
+
+    /// Use single quotes.
     Single,
+
+    /// Retain the original delimiter.
     Preserve,
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-#[derive(serde::Serialize)]
+/// Leading-zero treatment for fractional numeric literals.
 pub enum Zero {
+    /// Insert a zero before a leading decimal point.
     #[default]
     Add,
 
+    /// Remove a zero before a leading decimal point.
     Strip,
+
+    /// Retain the source spelling.
     Preserve,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-#[derive(serde::Serialize)]
+/// Parentheses policy for function arguments.
 pub enum Parentheses {
+    /// Parenthesize every argument list.
     #[default]
     Always,
 
+    /// Omit parentheses around a sole string argument.
     OmitString,
+
+    /// Omit parentheses around a sole table argument.
     OmitTable,
 
+    /// Omit parentheses around either optional argument form.
     OmitOptional,
 
+    /// Retain the source choice where syntax permits.
     Preserve,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-#[derive(serde::Serialize)]
+/// Spaces between function names and opening parentheses.
 pub enum Separation {
+    /// Keep names adjacent to parentheses.
     #[default]
     Never,
 
+    /// Insert a space in function declarations only.
     Definitions,
+
+    /// Insert a space in function calls only.
     Calls,
+
+    /// Insert a space in declarations and calls.
     Always,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-#[derive(serde::Serialize)]
+/// Statement terminator policy.
 pub enum Semicolons {
+    /// Emit semicolons only where required to preserve parsing.
     #[default]
     Never,
 
+    /// Terminate every eligible statement with a semicolon.
     Always,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-#[derive(serde::Serialize)]
+/// Voluntary expansion of lists across lines.
 pub enum Expansion {
+    /// Expand when the list exceeds the available width.
     #[default]
     Needed,
 
+    /// Expand eligible lists regardless of width.
     Always,
+
+    /// Keep lists flat unless a mandatory break requires expansion.
     Never,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-#[derive(serde::Serialize)]
+/// Punctuation separating table-type members.
 pub enum Separator {
+    /// Separate members with commas.
     #[default]
     Comma,
 
+    /// Separate members with semicolons.
     Semicolon,
 }
 
@@ -121,9 +157,9 @@ impl Separator {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
-#[derive(serde::Serialize)]
+/// Layout and ordering of table-type members.
 pub struct Tables {
     /// Format table-type layouts. When false, multiline table types retain their source layout and single-line table types stay flat.
     pub enabled: bool,
@@ -157,40 +193,48 @@ impl Default for Tables {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-#[derive(serde::Serialize)]
+/// Expansion policy for conditional expressions.
 pub enum ConditionalExpansion {
+    /// Expand only when required by the column width.
     #[default]
     Never,
 
+    /// Expand outer conditional expressions regardless of width.
     Always,
+
+    /// Expand expressions exceeding the configured conditional width.
     Needed,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-#[derive(serde::Serialize)]
+/// Placement of keywords in expanded conditional expressions.
 pub enum ConditionalStyle {
+    /// Put branch values on indented lines after their keywords.
     #[default]
     Block,
 
+    /// Begin indented branch lines with then or else.
     Leading,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-#[derive(serde::Serialize)]
+/// Placement of an expanded expression after its binding or return.
 pub enum Placement {
+    /// Start on the same line as the preceding syntax.
     #[default]
     SameLine,
 
+    /// Start a sole expanded expression on an indented line.
     NextLine,
 }
 
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
-#[derive(serde::Serialize)]
+/// Layout of if-then-else expressions.
 pub struct Conditional {
     /// Expand conditional expressions when needed by width, always at the outermost level, or never voluntarily. Column-width wrapping still applies.
     pub expand: ConditionalExpansion,
@@ -220,19 +264,21 @@ impl Default for Conditional {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-#[derive(serde::Serialize)]
+/// Layout of expanded call arguments.
 pub enum CallStyle {
+    /// Give expanded arguments separate lines.
     #[default]
     OnePerLine,
 
+    /// Keep a final table, function, or multiline string attached when possible.
     HugLast,
 }
 
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
-#[derive(serde::Serialize)]
+/// Argument-list and chained-call formatting.
 pub struct Calls {
     /// Expand argument lists when needed by width, always, or never voluntarily. Mandatory line breaks are retained.
     pub expand: Expansion,
@@ -262,9 +308,9 @@ impl Default for Calls {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
-#[derive(serde::Serialize)]
+/// Layout of function declaration parameter lists.
 pub struct Parameters {
     /// Expand declaration parameters when needed by width, always, or never voluntarily. Mandatory line breaks are retained.
     pub expand: Expansion,
@@ -282,8 +328,9 @@ impl Default for Parameters {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, JsonSchema, serde::Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
+/// Indentation characters and display width.
 pub struct Indentation {
     /// Indent with tabs or spaces.
     pub style: Whitespace,
@@ -301,8 +348,9 @@ impl Default for Indentation {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, JsonSchema, serde::Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
+/// Interior delimiter and function-name spacing.
 pub struct Spacing {
     /// Add interior spaces to nonempty parentheses.
     pub parentheses: bool,
@@ -328,12 +376,13 @@ impl Default for Spacing {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, JsonSchema, serde::Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 #[expect(
     clippy::struct_excessive_bools,
     reason = "Independent formatting controls"
 )]
+/// Complete formatter settings with inherited project defaults.
 pub struct Options {
     /// Format source files and run formatting grafts.
     pub enabled: bool,
@@ -427,28 +476,39 @@ impl Default for Options {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+/// Eligible single-statement blocks to collapse onto one line.
 pub enum Collapse {
+    /// Keep block bodies on separate lines.
     #[default]
     Never,
 
+    /// Collapse eligible function bodies.
     Functions,
+
+    /// Collapse eligible conditional branches.
     Conditionals,
+
+    /// Collapse both eligible function bodies and conditional branches.
     Always,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+/// Treatment of existing blank lines at layout boundaries.
 pub enum Gaps {
+    /// Remove boundary blank lines.
     #[default]
     Remove,
 
+    /// Retain one existing boundary blank line.
     Preserve,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
+/// Statement-block collapsing and boundary spacing.
 pub struct Blocks {
     /// Collapse eligible single-statement blocks: never, functions, conditionals, or always. Comments can prevent collapsing.
     pub collapse: Collapse,
@@ -457,48 +517,69 @@ pub struct Blocks {
     pub blank_lines: Gaps,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+/// Declaration form for eligible require bindings.
 pub enum Binding {
+    /// Keep the source declaration form.
     #[default]
     Preserve,
 
+    /// Convert eligible bindings to const.
     Const,
+
+    /// Convert eligible bindings to local.
     Local,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+/// Treatment of unused require bindings.
 pub enum Unused {
+    /// Leave unused bindings unchanged.
     #[default]
     Ignore,
 
+    /// Prefix unused binding names with an underscore.
     Underscore,
+
+    /// Remove eligible unused declarations.
     Remove,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+/// Declaration form for eligible function definitions.
 pub enum Declaration {
+    /// Keep the source declaration form.
     #[default]
     Preserve,
 
+    /// Use a local function declaration.
     Local,
+
+    /// Use a constant function declaration.
     Const,
+
+    /// Use a global function declaration.
     Global,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+/// Grouping of sorted require bindings.
 pub enum Grouping {
+    /// Sort all adjacent imports together.
     #[default]
     Flat,
 
+    /// Separate alias, other, and relative paths into ordered groups.
     ByKind,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
+/// Ordering, declaration conversion, and removal of require bindings.
 pub struct Imports {
     /// Sort eligible adjacent require bindings by module path.
     pub sort: bool,
@@ -513,8 +594,9 @@ pub struct Imports {
     pub unused: Unused,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
+/// Scope-aware conversion of local bindings to constants.
 pub struct Constants {
     /// Convert eligible unreassigned local bindings to const using lexical scope analysis.
     pub prefer_constant: bool,
@@ -523,48 +605,71 @@ pub struct Constants {
     pub preserve_mutated_tables: bool,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+/// Ordering of eligible table fields.
 pub enum Order {
+    /// Retain the source order.
     #[default]
     Preserve,
 
+    /// Sort shorter keys first, breaking ties alphabetically.
     KeyLengthAscending,
+
+    /// Sort longer keys first, breaking ties alphabetically.
     KeyLengthDescending,
+
+    /// Sort keys alphabetically.
     Alphabetical,
+
+    /// Sort narrower formatted fields first, breaking ties alphabetically.
     FieldWidthAscending,
+
+    /// Sort wider formatted fields first, breaking ties alphabetically.
     FieldWidthDescending,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+/// Placement of table-type indexers when fields are sorted.
 pub enum Indexer {
+    /// Put indexers before named fields.
     #[default]
     First,
 
+    /// Put indexers after named fields.
     Last,
+
+    /// Sort indexers alongside fields using an empty key.
     Sorted,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
+/// Ordering of fields in table expressions.
 pub struct Sorting {
     /// Preserve field order, sort alphabetically, by key length, or by formatted field width. Length and width orders use alphabetical tie-breaking. Comment-bearing tables retain their order.
     pub order: Order,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+/// Line-break policy for repeated dot and colon calls.
 pub enum Chain {
+    /// Retain ordinary call layout.
     #[default]
     Preserve,
 
+    /// Keep the first call with its receiver.
     Method,
+
+    /// Allow a line break before every call.
     Full,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
+/// Style and count threshold for expanding call chains.
 pub struct Chains {
     /// Preserve ordinary call layout; method keeps the first call with the receiver; full allows a break before every call. Both method and full handle dot and colon calls.
     pub style: Chain,
@@ -582,25 +687,32 @@ impl Default for Chains {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+/// Expansion policy for union and intersection members.
 pub enum TypeExpansion {
+    /// Expand when members exceed the available width.
     #[default]
     Needed,
 
+    /// Expand eligible members regardless of width.
     Always,
+
+    /// Avoid voluntary expansion while retaining required breaks.
     Never,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
+/// Layout of union and intersection operators.
 pub struct Operators {
     /// Expand unions and intersections when needed, always, or never voluntarily. Nested types and overload signatures remain grouped where possible.
     pub expand: TypeExpansion,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
+/// Table-type and compound-type layout settings.
 pub struct Types {
     /// Layout and ordering of fields in table types.
     pub tables: Tables,
@@ -609,8 +721,9 @@ pub struct Types {
     pub operators: Operators,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
+/// Function parameter layout and declaration conversion.
 pub struct Functions {
     /// Layout of function declaration parameters.
     pub parameters: Parameters,

@@ -1,3 +1,5 @@
+//! Write the generated project configuration schema to a requested path.
+
 use std::{env, error::Error, fs, path::PathBuf};
 
 use instar_core::configuration::InstarConfig;

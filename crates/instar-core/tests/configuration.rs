@@ -1,3 +1,5 @@
+//! Formatter configuration and inherited layout settings.
+
 use instar_core::{configuration::format::Options, format::format};
 
 fn check(configuration: &str, source: &str, expected: &str) {

@@ -10,114 +10,109 @@ use std::{
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 #[schemars(rename = "BuildSettings")]
+/// Build inputs, outputs, transformations, and profile overrides.
 pub struct Settings {
-    #[schemars(
-        description = "Input files and directories relative to the build configuration. Required for directory output."
-    )]
+    /// Input files and directories relative to the build configuration. Required for directory output.
     pub inputs: Vec<PathBuf>,
 
-    #[schemars(
-        description = "Output directory or bundle file relative to the build configuration. Required."
-    )]
+    /// Output directory or bundle file relative to the build configuration. Required.
     pub output: Option<PathBuf>,
 
-    #[schemars(
-        description = "Directory output retains project-relative paths; bundle output follows the entry's dependencies."
-    )]
+    /// Directory output retains project-relative paths; bundle output follows the entry's dependencies.
     pub shape: Shape,
 
-    #[schemars(
-        description = "Bundle entry relative to the build configuration. Required for bundle output."
-    )]
+    /// Bundle entry relative to the build configuration. Required for bundle output.
     pub entry: Option<PathBuf>,
 
-    #[schemars(
-        description = "Require output syntax. Unset uses Roblox strings when Roblox is enabled, otherwise relative paths."
-    )]
+    /// Require output syntax. Unset uses Roblox strings when Roblox is enabled, otherwise relative paths.
     pub target: Option<Target>,
 
-    #[schemars(
-        description = "Exact require specifiers supplied by the deployment runtime rather than this build."
-    )]
+    /// Exact require specifiers supplied by the deployment runtime rather than this build.
     pub external: Vec<String>,
 
-    #[schemars(
-        description = "Replace reads of these unshadowed global names with scalar constants. Assignments to constants are rejected."
-    )]
+    /// Replace reads of these unshadowed global names with scalar constants. Assignments to constants are rejected.
     pub constants: BTreeMap<String, Constant>,
 
-    #[schemars(
-        description = "Remove type-only syntax, assertions, and const declarations while retaining Luau runtime syntax."
-    )]
+    /// Remove type-only syntax, assertions, and const declarations while retaining Luau runtime syntax.
     pub lower: bool,
 
-    #[schemars(
-        description = "Remove comments and unnecessary whitespace. Literal contents and token boundaries are preserved."
-    )]
+    /// Remove comments and unnecessary whitespace. Literal contents and token boundaries are preserved.
     pub minify: bool,
 
-    #[schemars(
-        description = "Input extensions mapped to configured compiling graft names. A leading dot is omitted."
-    )]
+    /// Input extensions mapped to configured compiling graft names. A leading dot is omitted.
     pub languages: BTreeMap<String, String>,
 
-    #[schemars(
-        description = "Named overrides for build configuration. Paths remain relative to this configuration."
-    )]
+    /// Named overrides for build configuration. Paths remain relative to this configuration.
     pub profiles: BTreeMap<String, Profile>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 #[schemars(rename = "BuildShape")]
+/// Organization of compiled output artifacts.
 pub enum Shape {
+    /// Emit separate files using project-relative paths.
     #[default]
     Directory,
 
+    /// Combine reachable modules into a single bundle.
     Bundle,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 #[schemars(rename = "BuildTarget")]
+/// Runtime representation of rewritten require targets.
 pub enum Target {
+    /// Relative filesystem paths.
     Path,
+
+    /// Roblox string require paths.
     RobloxString,
+
+    /// Roblox instance expressions.
     RobloxInstance,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(untagged)]
 #[schemars(rename = "BuildConstant")]
+/// Scalar value substituted for an unshadowed global read.
 pub enum Constant {
+    /// A boolean literal.
     Boolean(bool),
+
+    /// A numeric literal.
     Number(f64),
+
+    /// A string literal.
     String(String),
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 #[schemars(rename = "BuildProfile")]
+/// Named overrides applied to the base build settings.
 pub struct Profile {
-    #[schemars(description = "Override the output destination.")]
+    /// Override the output destination.
     pub output: Option<PathBuf>,
 
-    #[schemars(description = "Override the bundle entry.")]
+    /// Override the bundle entry.
     pub entry: Option<PathBuf>,
 
-    #[schemars(description = "Override the output shape.")]
+    /// Override the output shape.
     pub shape: Option<Shape>,
 
-    #[schemars(description = "Override the require target.")]
+    /// Override the require target.
     pub target: Option<Target>,
 
-    #[schemars(description = "Override constants by name.")]
+    /// Override constants by name.
     pub constants: BTreeMap<String, Constant>,
 
-    #[schemars(description = "Override type lowering.")]
+    /// Override type lowering.
     pub lower: Option<bool>,
 
-    #[schemars(description = "Override minification.")]
+    /// Override minification.
     pub minify: Option<bool>,
 }
 

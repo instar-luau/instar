@@ -1,4 +1,5 @@
 mod bundle;
+/// Build settings and profile overrides.
 pub mod configuration;
 mod graph;
 mod mapping;
@@ -25,36 +26,72 @@ use std::{
 };
 
 #[derive(Clone, Debug, Serialize)]
+/// A build finding associated with a source byte range.
 pub struct Diagnostic {
+    /// Source containing the finding.
     pub path: PathBuf,
+
+    /// Starting byte offset.
     pub start: usize,
+
+    /// Exclusive ending byte offset.
     pub end: usize,
+
+    /// Whether this finding prevents publication.
     pub error: bool,
+
+    /// Explanation of the finding.
     pub message: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
+/// A source module and its classified require dependencies.
 pub struct Module {
+    /// Logical source path of the module.
     pub path: PathBuf,
+
+    /// Require dependencies discovered in this module.
     pub dependencies: Vec<Dependency>,
 }
 
 #[derive(Clone, Debug, Serialize)]
+/// Destination and size of a prepared output artifact.
 pub struct Artifact {
+    /// Artifact path relative to the publication directory.
     pub path: PathBuf,
+
+    /// Length of the prepared contents in bytes.
     pub bytes: usize,
 }
 
 #[derive(Clone, Serialize)]
+/// Prepared build outputs and the input snapshots required to publish them.
 pub struct Plan {
+    /// Absolute build project root.
     pub root: PathBuf,
+
+    /// Requested output directory or bundle path.
     pub output: PathBuf,
+
+    /// Directory or bundle output organization.
     pub shape: Shape,
+
+    /// Runtime require representation.
     pub target: Target,
+
+    /// Selected named build profile, if any.
     pub profile: Option<String>,
+
+    /// Transformation stages selected for this build.
     pub stages: Vec<String>,
+
+    /// Modules included in the dependency graph.
     pub modules: Vec<Module>,
+
+    /// Prepared output destinations and byte counts.
     pub artifacts: Vec<Artifact>,
+
+    /// Findings collected while constructing the plan.
     pub diagnostics: Vec<Diagnostic>,
 
     #[serde(skip)]
@@ -72,11 +109,13 @@ pub struct Plan {
 
 impl Plan {
     #[must_use]
+    /// Whether build findings prevent publication.
     pub fn has_errors(&self) -> bool {
         self.diagnostics.iter().any(|diagnostic| diagnostic.error)
     }
 
     #[must_use]
+    /// Prepared contents for an artifact path, without publishing it.
     pub fn contents(&self, path: &Path) -> Option<&[u8]> {
         self.prepared.get(path).map(Vec::as_slice)
     }
@@ -94,6 +133,7 @@ impl Plan {
     }
 
     #[must_use]
+    /// Whether prepared contents, input snapshots, and output destinations match.
     pub fn equivalent(&self, other: &Self) -> bool {
         self.prepared == other.prepared
             && self.snapshots == other.snapshots
@@ -101,6 +141,7 @@ impl Plan {
     }
 
     #[must_use]
+    /// Paths whose snapshots must remain unchanged before publication.
     pub fn inputs(&self) -> Vec<PathBuf> {
         self.snapshots.keys().cloned().collect()
     }
@@ -115,6 +156,7 @@ struct Cached {
 }
 
 #[derive(Default)]
+/// Reusable compilation state for build plans and watch rebuilds.
 pub struct Session {
     sources: SourceStore,
     analysis: analysis::Session,
@@ -122,14 +164,144 @@ pub struct Session {
     compiled: BTreeMap<PathBuf, Cached>,
 }
 
+struct Graph {
+    modules: BTreeMap<PathBuf, graph::Module>,
+    diagnostics: Vec<Diagnostic>,
+}
+
+struct Inputs {
+    snapshots: BTreeMap<PathBuf, Vec<u8>>,
+    key: Vec<u8>,
+    texts: BTreeMap<PathBuf, Text>,
+    originals: BTreeMap<PathBuf, String>,
+    prepared: BTreeMap<PathBuf, Vec<u8>>,
+    virtuals: BTreeMap<PathBuf, PathBuf>,
+}
+
 impl Session {
     /// # Errors
     /// Returns invalid configuration, inputs, transformations, or graph construction errors without publishing outputs.
-    #[allow(clippy::too_many_lines)]
     pub fn plan(&mut self, from: &Path, profile: Option<&str>) -> io::Result<Plan> {
         self.sources = SourceStore::default();
         let mut configuration = configuration::discover(from, profile)?;
 
+        let (output, directory, state) = Self::destination(&configuration)?;
+
+        let mut inputs = self.inputs(&mut configuration, &output)?;
+
+        let entry = configuration
+            .settings
+            .entry
+            .as_ref()
+            .map(|path| {
+                paths::absolute(&configuration.root.join(path))
+                    .map(|path| logical(&path, &configuration))
+            })
+            .transpose()?;
+
+        let origin = entry
+            .as_ref()
+            .or_else(|| inputs.texts.keys().next())
+            .cloned()
+            .unwrap_or_else(|| configuration.root.join("source.luau"));
+
+        self.analysis.refresh();
+        let environment = self.analysis.environment(&mut self.sources, &origin)?;
+
+        let target = configuration
+            .settings
+            .target
+            .unwrap_or(if environment.enabled {
+                Target::RobloxString
+            } else {
+                Target::Path
+            });
+
+        if target != Target::Path && !environment.enabled {
+            return Err(io::Error::other(
+                "Roblox build targets require the roblox opt-in",
+            ));
+        }
+
+        let pending = match configuration.settings.shape {
+            Shape::Directory => inputs.texts.keys().cloned().collect::<Vec<_>>(),
+
+            Shape::Bundle => vec![
+                entry
+                    .clone()
+                    .ok_or_else(|| io::Error::other("bundle entry missing"))?,
+            ],
+        };
+
+        let graph = self.graph(&configuration, &mut inputs, &environment, target, pending)?;
+
+        Self::artifacts(
+            &configuration,
+            &mut inputs,
+            &graph,
+            &environment,
+            target,
+            entry.as_deref(),
+            (&output, &directory),
+        )?;
+
+        self.compiled
+            .retain(|path, _| inputs.snapshots.contains_key(path));
+
+        let mut stages = vec![
+            "compile".into(),
+            "constants".into(),
+            "resolve".into(),
+            "validate".into(),
+            "rewrite".into(),
+        ];
+
+        if configuration.settings.shape == Shape::Bundle {
+            stages.push("bundle".into());
+        }
+
+        if configuration.settings.lower {
+            stages.push("lower".into());
+        }
+
+        if configuration.settings.minify {
+            stages.push("minify".into());
+        }
+
+        stages.push("map".into());
+
+        Ok(Plan {
+            root: configuration.root,
+            output,
+            shape: configuration.settings.shape,
+            target,
+            profile: profile.map(str::to_owned),
+            stages,
+            modules: graph
+                .modules
+                .into_iter()
+                .map(|(path, module)| Module {
+                    path,
+                    dependencies: module.dependencies,
+                })
+                .collect(),
+            artifacts: inputs
+                .prepared
+                .iter()
+                .map(|(path, bytes)| Artifact {
+                    path: path.clone(),
+                    bytes: bytes.len(),
+                })
+                .collect(),
+            diagnostics: graph.diagnostics,
+            prepared: inputs.prepared,
+            snapshots: inputs.snapshots,
+            directory,
+            state,
+        })
+    }
+
+    fn destination(configuration: &Configuration) -> io::Result<(PathBuf, PathBuf, PathBuf)> {
         let output = paths::absolute(
             &configuration.root.join(
                 configuration
@@ -156,7 +328,11 @@ impl Session {
             ),
         };
 
-        let inputs = inputs(&mut configuration, &output)?;
+        Ok((output, directory, state))
+    }
+
+    fn inputs(&mut self, configuration: &mut Configuration, output: &Path) -> io::Result<Inputs> {
+        let inputs = inputs(configuration, output)?;
         let mut snapshots = configuration.files.clone();
 
         let key = serde_json::to_vec(&(&configuration.settings, &configuration.files))
@@ -171,8 +347,8 @@ impl Session {
             let bytes = fs::read(path)?;
             snapshots.insert(path.clone(), bytes.clone());
 
-            if language(path, &configuration) {
-                let logical = logical(path, &configuration);
+            if language(path, configuration) {
+                let logical = logical(path, configuration);
 
                 if virtuals.insert(logical.clone(), path.clone()).is_some() {
                     return Err(io::Error::other("compilation destination collision"));
@@ -186,7 +362,7 @@ impl Session {
                 if configuration.settings.shape == Shape::Bundle && &logical != path {
                     self.snapshot(&logical, "return nil")?;
                 } else {
-                    let text = self.compile(path, bytes, &configuration, &key, &mut snapshots)?;
+                    let text = self.compile(path, bytes, configuration, &key, &mut snapshots)?;
                     self.snapshot(&logical, &text.text)?;
                     texts.insert(logical, text);
                 }
@@ -208,53 +384,36 @@ impl Session {
                 .into_iter()
                 .flatten()
             {
-                self.snapshot(path, &project::compile(&configuration, path)?)?;
+                self.snapshot(path, &project::compile(configuration, path)?)?;
             }
         }
 
-        let entry = configuration
-            .settings
-            .entry
-            .as_ref()
-            .map(|path| {
-                paths::absolute(&configuration.root.join(path))
-                    .map(|path| logical(&path, &configuration))
-            })
-            .transpose()?;
+        Ok(Inputs {
+            snapshots,
+            key,
+            texts,
+            originals,
+            prepared,
+            virtuals,
+        })
+    }
 
-        let origin = entry
-            .as_ref()
-            .or_else(|| texts.keys().next())
-            .cloned()
-            .unwrap_or_else(|| configuration.root.join("source.luau"));
-
-        self.analysis.refresh();
-        let environment = self.analysis.environment(&mut self.sources, &origin)?;
-
-        let target = configuration
-            .settings
-            .target
-            .unwrap_or(if environment.enabled {
-                Target::RobloxString
-            } else {
-                Target::Path
-            });
-
-        if target != Target::Path && !environment.enabled {
-            return Err(io::Error::other(
-                "Roblox build targets require the roblox opt-in",
-            ));
-        }
-
-        let mut pending = match configuration.settings.shape {
-            Shape::Directory => texts.keys().cloned().collect::<Vec<_>>(),
-
-            Shape::Bundle => vec![
-                entry
-                    .clone()
-                    .ok_or_else(|| io::Error::other("bundle entry missing"))?,
-            ],
-        };
+    fn graph(
+        &mut self,
+        configuration: &Configuration,
+        inputs: &mut Inputs,
+        environment: &crate::roblox::Environment,
+        target: Target,
+        mut pending: Vec<PathBuf>,
+    ) -> io::Result<Graph> {
+        let Inputs {
+            snapshots,
+            key,
+            texts,
+            originals,
+            virtuals,
+            ..
+        } = inputs;
 
         let mut modules = BTreeMap::new();
         let mut diagnostics = Vec::new();
@@ -292,17 +451,17 @@ impl Session {
 
                 snapshots.insert(original.clone(), bytes.clone());
 
-                self.compile(original, bytes, &configuration, &key, &mut snapshots)?
+                self.compile(original, bytes, configuration, key, snapshots)?
             };
 
-            let mut module = self.module(&path, &text, &configuration)?;
+            let mut module = self.module(&path, &text, configuration)?;
 
             module.dependencies =
-                graph::dependencies(&module, &environment, &configuration.settings.external)?;
+                graph::dependencies(&module, environment, &configuration.settings.external)?;
 
             diagnostics.extend(graph::validate(
                 &module,
-                &environment,
+                environment,
                 configuration.settings.shape,
                 target,
             ));
@@ -329,6 +488,33 @@ impl Session {
             }
         }
 
+        Ok(Graph {
+            modules,
+            diagnostics,
+        })
+    }
+
+    fn artifacts(
+        configuration: &Configuration,
+        inputs: &mut Inputs,
+        graph: &Graph,
+        environment: &crate::roblox::Environment,
+        target: Target,
+        entry: Option<&Path>,
+        (output, directory): (&Path, &Path),
+    ) -> io::Result<()> {
+        let Graph {
+            modules,
+            diagnostics,
+        } = graph;
+
+        let Inputs {
+            prepared,
+            snapshots,
+            originals,
+            ..
+        } = inputs;
+
         let destinations = modules
             .keys()
             .map(|path| {
@@ -345,102 +531,49 @@ impl Session {
         if !diagnostics.iter().any(|diagnostic| diagnostic.error) {
             match configuration.settings.shape {
                 Shape::Directory => {
-                    for (path, module) in &modules {
+                    for (path, module) in modules {
                         let text =
-                            graph::rewrite(module, &destinations, &environment, target, None)?;
+                            graph::rewrite(module, &destinations, environment, target, None)?;
 
                         let path = path
                             .strip_prefix(&configuration.root)
                             .map_err(io::Error::other)?
                             .to_owned();
 
-                        emit(&mut prepared, path, text, &configuration, &originals)?;
+                        emit(prepared, path, text, configuration, originals)?;
                     }
 
                     if let Some(path) = &configuration.project {
-                        project::emit(&configuration, path, &mut prepared, &mut snapshots)?;
+                        project::emit(configuration, path, prepared, snapshots)?;
                     }
                 }
 
                 Shape::Bundle => {
                     let text = bundle::emit(
-                        &modules,
+                        modules,
                         &configuration.root,
-                        entry
-                            .as_deref()
-                            .ok_or_else(|| io::Error::other("bundle entry missing"))?,
-                        &environment,
+                        entry.ok_or_else(|| io::Error::other("bundle entry missing"))?,
+                        environment,
                         target,
                     )?;
 
                     emit(
-                        &mut prepared,
+                        prepared,
                         PathBuf::from(
                             output
                                 .file_name()
                                 .ok_or_else(|| io::Error::other("bundle filename missing"))?,
                         ),
                         text,
-                        &configuration,
-                        &originals,
+                        configuration,
+                        originals,
                     )?;
                 }
             }
         }
 
-        self.compiled.retain(|path, _| snapshots.contains_key(path));
-
-        let mut stages = vec![
-            "compile".into(),
-            "constants".into(),
-            "resolve".into(),
-            "validate".into(),
-            "rewrite".into(),
-        ];
-
-        if configuration.settings.shape == Shape::Bundle {
-            stages.push("bundle".into());
-        }
-
-        if configuration.settings.lower {
-            stages.push("lower".into());
-        }
-
-        if configuration.settings.minify {
-            stages.push("minify".into());
-        }
-
-        stages.push("map".into());
-
-        Ok(Plan {
-            root: configuration.root,
-            output,
-            shape: configuration.settings.shape,
-            target,
-            profile: profile.map(str::to_owned),
-            stages,
-            modules: modules
-                .into_iter()
-                .map(|(path, module)| Module {
-                    path,
-                    dependencies: module.dependencies,
-                })
-                .collect(),
-            artifacts: prepared
-                .iter()
-                .map(|(path, bytes)| Artifact {
-                    path: path.clone(),
-                    bytes: bytes.len(),
-                })
-                .collect(),
-            diagnostics,
-            prepared,
-            snapshots,
-            directory,
-            state,
-        })
+        Ok(())
     }
-
     fn snapshot(&mut self, path: &Path, text: &str) -> io::Result<Arc<Source>> {
         if self.sources.is_open(path).map_err(io::Error::other)? {
             let source = self.sources.read(path).map_err(io::Error::other)?;

@@ -68,7 +68,7 @@ pub(super) fn hints(
         "hints",
     )?
     else {
-        return Err(tower_lsp_server::jsonrpc::Error::internal_error());
+        return Err(super::internal_error("unexpected worker response"));
     };
 
     let options = &state.settings.inlay_hints;

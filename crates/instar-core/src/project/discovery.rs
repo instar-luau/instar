@@ -1,4 +1,4 @@
-use super::{CONFIG_FILES, ConfigFile, ConfigKind, Project, ProjectError, selection::Selection};
+use super::selection::Selection;
 use crate::{configuration::InstarConfig, luau, source::absolute};
 use std::{
     collections::BTreeMap,
@@ -377,76 +377,6 @@ impl Discovery {
     }
 }
 
-impl Project {
-    /// # Errors
-    /// Returns root, filesystem, encoding or Instar configuration failures.
-    pub fn load(root: &Path) -> Result<Self, ProjectError> {
-        let root = std::path::absolute(root).map_err(|source| ProjectError::Io {
-            path: root.to_owned(),
-            source,
-        })?;
-
-        let metadata = fs::metadata(&root).map_err(|source| ProjectError::Io {
-            path: root.clone(),
-            source,
-        })?;
-
-        if !metadata.is_dir() {
-            return Err(ProjectError::NotDirectory(root));
-        }
-
-        let mut files = Vec::new();
-        let mut instar = None;
-
-        for (name, kind) in CONFIG_FILES {
-            let path = root.join(name);
-
-            match fs::symlink_metadata(&path) {
-                Ok(_) => {}
-                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-                Err(source) => return Err(ProjectError::Io { path, source }),
-            }
-
-            let metadata = fs::metadata(&path).map_err(|source| ProjectError::Io {
-                path: path.clone(),
-                source,
-            })?;
-
-            if !metadata.is_file() {
-                return Err(ProjectError::NotFile(path));
-            }
-
-            let bytes = fs::read(&path).map_err(|source| ProjectError::Io {
-                path: path.clone(),
-                source,
-            })?;
-
-            if kind == ConfigKind::Instar {
-                let text =
-                    std::str::from_utf8(&bytes).map_err(|source| ProjectError::Encoding {
-                        path: path.clone(),
-                        source,
-                    })?;
-
-                instar = Some(
-                    InstarConfig::parse(text).map_err(|source| ProjectError::Toml {
-                        path: path.clone(),
-                        source,
-                    })?,
-                );
-            }
-
-            files.push(ConfigFile { path, kind, bytes });
-        }
-
-        Ok(Self {
-            root,
-            files,
-            instar,
-        })
-    }
-}
-
 impl Selection {
     /// # Errors
     /// Returns filesystem, encoding, configuration or glob failures.
@@ -547,23 +477,6 @@ impl super::Configuration {
     }
 }
 
-fn overlay(
-    under: &mut serde_json::Map<String, serde_json::Value>,
-    over: serde_json::Map<String, serde_json::Value>,
-) {
-    for (key, value) in over {
-        match (under.get_mut(&key), value) {
-            (Some(serde_json::Value::Object(under)), serde_json::Value::Object(over)) => {
-                overlay(under, over);
-            }
-
-            (_, value) => {
-                under.insert(key, value);
-            }
-        }
-    }
-}
-
 fn merge(
     merged: &mut serde_json::Map<String, serde_json::Value>,
     text: &str,
@@ -596,7 +509,7 @@ fn merge(
         .map_or(serde_json::Value::Null, serde_json::Value::take);
 
     if let serde_json::Value::Object(fields) = value {
-        overlay(merged, fields);
+        crate::configuration::overlay(merged, fields);
     }
 
     Ok(())

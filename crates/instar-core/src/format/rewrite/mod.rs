@@ -61,7 +61,128 @@ fn required<'tree, 'source>(view: View<'tree, 'source>) -> Option<View<'tree, 's
     (callee.kind() == Kind::Name && callee.text() == "require").then_some(name)
 }
 
-#[allow(clippy::too_many_lines)]
+fn removed(source: &str, tree: &Tree<'_>, view: View<'_, '_>) -> (Range<usize>, String) {
+    let span = view.span();
+
+    let comments = tree
+        .tokens
+        .iter()
+        .filter(|token| {
+            token.span.start >= span.start
+                && token.span.end <= span.end
+                && matches!(
+                    token.kind,
+                    vermis::TokenKind::Comment | vermis::TokenKind::BlockComment
+                )
+        })
+        .map(|token| &source[token.span.start..token.span.end])
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let replacement = if comments.is_empty() {
+        comments
+    } else {
+        format!("{comments}\n")
+    };
+
+    let mut end = span.end;
+
+    if source.as_bytes().get(end) == Some(&b';') {
+        end += 1;
+    }
+
+    let line_start = source[..span.start]
+        .rfind('\n')
+        .map_or(0, |index| index + 1);
+
+    if source[line_start..span.start].trim().is_empty() {
+        let after = &source[end..];
+
+        if let Some(newline) = after.find('\n')
+            && after[..newline].trim().is_empty()
+        {
+            return (line_start..end + newline + 1, replacement);
+        }
+    }
+
+    (span.start..end, replacement)
+}
+
+fn function(
+    source: &str,
+    tree: &Tree<'_>,
+    view: View<'_, '_>,
+    names: &Names,
+    declaration: Declaration,
+) -> Option<(Range<usize>, String)> {
+    let Parts::Function {
+        name: Some(name), ..
+    } = view.parts()?
+    else {
+        return None;
+    };
+
+    let name = match name.parts() {
+        Some(Parts::FunctionName { path, method: None }) if path.clone().count() == 1 => {
+            path.clone().next().expect("one name")
+        }
+
+        Some(Parts::Leaf) if name.kind() == Kind::Name => name,
+        _ => return None,
+    };
+
+    if !matches!(view.kind(), Kind::LocalFunction | Kind::Function) {
+        return None;
+    }
+
+    let local = view.kind() == Kind::LocalFunction;
+
+    let mutable = if local {
+        names
+            .bindings
+            .get(&name.span().start)
+            .is_none_or(|binding| binding.writes > 0)
+    } else {
+        names
+            .globals
+            .get(&name.text().to_string())
+            .is_some_and(|count| *count > 1)
+    };
+
+    let keyword = match declaration {
+        Declaration::Const if !mutable => "const ",
+        Declaration::Local => "local ",
+        Declaration::Global => "",
+        _ => return None,
+    };
+
+    let span = view.span();
+
+    let token = tree.tokens.iter().find(|token| {
+        token.span.start >= span.start
+            && token.span.end <= name.span().start
+            && token.kind == vermis::TokenKind::Keyword(vermis::Keyword::Function)
+    })?;
+
+    let start = if local {
+        tree.tokens
+            .iter()
+            .rfind(|previous| {
+                previous.span.start >= span.start
+                    && previous.span.end <= token.span.start
+                    && matches!(
+                        &source[previous.span.start..previous.span.end],
+                        "local" | "const"
+                    )
+            })
+            .map_or(token.span.start, |previous| previous.span.start)
+    } else {
+        token.span.start
+    };
+
+    Some((start..token.span.start, keyword.to_owned()))
+}
+
 fn bindings(
     source: &str,
     tree: &Tree<'_>,
@@ -145,51 +266,7 @@ fn bindings(
                         )),
 
                         Unused::Remove if keyword.is_none() => {
-                            let comments = tree
-                                .tokens
-                                .iter()
-                                .filter(|token| {
-                                    token.span.start >= span.start
-                                        && token.span.end <= span.end
-                                        && matches!(
-                                            token.kind,
-                                            vermis::TokenKind::Comment
-                                                | vermis::TokenKind::BlockComment
-                                        )
-                                })
-                                .map(|token| &source[token.span.start..token.span.end])
-                                .collect::<Vec<_>>()
-                                .join("\n");
-
-                            let replacement = if comments.is_empty() {
-                                comments
-                            } else {
-                                format!("{comments}\n")
-                            };
-
-                            let mut end = span.end;
-
-                            if source.as_bytes().get(end) == Some(&b';') {
-                                end += 1;
-                            }
-
-                            let line_start = source[..span.start]
-                                .rfind('\n')
-                                .map_or(0, |index| index + 1);
-
-                            if source[line_start..span.start].trim().is_empty() {
-                                let after = &source[end..];
-
-                                if let Some(newline) = after.find('\n')
-                                    && after[..newline].trim().is_empty()
-                                {
-                                    end += newline + 1;
-                                    changes.push((line_start..end, replacement));
-                                    continue;
-                                }
-                            }
-
-                            changes.push((span.start..end, replacement));
+                            changes.push(removed(source, tree, view));
                             continue;
                         }
 
@@ -209,69 +286,9 @@ fn bindings(
             }
         } else if top.contains(&index)
             && options.functions.binding != Declaration::Preserve
-            && let Some(Parts::Function {
-                name: Some(name), ..
-            }) = view.parts()
+            && let Some(change) = function(source, tree, view, &names, options.functions.binding)
         {
-            let name = match name.parts() {
-                Some(Parts::FunctionName { path, method: None }) if path.clone().count() == 1 => {
-                    path.clone().next().expect("one name")
-                }
-
-                Some(Parts::Leaf) if name.kind() == Kind::Name => name,
-                _ => continue,
-            };
-
-            if !matches!(view.kind(), Kind::LocalFunction | Kind::Function) {
-                continue;
-            }
-
-            let local = view.kind() == Kind::LocalFunction;
-
-            let mutable = if local {
-                names
-                    .bindings
-                    .get(&name.span().start)
-                    .is_none_or(|binding| binding.writes > 0)
-            } else {
-                names
-                    .globals
-                    .get(&name.text().to_string())
-                    .is_some_and(|count| *count > 1)
-            };
-
-            let keyword = match options.functions.binding {
-                Declaration::Const if !mutable => "const ",
-                Declaration::Local => "local ",
-                Declaration::Global => "",
-                _ => continue,
-            };
-
-            let Some(token) = tree.tokens.iter().find(|token| {
-                token.span.start >= span.start
-                    && token.span.end <= name.span().start
-                    && token.kind == vermis::TokenKind::Keyword(vermis::Keyword::Function)
-            }) else {
-                continue;
-            };
-
-            let start = if local {
-                tree.tokens
-                    .iter()
-                    .rfind(|previous| {
-                        previous.span.start >= span.start
-                            && previous.span.end <= token.span.start
-                            && matches!(
-                                &source[previous.span.start..previous.span.end],
-                                "local" | "const"
-                            )
-                    })
-                    .map_or(token.span.start, |previous| previous.span.start)
-            } else {
-                token.span.start
-            };
-
-            changes.push((start..token.span.start, keyword.to_owned()));
+            changes.push(change);
         }
     }
 

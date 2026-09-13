@@ -31,7 +31,7 @@ pub(super) struct Edit {
 }
 
 impl Text {
-    pub fn original(path: &Path, text: String) -> Self {
+    pub(super) fn original(path: &Path, text: String) -> Self {
         let length = text.len();
 
         Self {
@@ -53,7 +53,7 @@ impl Text {
         }
     }
 
-    pub fn append(&mut self, other: &Self) {
+    pub(super) fn append(&mut self, other: &Self) {
         let offset = self.text.len();
         self.text.push_str(&other.text);
 
@@ -66,11 +66,11 @@ impl Text {
             }));
     }
 
-    pub fn generated(&mut self, text: &str) {
+    pub(super) fn generated(&mut self, text: &str) {
         self.text.push_str(text);
     }
 
-    pub fn origin(&self, offset: usize) -> Option<(&Path, usize)> {
+    pub(super) fn origin(&self, offset: usize) -> Option<(&Path, usize)> {
         self.segments
             .get(
                 self.segments
@@ -115,7 +115,7 @@ impl Text {
         output
     }
 
-    pub fn edit(&self, mut edits: Vec<Edit>) -> io::Result<Self> {
+    pub(super) fn edit(&self, mut edits: Vec<Edit>) -> io::Result<Self> {
         edits.sort_by_key(|edit| (edit.range.start, edit.range.end));
         let mut output = Self::default();
         let mut previous = 0;
@@ -152,7 +152,7 @@ impl Text {
         Ok(output)
     }
 
-    pub fn map(
+    pub(super) fn map(
         &self,
         root: &Path,
         output: &Path,

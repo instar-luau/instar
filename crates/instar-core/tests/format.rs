@@ -1,3 +1,5 @@
+//! Formatter output, configuration, and source preservation.
+
 use instar_core::{
     configuration::format::{Endings, Options, Quotes, Whitespace, Zero},
     format,

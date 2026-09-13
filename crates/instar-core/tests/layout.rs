@@ -1,3 +1,5 @@
+//! Syntax layout, comments, and formatter idempotence.
+
 use instar_core::configuration::format::Options;
 use instar_core::configuration::format::{
     Blocks, CallStyle, Calls, Chains, Collapse, Conditional, ConditionalExpansion,

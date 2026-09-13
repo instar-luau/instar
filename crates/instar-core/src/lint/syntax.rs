@@ -150,7 +150,7 @@ pub(super) struct Context<'value> {
     file_suppressions: BTreeSet<String>,
 }
 impl<'value> Context<'value> {
-    pub fn new(
+    pub(super) fn new(
         source: &'value Source,
         document: &'value Value,
         settings: &'value Settings,
@@ -236,10 +236,10 @@ impl<'value> Context<'value> {
         context
     }
 
-    pub fn span(&self, value: &Value) -> Option<Range<usize>> {
+    pub(super) fn span(&self, value: &Value) -> Option<Range<usize>> {
         self.location(field(value, "location"))
     }
-    pub fn location(&self, location: &str) -> Option<Range<usize>> {
+    pub(super) fn location(&self, location: &str) -> Option<Range<usize>> {
         let (start, end) = location.split_once(" - ")?;
 
         let offset = |position: &str| {
@@ -262,12 +262,12 @@ impl<'value> Context<'value> {
         (range.start <= range.end && self.source.bytes().get(range.clone()).is_some())
             .then_some(range)
     }
-    pub fn text(&self, value: &Value) -> &str {
+    pub(super) fn text(&self, value: &Value) -> &str {
         self.span(value)
             .and_then(|range| self.source.text().ok()?.get(range))
             .unwrap_or("")
     }
-    pub fn same(&self, left: &Value, right: &Value) -> bool {
+    pub(super) fn same(&self, left: &Value, right: &Value) -> bool {
         if kind(left) != kind(right) {
             return false;
         }
@@ -281,12 +281,12 @@ impl<'value> Context<'value> {
 
         !left.is_empty() && left == right
     }
-    pub fn emit(&mut self, rule: &str, node: &Value, message: impl Into<String>) {
+    pub(super) fn emit(&mut self, rule: &str, node: &Value, message: impl Into<String>) {
         if let Some(range) = self.span(node) {
             self.emit_range(rule, range, message, Vec::new());
         }
     }
-    pub fn emit_range(
+    pub(super) fn emit_range(
         &mut self,
         rule: &str,
         range: Range<usize>,
@@ -304,7 +304,7 @@ impl<'value> Context<'value> {
         let line = self
             .source
             .position(
-                text_size::TextSize::try_from(range.start).unwrap_or_default(),
+                line_index::TextSize::try_from(range.start).unwrap_or_default(),
                 PositionEncoding::Utf8,
             )
             .map(|position| position.line)
@@ -329,7 +329,7 @@ impl<'value> Context<'value> {
             edits,
         });
     }
-    pub fn fix(&mut self, rule: &str, node: &Value, replacement: String) {
+    pub(super) fn fix(&mut self, rule: &str, node: &Value, replacement: String) {
         if let Some(range) = self.span(node) {
             let edits = if self
                 .comments
@@ -416,7 +416,7 @@ impl<'value> Context<'value> {
             }
 
             if let Ok(position) = self.source.position(
-                text_size::TextSize::try_from(range.start).unwrap_or_default(),
+                line_index::TextSize::try_from(range.start).unwrap_or_default(),
                 PositionEncoding::Utf8,
             ) {
                 for line in [position.line, position.line + 1] {

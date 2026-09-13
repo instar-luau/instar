@@ -1,3 +1,5 @@
+//! Module resolution and native analysis snapshot consistency.
+
 use std::{error::Error, fs, sync::Arc};
 
 use instar_core::{

@@ -12,6 +12,7 @@ struct Node {
     module: Option<PathBuf>,
 }
 
+/// Module resolution using consistent source and configuration snapshots.
 pub struct Resolver<'store> {
     sources: &'store mut SourceStore,
     snapshots: BTreeMap<PathBuf, Arc<Source>>,
@@ -19,6 +20,7 @@ pub struct Resolver<'store> {
 }
 
 impl<'store> Resolver<'store> {
+    /// Create a resolver backed by the supplied source store.
     pub fn new(sources: &'store mut SourceStore) -> Self {
         Self {
             sources,

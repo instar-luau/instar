@@ -18,18 +18,12 @@ pub(super) fn files(roots: &BTreeSet<PathBuf>) -> io::Result<Vec<PathBuf>> {
                 continue;
             }
 
-            for entry in fs::read_dir(&path)? {
-                let path = entry?.path();
-
-                if fs::metadata(&path)?.is_dir()
-                    || matches!(
-                        path.extension().and_then(|extension| extension.to_str()),
-                        Some("lua" | "luau")
-                    )
-                {
-                    pending.push((path, false));
-                }
-            }
+            pending.extend(
+                crate::source::children(&path)?
+                    .into_iter()
+                    .rev()
+                    .map(|path| (path, false)),
+            );
         } else if metadata.is_file()
             && (explicit
                 || crate::project::selection::Selection::discover(&path)?.includes(&path)?)

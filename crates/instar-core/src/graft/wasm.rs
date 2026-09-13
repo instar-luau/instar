@@ -39,35 +39,16 @@ impl Host {
             .get_typed_func(&store, "instar_deallocate")
             .map_err(io::Error::other)?;
 
-        let format = if format {
-            Some(
-                instance
-                    .get_typed_func(&store, "instar_format")
-                    .map_err(io::Error::other)?,
-            )
-        } else {
-            None
+        let hook = |enabled: bool, name| {
+            enabled
+                .then(|| instance.get_typed_func(&store, name))
+                .transpose()
+                .map_err(io::Error::other)
         };
 
-        let lint = if lint {
-            Some(
-                instance
-                    .get_typed_func(&store, "instar_lint")
-                    .map_err(io::Error::other)?,
-            )
-        } else {
-            None
-        };
-
-        let compile = if compile {
-            Some(
-                instance
-                    .get_typed_func(&store, "instar_compile")
-                    .map_err(io::Error::other)?,
-            )
-        } else {
-            None
-        };
+        let format = hook(format, "instar_format")?;
+        let lint = hook(lint, "instar_lint")?;
+        let compile = hook(compile, "instar_compile")?;
 
         let mut host = Self {
             store,

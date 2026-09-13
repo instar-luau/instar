@@ -11,7 +11,7 @@ pub(super) struct Cache {
 }
 
 impl Cache {
-    pub fn report(
+    pub(super) fn report(
         &mut self,
         path: &Path,
         items: Vec<protocol::Diagnostic>,

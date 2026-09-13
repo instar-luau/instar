@@ -1,6 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "InstarConfig",
+  "description": "Settings read from an `instar.toml` project configuration.",
   "type": "object",
   "properties": {
     "aliases": {
@@ -122,14 +123,27 @@
   "additionalProperties": false,
   "$defs": {
     "Binding": {
-      "type": "string",
-      "enum": [
-        "preserve",
-        "const",
-        "local"
+      "description": "Declaration form for eligible require bindings.",
+      "oneOf": [
+        {
+          "description": "Keep the source declaration form.",
+          "type": "string",
+          "const": "preserve"
+        },
+        {
+          "description": "Convert eligible bindings to const.",
+          "type": "string",
+          "const": "const"
+        },
+        {
+          "description": "Convert eligible bindings to local.",
+          "type": "string",
+          "const": "local"
+        }
       ]
     },
     "Blocks": {
+      "description": "Statement-block collapsing and boundary spacing.",
       "type": "object",
       "properties": {
         "blank_lines": {
@@ -146,20 +160,25 @@
       "additionalProperties": false
     },
     "BuildConstant": {
+      "description": "Scalar value substituted for an unshadowed global read.",
       "anyOf": [
         {
+          "description": "A boolean literal.",
           "type": "boolean"
         },
         {
+          "description": "A numeric literal.",
           "type": "number",
           "format": "double"
         },
         {
+          "description": "A string literal.",
           "type": "string"
         }
       ]
     },
     "BuildProfile": {
+      "description": "Named overrides applied to the base build settings.",
       "type": "object",
       "properties": {
         "constants": {
@@ -230,6 +249,7 @@
       "additionalProperties": false
     },
     "BuildSettings": {
+      "description": "Build inputs, outputs, transformations, and profile overrides.",
       "type": "object",
       "properties": {
         "constants": {
@@ -319,28 +339,57 @@
       "additionalProperties": false
     },
     "BuildShape": {
-      "type": "string",
-      "enum": [
-        "directory",
-        "bundle"
+      "description": "Organization of compiled output artifacts.",
+      "oneOf": [
+        {
+          "description": "Emit separate files using project-relative paths.",
+          "type": "string",
+          "const": "directory"
+        },
+        {
+          "description": "Combine reachable modules into a single bundle.",
+          "type": "string",
+          "const": "bundle"
+        }
       ]
     },
     "BuildTarget": {
-      "type": "string",
-      "enum": [
-        "path",
-        "roblox-string",
-        "roblox-instance"
+      "description": "Runtime representation of rewritten require targets.",
+      "oneOf": [
+        {
+          "description": "Relative filesystem paths.",
+          "type": "string",
+          "const": "path"
+        },
+        {
+          "description": "Roblox string require paths.",
+          "type": "string",
+          "const": "roblox-string"
+        },
+        {
+          "description": "Roblox instance expressions.",
+          "type": "string",
+          "const": "roblox-instance"
+        }
       ]
     },
     "CallStyle": {
-      "type": "string",
-      "enum": [
-        "one-per-line",
-        "hug-last"
+      "description": "Layout of expanded call arguments.",
+      "oneOf": [
+        {
+          "description": "Give expanded arguments separate lines.",
+          "type": "string",
+          "const": "one-per-line"
+        },
+        {
+          "description": "Keep a final table, function, or multiline string attached when possible.",
+          "type": "string",
+          "const": "hug-last"
+        }
       ]
     },
     "Calls": {
+      "description": "Argument-list and chained-call formatting.",
       "type": "object",
       "properties": {
         "chains": {
@@ -377,14 +426,27 @@
       "additionalProperties": false
     },
     "Chain": {
-      "type": "string",
-      "enum": [
-        "preserve",
-        "method",
-        "full"
+      "description": "Line-break policy for repeated dot and colon calls.",
+      "oneOf": [
+        {
+          "description": "Retain ordinary call layout.",
+          "type": "string",
+          "const": "preserve"
+        },
+        {
+          "description": "Keep the first call with its receiver.",
+          "type": "string",
+          "const": "method"
+        },
+        {
+          "description": "Allow a line break before every call.",
+          "type": "string",
+          "const": "full"
+        }
       ]
     },
     "Chains": {
+      "description": "Style and count threshold for expanding call chains.",
       "type": "object",
       "properties": {
         "minimum_calls": {
@@ -403,15 +465,32 @@
       "additionalProperties": false
     },
     "Collapse": {
-      "type": "string",
-      "enum": [
-        "never",
-        "functions",
-        "conditionals",
-        "always"
+      "description": "Eligible single-statement blocks to collapse onto one line.",
+      "oneOf": [
+        {
+          "description": "Keep block bodies on separate lines.",
+          "type": "string",
+          "const": "never"
+        },
+        {
+          "description": "Collapse eligible function bodies.",
+          "type": "string",
+          "const": "functions"
+        },
+        {
+          "description": "Collapse eligible conditional branches.",
+          "type": "string",
+          "const": "conditionals"
+        },
+        {
+          "description": "Collapse both eligible function bodies and conditional branches.",
+          "type": "string",
+          "const": "always"
+        }
       ]
     },
     "Complexity": {
+      "description": "Threshold for function control-flow complexity.",
       "type": "object",
       "properties": {
         "maximum_complexity": {
@@ -425,6 +504,7 @@
       "additionalProperties": false
     },
     "Conditional": {
+      "description": "Layout of if-then-else expressions.",
       "type": "object",
       "properties": {
         "expand": {
@@ -460,21 +540,42 @@
       "additionalProperties": false
     },
     "ConditionalExpansion": {
-      "type": "string",
-      "enum": [
-        "never",
-        "always",
-        "needed"
+      "description": "Expansion policy for conditional expressions.",
+      "oneOf": [
+        {
+          "description": "Expand only when required by the column width.",
+          "type": "string",
+          "const": "never"
+        },
+        {
+          "description": "Expand outer conditional expressions regardless of width.",
+          "type": "string",
+          "const": "always"
+        },
+        {
+          "description": "Expand expressions exceeding the configured conditional width.",
+          "type": "string",
+          "const": "needed"
+        }
       ]
     },
     "ConditionalStyle": {
-      "type": "string",
-      "enum": [
-        "block",
-        "leading"
+      "description": "Placement of keywords in expanded conditional expressions.",
+      "oneOf": [
+        {
+          "description": "Put branch values on indented lines after their keywords.",
+          "type": "string",
+          "const": "block"
+        },
+        {
+          "description": "Begin indented branch lines with then or else.",
+          "type": "string",
+          "const": "leading"
+        }
       ]
     },
     "Constant": {
+      "description": "Treatment of table mutation when suggesting constant bindings.",
       "type": "object",
       "properties": {
         "mutated_tables_stay_local": {
@@ -486,6 +587,7 @@
       "additionalProperties": false
     },
     "Constants": {
+      "description": "Scope-aware conversion of local bindings to constants.",
       "type": "object",
       "properties": {
         "prefer_constant": {
@@ -502,15 +604,32 @@
       "additionalProperties": false
     },
     "Declaration": {
-      "type": "string",
-      "enum": [
-        "preserve",
-        "local",
-        "const",
-        "global"
+      "description": "Declaration form for eligible function definitions.",
+      "oneOf": [
+        {
+          "description": "Keep the source declaration form.",
+          "type": "string",
+          "const": "preserve"
+        },
+        {
+          "description": "Use a local function declaration.",
+          "type": "string",
+          "const": "local"
+        },
+        {
+          "description": "Use a constant function declaration.",
+          "type": "string",
+          "const": "const"
+        },
+        {
+          "description": "Use a global function declaration.",
+          "type": "string",
+          "const": "global"
+        }
       ]
     },
     "Deprecated": {
+      "description": "Project-specific deprecated function declarations.",
       "type": "object",
       "properties": {
         "additional": {
@@ -525,21 +644,42 @@
       "additionalProperties": false
     },
     "Endings": {
-      "type": "string",
-      "enum": [
-        "unix",
-        "windows"
+      "description": "Line-ending sequence emitted by the formatter.",
+      "oneOf": [
+        {
+          "description": "Emit a line feed.",
+          "type": "string",
+          "const": "unix"
+        },
+        {
+          "description": "Emit a carriage return followed by a line feed.",
+          "type": "string",
+          "const": "windows"
+        }
       ]
     },
     "Expansion": {
-      "type": "string",
-      "enum": [
-        "needed",
-        "always",
-        "never"
+      "description": "Voluntary expansion of lists across lines.",
+      "oneOf": [
+        {
+          "description": "Expand when the list exceeds the available width.",
+          "type": "string",
+          "const": "needed"
+        },
+        {
+          "description": "Expand eligible lists regardless of width.",
+          "type": "string",
+          "const": "always"
+        },
+        {
+          "description": "Keep lists flat unless a mandatory break requires expansion.",
+          "type": "string",
+          "const": "never"
+        }
       ]
     },
     "Functions": {
+      "description": "Function parameter layout and declaration conversion.",
       "type": "object",
       "properties": {
         "binding": {
@@ -559,20 +699,37 @@
       "additionalProperties": false
     },
     "Gaps": {
-      "type": "string",
-      "enum": [
-        "remove",
-        "preserve"
+      "description": "Treatment of existing blank lines at layout boundaries.",
+      "oneOf": [
+        {
+          "description": "Remove boundary blank lines.",
+          "type": "string",
+          "const": "remove"
+        },
+        {
+          "description": "Retain one existing boundary blank line.",
+          "type": "string",
+          "const": "preserve"
+        }
       ]
     },
     "Grouping": {
-      "type": "string",
-      "enum": [
-        "flat",
-        "by-kind"
+      "description": "Grouping of sorted require bindings.",
+      "oneOf": [
+        {
+          "description": "Sort all adjacent imports together.",
+          "type": "string",
+          "const": "flat"
+        },
+        {
+          "description": "Separate alias, other, and relative paths into ordered groups.",
+          "type": "string",
+          "const": "by-kind"
+        }
       ]
     },
     "Imports": {
+      "description": "Ordering, declaration conversion, and removal of require bindings.",
       "type": "object",
       "properties": {
         "binding": {
@@ -599,6 +756,7 @@
       "additionalProperties": false
     },
     "Indentation": {
+      "description": "Indentation characters and display width.",
       "type": "object",
       "properties": {
         "style": {
@@ -617,23 +775,52 @@
       "additionalProperties": false
     },
     "Indexer": {
-      "type": "string",
-      "enum": [
-        "first",
-        "last",
-        "sorted"
+      "description": "Placement of table-type indexers when fields are sorted.",
+      "oneOf": [
+        {
+          "description": "Put indexers before named fields.",
+          "type": "string",
+          "const": "first"
+        },
+        {
+          "description": "Put indexers after named fields.",
+          "type": "string",
+          "const": "last"
+        },
+        {
+          "description": "Sort indexers alongside fields using an empty key.",
+          "type": "string",
+          "const": "sorted"
+        }
       ]
     },
     "Level": {
-      "type": "string",
-      "enum": [
-        "allow",
-        "info",
-        "warn",
-        "deny"
+      "description": "Reporting level assigned to a lint rule.",
+      "oneOf": [
+        {
+          "description": "Suppress the finding.",
+          "type": "string",
+          "const": "allow"
+        },
+        {
+          "description": "Report an informational finding.",
+          "type": "string",
+          "const": "info"
+        },
+        {
+          "description": "Report a warning without failing the command.",
+          "type": "string",
+          "const": "warn"
+        },
+        {
+          "description": "Report an error that fails the command.",
+          "type": "string",
+          "const": "deny"
+        }
       ]
     },
     "LintOptions": {
+      "description": "Options shared by configurable built-in lint rules.",
       "type": "object",
       "properties": {
         "constant_binding": {
@@ -685,6 +872,7 @@
       "additionalProperties": false
     },
     "LintSettings": {
+      "description": "Lint enablement, severity overrides, globals, and rule options.",
       "type": "object",
       "properties": {
         "enabled": {
@@ -747,6 +935,7 @@
       "additionalProperties": false
     },
     "LintUnused": {
+      "description": "Binding categories and names checked for unused declarations.",
       "type": "object",
       "properties": {
         "ignore_pattern": {
@@ -768,14 +957,27 @@
       "additionalProperties": false
     },
     "Mode": {
-      "type": "string",
-      "enum": [
-        "strict",
-        "nonstrict",
-        "nocheck"
+      "description": "Type-checking mode supplied to Luau.",
+      "oneOf": [
+        {
+          "description": "Check inferred and annotated types strictly.",
+          "type": "string",
+          "const": "strict"
+        },
+        {
+          "description": "Use Luau's permissive type-checking mode.",
+          "type": "string",
+          "const": "nonstrict"
+        },
+        {
+          "description": "Skip type checking while retaining parsing and enabled lint checks.",
+          "type": "string",
+          "const": "nocheck"
+        }
       ]
     },
     "Operators": {
+      "description": "Layout of union and intersection operators.",
       "type": "object",
       "properties": {
         "expand": {
@@ -787,6 +989,7 @@
       "additionalProperties": false
     },
     "Options": {
+      "description": "Complete formatter settings with inherited project defaults.",
       "type": "object",
       "properties": {
         "bindings": {
@@ -960,17 +1163,42 @@
       "additionalProperties": false
     },
     "Order": {
-      "type": "string",
-      "enum": [
-        "preserve",
-        "key-length-ascending",
-        "key-length-descending",
-        "alphabetical",
-        "field-width-ascending",
-        "field-width-descending"
+      "description": "Ordering of eligible table fields.",
+      "oneOf": [
+        {
+          "description": "Retain the source order.",
+          "type": "string",
+          "const": "preserve"
+        },
+        {
+          "description": "Sort shorter keys first, breaking ties alphabetically.",
+          "type": "string",
+          "const": "key-length-ascending"
+        },
+        {
+          "description": "Sort longer keys first, breaking ties alphabetically.",
+          "type": "string",
+          "const": "key-length-descending"
+        },
+        {
+          "description": "Sort keys alphabetically.",
+          "type": "string",
+          "const": "alphabetical"
+        },
+        {
+          "description": "Sort narrower formatted fields first, breaking ties alphabetically.",
+          "type": "string",
+          "const": "field-width-ascending"
+        },
+        {
+          "description": "Sort wider formatted fields first, breaking ties alphabetically.",
+          "type": "string",
+          "const": "field-width-descending"
+        }
       ]
     },
     "Parameters": {
+      "description": "Layout of function declaration parameter lists.",
       "type": "object",
       "properties": {
         "expand": {
@@ -989,33 +1217,82 @@
       "additionalProperties": false
     },
     "Parentheses": {
-      "type": "string",
-      "enum": [
-        "always",
-        "omit-string",
-        "omit-table",
-        "omit-optional",
-        "preserve"
+      "description": "Parentheses policy for function arguments.",
+      "oneOf": [
+        {
+          "description": "Parenthesize every argument list.",
+          "type": "string",
+          "const": "always"
+        },
+        {
+          "description": "Omit parentheses around a sole string argument.",
+          "type": "string",
+          "const": "omit-string"
+        },
+        {
+          "description": "Omit parentheses around a sole table argument.",
+          "type": "string",
+          "const": "omit-table"
+        },
+        {
+          "description": "Omit parentheses around either optional argument form.",
+          "type": "string",
+          "const": "omit-optional"
+        },
+        {
+          "description": "Retain the source choice where syntax permits.",
+          "type": "string",
+          "const": "preserve"
+        }
       ]
     },
     "Placement": {
-      "type": "string",
-      "enum": [
-        "same-line",
-        "next-line"
+      "description": "Placement of an expanded expression after its binding or return.",
+      "oneOf": [
+        {
+          "description": "Start on the same line as the preceding syntax.",
+          "type": "string",
+          "const": "same-line"
+        },
+        {
+          "description": "Start a sole expanded expression on an indented line.",
+          "type": "string",
+          "const": "next-line"
+        }
       ]
     },
     "Quotes": {
-      "type": "string",
-      "enum": [
-        "prefer-double",
-        "prefer-single",
-        "double",
-        "single",
-        "preserve"
+      "description": "Delimiter selection for short string literals.",
+      "oneOf": [
+        {
+          "description": "Minimize escapes, preferring double quotes on ties.",
+          "type": "string",
+          "const": "prefer-double"
+        },
+        {
+          "description": "Minimize escapes, preferring single quotes on ties.",
+          "type": "string",
+          "const": "prefer-single"
+        },
+        {
+          "description": "Use double quotes.",
+          "type": "string",
+          "const": "double"
+        },
+        {
+          "description": "Use single quotes.",
+          "type": "string",
+          "const": "single"
+        },
+        {
+          "description": "Retain the original delimiter.",
+          "type": "string",
+          "const": "preserve"
+        }
       ]
     },
     "Restricted": {
+      "description": "Modules whose imports should produce a lint finding.",
       "type": "object",
       "properties": {
         "paths": {
@@ -1030,6 +1307,7 @@
       "additionalProperties": false
     },
     "RobloxConfig": {
+      "description": "Opt-in Roblox environment and generated-asset selection.",
       "type": "object",
       "properties": {
         "cache": {
@@ -1041,7 +1319,7 @@
           "default": null
         },
         "level": {
-          "description": "Roblox API security level. Inherits from ancestor configurations; defaults to PluginSecurity.\n\nDefault: `unset`.",
+          "description": "Roblox API security level. Inherits from ancestor configurations; defaults to `PluginSecurity`.\n\nDefault: `unset`.",
           "anyOf": [
             {
               "$ref": "#/$defs/RobloxLevel"
@@ -1080,38 +1358,87 @@
       "additionalProperties": false
     },
     "RobloxLevel": {
-      "type": "string",
-      "enum": [
-        "None",
-        "LocalUserSecurity",
-        "PluginSecurity",
-        "RobloxScriptSecurity"
+      "description": "Permission level used to select accessible Roblox API members.",
+      "oneOf": [
+        {
+          "description": "Members available to ordinary experience scripts.",
+          "type": "string",
+          "const": "None"
+        },
+        {
+          "description": "Members additionally available to local user scripts.",
+          "type": "string",
+          "const": "LocalUserSecurity"
+        },
+        {
+          "description": "Members additionally available to Studio plugins.",
+          "type": "string",
+          "const": "PluginSecurity"
+        },
+        {
+          "description": "Members additionally available to Roblox internal scripts.",
+          "type": "string",
+          "const": "RobloxScriptSecurity"
+        }
       ]
     },
     "Semicolons": {
-      "type": "string",
-      "enum": [
-        "never",
-        "always"
+      "description": "Statement terminator policy.",
+      "oneOf": [
+        {
+          "description": "Emit semicolons only where required to preserve parsing.",
+          "type": "string",
+          "const": "never"
+        },
+        {
+          "description": "Terminate every eligible statement with a semicolon.",
+          "type": "string",
+          "const": "always"
+        }
       ]
     },
     "Separation": {
-      "type": "string",
-      "enum": [
-        "never",
-        "definitions",
-        "calls",
-        "always"
+      "description": "Spaces between function names and opening parentheses.",
+      "oneOf": [
+        {
+          "description": "Keep names adjacent to parentheses.",
+          "type": "string",
+          "const": "never"
+        },
+        {
+          "description": "Insert a space in function declarations only.",
+          "type": "string",
+          "const": "definitions"
+        },
+        {
+          "description": "Insert a space in function calls only.",
+          "type": "string",
+          "const": "calls"
+        },
+        {
+          "description": "Insert a space in declarations and calls.",
+          "type": "string",
+          "const": "always"
+        }
       ]
     },
     "Separator": {
-      "type": "string",
-      "enum": [
-        "comma",
-        "semicolon"
+      "description": "Punctuation separating table-type members.",
+      "oneOf": [
+        {
+          "description": "Separate members with commas.",
+          "type": "string",
+          "const": "comma"
+        },
+        {
+          "description": "Separate members with semicolons.",
+          "type": "string",
+          "const": "semicolon"
+        }
       ]
     },
     "Sorting": {
+      "description": "Ordering of fields in table expressions.",
       "type": "object",
       "properties": {
         "order": {
@@ -1123,6 +1450,7 @@
       "additionalProperties": false
     },
     "Spacing": {
+      "description": "Interior delimiter and function-name spacing.",
       "type": "object",
       "properties": {
         "braces": {
@@ -1149,6 +1477,7 @@
       "additionalProperties": false
     },
     "Tables": {
+      "description": "Layout and ordering of table-type members.",
       "type": "object",
       "properties": {
         "blank_lines": {
@@ -1187,14 +1516,27 @@
       "additionalProperties": false
     },
     "TypeExpansion": {
-      "type": "string",
-      "enum": [
-        "needed",
-        "always",
-        "never"
+      "description": "Expansion policy for union and intersection members.",
+      "oneOf": [
+        {
+          "description": "Expand when members exceed the available width.",
+          "type": "string",
+          "const": "needed"
+        },
+        {
+          "description": "Expand eligible members regardless of width.",
+          "type": "string",
+          "const": "always"
+        },
+        {
+          "description": "Avoid voluntary expansion while retaining required breaks.",
+          "type": "string",
+          "const": "never"
+        }
       ]
     },
     "Types": {
+      "description": "Table-type and compound-type layout settings.",
       "type": "object",
       "properties": {
         "operators": {
@@ -1220,26 +1562,58 @@
       "additionalProperties": false
     },
     "Unused": {
-      "type": "string",
-      "enum": [
-        "ignore",
-        "underscore",
-        "remove"
+      "description": "Treatment of unused require bindings.",
+      "oneOf": [
+        {
+          "description": "Leave unused bindings unchanged.",
+          "type": "string",
+          "const": "ignore"
+        },
+        {
+          "description": "Prefix unused binding names with an underscore.",
+          "type": "string",
+          "const": "underscore"
+        },
+        {
+          "description": "Remove eligible unused declarations.",
+          "type": "string",
+          "const": "remove"
+        }
       ]
     },
     "Whitespace": {
-      "type": "string",
-      "enum": [
-        "tabs",
-        "spaces"
+      "description": "Characters used for each indentation level.",
+      "oneOf": [
+        {
+          "description": "Indent with tab characters.",
+          "type": "string",
+          "const": "tabs"
+        },
+        {
+          "description": "Indent with space characters.",
+          "type": "string",
+          "const": "spaces"
+        }
       ]
     },
     "Zero": {
-      "type": "string",
-      "enum": [
-        "add",
-        "strip",
-        "preserve"
+      "description": "Leading-zero treatment for fractional numeric literals.",
+      "oneOf": [
+        {
+          "description": "Insert a zero before a leading decimal point.",
+          "type": "string",
+          "const": "add"
+        },
+        {
+          "description": "Remove a zero before a leading decimal point.",
+          "type": "string",
+          "const": "strip"
+        },
+        {
+          "description": "Retain the source spelling.",
+          "type": "string",
+          "const": "preserve"
+        }
       ]
     }
   }

@@ -1,3 +1,5 @@
+//! Loading and resolving external Luau definition sources.
+
 use instar_core::{
     analysis::{self, Options},
     project::resolution::Resolver,
@@ -5,10 +7,10 @@ use instar_core::{
 };
 use std::{error::Error, fs};
 
-type Result = std::result::Result<(), Box<dyn Error>>;
+type TestResult = Result<(), Box<dyn Error>>;
 
 #[test]
-fn definitions_are_checked_and_loaded_in_order() -> Result {
+fn definitions_are_checked_and_loaded_in_order() -> TestResult {
     let directory = tempfile::tempdir()?;
     let root = directory.path();
 
@@ -51,7 +53,7 @@ fn definitions_are_checked_and_loaded_in_order() -> Result {
 }
 
 #[test]
-fn definition_diagnostics_keep_their_source_paths() -> Result {
+fn definition_diagnostics_keep_their_source_paths() -> TestResult {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("types.d.luau");
 
@@ -89,7 +91,7 @@ fn definition_diagnostics_keep_their_source_paths() -> Result {
 }
 
 #[test]
-fn configured_definitions_use_editor_snapshots() -> Result {
+fn configured_definitions_use_editor_snapshots() -> TestResult {
     let directory = tempfile::tempdir()?;
     let root = directory.path();
     fs::write(root.join("instar.toml"), "definitions=['globals.luau']")?;
@@ -127,7 +129,7 @@ fn configured_definitions_use_editor_snapshots() -> Result {
 }
 
 #[test]
-fn definition_environments_do_not_leak_between_entry_projects() -> Result {
+fn definition_environments_do_not_leak_between_entry_projects() -> TestResult {
     let directory = tempfile::tempdir()?;
     let root = directory.path();
     fs::create_dir(root.join("nested"))?;

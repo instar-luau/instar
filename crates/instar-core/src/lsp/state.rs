@@ -1,4 +1,6 @@
-use super::{EditorEntry, Request, Response, documentation, failure, moved, path, workspace};
+use super::{
+    EditorEntry, Request, Response, documentation, internal_error, moved, path, workspace,
+};
 use crate::{
     analysis,
     project::Configuration,
@@ -38,8 +40,18 @@ impl State {
         self.session.refresh();
 
         for file in parameters.files {
-            let old = path(&file.old_uri.parse().map_err(failure)?)?;
-            let new: Uri = file.new_uri.parse().map_err(failure)?;
+            let old = path(
+                &file
+                    .old_uri
+                    .parse::<Uri>()
+                    .map_err(|error| Error::invalid_params(error.to_string()))?,
+            )?;
+
+            let new: Uri = file
+                .new_uri
+                .parse::<Uri>()
+                .map_err(|error| Error::invalid_params(error.to_string()))?;
+
             let mut moves = Vec::new();
 
             for (path, document) in &self.documents {
@@ -49,7 +61,7 @@ impl State {
             }
 
             for (original, uri, version) in moves {
-                let source = self.sources.read(&original).map_err(failure)?;
+                let source = self.sources.read(&original).map_err(internal_error)?;
                 let target = path(&uri)?;
 
                 if target == original {
@@ -60,17 +72,17 @@ impl State {
                     continue;
                 }
 
-                if !self.sources.is_open(&target).map_err(failure)? {
+                if !self.sources.is_open(&target).map_err(internal_error)? {
                     let updated = self
                         .sources
                         .open_bytes(&target, version, source.bytes().to_vec())
-                        .map_err(failure)?;
+                        .map_err(internal_error)?;
 
                     self.documents
                         .insert(updated.path().to_owned(), Document { uri, version });
                 }
 
-                self.sources.close(&source).map_err(failure)?;
+                self.sources.close(&source).map_err(internal_error)?;
                 self.documents.remove(&original);
             }
 
@@ -79,7 +91,7 @@ impl State {
                 .iter()
                 .map(|root| {
                     let uri = Uri::from_file_path(root)
-                        .ok_or_else(|| failure("invalid workspace URI"))?;
+                        .ok_or_else(|| internal_error("invalid workspace URI"))?;
 
                     moved(&uri, &old, &new)?.map_or_else(|| Ok(root.clone()), |uri| path(&uri))
                 })
@@ -95,12 +107,12 @@ impl State {
     ) -> Result<std::sync::Arc<crate::roblox::Environment>> {
         self.session
             .environment(&mut self.sources, path)
-            .map_err(failure)
+            .map_err(internal_error)
     }
 
     pub(super) fn workspace(&mut self) -> Result<Vec<PathBuf>> {
         if self.files.is_none() {
-            self.files = Some(workspace::files(&self.roots).map_err(failure)?);
+            self.files = Some(workspace::files(&self.roots).map_err(internal_error)?);
         }
 
         let mut paths = self
@@ -116,7 +128,7 @@ impl State {
     }
 
     fn range(&mut self, path: &std::path::Path, coordinates: [u32; 4]) -> Result<Range> {
-        let source = self.sources.read(path).map_err(failure)?;
+        let source = self.sources.read(path).map_err(internal_error)?;
 
         Self::source_range(&source, coordinates)
     }
@@ -128,11 +140,11 @@ impl State {
         let position = |line, col| {
             let offset = source
                 .offset(LineCol { line, col }, PositionEncoding::Utf8)
-                .map_err(failure)?;
+                .map_err(internal_error)?;
 
             let position = source
                 .position(offset, PositionEncoding::Utf16)
-                .map_err(failure)?;
+                .map_err(internal_error)?;
 
             Ok(Position::new(position.line, position.col))
         };
@@ -159,7 +171,7 @@ impl State {
                     position,
                     "scope",
                 )
-                .map_err(failure)?;
+                .map_err(internal_error)?;
 
             if matches!(scope.editor, Some(analysis::EditorResult::Entry(entry)) if entry.kind == Some(13))
             {
@@ -178,7 +190,7 @@ impl State {
         let source = self
             .sources
             .read(&path(&parameters.text_document.uri)?)
-            .map_err(failure)?;
+            .map_err(internal_error)?;
 
         let offset = source
             .offset(
@@ -188,11 +200,11 @@ impl State {
                 },
                 PositionEncoding::Utf16,
             )
-            .map_err(failure)?;
+            .map_err(|error| Error::invalid_params(error.to_string()))?;
 
         let position = source
             .position(offset, PositionEncoding::Utf8)
-            .map_err(failure)?;
+            .map_err(internal_error)?;
 
         let operation = self.operation(source.path(), position, operation)?;
 
@@ -206,7 +218,7 @@ impl State {
                     position,
                     "scope",
                 )
-                .map_err(failure)?;
+                .map_err(internal_error)?;
 
             match scope.editor {
                 Some(analysis::EditorResult::Entry(entry)) => {
@@ -226,7 +238,7 @@ impl State {
                 let mut candidates = Vec::new();
 
                 for path in modules {
-                    let candidate = self.sources.read(&path).map_err(failure)?;
+                    let candidate = self.sources.read(&path).map_err(internal_error)?;
 
                     if candidate
                         .bytes()
@@ -259,7 +271,7 @@ impl State {
                 position,
                 operation,
             )
-            .map_err(failure)?;
+            .map_err(internal_error)?;
 
         self.entries(report, source.path())
     }
@@ -276,7 +288,7 @@ impl State {
 
         for mut entry in entries {
             if let Some(error) = &entry.error {
-                return Err(failure(error));
+                return Err(internal_error(error));
             }
 
             let target = entry.path.as_deref().unwrap_or(path);
@@ -286,7 +298,7 @@ impl State {
                     std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
 
                     std::collections::btree_map::Entry::Vacant(entry) => {
-                        entry.insert(self.sources.read(target).map_err(failure)?)
+                        entry.insert(self.sources.read(target).map_err(internal_error)?)
                     }
                 })
             } else {
@@ -300,7 +312,7 @@ impl State {
                         .get(target)
                         .map(|document| document.uri.clone())
                         .or_else(|| Uri::from_file_path(target))
-                        .ok_or_else(|| failure("invalid target URI"))?;
+                        .ok_or_else(|| internal_error("invalid target URI"))?;
 
                     Some(protocol::Location::new(
                         uri,
@@ -360,7 +372,7 @@ impl State {
         let Response::Editor(entries) =
             self.query(&parameters.text_document_position, "references")?
         else {
-            return Err(Error::internal_error());
+            return Err(super::internal_error("unexpected worker response"));
         };
 
         if !entries
@@ -389,7 +401,7 @@ impl State {
         let mut documents = Vec::new();
 
         for (uri, mut edits) in changes {
-            let uri: Uri = uri.parse().map_err(failure)?;
+            let uri: Uri = uri.parse().map_err(internal_error)?;
 
             let position = protocol::TextDocumentPositionParams {
                 text_document: protocol::TextDocumentIdentifier { uri: uri.clone() },
@@ -411,7 +423,7 @@ impl State {
 
             edits.sort_by_key(|edit| (edit.range.start.line, edit.range.start.character));
             edits.dedup_by(|left, right| left.range == right.range);
-            let source = self.sources.read(&path(&uri)?).map_err(failure)?;
+            let source = self.sources.read(&path(&uri)?).map_err(internal_error)?;
 
             let version = self
                 .documents
@@ -448,12 +460,12 @@ impl State {
     fn close(&mut self, uri: &Uri) -> Result<()> {
         let path = path(uri)?;
 
-        if !self.sources.is_open(&path).map_err(failure)? {
+        if !self.sources.is_open(&path).map_err(internal_error)? {
             return Ok(());
         }
 
-        let source = self.sources.read(&path).map_err(failure)?;
-        self.sources.close(&source).map_err(failure)?;
+        let source = self.sources.read(&path).map_err(internal_error)?;
+        self.sources.close(&source).map_err(internal_error)?;
         self.documents.remove(source.path());
         self.changed(source.path());
 
@@ -469,7 +481,7 @@ impl State {
             super::hints::Settings::default()
         } else {
             serde_json::from_value(settings.get("instar").unwrap_or(settings).clone())
-                .map_err(failure)?
+                .map_err(internal_error)?
         };
 
         Ok(())
@@ -491,7 +503,7 @@ impl State {
                 let source = self
                     .sources
                     .open(&path(&document.uri)?, document.version, &document.text)
-                    .map_err(failure)?;
+                    .map_err(internal_error)?;
 
                 self.changed(source.path());
 
@@ -508,14 +520,14 @@ impl State {
                 let source = self
                     .sources
                     .read(&path(&parameters.text_document.uri)?)
-                    .map_err(failure)?;
+                    .map_err(internal_error)?;
 
                 let text = super::sync::apply(&source, parameters.content_changes)?;
 
                 let updated = self
                     .sources
                     .update(&source, parameters.text_document.version, &text)
-                    .map_err(failure)?;
+                    .map_err(internal_error)?;
 
                 let document = self
                     .documents
@@ -606,7 +618,8 @@ impl State {
                     .map_err(|_| Error::request_cancelled())?;
             }
 
-            let uri = Uri::from_file_path(&path).ok_or_else(|| failure("invalid workspace URI"))?;
+            let uri = Uri::from_file_path(&path)
+                .ok_or_else(|| internal_error("invalid workspace URI"))?;
 
             let parameters = protocol::TextDocumentPositionParams {
                 text_document: protocol::TextDocumentIdentifier { uri },
@@ -614,7 +627,7 @@ impl State {
             };
 
             let Response::Editor(entries) = self.query(&parameters, "index")? else {
-                return Err(Error::internal_error());
+                return Err(super::internal_error("unexpected worker response"));
             };
 
             let mut symbols = Vec::new();
@@ -713,28 +726,31 @@ impl State {
     }
 
     pub(super) fn format(&mut self, uri: &Uri) -> Result<Response> {
-        let source = self.sources.read(&path(uri)?).map_err(failure)?;
-        let configuration = Configuration::discover(source.path(), None).map_err(failure)?;
-        let output = configuration.format(source.bytes()).map_err(failure)?;
+        let source = self.sources.read(&path(uri)?).map_err(internal_error)?;
+        let configuration = Configuration::discover(source.path(), None).map_err(internal_error)?;
+
+        let output = configuration
+            .format(source.bytes())
+            .map_err(internal_error)?;
 
         if output == source.bytes() {
             return Ok(Response::Edits(None));
         }
 
-        let length = u32::try_from(source.bytes().len()).map_err(failure)?;
+        let length = u32::try_from(source.bytes().len()).map_err(internal_error)?;
 
         let end = source
             .position(length.into(), PositionEncoding::Utf16)
-            .map_err(failure)?;
+            .map_err(internal_error)?;
 
         Ok(Response::Edits(Some(vec![TextEdit {
             range: Range::new(Position::default(), Position::new(end.line, end.col)),
-            new_text: String::from_utf8(output).map_err(failure)?,
+            new_text: String::from_utf8(output).map_err(internal_error)?,
         }])))
     }
 
     pub(super) fn lint(&mut self, path: &std::path::Path) -> Result<crate::lint::Report> {
-        crate::lint::analyze(&mut self.session, &mut self.sources, path).map_err(failure)
+        crate::lint::analyze(&mut self.session, &mut self.sources, path).map_err(internal_error)
     }
 
     fn diagnostics(&mut self) -> Result<Vec<PublishDiagnosticsParams>> {
@@ -855,10 +871,10 @@ impl State {
                 uri.clone()
             } else {
                 url::Url::from_file_path(&path)
-                    .map_err(|()| Error::invalid_params("invalid document path"))?
+                    .map_err(|()| internal_error("invalid document path"))?
                     .as_str()
                     .parse()
-                    .map_err(failure)?
+                    .map_err(internal_error)?
             };
 
             published.insert(path, uri.clone());
