@@ -7,6 +7,7 @@ use instar_core::configuration::format::{
     Operators, Order, Parameters, Parentheses, Placement, Quotes, Separation, Separator, Sorting,
     Spacing, Tables, TypeExpansion, Types, Unused, Whitespace,
 };
+
 fn format(source: &str, options: &Options) -> std::io::Result<String> {
     instar_core::format::format(source.as_bytes(), options)
         .map(|output| String::from_utf8(output).unwrap())

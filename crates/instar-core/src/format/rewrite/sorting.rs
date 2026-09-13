@@ -389,6 +389,7 @@ struct Piece {
     key: Option<String>,
     blank: bool,
 }
+
 fn kind(path: &str) -> usize {
     if path.starts_with('@') {
         0
