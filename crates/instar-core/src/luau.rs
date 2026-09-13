@@ -17,6 +17,8 @@ use crate::{
     project::resolution::Resolver,
 };
 
+const BUILD_CONSTANT_DEFINITIONS: &str = "@instar/build/constants.d.luau";
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Bytes {
@@ -129,6 +131,7 @@ struct Context<'resolver, 'store> {
     resolver: &'resolver mut Resolver<'store>,
     buffer: Vec<u8>,
     environment: std::sync::Arc<crate::roblox::Environment>,
+    constants: Vec<u8>,
     report: Report,
     error: Option<io::Error>,
 }
@@ -168,6 +171,10 @@ extern "C" fn read(context: *mut c_void, name: Bytes) -> Bytes {
 
     context.call(|context| {
         let name = unsafe { name.string()? };
+
+        if name == BUILD_CONSTANT_DEFINITIONS {
+            return Ok(Some(context.constants.clone()));
+        }
 
         let path = Path::new(&name);
 
@@ -450,6 +457,18 @@ impl Session {
                 definitions.push(path.clone());
             }
 
+            let documentation = if configuration {
+                Vec::new()
+            } else {
+                resolver.discovery.documentation(&path)?
+            };
+
+            let constants = if configuration {
+                Vec::new()
+            } else {
+                resolver.discovery.constants(&path)?
+            };
+
             let environment = if configuration {
                 None
             } else {
@@ -457,18 +476,18 @@ impl Session {
             };
 
             groups
-                .entry((definitions, environment))
+                .entry((definitions, documentation, constants, environment))
                 .or_insert_with(Vec::new)
                 .push(path);
         }
 
         let mut report = Report::default();
 
-        for ((definitions, environment), modules) in groups {
+        for ((definitions, documentation, constants, environment), modules) in groups {
             let result = self.analyze_group(
                 resolver,
                 &modules,
-                &definitions,
+                (&definitions, &documentation, &constants),
                 environment.as_ref(),
                 options,
                 incremental.then_some(changed.as_slice()),
@@ -522,15 +541,20 @@ impl Session {
         Ok(environment)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the native analysis call keeps its borrowed inputs together"
+    )]
     fn analyze_group(
         &mut self,
         resolver: &mut Resolver<'_>,
         modules: &[PathBuf],
-        definitions: &[PathBuf],
+        assets: (&[PathBuf], &[PathBuf], &[u8]),
         settings: Option<&crate::configuration::RobloxConfig>,
         options: &Options,
         changed: Option<&[PathBuf]>,
     ) -> io::Result<Report> {
+        let (definitions, documentation, constants) = assets;
         let environment = self.environment(resolver, settings, options.update)?;
         let mut changed_names = Vec::new();
 
@@ -547,7 +571,11 @@ impl Session {
             .map(|name| Bytes::new(name.as_bytes()))
             .collect::<Vec<_>>();
 
-        let definition_names = names(resolver, definitions)?;
+        let mut definition_names = names(resolver, definitions)?;
+
+        if !constants.is_empty() {
+            definition_names.push(BUILD_CONSTANT_DEFINITIONS.to_owned());
+        }
 
         let definitions: Vec<_> = definition_names
             .iter()
@@ -565,6 +593,7 @@ impl Session {
             resolver,
             buffer: Vec::new(),
             environment,
+            constants: constants.to_vec(),
             report: Report::default(),
             error: None,
         };
@@ -626,8 +655,19 @@ impl Session {
             return Err(error);
         }
 
-        if !context.environment.documentation.is_empty() {
-            let documentation = std::sync::Arc::clone(&context.environment.documentation);
+        let mut external_documentation = context.environment.documentation.as_ref().clone();
+
+        for path in documentation {
+            let source = context.resolver.load(path)?;
+
+            let values: crate::analysis::Documentation = serde_json::from_slice(source.bytes())
+                .map_err(|error| io::Error::other(format!("{}: {error}", path.display())))?;
+
+            external_documentation.extend(values);
+        }
+
+        if !external_documentation.is_empty() {
+            let documentation = std::sync::Arc::new(external_documentation);
 
             for name in names {
                 context

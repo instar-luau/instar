@@ -2,6 +2,7 @@
 
 use instar_core::{
     analysis::{self, Options},
+    lint,
     project::resolution::Resolver,
     source::SourceStore,
 };
@@ -48,6 +49,104 @@ fn definitions_are_checked_and_loaded_in_order() -> TestResult {
                 .collect::<Vec<_>>()
         );
     }
+
+    Ok(())
+}
+
+#[test]
+fn build_constants_are_typed_analysis_and_lint_globals() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path();
+    let main = root.join("main.luau");
+
+    fs::write(
+        root.join("instar.toml"),
+        "[build.constants]\nDEBUG=false\nVERSION='development'\nLIMIT=1\n[lint.rules]\nundefined_variable='deny'",
+    )?;
+
+    fs::write(
+        &main,
+        "--!strict\nlocal debug: boolean = DEBUG\nlocal version: string = VERSION\nlocal limit: number = LIMIT\nreturn debug, version, limit",
+    )?;
+
+    assert!(
+        !analysis::analyze(
+            &mut Resolver::new(&mut SourceStore::default()),
+            std::slice::from_ref(&main),
+            &Options::default(),
+        )?
+        .has_errors()
+    );
+
+    let lint = lint::analyze(
+        &mut analysis::Session::default(),
+        &mut SourceStore::default(),
+        &main,
+    )?;
+
+    assert!(
+        lint.findings
+            .iter()
+            .all(|finding| finding.rule != "undefined_variable")
+    );
+
+    fs::write(
+        &main,
+        "--!strict\nlocal limit: string = LIMIT\nreturn limit",
+    )?;
+
+    assert!(
+        analysis::analyze(
+            &mut Resolver::new(&mut SourceStore::default()),
+            &[main],
+            &Options::default(),
+        )?
+        .has_errors()
+    );
+
+    Ok(())
+}
+
+#[test]
+fn external_documentation_is_loaded_for_analyzed_sources() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path();
+    let main = root.join("main.luau");
+    let documentation = root.join("documentation.json");
+
+    fs::write(
+        root.join("instar.toml"),
+        "[analyze]\ndocumentation=['documentation.json']",
+    )?;
+
+    fs::write(&main, "return 1")?;
+
+    fs::write(
+        &documentation,
+        r#"{"@external/global/value":{"documentation":"External value."}}"#,
+    )?;
+
+    let report = analysis::analyze(
+        &mut Resolver::new(&mut SourceStore::default()),
+        std::slice::from_ref(&main),
+        &Options::default(),
+    )?;
+
+    assert_eq!(
+        report.documentation[&main]["@external/global/value"]["documentation"],
+        "External value."
+    );
+
+    fs::write(&documentation, "[]")?;
+
+    assert!(
+        analysis::analyze(
+            &mut Resolver::new(&mut SourceStore::default()),
+            &[main],
+            &Options::default(),
+        )
+        .is_err()
+    );
 
     Ok(())
 }
