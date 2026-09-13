@@ -1,10 +1,14 @@
 use super::{RESPONSE_LIMIT, Request};
 use std::{
     io::{self, Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
 };
+
+pub(super) fn entry(directory: &Path) -> PathBuf {
+    directory.join(format!("graft{}", std::env::consts::EXE_SUFFIX))
+}
 
 pub(super) fn validate(entry: &Path) -> io::Result<()> {
     if cfg!(windows)

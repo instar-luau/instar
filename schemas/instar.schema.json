@@ -223,6 +223,34 @@
       },
       "additionalProperties": false
     },
+    "BuildAppendTextComment": {
+      "description": "Comment text added to generated sources.",
+      "type": "object",
+      "properties": {
+        "file": {
+          "description": "Text file relative to the build configuration, mutually exclusive with text.\n\nDefault: `unset`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "location": {
+          "description": "Start or end placement.\n\nDefault: `\"start\"`.",
+          "type": "string",
+          "default": "start"
+        },
+        "text": {
+          "description": "Literal comment text, mutually exclusive with file.\n\nDefault: `unset`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
     "BuildConstant": {
       "description": "Scalar value substituted for an unshadowed global read.",
       "anyOf": [
@@ -238,6 +266,26 @@
         {
           "description": "A string literal.",
           "type": "string"
+        }
+      ]
+    },
+    "BuildPreserveSideEffects": {
+      "description": "Rule switch or argument side-effect behavior.",
+      "anyOf": [
+        {
+          "description": "Enable or disable the rule while preserving argument side effects.",
+          "type": "boolean"
+        },
+        {
+          "description": "Configure whether calls in arguments prevent removal.",
+          "type": "object",
+          "properties": {
+            "preserve_arguments_side_effects": {
+              "description": "Preserve calls whose arguments may have side effects.\n\nDefault: `true`.",
+              "type": "boolean",
+              "default": true
+            }
+          }
         }
       ]
     },
@@ -308,6 +356,349 @@
             }
           ],
           "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "BuildRemoveAttribute": {
+      "description": "Attribute removal switch or matching patterns.",
+      "anyOf": [
+        {
+          "description": "Enable or disable removal of every attribute.",
+          "type": "boolean"
+        },
+        {
+          "description": "Remove attributes whose names match any regular expression.",
+          "type": "object",
+          "properties": {
+            "match": {
+              "description": "Regular expressions matching attribute names.\n\nDefault: `[]`.",
+              "type": "array",
+              "default": [],
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "BuildRemoveCalls": {
+      "description": "Calls to remove with optional argument side-effect behavior.",
+      "anyOf": [
+        {
+          "description": "Function names to remove.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "description": "Function names and argument side-effect behavior.",
+          "type": "object",
+          "properties": {
+            "functions": {
+              "description": "Function names to remove.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "preserve_arguments_side_effects": {
+              "description": "Preserve calls whose arguments may have side effects.\n\nDefault: `true`.",
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "required": [
+            "functions"
+          ]
+        }
+      ]
+    },
+    "BuildRemoveComments": {
+      "description": "Comment removal switch or exception patterns.",
+      "anyOf": [
+        {
+          "description": "Enable or disable comment removal with directive comments retained by default.",
+          "type": "boolean"
+        },
+        {
+          "description": "Enable comment removal with regular expression exceptions.",
+          "type": "object",
+          "properties": {
+            "except": {
+              "description": "Regular expressions matching comments to retain.\n\nDefault: `[\"^--!\"]`.",
+              "type": "array",
+              "default": [
+                "^--!"
+              ],
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "BuildRemoveInterpolatedString": {
+      "description": "Interpolated string removal switch or conversion strategy.",
+      "anyOf": [
+        {
+          "description": "Enable or disable interpolation removal with tostring wrapping.",
+          "type": "boolean"
+        },
+        {
+          "description": "Select the string or tostring strategy.",
+          "type": "object",
+          "properties": {
+            "strategy": {
+              "description": "Interpolation conversion strategy.\n\nDefault: `\"string\"`.",
+              "type": "string",
+              "default": "string"
+            }
+          }
+        }
+      ]
+    },
+    "BuildRules": {
+      "description": "Optional source transformations applied during builds.",
+      "type": "object",
+      "properties": {
+        "add_luau_directive": {
+          "description": "Add a Luau directive when no directive from the same family exists.\n\nDefault: `unset`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "append_text_comment": {
+          "description": "Append comment text at the start or end of each source.\n\nDefault: `unset`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BuildAppendTextComment"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "compute_expression": {
+          "description": "Fold constant expressions.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "const_requires": {
+          "description": "Convert eligible require bindings from local to const.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "convert_function_to_assignment": {
+          "description": "Rewrite named function declarations as assignments.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "convert_index_to_field": {
+          "description": "Rewrite bracketed identifier string keys as fields.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "convert_local_function_to_assign": {
+          "description": "Rewrite local function declarations as local assignments.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "convert_luau_number": {
+          "description": "Rewrite Luau-only numeric literal forms.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "convert_square_root_call": {
+          "description": "Rewrite calls to math.sqrt as exponentiation.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "dedupe_requires": {
+          "description": "Merge duplicate top-level requires.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "filter_after_early_return": {
+          "description": "Remove statements after an unconditional return or break.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "freeze_module": {
+          "description": "Freeze module table returns that are safe to freeze.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "group_local_assignment": {
+          "description": "Group compatible adjacent local declarations.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "inject_module_path": {
+          "description": "Name a constant containing the source `DataModel` path.\n\nDefault: `unset`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "make_assignment_local": {
+          "description": "Convert const declarations to local declarations.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "remove_assertions": {
+          "description": "Remove assertion calls when their arguments can be discarded safely.\n\nDefault: `unset`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BuildPreserveSideEffects"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "remove_attribute": {
+          "description": "Remove function attributes.\n\nDefault: `unset`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BuildRemoveAttribute"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "remove_calls": {
+          "description": "Remove configured calls in statement position.\n\nDefault: `unset`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BuildRemoveCalls"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "remove_comments": {
+          "description": "Remove comments while retaining their newline count.\n\nDefault: `unset`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BuildRemoveComments"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "remove_compound_assignment": {
+          "description": "Rewrite compound assignments as ordinary assignments.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "remove_continue": {
+          "description": "Rewrite continue statements without changing loop behavior.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "remove_debug_profiling": {
+          "description": "Remove debug profiling calls.\n\nDefault: `unset`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BuildPreserveSideEffects"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "remove_empty_do": {
+          "description": "Remove empty do blocks.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "remove_floor_division": {
+          "description": "Rewrite floor division using math.floor.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "remove_function_call_parens": {
+          "description": "Remove parentheses from eligible single-argument calls.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "remove_if_expression": {
+          "description": "Rewrite if expressions as boolean expressions when safe.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "remove_interpolated_string": {
+          "description": "Rewrite interpolated strings using string.format.\n\nDefault: `unset`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BuildRemoveInterpolatedString"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "remove_method_call": {
+          "description": "Rewrite method calls as ordinary function calls.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "remove_method_definition": {
+          "description": "Rewrite method definitions as ordinary function definitions.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "remove_nil_declaration": {
+          "description": "Remove local declarations whose values are all nil.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "remove_types": {
+          "description": "Remove type syntax and declarations.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "remove_unused_if_branch": {
+          "description": "Remove branches whose conditions have constant truth values.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "remove_unused_variable": {
+          "description": "Remove unread local bindings when their values have no side effects.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "remove_unused_while": {
+          "description": "Remove while loops whose conditions are always false.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "rename_variables": {
+          "description": "Rename local bindings to short names.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "use_get_service": {
+          "description": "Rewrite direct service fields as `GetService` calls.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
         }
       },
       "additionalProperties": false
@@ -397,6 +788,48 @@
             "$ref": "#/$defs/BuildProfile"
           },
           "default": {}
+        },
+        "rules": {
+          "description": "Source transformations applied before require resolution and output generation.\n\nDefault: `{\"add_luau_directive\":null,\"append_text_comment\":null,\"compute_expression\":false,\"const_requires\":false,\"convert_function_to_assignment\":false,\"convert_index_to_field\":false,\"convert_local_function_to_assign\":false,\"convert_luau_number\":false,\"convert_square_root_call\":false,\"dedupe_requires\":false,\"filter_after_early_return\":false,\"freeze_module\":false,\"group_local_assignment\":false,\"inject_module_path\":null,\"make_assignment_local\":false,\"remove_assertions\":null,\"remove_attribute\":null,\"remove_calls\":null,\"remove_comments\":null,\"remove_compound_assignment\":false,\"remove_continue\":false,\"remove_debug_profiling\":null,\"remove_empty_do\":false,\"remove_floor_division\":false,\"remove_function_call_parens\":false,\"remove_if_expression\":false,\"remove_interpolated_string\":null,\"remove_method_call\":false,\"remove_method_definition\":false,\"remove_nil_declaration\":false,\"remove_types\":false,\"remove_unused_if_branch\":false,\"remove_unused_variable\":false,\"remove_unused_while\":false,\"rename_variables\":false,\"use_get_service\":false}`.",
+          "$ref": "#/$defs/BuildRules",
+          "default": {
+            "add_luau_directive": null,
+            "append_text_comment": null,
+            "compute_expression": false,
+            "const_requires": false,
+            "convert_function_to_assignment": false,
+            "convert_index_to_field": false,
+            "convert_local_function_to_assign": false,
+            "convert_luau_number": false,
+            "convert_square_root_call": false,
+            "dedupe_requires": false,
+            "filter_after_early_return": false,
+            "freeze_module": false,
+            "group_local_assignment": false,
+            "inject_module_path": null,
+            "make_assignment_local": false,
+            "remove_assertions": null,
+            "remove_attribute": null,
+            "remove_calls": null,
+            "remove_comments": null,
+            "remove_compound_assignment": false,
+            "remove_continue": false,
+            "remove_debug_profiling": null,
+            "remove_empty_do": false,
+            "remove_floor_division": false,
+            "remove_function_call_parens": false,
+            "remove_if_expression": false,
+            "remove_interpolated_string": null,
+            "remove_method_call": false,
+            "remove_method_definition": false,
+            "remove_nil_declaration": false,
+            "remove_types": false,
+            "remove_unused_if_branch": false,
+            "remove_unused_variable": false,
+            "remove_unused_while": false,
+            "rename_variables": false,
+            "use_get_service": false
+          }
         },
         "shape": {
           "description": "Directory output retains project-relative paths; bundle output follows the entry's dependencies.\n\nDefault: `\"directory\"`.",
@@ -1106,8 +1539,12 @@
           "default": {}
         },
         "entry": {
-          "description": "Entry path relative to the manifest.",
-          "type": "string"
+          "description": "Entry path relative to the manifest.\n\nDefault: `unset`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
         },
         "format": {
           "description": "Whether the graft exports a formatting hook.\n\nDefault: `false`.",
@@ -1143,8 +1580,7 @@
         "name",
         "version",
         "protocol",
-        "runtime",
-        "entry"
+        "runtime"
       ]
     },
     "Mode": {

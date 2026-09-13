@@ -279,6 +279,336 @@ fn graph_classifies_unresolved_dynamic_and_external_requires() -> TestResult {
 }
 
 #[test]
+fn configured_build_rules_transform_sources_before_output() -> TestResult {
+    let directory = project(
+        "[build]\ninputs = ['source']\noutput = 'output'\n[build.rules]\ncompute_expression = true\nconvert_function_to_assignment = true\nconvert_index_to_field = true\nconvert_luau_number = true\nconvert_square_root_call = true\nfilter_after_early_return = true\nremove_attribute = true\nremove_comments = { except = [] }\nremove_compound_assignment = true\nremove_debug_profiling = true\nremove_empty_do = true\nremove_floor_division = true\nremove_interpolated_string = true\nremove_method_call = true\nremove_method_definition = true\nremove_nil_declaration = true\nremove_types = true\nremove_unused_if_branch = true\nremove_unused_variable = true\nremove_unused_while = true\n",
+    );
+
+    fs::write(
+        directory.path().join("source/main.luau"),
+        "-- removed\nlocal object = {}\n@native\nfunction attributed() end\nfunction object:method(value: number): string\n\tdebug.profilebegin('method')\n\tlocal unused = 1\n\tlocal nilled = nil\n\tdo end\n\tif false then error('dead branch') else value += 0b1010 end\n\twhile false do error('dead loop') end\n\tdebug.profileend()\n\treturn `value {math.sqrt(value // 1)}`\nend\nlocal data = {[\"field\"] = 1 + 2}\nlocal function filtered()\n\tdo return end\n\terror('dead return')\nend\nfiltered()\nreturn object:method(data[\"field\"])\n",
+    )?;
+
+    let plan = Session::default().plan(directory.path(), None)?;
+    assert!(!plan.has_errors(), "{}", plan.json()?);
+    assert!(plan.stages.iter().any(|stage| stage == "rules"));
+    assert!(plan.stages.iter().any(|stage| stage == "lower"));
+
+    let output = std::str::from_utf8(
+        plan.contents(Path::new("source/main.luau"))
+            .ok_or("output")?,
+    )?;
+
+    for removed in [
+        "-- removed",
+        "@native",
+        ":method",
+        "debug.profile",
+        "unused",
+        "nilled",
+        "do end",
+        "dead branch",
+        "dead loop",
+        "dead return",
+        "0b1_0",
+        "//",
+        "`value",
+        "[\"field\"]",
+        ": number",
+        ": string",
+    ] {
+        assert!(!output.contains(removed), "{removed} remains in:\n{output}");
+    }
+
+    assert!(
+        output.contains("object.method = function(self, value)"),
+        "{output}"
+    );
+
+    assert!(output.contains("value = value + 0xA"), "{output}");
+    assert!(output.contains("math.floor(value / 1)"), "{output}");
+    assert!(output.contains("^ 0.5"), "{output}");
+    assert!(output.contains("string.format"), "{output}");
+    assert!(output.contains("field = 3"), "{output}");
+
+    assert!(
+        output.contains("object.method(object, data.field)"),
+        "{output}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn method_and_branch_rules_preserve_live_source() -> TestResult {
+    let directory = project(
+        "[build]\ninputs = ['source']\noutput = 'output'\n[build.rules]\nremove_method_definition = true\nremove_method_call = true\nremove_unused_if_branch = true\n",
+    );
+
+    fs::write(
+        directory.path().join("source/main.luau"),
+        "local object = {}\nfunction object:method(value) return self, value end\nobject:method{'value'}\nnested.object:method(1)\nif condition then\n\tone()\nelseif false then\n\ttwo()\nelse\n\tthree()\nend\n",
+    )?;
+
+    let plan = Session::default().plan(directory.path(), None)?;
+    assert!(!plan.has_errors(), "{}", plan.json()?);
+
+    let output = std::str::from_utf8(
+        plan.contents(Path::new("source/main.luau"))
+            .ok_or("output")?,
+    )?;
+
+    assert!(
+        output.contains("function object.method(self, value)"),
+        "{output}"
+    );
+
+    assert!(
+        output.contains("object.method(object, {'value'})"),
+        "{output}"
+    );
+
+    assert!(output.contains("nested.object:method(1)"), "{output}");
+    assert!(output.contains("one()"), "{output}");
+    assert!(!output.contains("two()"), "{output}");
+    assert!(output.contains("three()"), "{output}");
+
+    Ok(())
+}
+
+#[test]
+fn function_assignment_rules_preserve_attributes_generics_and_recursion() -> TestResult {
+    let directory = project(
+        "[build]\ninputs = ['source']\noutput = 'output'\n[build.rules]\nconvert_function_to_assignment = true\nconvert_local_function_to_assign = true\n",
+    );
+
+    fs::write(
+        directory.path().join("source/main.luau"),
+        "@native\nfunction attributed() end\nfunction generic<T>(value: T): T return value end\nlocal function recursive() return recursive() end\nreturn attributed, generic, recursive\n",
+    )?;
+
+    let plan = Session::default().plan(directory.path(), None)?;
+    assert!(!plan.has_errors(), "{}", plan.json()?);
+
+    let output = std::str::from_utf8(
+        plan.contents(Path::new("source/main.luau"))
+            .ok_or("output")?,
+    )?;
+
+    assert!(
+        output.contains("@native\nfunction attributed()"),
+        "{output}"
+    );
+
+    assert!(
+        output.contains("generic = function<T>(value: T)"),
+        "{output}"
+    );
+
+    assert!(output.contains("local function recursive()"), "{output}");
+
+    Ok(())
+}
+
+#[test]
+fn variable_renaming_uses_local_identity_and_preserves_behavior() -> TestResult {
+    let directory = project(
+        "[build]\nentry = 'source/main.luau'\nshape = 'bundle'\noutput = 'output/bundle.luau'\nminify = true\n[build.rules]\nrename_variables = true\n",
+    );
+
+    fs::write(
+        directory.path().join("source/main.luau"),
+        "local long_name = 3\nlocal function add(value) return value + long_name end\nreturn add(4)",
+    )?;
+
+    let plan = Session::default().plan(directory.path(), None)?;
+    assert!(!plan.has_errors(), "{}", plan.json()?);
+    let output = std::str::from_utf8(plan.contents(Path::new("bundle.luau")).ok_or("bundle")?)?;
+    assert!(!output.contains("long_name"), "{output}");
+    execute(directory.path(), output, "result == 7")?;
+
+    Ok(())
+}
+
+#[test]
+fn remaining_build_rules_transform_their_supported_forms() -> TestResult {
+    let directory = project(
+        "[build]\ninputs = ['source']\noutput = 'output'\n[build.rules]\nconst_requires = true\nappend_text_comment = { text = 'tail', location = 'end' }\nadd_luau_directive = 'native'\nremove_if_expression = true\nmake_assignment_local = true\nremove_function_call_parens = true\nremove_continue = true\nremove_assertions = true\ngroup_local_assignment = true\nconvert_local_function_to_assign = true\nremove_calls = ['print']\ndedupe_requires = true\nfreeze_module = true\n",
+    );
+
+    fs::write(directory.path().join("source/value.luau"), "return 1")?;
+
+    fs::write(
+        directory.path().join("source/main.luau"),
+        "local A = require('./value')\nlocal B = require('./value')\nconst changed = 1\nlocal first = 1\nlocal second = 2\nlocal function identity(value) return value end\nlocal selected = if true then 1 else 2\nassert(true)\nprint('drop')\nwhile running do continue end\nidentity({'value'})\nreturn {A, B, changed, first, second, selected}\n",
+    )?;
+
+    let plan = Session::default().plan(directory.path(), None)?;
+    assert!(!plan.has_errors(), "{}", plan.json()?);
+
+    let output = std::str::from_utf8(
+        plan.contents(Path::new("source/main.luau"))
+            .ok_or("output")?,
+    )?;
+
+    assert!(output.starts_with("--!native\n"), "{output}");
+    assert!(output.contains("const A = require"), "{output}");
+    assert!(output.contains("const B = A"), "{output}");
+    assert!(output.contains("local changed = 1"), "{output}");
+    assert!(output.contains("local first, second = 1, 2"), "{output}");
+    assert!(output.contains("local identity = function"), "{output}");
+    assert!(output.contains("true and 1 or 2"), "{output}");
+    assert!(!output.contains("assert("), "{output}");
+    assert!(!output.contains("print("), "{output}");
+    assert!(output.contains("repeat"), "{output}");
+    assert!(!output.contains("continue"), "{output}");
+    assert!(output.contains("identity{'value'}"), "{output}");
+    assert!(output.contains("return table.freeze("), "{output}");
+    assert!(output.trim_end().ends_with("-- tail"), "{output}");
+
+    Ok(())
+}
+
+#[test]
+fn grouped_locals_keep_sequential_dependencies() -> TestResult {
+    let directory = project(
+        "[build]\ninputs = ['source']\noutput = 'output'\n[build.rules]\ngroup_local_assignment = true\n",
+    );
+
+    let source = "local first = 1\nlocal second = first\nreturn second\n";
+    fs::write(directory.path().join("source/main.luau"), source)?;
+
+    let plan = Session::default().plan(directory.path(), None)?;
+    assert!(!plan.has_errors(), "{}", plan.json()?);
+
+    assert_eq!(
+        std::str::from_utf8(
+            plan.contents(Path::new("source/main.luau"))
+                .ok_or("output")?
+        )?,
+        source
+    );
+
+    Ok(())
+}
+
+#[test]
+fn build_rule_options_preserve_configured_source() -> TestResult {
+    let directory = project(
+        "[build]\ninputs = ['source']\noutput = 'output'\n[build.rules]\nremove_comments = {}\nappend_text_comment = { file = 'notice.txt' }\nremove_attribute = { match = ['^native$'] }\nremove_interpolated_string = { strategy = 'tostring' }\nremove_assertions = { preserve_arguments_side_effects = false }\nremove_debug_profiling = { preserve_arguments_side_effects = false }\nremove_calls = { functions = ['warn'], preserve_arguments_side_effects = false }\n",
+    );
+
+    fs::write(directory.path().join("notice.txt"), "notice")?;
+
+    fs::write(
+        directory.path().join("source/main.luau"),
+        "--!strict\n-- removed\n@native\nfunction removed() end\n@checked\nfunction retained() end\nassert(side())\ndebug.profilebegin(side())\nwarn(side())\nlocal nested = `nested {choose([=[}]=])}`\nreturn `value {side()}`, nested\n",
+    )?;
+
+    let plan = Session::default().plan(directory.path(), None)?;
+    assert!(!plan.has_errors(), "{}", plan.json()?);
+
+    let output = std::str::from_utf8(
+        plan.contents(Path::new("source/main.luau"))
+            .ok_or("output")?,
+    )?;
+
+    assert!(output.starts_with("-- notice\n--!strict\n"), "{output}");
+    assert!(!output.contains("-- removed"), "{output}");
+    assert!(!output.contains("@native"), "{output}");
+    assert!(output.contains("@checked"), "{output}");
+    assert!(!output.contains("assert("), "{output}");
+    assert!(!output.contains("debug.profilebegin("), "{output}");
+    assert!(!output.contains("warn("), "{output}");
+
+    assert!(
+        output.contains("string.format(\"nested %*\", choose([=[}]=]))"),
+        "{output}"
+    );
+
+    assert!(
+        output.contains("string.format(\"value %*\", side())"),
+        "{output}"
+    );
+
+    assert!(
+        plan.inputs()
+            .iter()
+            .any(|path| path.ends_with("notice.txt")),
+        "{:?}",
+        plan.inputs()
+    );
+
+    Ok(())
+}
+
+#[test]
+fn build_rule_names_and_strategies_are_validated() -> TestResult {
+    for rule in [
+        "inject_module_path = 'if'",
+        "remove_calls = ['debug.if']",
+        "remove_interpolated_string = { strategy = 'invalid' }",
+    ] {
+        let directory = project(&format!(
+            "[build]\ninputs = ['source']\noutput = 'output'\n[build.rules]\n{rule}\n"
+        ));
+
+        fs::write(directory.path().join("source/main.luau"), "return 1")?;
+        assert!(Session::default().plan(directory.path(), None).is_err());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn roblox_native_rules_use_services_and_mounted_module_paths() -> TestResult {
+    let directory = project(
+        "[build]\ninputs = ['source']\noutput = 'output'\n[build.rules]\nuse_get_service = true\ninject_module_path = 'MODULE_PATH'\n[analyze.roblox]\nproject = 'default.project.json'\n",
+    );
+
+    support::configure(directory.path())?;
+
+    fs::write(
+        directory.path().join("default.project.json"),
+        r#"{"name":"Game","tree":{"$className":"DataModel","ReplicatedStorage":{"Main":{"$path":"source/main.luau"}}}}"#,
+    )?;
+
+    fs::write(
+        directory.path().join("source/main.luau"),
+        "--!strict\n-- header\nreturn game.Players, game.AnalyticsService, game.Part, MODULE_PATH\n",
+    )?;
+
+    let plan = Session::default().plan(directory.path(), None)?;
+    assert!(!plan.has_errors(), "{}", plan.json()?);
+
+    let output = std::str::from_utf8(
+        plan.contents(Path::new("source/main.luau"))
+            .ok_or("output")?,
+    )?;
+
+    assert!(output.contains("game:GetService(\"Players\")"), "{output}");
+
+    assert!(
+        output.contains("game:GetService(\"AnalyticsService\")"),
+        "{output}"
+    );
+
+    assert!(output.contains("game.Part"), "{output}");
+
+    assert!(
+        output.starts_with("--!strict\n-- header\nlocal MODULE_PATH"),
+        "{output}"
+    );
+
+    assert!(
+        output.contains("local MODULE_PATH = \"@game/ReplicatedStorage/Main\""),
+        "{output}"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn graft_compilation_exposes_dependencies_and_validated_source_mappings() -> TestResult {
     let directory = project(
         "[grafts]\nexample = { path = '.' }\n[build]\ninputs = ['source']\nentry = 'source/main.luau'\nshape = 'bundle'\noutput = 'output/bundle.luau'\n[build.languages]\ncustom = 'example'\n",

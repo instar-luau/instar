@@ -48,7 +48,8 @@ pub struct Manifest {
     pub runtime: Runtime,
 
     /// Entry path relative to the manifest.
-    pub entry: PathBuf,
+    #[serde(default)]
+    pub entry: Option<PathBuf>,
 
     /// Whether the graft exports a formatting hook.
     #[serde(default)]
@@ -85,11 +86,25 @@ impl Manifest {
             return Err(io::Error::other("graft protocol or hooks are invalid"));
         }
 
-        if self.entry.as_os_str().is_empty()
-            || self
-                .entry
-                .components()
-                .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
+        match (&self.runtime, &self.entry) {
+            (Runtime::Native, Some(_)) => {
+                return Err(io::Error::other("native grafts must not define an entry"));
+            }
+
+            (Runtime::Native, None) | (Runtime::Luau | Runtime::Wasm, Some(_)) => {}
+
+            (Runtime::Luau | Runtime::Wasm, None) => {
+                return Err(io::Error::other(
+                    "Luau and WebAssembly grafts require an entry",
+                ));
+            }
+        }
+
+        if let Some(entry) = &self.entry
+            && (entry.as_os_str().is_empty()
+                || entry
+                    .components()
+                    .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir)))
         {
             return Err(io::Error::other(
                 "graft entry must remain inside its project directory",
@@ -414,7 +429,10 @@ impl Graft {
             .ok_or_else(|| io::Error::other("graft manifest has no parent"))?
             .canonicalize()?;
 
-        let entry = directory.join(&manifest.entry).canonicalize()?;
+        let entry = match manifest.entry {
+            Some(entry) => directory.join(entry).canonicalize()?,
+            None => native::entry(&directory).canonicalize()?,
+        };
 
         if !entry.starts_with(&directory) || !entry.is_file() {
             return Err(io::Error::other(
