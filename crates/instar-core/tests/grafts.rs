@@ -20,7 +20,8 @@ mod native;
 fn project_configuration_validates_dependencies_and_metadata() {
     for entries in [
         "local={path='../local-project'}\nremote={repo='owner/project',version='^0.2.0'}",
-        "remote={repo='owner/project',version='0.2.1'}",
+        "local={path='../local-project',configuration={factory={create='fluid.create'}}}",
+        "remote={repo='owner/project',version='0.2.1',configuration={factory={create='fluid.create'}}}",
     ] {
         assert!(InstarConfig::parse(&format!("[grafts]\n{entries}")).is_ok());
     }
@@ -35,6 +36,7 @@ fn project_configuration_validates_dependencies_and_metadata() {
         "example={repo='owner',version='0.2.1'}",
         "example={path='.',repo='owner/project',version='0.2.1'}",
         "example={path='.',unknown=true}",
+        "example={path='.',configuration=true}",
         "'../escape'={path='.'}",
     ] {
         assert!(
@@ -125,6 +127,36 @@ fn local_projects_resolve_relative_to_the_declaring_configuration() {
     assert!(graft::install(&consumer.join("missing.toml")).is_err());
     fs::write(consumer.join("instar.toml"), "[grafts]\nwrong={path='..'}").unwrap();
     assert!(Configuration::discover(&consumer.join("source.luau"), None).is_err());
+}
+
+#[test]
+fn project_configuration_overrides_graft_defaults() {
+    let directory = support::luau(
+        r#"
+local function lint(request)
+    local factory = request.configuration.factory
+    return {{rule = "example", message = factory.backend .. ":" .. factory.create, start = 0, ["end"] = #request.source}}
+end
+return table.freeze({lint = lint})
+"#,
+        "lint",
+    );
+
+    let manifest = directory.path().join("instar.toml");
+
+    fs::write(
+        &manifest,
+        fs::read_to_string(&manifest).unwrap()
+            + "[graft.configuration.factory]\nbackend='table'\ncreate='default.create'\n[grafts.example]\npath='.'\n[grafts.example.configuration.factory]\ncreate='fluid.create'\n",
+    )
+    .unwrap();
+
+    let configuration =
+        Configuration::discover(&directory.path().join("source.luau"), None).unwrap();
+
+    let findings = configuration.grafts[0].lint(b"return 1").unwrap();
+
+    assert_eq!(findings[0].message, "table:fluid.create");
 }
 
 #[test]

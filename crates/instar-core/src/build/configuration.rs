@@ -518,7 +518,10 @@ pub(super) fn discover(from: &Path, profile: Option<&str>) -> io::Result<Configu
 
     for (name, (dependency, directory)) in manifests {
         let path = super::paths::absolute(&dependency.resolve(&directory, &name)?)?;
-        let graft = crate::graft::Graft::load(&path, &name)?;
+
+        let graft =
+            crate::graft::Graft::load_with_configuration(&path, &name, dependency.configuration())?;
+
         files.insert(path, fs::read(graft.manifest())?);
         files.insert(graft.entry().to_owned(), fs::read(graft.entry())?);
         grafts.insert(name, graft);

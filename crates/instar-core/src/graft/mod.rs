@@ -124,6 +124,9 @@ pub enum Dependency {
     Local {
         /// Directory containing the graft project's instar.toml.
         path: PathBuf,
+        /// Project settings merged over the graft's defaults.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        configuration: BTreeMap<String, serde_json::Value>,
     },
 
     /// A GitHub project installed into Instar's graft cache.
@@ -132,6 +135,9 @@ pub enum Dependency {
         repo: String,
         /// Exact semantic version or an explicit compatible version requirement.
         version: String,
+        /// Project settings merged over the graft's defaults.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        configuration: BTreeMap<String, serde_json::Value>,
     },
 }
 
@@ -183,13 +189,13 @@ impl Dependency {
         component(name)?;
 
         match self {
-            Self::Local { path } if path.as_os_str().is_empty() => {
+            Self::Local { path, .. } if path.as_os_str().is_empty() => {
                 Err(io::Error::other("graft project path is empty"))
             }
 
             Self::Local { .. } => Ok(()),
 
-            Self::Remote { repo, version } => {
+            Self::Remote { repo, version, .. } => {
                 let parts = repo.split('/').collect::<Vec<_>>();
 
                 if parts.len() != 2 {
@@ -211,13 +217,19 @@ impl Dependency {
         self.validate(name)?;
 
         match self {
-            Self::Local { path } => Ok(directory.join(path).join("instar.toml")),
+            Self::Local { path, .. } => Ok(directory.join(path).join("instar.toml")),
             Self::Remote { .. } => self.cached(&cache()?, name),
         }
     }
 
+    pub(crate) fn configuration(&self) -> &BTreeMap<String, serde_json::Value> {
+        match self {
+            Self::Local { configuration, .. } | Self::Remote { configuration, .. } => configuration,
+        }
+    }
+
     fn cached(&self, cache: &Path, name: &str) -> io::Result<PathBuf> {
-        let Self::Remote { repo, version } = self else {
+        let Self::Remote { repo, version, .. } = self else {
             return Err(io::Error::other("expected a remote graft"));
         };
 
@@ -416,6 +428,14 @@ impl Graft {
     /// # Errors
     /// Returns invalid manifests, unsupported versions, or inaccessible artifacts.
     pub fn load(path: &Path, name: &str) -> io::Result<Self> {
+        Self::load_with_configuration(path, name, &BTreeMap::new())
+    }
+
+    pub(crate) fn load_with_configuration(
+        path: &Path,
+        name: &str,
+        project_configuration: &BTreeMap<String, serde_json::Value>,
+    ) -> io::Result<Self> {
         let manifest = Manifest::read(path)?;
 
         if manifest.name != name {
@@ -441,6 +461,19 @@ impl Graft {
             ));
         }
 
+        let mut configuration = manifest
+            .configuration
+            .clone()
+            .into_iter()
+            .collect::<serde_json::Map<_, _>>();
+
+        crate::configuration::overlay(
+            &mut configuration,
+            project_configuration.clone().into_iter().collect(),
+        );
+
+        let configuration = configuration.into_iter().collect();
+
         let artifact = match manifest.runtime {
             Runtime::Native => {
                 native::validate(&entry)?;
@@ -463,7 +496,7 @@ impl Graft {
                     manifest.format,
                     manifest.lint,
                     manifest.compile,
-                    &manifest.configuration,
+                    &configuration,
                 )?;
 
                 Artifact::Wasm(bytes)
@@ -477,7 +510,7 @@ impl Graft {
             format: manifest.format,
             lint: manifest.lint,
             compile: manifest.compile,
-            configuration: manifest.configuration,
+            configuration,
         })
     }
 

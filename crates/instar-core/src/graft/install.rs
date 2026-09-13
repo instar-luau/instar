@@ -382,7 +382,7 @@ pub fn install(path: &Path) -> io::Result<Vec<PathBuf>> {
                 );
             }
 
-            Dependency::Remote { repo, version } => {
+            Dependency::Remote { repo, version, .. } => {
                 let agent = ureq::AgentBuilder::new()
                     .https_only(true)
                     .tls_connector(Arc::new(
@@ -637,6 +637,7 @@ mod tests {
         let dependency = Dependency::Remote {
             repo: "owner/project".to_owned(),
             version: "^0.2.0".to_owned(),
+            configuration: BTreeMap::new(),
         };
 
         let path = dependency.cached(directory.path(), "example").unwrap();
