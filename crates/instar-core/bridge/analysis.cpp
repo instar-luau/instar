@@ -1,20 +1,20 @@
-#include "Luau/AstQuery.h"
 #include "Luau/AstJsonEncoder.h"
-#include <regex>
+#include "Luau/AstQuery.h"
 #include "Luau/Autocomplete.h"
-#include "Luau/JsonEmitter.h"
 #include "Luau/BuiltinDefinitions.h"
 #include "Luau/Config.h"
 #include "Luau/Error.h"
 #include "Luau/FileResolver.h"
 #include "Luau/Flags.h"
 #include "Luau/Frontend.h"
+#include "Luau/JsonEmitter.h"
 #include "Luau/LuauConfig.h"
 #include "Luau/Parser.h"
 #include "Luau/ToString.h"
 #include "Luau/TypeArena.h"
-#include "roblox.hpp"
 #include "color.hpp"
+#include "roblox.hpp"
+#include <regex>
 #include <unordered_set>
 
 #include <algorithm>
@@ -31,16 +31,16 @@ LUAU_FASTINT(LuauTarjanChildLimit)
 
 extern "C" {
 struct Bytes {
-  const char *data;
-  size_t size;
+    const char *data;
+    size_t size;
 };
 
 struct Span {
-  unsigned line;
-  unsigned column;
-  unsigned endLine;
-  unsigned endColumn;
-  bool related;
+    unsigned line;
+    unsigned column;
+    unsigned endLine;
+    unsigned endColumn;
+    bool related;
 };
 
 using Read = Bytes (*)(void *, Bytes);
@@ -52,2082 +52,2427 @@ using Annotate = void (*)(void *, Bytes, Bytes);
 using Alias = void (*)(void *, Bytes, Bytes);
 }
 
-static Bytes bytes(const std::string &value) {
-  return {value.data(), value.size()};
-}
+static Bytes bytes(const std::string &value) { return {value.data(), value.size()}; }
 
-static std::string text(Bytes value) {
-  return value.size ? std::string(value.data, value.size) : std::string{};
-}
+static std::string text(Bytes value) { return value.size ? std::string(value.data, value.size) : std::string{}; }
 
 void instar_initialize() {
-  static std::once_flag flags;
+    static std::once_flag flags;
 
-  std::call_once(flags, [] {
-    setLuauFlagsDefault();
-    if (FInt::LuauTarjanChildLimit > 0 && FInt::LuauTarjanChildLimit < 15000)
-      FInt::LuauTarjanChildLimit.value = 15000;
-  });
+    std::call_once(flags, [] {
+        setLuauFlagsDefault();
+        if (FInt::LuauTarjanChildLimit > 0 && FInt::LuauTarjanChildLimit < 15000) {
+            FInt::LuauTarjanChildLimit.value = 15000;
+        }
+    });
 }
 
 struct Files : Luau::FileResolver {
-  void *context;
-  Read read;
-  Resolve resolve;
-  Environment environment;
-  const std::vector<Luau::TypeId> *instances = nullptr;
+    void *context;
+    Read read;
+    Resolve resolve;
+    Environment environment;
+    const std::vector<Luau::TypeId> *instances = nullptr;
 
-  std::string physical(const std::string &name) {
-    return text(environment(context, bytes("path"), bytes(name), 0));
-  }
+    std::string physical(const std::string &name) { return text(environment(context, bytes("path"), bytes(name), 0)); }
 
-  Bytes member(const std::string &from, const std::string &name) {
-    if (!instances)
-      return {};
+    Bytes member(const std::string &from, const std::string &name) {
+        if (!instances) {
+            return {};
+        }
 
-    Bytes index = environment(context, bytes("script"), bytes(from), 0);
+        Bytes index = environment(context, bytes("script"), bytes(from), 0);
 
-    if (!index.data)
-      return {};
+        if (!index.data) {
+            return {};
+        }
 
-    auto type =
-        Luau::get<Luau::ExternType>(instances->at(std::stoull(text(index))));
+        auto type = Luau::get<Luau::ExternType>(instances->at(std::stoull(text(index))));
 
-    if (name != "Parent" && type->parent &&
-        Luau::lookupExternTypeProp(
-            Luau::get<Luau::ExternType>(Luau::follow(*type->parent)), name))
-      return {};
+        if (name != "Parent" && type->parent &&
+            Luau::lookupExternTypeProp(Luau::get<Luau::ExternType>(Luau::follow(*type->parent)), name)) {
+            return {};
+        }
 
-    return resolve(context, bytes(from), bytes(name), 2);
-  }
-
-  std::optional<Luau::SourceCode>
-  readSource(const Luau::ModuleName &name) override {
-    Bytes source = read(context, bytes(name));
-
-    if (!source.data)
-      return std::nullopt;
-
-    auto contents = text(source);
-    auto kind = text(environment(context, bytes("kind"), bytes(name), 0));
-
-    return Luau::SourceCode{std::move(contents),
-                            kind == "Script" || kind == "LocalScript"
-                                ? Luau::SourceCode::Script
-                                : Luau::SourceCode::Module};
-  }
-
-  std::optional<Luau::ModuleInfo>
-  resolveModule(const Luau::ModuleInfo *from, Luau::AstExpr *expression,
-                const Luau::TypeCheckLimits &) override {
-    if (!from)
-      return std::nullopt;
-
-    Bytes target{};
-
-    if (auto literal = expression->as<Luau::AstExprConstantString>())
-      target = resolve(context, bytes(from->name),
-                       {literal->value.data, literal->value.size}, 0);
-    else if (auto global = expression->as<Luau::AstExprGlobal>())
-      target =
-          resolve(context, bytes(from->name), bytes(global->name.value), 1);
-    else if (auto expressionMember = expression->as<Luau::AstExprIndexName>())
-      target = member(from->name, expressionMember->index.value);
-    else if (auto member = expression->as<Luau::AstExprIndexExpr>()) {
-      if (auto literal = member->index->as<Luau::AstExprConstantString>())
-        target = this->member(
-            from->name, std::string(literal->value.data, literal->value.size));
-    } else if (auto call = expression->as<Luau::AstExprCall>();
-               call && call->self && call->args.size >= 1) {
-      auto member = call->func->as<Luau::AstExprIndexName>();
-      auto literal = call->args.data[0]->as<Luau::AstExprConstantString>();
-
-      if (member && literal &&
-          (member->index == "GetService" || member->index == "WaitForChild" ||
-           member->index == "FindFirstChild"))
-        target = resolve(context, bytes(from->name),
-                         {literal->value.data, literal->value.size},
-                         member->index == "GetService" ? 4 : 3);
+        return resolve(context, bytes(from), bytes(name), 2);
     }
 
-    if (!target.data)
-      return std::nullopt;
+    std::optional<Luau::SourceCode> readSource(const Luau::ModuleName &name) override {
+        Bytes source = read(context, bytes(name));
 
-    return Luau::ModuleInfo{text(target)};
-  }
+        if (!source.data) {
+            return std::nullopt;
+        }
+
+        auto contents = text(source);
+        auto kind = text(environment(context, bytes("kind"), bytes(name), 0));
+
+        return Luau::SourceCode{std::move(contents), kind == "Script" || kind == "LocalScript"
+                                                         ? Luau::SourceCode::Script
+                                                         : Luau::SourceCode::Module};
+    }
+
+    std::optional<Luau::ModuleInfo> resolveModule(const Luau::ModuleInfo *from, Luau::AstExpr *expression,
+                                                  const Luau::TypeCheckLimits &) override {
+        if (!from) {
+            return std::nullopt;
+        }
+
+        Bytes target{};
+
+        if (auto literal = expression->as<Luau::AstExprConstantString>()) {
+            target = resolve(context, bytes(from->name), {literal->value.data, literal->value.size}, 0);
+        } else if (auto global = expression->as<Luau::AstExprGlobal>()) {
+            target = resolve(context, bytes(from->name), bytes(global->name.value), 1);
+        } else if (auto expressionMember = expression->as<Luau::AstExprIndexName>()) {
+            target = member(from->name, expressionMember->index.value);
+        } else if (auto member = expression->as<Luau::AstExprIndexExpr>()) {
+            if (auto literal = member->index->as<Luau::AstExprConstantString>()) {
+                target = this->member(from->name, std::string(literal->value.data, literal->value.size));
+            }
+        } else if (auto call = expression->as<Luau::AstExprCall>(); call && call->self && call->args.size >= 1) {
+            auto member = call->func->as<Luau::AstExprIndexName>();
+            auto literal = call->args.data[0]->as<Luau::AstExprConstantString>();
+
+            if (member && literal &&
+                (member->index == "GetService" || member->index == "WaitForChild" ||
+                 member->index == "FindFirstChild")) {
+                target = resolve(context, bytes(from->name), {literal->value.data, literal->value.size},
+                                 member->index == "GetService" ? 4 : 3);
+            }
+        }
+
+        if (!target.data) {
+            return std::nullopt;
+        }
+
+        return Luau::ModuleInfo{text(target)};
+    }
 };
 
 static Luau::ConfigOptions configurationOptions() {
-  Luau::ConfigOptions options;
-  options.aliasOptions = Luau::ConfigOptions::AliasOptions{std::nullopt, true};
+    Luau::ConfigOptions options;
+    options.aliasOptions = Luau::ConfigOptions::AliasOptions{std::nullopt, true};
 
-  return options;
+    return options;
 }
 
 static bool isConfiguration(const std::string &path) {
-  auto name = path.substr(path.find_last_of("/\\") + 1);
+    auto name = path.substr(path.find_last_of("/\\") + 1);
 
-  return name == ".config.luau" || name == "config.luau";
+    return name == ".config.luau" || name == "config.luau";
 }
 
 struct Configurations : Luau::ConfigResolver {
-  void *context;
-  Configuration configuration;
-  Report report;
-  std::optional<Luau::Mode> mode;
-  mutable std::map<std::string, Luau::Config> cache;
+    void *context;
+    Configuration configuration;
+    Report report;
+    std::optional<Luau::Mode> mode;
+    mutable std::map<std::string, Luau::Config> cache;
 
-  const Luau::Config &getConfig(const Luau::ModuleName &name,
-                                const Luau::TypeCheckLimits &) const override {
-    auto [iterator, inserted] = cache.try_emplace(name);
+    const Luau::Config &getConfig(const Luau::ModuleName &name, const Luau::TypeCheckLimits &) const override {
+        auto [iterator, inserted] = cache.try_emplace(name);
 
-    if (!inserted)
-      return iterator->second;
+        if (!inserted) {
+            return iterator->second;
+        }
 
-    auto &result = iterator->second;
+        auto &result = iterator->second;
 
-    for (size_t index = 0;; ++index) {
-      Bytes contents = configuration(context, bytes(name), index);
+        for (size_t index = 0;; ++index) {
+            Bytes contents = configuration(context, bytes(name), index);
 
-      if (!contents.data)
-        break;
+            if (!contents.data) {
+                break;
+            }
 
-      std::string payload = text(contents);
-      size_t separator = payload.find('\0');
+            std::string payload = text(contents);
+            size_t separator = payload.find('\0');
 
-      if (separator == std::string::npos)
-        throw std::runtime_error("configuration path unavailable");
+            if (separator == std::string::npos) {
+                throw std::runtime_error("configuration path unavailable");
+            }
 
-      std::string path = payload.substr(0, separator);
-      std::string source = payload.substr(separator + 1);
-      std::optional<std::string> error;
+            std::string path = payload.substr(0, separator);
+            std::string source = payload.substr(separator + 1);
+            std::optional<std::string> error;
 
-      if (isConfiguration(path)) {
-        Luau::InterruptCallbacks callbacks{};
-        Luau::ConfigOptions::AliasOptions aliases;
-        aliases.configLocation = path;
-        aliases.overwriteAliases = true;
+            if (isConfiguration(path)) {
+                Luau::InterruptCallbacks callbacks{};
+                Luau::ConfigOptions::AliasOptions aliases;
+                aliases.configLocation = path;
+                aliases.overwriteAliases = true;
 
-        error = Luau::extractLuauConfig(source, result, aliases,
-                                        std::move(callbacks));
-      } else {
-        error = Luau::parseConfig(source, result, configurationOptions());
-      }
+                error = Luau::extractLuauConfig(source, result, aliases, std::move(callbacks));
+            } else {
+                error = Luau::parseConfig(source, result, configurationOptions());
+            }
 
-      if (error)
-        report(context, bytes(path), bytes(*error), {}, true);
+            if (error) {
+                report(context, bytes(path), bytes(*error), {}, true);
+            }
+        }
+
+        if (mode) {
+            result.mode = *mode;
+        }
+
+        return result;
     }
-
-    if (mode)
-      result.mode = *mode;
-
-    return result;
-  }
 };
 
 extern "C" int instar_matches(Bytes pattern, Bytes source) noexcept {
-  try {
-    return std::regex_search(text(source), std::regex(text(pattern))) ? 1 : 0;
-  } catch (const std::exception &) {
-    return -1;
-  }
+    try {
+        return std::regex_search(text(source), std::regex(text(pattern))) ? 1 : 0;
+    } catch (const std::exception &) {
+        return -1;
+    }
 }
 
-extern "C" void instar_aliases(Bytes source, bool executable, void *context,
-                               Alias alias, Report report) noexcept {
-  try {
-    instar_initialize();
-    Luau::Config configuration;
+extern "C" void instar_aliases(Bytes source, bool executable, void *context, Alias alias, Report report) noexcept {
+    try {
+        instar_initialize();
+        Luau::Config configuration;
 
-    auto options = configurationOptions();
+        auto options = configurationOptions();
 
-    auto error = executable
-                     ? Luau::extractLuauConfig(text(source), configuration,
-                                               options.aliasOptions, {})
-                     : Luau::parseConfig(text(source), configuration, options);
+        auto error = executable ? Luau::extractLuauConfig(text(source), configuration, options.aliasOptions, {})
+                                : Luau::parseConfig(text(source), configuration, options);
 
-    if (error) {
-      report(context, {}, bytes(*error), {}, true);
+        if (error) {
+            report(context, {}, bytes(*error), {}, true);
 
-      return;
+            return;
+        }
+
+        for (const auto &entry : configuration.aliases) {
+            alias(context, bytes(entry.second.originalCase), bytes(entry.second.value));
+        }
+    } catch (const std::exception &error) {
+        report(context, {}, bytes(error.what()), {}, true);
+    } catch (...) {
+        report(context, {}, bytes("native configuration failure"), {}, true);
     }
-
-    for (const auto &entry : configuration.aliases)
-      alias(context, bytes(entry.second.originalCase), bytes(entry.second.value));
-  } catch (const std::exception &error) {
-    report(context, {}, bytes(error.what()), {}, true);
-  } catch (...) {
-    report(context, {}, bytes("native configuration failure"), {}, true);
-  }
 }
 
 struct Annotations : Luau::AstVisitor {
-  Luau::Module &module;
-  std::vector<size_t> lines{0};
-  std::map<size_t, std::string> insertions;
-  Luau::ToStringOptions options;
+    Luau::Module &module;
+    std::vector<size_t> lines{0};
+    std::map<size_t, std::string> insertions;
+    Luau::ToStringOptions options;
 
-  Annotations(Luau::Module &module, const std::string &source)
-      : module(module) {
-    for (size_t index = 0; index < source.size(); ++index)
-      if (source[index] == '\n')
-        lines.push_back(index + 1);
-  }
+    Annotations(Luau::Module &module, const std::string &source) : module(module) {
+        for (size_t index = 0; index < source.size(); ++index) {
+            if (source[index] == '\n') {
+                lines.push_back(index + 1);
+            }
+        }
+    }
 
-  template <typename Type>
-  void insert(Luau::Position position, Type type, const Luau::ScopePtr &scope) {
-    options.scope = scope;
-    auto result = Luau::toStringDetailed(type, options);
+    template <typename Type> void insert(Luau::Position position, Type type, const Luau::ScopePtr &scope) {
+        options.scope = scope;
+        auto result = Luau::toStringDetailed(type, options);
 
-    if (result.invalid || result.error || result.cycle || result.truncated)
-      return;
-
-    std::string annotation = result.name;
-
-    if constexpr (std::is_same_v<Type, Luau::TypePackId>)
-      if (annotation != "()")
-        annotation = "(" + annotation + ")";
-
-    std::string declaration = "type Annotation = ";
-
-    if constexpr (std::is_same_v<Type, Luau::TypePackId>)
-      declaration += "() -> ";
-
-    declaration += annotation;
-
-    Luau::Allocator allocator;
-    Luau::AstNameTable names(allocator);
-
-    auto parsed = Luau::Parser::parse(declaration.data(), declaration.size(),
-                                      names, allocator);
-
-    if (!parsed.errors.empty())
-      return;
-
-    insertions.emplace(lines.at(position.line) + position.column,
-                       ": " + annotation);
-  }
-
-  void local(Luau::AstLocal *value) {
-    if (value->annotation)
-      return;
-
-    if (auto scope = Luau::findScopeAtPosition(module, value->location.begin))
-      if (auto type = scope->lookup(value))
-        insert(value->location.end, *type, scope);
-  }
-
-  bool visit(Luau::AstStatLocal *statement) override {
-    for (auto *value : statement->vars)
-      local(value);
-
-    return true;
-  }
-
-  bool visit(Luau::AstStatFor *statement) override {
-    local(statement->var);
-
-    return true;
-  }
-
-  bool visit(Luau::AstStatForIn *statement) override {
-    for (auto *value : statement->vars)
-      local(value);
-
-    return true;
-  }
-
-  bool visit(Luau::AstExprFunction *function) override {
-    if (function->argLocation && function->generics.size == 0 &&
-        function->genericPacks.size == 0)
-      if (auto type = module.astTypes.find(function))
-        if (auto signature =
-                Luau::get<Luau::FunctionType>(Luau::follow(*type))) {
-          std::string generics;
-
-          auto generic = [&](const auto &type) {
-            if (!generics.empty())
-              generics += ", ";
-
-            generics += Luau::toString(type, options);
-          };
-
-          for (auto type : signature->generics)
-            generic(type);
-
-          for (auto type : signature->genericPacks)
-            generic(type);
-
-          if (!generics.empty())
-            insertions.emplace(lines.at(function->argLocation->begin.line) +
-                                   function->argLocation->begin.column,
-                               "<" + generics + ">");
+        if (result.invalid || result.error || result.cycle || result.truncated) {
+            return;
         }
 
-    for (auto *argument : function->args)
-      local(argument);
+        std::string annotation = result.name;
 
-    if (!function->returnAnnotation && function->argLocation)
-      if (auto scope =
-              Luau::findScopeAtPosition(module, function->body->location.begin))
-        insert(function->argLocation->end, scope->returnType, scope);
+        if constexpr (std::is_same_v<Type, Luau::TypePackId>) {
+            if (annotation != "()") {
+                annotation = "(" + annotation + ")";
+            }
+        }
 
-    return true;
-  }
+        std::string declaration = "type Annotation = ";
+
+        if constexpr (std::is_same_v<Type, Luau::TypePackId>) {
+            declaration += "() -> ";
+        }
+
+        declaration += annotation;
+
+        Luau::Allocator allocator;
+        Luau::AstNameTable names(allocator);
+
+        auto parsed = Luau::Parser::parse(declaration.data(), declaration.size(), names, allocator);
+
+        if (!parsed.errors.empty()) {
+            return;
+        }
+
+        insertions.emplace(lines.at(position.line) + position.column, ": " + annotation);
+    }
+
+    void local(Luau::AstLocal *value) {
+        if (value->annotation) {
+            return;
+        }
+
+        if (auto scope = Luau::findScopeAtPosition(module, value->location.begin)) {
+            if (auto type = scope->lookup(value)) {
+                insert(value->location.end, *type, scope);
+            }
+        }
+    }
+
+    bool visit(Luau::AstStatLocal *statement) override {
+        for (auto *value : statement->vars) {
+            local(value);
+        }
+
+        return true;
+    }
+
+    bool visit(Luau::AstStatFor *statement) override {
+        local(statement->var);
+
+        return true;
+    }
+
+    bool visit(Luau::AstStatForIn *statement) override {
+        for (auto *value : statement->vars) {
+            local(value);
+        }
+
+        return true;
+    }
+
+    bool visit(Luau::AstExprFunction *function) override {
+        if (function->argLocation && function->generics.size == 0 && function->genericPacks.size == 0) {
+            if (auto type = module.astTypes.find(function)) {
+                if (auto signature = Luau::get<Luau::FunctionType>(Luau::follow(*type))) {
+                    std::string generics;
+
+                    auto generic = [&](const auto &type) {
+                        if (!generics.empty()) {
+                            generics += ", ";
+                        }
+
+                        generics += Luau::toString(type, options);
+                    };
+
+                    for (auto type : signature->generics) {
+                        generic(type);
+                    }
+
+                    for (auto type : signature->genericPacks) {
+                        generic(type);
+                    }
+
+                    if (!generics.empty()) {
+                        insertions.emplace(lines.at(function->argLocation->begin.line) +
+                                               function->argLocation->begin.column,
+                                           "<" + generics + ">");
+                    }
+                }
+            }
+        }
+
+        for (auto *argument : function->args) {
+            local(argument);
+        }
+
+        if (!function->returnAnnotation && function->argLocation) {
+            if (auto scope = Luau::findScopeAtPosition(module, function->body->location.begin)) {
+                insert(function->argLocation->end, scope->returnType, scope);
+            }
+        }
+
+        return true;
+    }
 };
 
 struct Definition {
-  std::string path;
-  std::string source;
+    std::string path;
+    std::string source;
 };
 
 struct Diagnostic {
-  std::string path;
-  Luau::Location location;
-  std::string message;
-  bool error;
-  bool related;
+    std::string path;
+    Luau::Location location;
+    std::string message;
+    bool error;
+    bool related;
 };
 
 struct Session {
-  Files files;
-  Configurations configurations;
-  std::vector<Luau::TypeId> instances;
-  std::vector<Diagnostic> diagnostics;
-  std::vector<std::string> inputs;
-  std::map<std::string, std::vector<std::string>> metadata;
-  std::unique_ptr<Luau::Frontend> frontend;
+    Files files;
+    Configurations configurations;
+    std::vector<Luau::TypeId> instances;
+    std::vector<Diagnostic> diagnostics;
+    std::vector<std::string> inputs;
+    std::map<std::string, std::vector<std::string>> metadata;
+    std::unique_ptr<Luau::Frontend> frontend;
 };
 
 static std::mutex analysisMutex;
 
 extern "C" void instar_destroy(void *session) noexcept {
-  std::lock_guard<std::mutex> lock(analysisMutex);
-  delete static_cast<Session *>(session);
+    std::lock_guard<std::mutex> lock(analysisMutex);
+    delete static_cast<Session *>(session);
 }
 
-extern "C" void instar_analyze(void **handle, void *context, Read read, Resolve resolve,
-                               Configuration configuration, Report report,
-                               Annotate annotate, const Bytes *modules,
-                               size_t count, const Bytes *definitions,
-                               size_t definitionCount, Bytes configurationTypes,
-                               Environment environment, Bytes mode,
-                               bool oldSolver, bool annotations, const Bytes *changed, size_t changedCount) noexcept {
-  std::lock_guard<std::mutex> lock(analysisMutex);
+extern "C" void instar_analyze(void **handle, void *context, Read read, Resolve resolve, Configuration configuration,
+                               Report report, Annotate annotate, const Bytes *modules, size_t count,
+                               const Bytes *definitions, size_t definitionCount, Bytes configurationTypes,
+                               Environment environment, Bytes mode, bool oldSolver, bool annotations,
+                               const Bytes *changed, size_t changedCount) noexcept {
+    std::lock_guard<std::mutex> lock(analysisMutex);
 
-  try {
-    instar_initialize();
+    try {
+        instar_initialize();
 
-    auto metadata = [&](const std::string &category,
-                        size_t index) -> std::optional<std::string> {
-      Bytes value = environment(context, bytes(category), {}, index);
+        auto metadata = [&](const std::string &category, size_t index) -> std::optional<std::string> {
+            Bytes value = environment(context, bytes(category), {}, index);
 
-      return value.data ? std::optional<std::string>{text(value)} : std::nullopt;
-    };
-
-    std::map<std::string, std::vector<std::string>> values;
-
-    for (const auto &category : {"enabled", "definitions"})
-      if (auto value = metadata(category, 0))
-        values[category].push_back(*value);
-
-    for (const auto &category : {"enumeration", "class", "node"}) {
-      auto &entries = values[category];
-
-      for (size_t index = 0;; ++index) {
-        auto value = metadata(category, index);
-
-        if (!value)
-          break;
-
-        entries.push_back(*value);
-      }
-    }
-
-    std::set<std::string> loaded;
-    std::vector<Definition> sources;
-    std::vector<std::string> inputs{oldSolver ? "old" : "new", text(configurationTypes)};
-
-    for (size_t index = 0; index < definitionCount; ++index) {
-      std::string name = text(definitions[index]);
-
-      if (!loaded.insert(name).second)
-        continue;
-
-      Bytes source = read(context, bytes(name));
-
-      if (!source.data)
-        throw std::runtime_error("definition source unavailable: " + name);
-
-      sources.push_back({name, text(source)});
-      inputs.push_back(name);
-      inputs.push_back(sources.back().source);
-    }
-
-    auto *previous = static_cast<Session *>(*handle);
-    bool initializing = !previous || previous->inputs != inputs || previous->metadata != values;
-
-    if (initializing) {
-      delete previous;
-      *handle = nullptr;
-      auto replacement = std::make_unique<Session>();
-      replacement->inputs = std::move(inputs);
-      replacement->metadata = std::move(values);
-      *handle = replacement.release();
-    }
-
-    auto &session = *static_cast<Session *>(*handle);
-    auto &files = session.files;
-    files.context = context;
-    files.read = read;
-    files.resolve = resolve;
-    files.environment = environment;
-    auto &configurations = session.configurations;
-    configurations.cache.clear();
-    configurations.mode.reset();
-    configurations.context = context;
-    configurations.configuration = configuration;
-    configurations.report = report;
-
-    if (mode.size) {
-      Luau::Mode selected;
-
-      if (auto error = Luau::parseModeString(selected, text(mode)))
-        throw std::runtime_error(*error);
-
-      configurations.mode = selected;
-    }
-
-    if (initializing) {
-      Luau::FrontendOptions options;
-      options.runLintChecks = true;
-      options.retainFullTypeGraphs = true;
-
-      session.frontend = std::make_unique<Luau::Frontend>(
-          oldSolver ? Luau::SolverMode::Old : Luau::SolverMode::New,
-          &files, &configurations, options);
-    }
-
-    auto &frontend = *session.frontend;
-
-    if (changed && !initializing)
-      for (size_t index = 0; index < changedCount; ++index)
-        frontend.markDirty(text(changed[index]));
-    else
-      frontend.clear();
-
-    frontend.clearStats();
-
-    auto diagnostic = [&](const std::string &module,
-                          const Luau::Location &location,
-                          const std::string &message, bool error) {
-      if (initializing)
-        session.diagnostics.push_back({module, location, message, error});
-
-      report(context, bytes(module), bytes(message), {location.begin.line,
-             location.begin.column, location.end.line, location.end.column}, error);
-    };
-
-    auto typeDiagnostic = [&](const std::string &name,
-                              const Luau::TypeError &error) {
-      std::string message;
-
-      if (const auto *syntax = Luau::get_if<Luau::SyntaxError>(&error.data))
-        message = "SyntaxError: " + syntax->message;
-      else
-        message = "TypeError: " +
-                  Luau::toString(error, Luau::TypeErrorToStringOptions{&files});
-
-      diagnostic(name, error.location, message, true);
-
-      auto related = [&](const std::string &path, const Luau::Location &location, const std::string &message) {
-        if (initializing)
-          session.diagnostics.push_back({path, location, message, true, true});
-
-        report(context, bytes(path), bytes(message), {location.begin.line, location.begin.column, location.end.line, location.end.column, true}, true);
-      };
-
-      if (auto duplicate = Luau::get_if<Luau::DuplicateTypeDefinition>(&error.data)) {
-        if (duplicate->previousLocation)
-          related(name, *duplicate->previousLocation, "Previous declaration");
-      } else if (auto mismatch = Luau::get_if<Luau::TypeMismatch>(&error.data)) {
-        if (mismatch->error && !mismatch->error->moduleName.empty() && mismatch->error->location != Luau::Location{})
-          related(mismatch->error->moduleName, mismatch->error->location, Luau::toString(*mismatch->error, Luau::TypeErrorToStringOptions{&files}));
-      }
-    };
-
-    bool roblox = session.metadata.count("enabled") != 0;
-
-    if (initializing) {
-      Luau::registerBuiltinGlobals(frontend, frontend.globals);
-      std::string combined;
-      std::vector<std::pair<unsigned, std::string>> origins;
-      unsigned lines = 0;
-      auto bundle = metadata("definitions", 0);
-
-      auto append = [&](const std::string &name, const std::string &source) {
-        origins.emplace_back(lines, name);
-        combined += source + "\n";
-        lines += unsigned(std::count(source.begin(), source.end(), '\n')) + 1;
-      };
-
-      if (!bundle)
-        for (const auto &definition : sources) {
-          const auto &name = definition.path;
-
-          auto result = frontend.loadDefinitionFile(frontend.globals,
-                                                    frontend.globals.globalScope,
-                                                    definition.source, name, true);
-
-          for (const auto &error : result.parseResult.errors)
-            diagnostic(name, error.getLocation(),
-                       "SyntaxError: " + error.getMessage(), true);
-
-          if (result.module)
-            for (const auto &error : result.module->errors)
-              typeDiagnostic(name, error);
-        }
-
-      if (bundle) {
-        std::string name = "roblox";
-
-        append(name, *bundle);
-
-        for (const auto &definition : sources)
-          append(definition.path, definition.source);
-
-        auto result = frontend.loadDefinitionFile(frontend.globals,
-                                                  frontend.globals.globalScope,
-                                                  combined, "@roblox", false);
-
-        auto origin = [&](Luau::Location &location) {
-          auto iterator = origins.rbegin();
-
-          while (iterator != origins.rend() &&
-                 iterator->first > location.begin.line)
-            ++iterator;
-
-          if (iterator == origins.rend())
-            return name;
-
-          location.begin.line -= iterator->first;
-          location.end.line -= iterator->first;
-
-          if (iterator->second == name)
-            location = {};
-
-          return iterator->second;
+            return value.data ? std::optional<std::string>{text(value)} : std::nullopt;
         };
 
-        for (const auto &error : result.parseResult.errors) {
-          auto location = error.getLocation();
-          auto path = origin(location);
-          diagnostic(path, location, "SyntaxError: " + error.getMessage(), true);
+        std::map<std::string, std::vector<std::string>> values;
+
+        for (const auto &category : {"enabled", "definitions"}) {
+            if (auto value = metadata(category, 0)) {
+                values[category].push_back(*value);
+            }
         }
 
-        if (result.module)
-          for (auto error : result.module->errors) {
-            auto path = origin(error.location);
-            typeDiagnostic(path, error);
-          }
-      }
+        for (const auto &category : {"enumeration", "class", "node"}) {
+            auto &entries = values[category];
 
-      session.instances = roblox ? prepareRoblox(frontend, metadata)
-                                  : std::vector<Luau::TypeId>{};
+            for (size_t index = 0;; ++index) {
+                auto value = metadata(category, index);
 
-      files.instances = &session.instances;
+                if (!value) {
+                    break;
+                }
 
-      auto configurationScope =
-          std::make_shared<Luau::Scope>(frontend.globals.globalScope);
+                entries.push_back(*value);
+            }
+        }
 
-      auto configurationDefinition = frontend.loadDefinitionFile(
-          frontend.globals, configurationScope, text(configurationTypes),
-          "configuration", false);
+        std::set<std::string> loaded;
+        std::vector<Definition> sources;
+        std::vector<std::string> inputs{oldSolver ? "old" : "new", text(configurationTypes)};
 
-      if (!configurationDefinition.success)
-        throw std::runtime_error("configuration type definition failed");
+        for (size_t index = 0; index < definitionCount; ++index) {
+            std::string name = text(definitions[index]);
 
-      auto configurationType = configurationScope->lookupType("Config");
+            if (!loaded.insert(name).second) {
+                continue;
+            }
 
-      if (!configurationType)
-        throw std::runtime_error("configuration type unavailable");
+            Bytes source = read(context, bytes(name));
 
-      auto configurationReturn =
-          frontend.globals.globalTypes.addTypePack({configurationType->type});
+            if (!source.data) {
+                throw std::runtime_error("definition source unavailable: " + name);
+            }
 
-      frontend.prepareModuleScope = [configurationScope, configurationReturn,
-                                     &files](const Luau::ModuleName &name,
-                                              const Luau::ScopePtr &scope, bool) {
-        if (isConfiguration(name)) {
-          for (const auto &binding : configurationScope->exportedTypeBindings)
-            scope->exportedTypeBindings[binding.first] = binding.second;
+            sources.push_back({name, text(source)});
+            inputs.push_back(name);
+            inputs.push_back(sources.back().source);
+        }
 
-          scope->returnType = configurationReturn;
+        auto *previous = static_cast<Session *>(*handle);
+        bool initializing = !previous || previous->inputs != inputs || previous->metadata != values;
+
+        if (initializing) {
+            delete previous;
+            *handle = nullptr;
+            auto replacement = std::make_unique<Session>();
+            replacement->inputs = std::move(inputs);
+            replacement->metadata = std::move(values);
+            *handle = replacement.release();
+        }
+
+        auto &session = *static_cast<Session *>(*handle);
+        auto &files = session.files;
+        files.context = context;
+        files.read = read;
+        files.resolve = resolve;
+        files.environment = environment;
+        auto &configurations = session.configurations;
+        configurations.cache.clear();
+        configurations.mode.reset();
+        configurations.context = context;
+        configurations.configuration = configuration;
+        configurations.report = report;
+
+        if (mode.size) {
+            Luau::Mode selected;
+
+            if (auto error = Luau::parseModeString(selected, text(mode))) {
+                throw std::runtime_error(*error);
+            }
+
+            configurations.mode = selected;
+        }
+
+        if (initializing) {
+            Luau::FrontendOptions options;
+            options.runLintChecks = true;
+            options.retainFullTypeGraphs = true;
+
+            session.frontend = std::make_unique<Luau::Frontend>(
+                oldSolver ? Luau::SolverMode::Old : Luau::SolverMode::New, &files, &configurations, options);
+        }
+
+        auto &frontend = *session.frontend;
+
+        if (changed && !initializing) {
+            for (size_t index = 0; index < changedCount; ++index) {
+                frontend.markDirty(text(changed[index]));
+            }
         } else {
-          Bytes index = files.environment(files.context, bytes("script"), bytes(name), 0);
-
-          if (index.data)
-            scope->bindings[Luau::AstName("script")] =
-                Luau::Binding{files.instances->at(std::stoull(text(index)))};
-          else {
-            Bytes kind = files.environment(files.context, bytes("kind"), bytes(name), 0);
-
-            if (kind.data)
-              if (auto type = scope->lookupType(text(kind)))
-                scope->bindings[Luau::AstName("script")] =
-                    Luau::Binding{type->type};
-          }
+            frontend.clear();
         }
-      };
 
-      Luau::freeze(frontend.globals.globalTypes);
-      initializing = false;
-    } else {
-      for (const auto &stored : session.diagnostics)
-        if (stored.related)
-          report(context, bytes(stored.path), bytes(stored.message), {stored.location.begin.line, stored.location.begin.column, stored.location.end.line, stored.location.end.column, true}, stored.error);
-        else
-          diagnostic(stored.path, stored.location, stored.message, stored.error);
-    }
+        frontend.clearStats();
 
-    for (size_t index = 0; index < count; ++index)
-      if (!loaded.count(text(modules[index])))
-        frontend.queueModuleCheck(text(modules[index]));
+        auto diagnostic = [&](const std::string &module, const Luau::Location &location, const std::string &message,
+                              bool error) {
+            if (initializing) {
+                session.diagnostics.push_back({module, location, message, error});
+            }
 
-    auto pending = frontend.checkQueuedModules();
+            report(context, bytes(module), bytes(message),
+                   {location.begin.line, location.begin.column, location.end.line, location.end.column}, error);
+        };
 
-    for (size_t index = 0; index < count; ++index)
-      pending.push_back(text(modules[index]));
+        auto typeDiagnostic = [&](const std::string &name, const Luau::TypeError &error) {
+            std::string message;
 
-    std::set<std::string> visited;
+            if (const auto *syntax = Luau::get_if<Luau::SyntaxError>(&error.data)) {
+                message = "SyntaxError: " + syntax->message;
+            } else {
+                message = "TypeError: " + Luau::toString(error, Luau::TypeErrorToStringOptions{&files});
+            }
 
-    for (size_t index = 0; index < pending.size(); ++index) {
-      std::string name = pending[index];
+            diagnostic(name, error.location, message, true);
 
-      if (loaded.count(name) || !visited.insert(name).second) continue;
+            auto related = [&](const std::string &path, const Luau::Location &location, const std::string &message) {
+                if (initializing) {
+                    session.diagnostics.push_back({path, location, message, true, true});
+                }
 
-      if (auto trace = frontend.requireTrace.find(name); trace != frontend.requireTrace.end())
-        for (const auto &[dependency, location] : trace->second.requireList) pending.push_back(dependency);
+                report(context, bytes(path), bytes(message),
+                       {location.begin.line, location.begin.column, location.end.line, location.end.column, true},
+                       true);
+            };
 
-      auto checked = frontend.getCheckResult(name, false);
+            if (auto duplicate = Luau::get_if<Luau::DuplicateTypeDefinition>(&error.data)) {
+                if (duplicate->previousLocation) {
+                    related(name, *duplicate->previousLocation, "Previous declaration");
+                }
+            } else if (auto mismatch = Luau::get_if<Luau::TypeMismatch>(&error.data)) {
+                if (mismatch->error && !mismatch->error->moduleName.empty() &&
+                    mismatch->error->location != Luau::Location{}) {
+                    related(mismatch->error->moduleName, mismatch->error->location,
+                            Luau::toString(*mismatch->error, Luau::TypeErrorToStringOptions{&files}));
+                }
+            }
+        };
 
-      if (!checked) {
-        report(context, bytes(name),
-               bytes("native analysis result unavailable"), {}, true);
+        bool roblox = session.metadata.count("enabled") != 0;
 
-        continue;
-      }
+        if (initializing) {
+            Luau::registerBuiltinGlobals(frontend, frontend.globals);
+            std::string combined;
+            std::vector<std::pair<unsigned, std::string>> origins;
+            unsigned lines = 0;
+            auto bundle = metadata("definitions", 0);
 
-      const auto &result = *checked;
+            auto append = [&](const std::string &name, const std::string &source) {
+                origins.emplace_back(lines, name);
+                combined += source + "\n";
+                lines += unsigned(std::count(source.begin(), source.end(), '\n')) + 1;
+            };
 
-      for (const auto &error : result.errors)
-        typeDiagnostic(error.moduleName, error);
+            if (!bundle) {
+                for (const auto &definition : sources) {
+                    const auto &name = definition.path;
 
-      for (const auto &warning : result.lintResult.errors)
-        diagnostic(name, warning.location,
-                   std::string(Luau::LintWarning::getName(warning.code)) +
-                       ": " + warning.text,
-                   true);
+                    auto result = frontend.loadDefinitionFile(frontend.globals, frontend.globals.globalScope,
+                                                              definition.source, name, true);
 
-      for (const auto &warning : result.lintResult.warnings)
-        diagnostic(name, warning.location,
-                   std::string(Luau::LintWarning::getName(warning.code)) +
-                       ": " + warning.text,
-                   false);
+                    for (const auto &error : result.parseResult.errors) {
+                        diagnostic(name, error.getLocation(), "SyntaxError: " + error.getMessage(), true);
+                    }
 
-      if (annotations) {
-        auto *source = frontend.getSourceModule(name);
-        auto module = frontend.moduleResolver.getModule(name);
+                    if (result.module) {
+                        for (const auto &error : result.module->errors) {
+                            typeDiagnostic(name, error);
+                        }
+                    }
+                }
+            }
 
-        if (source && module) {
-          std::string contents = text(read(context, bytes(name)));
-          Annotations annotation(*module, contents);
-          source->root->visit(&annotation);
+            if (bundle) {
+                std::string name = "roblox";
 
-          for (auto iterator = annotation.insertions.rbegin();
-               iterator != annotation.insertions.rend(); ++iterator)
-            contents.insert(iterator->first, iterator->second);
+                append(name, *bundle);
 
-          annotate(context, bytes(name), bytes(contents));
+                for (const auto &definition : sources) {
+                    append(definition.path, definition.source);
+                }
+
+                auto result = frontend.loadDefinitionFile(frontend.globals, frontend.globals.globalScope, combined,
+                                                          "@roblox", false);
+
+                auto origin = [&](Luau::Location &location) {
+                    auto iterator = origins.rbegin();
+
+                    while (iterator != origins.rend() && iterator->first > location.begin.line) {
+                        ++iterator;
+                    }
+
+                    if (iterator == origins.rend()) {
+                        return name;
+                    }
+
+                    location.begin.line -= iterator->first;
+                    location.end.line -= iterator->first;
+
+                    if (iterator->second == name) {
+                        location = {};
+                    }
+
+                    return iterator->second;
+                };
+
+                for (const auto &error : result.parseResult.errors) {
+                    auto location = error.getLocation();
+                    auto path = origin(location);
+                    diagnostic(path, location, "SyntaxError: " + error.getMessage(), true);
+                }
+
+                if (result.module) {
+                    for (auto error : result.module->errors) {
+                        auto path = origin(error.location);
+                        typeDiagnostic(path, error);
+                    }
+                }
+            }
+
+            session.instances = roblox ? prepareRoblox(frontend, metadata) : std::vector<Luau::TypeId>{};
+
+            files.instances = &session.instances;
+
+            auto configurationScope = std::make_shared<Luau::Scope>(frontend.globals.globalScope);
+
+            auto configurationDefinition = frontend.loadDefinitionFile(
+                frontend.globals, configurationScope, text(configurationTypes), "configuration", false);
+
+            if (!configurationDefinition.success) {
+                throw std::runtime_error("configuration type definition failed");
+            }
+
+            auto configurationType = configurationScope->lookupType("Config");
+
+            if (!configurationType) {
+                throw std::runtime_error("configuration type unavailable");
+            }
+
+            auto configurationReturn = frontend.globals.globalTypes.addTypePack({configurationType->type});
+
+            frontend.prepareModuleScope = [configurationScope, configurationReturn,
+                                           &files](const Luau::ModuleName &name, const Luau::ScopePtr &scope, bool) {
+                if (isConfiguration(name)) {
+                    for (const auto &binding : configurationScope->exportedTypeBindings) {
+                        scope->exportedTypeBindings[binding.first] = binding.second;
+                    }
+
+                    scope->returnType = configurationReturn;
+                } else {
+                    Bytes index = files.environment(files.context, bytes("script"), bytes(name), 0);
+
+                    if (index.data) {
+                        scope->bindings[Luau::AstName("script")] =
+                            Luau::Binding{files.instances->at(std::stoull(text(index)))};
+                    } else {
+                        Bytes kind = files.environment(files.context, bytes("kind"), bytes(name), 0);
+
+                        if (kind.data) {
+                            if (auto type = scope->lookupType(text(kind))) {
+                                scope->bindings[Luau::AstName("script")] = Luau::Binding{type->type};
+                            }
+                        }
+                    }
+                }
+            };
+
+            Luau::freeze(frontend.globals.globalTypes);
+            initializing = false;
+        } else {
+            for (const auto &stored : session.diagnostics) {
+                if (stored.related) {
+                    report(context, bytes(stored.path), bytes(stored.message),
+                           {stored.location.begin.line, stored.location.begin.column, stored.location.end.line,
+                            stored.location.end.column, true},
+                           stored.error);
+                } else {
+                    diagnostic(stored.path, stored.location, stored.message, stored.error);
+                }
+            }
         }
-      }
-    }
 
-    files.context = nullptr;
-    configurations.context = nullptr;
-  } catch (const std::exception &error) {
-    delete static_cast<Session *>(*handle);
-    *handle = nullptr;
-    report(context, {}, bytes(error.what()), {}, true);
-  } catch (...) {
-    delete static_cast<Session *>(*handle);
-    *handle = nullptr;
-    report(context, {}, bytes("native analysis failure"), {}, true);
-  }
+        for (size_t index = 0; index < count; ++index) {
+            if (!loaded.count(text(modules[index]))) {
+                frontend.queueModuleCheck(text(modules[index]));
+            }
+        }
+
+        auto pending = frontend.checkQueuedModules();
+
+        for (size_t index = 0; index < count; ++index) {
+            pending.push_back(text(modules[index]));
+        }
+
+        std::set<std::string> visited;
+
+        for (size_t index = 0; index < pending.size(); ++index) {
+            std::string name = pending[index];
+
+            if (loaded.count(name) || !visited.insert(name).second) {
+                continue;
+            }
+
+            if (auto trace = frontend.requireTrace.find(name); trace != frontend.requireTrace.end()) {
+                for (const auto &[dependency, location] : trace->second.requireList) {
+                    pending.push_back(dependency);
+                }
+            }
+
+            auto checked = frontend.getCheckResult(name, false);
+
+            if (!checked) {
+                report(context, bytes(name), bytes("native analysis result unavailable"), {}, true);
+
+                continue;
+            }
+
+            const auto &result = *checked;
+
+            for (const auto &error : result.errors) {
+                typeDiagnostic(error.moduleName, error);
+            }
+
+            for (const auto &warning : result.lintResult.errors) {
+                diagnostic(name, warning.location,
+                           std::string(Luau::LintWarning::getName(warning.code)) + ": " + warning.text, true);
+            }
+
+            for (const auto &warning : result.lintResult.warnings) {
+                diagnostic(name, warning.location,
+                           std::string(Luau::LintWarning::getName(warning.code)) + ": " + warning.text, false);
+            }
+
+            if (annotations) {
+                auto *source = frontend.getSourceModule(name);
+                auto module = frontend.moduleResolver.getModule(name);
+
+                if (source && module) {
+                    std::string contents = text(read(context, bytes(name)));
+                    Annotations annotation(*module, contents);
+                    source->root->visit(&annotation);
+
+                    for (auto iterator = annotation.insertions.rbegin(); iterator != annotation.insertions.rend();
+                         ++iterator) {
+                        contents.insert(iterator->first, iterator->second);
+                    }
+
+                    annotate(context, bytes(name), bytes(contents));
+                }
+            }
+        }
+
+        files.context = nullptr;
+        configurations.context = nullptr;
+    } catch (const std::exception &error) {
+        delete static_cast<Session *>(*handle);
+        *handle = nullptr;
+        report(context, {}, bytes(error.what()), {}, true);
+    } catch (...) {
+        delete static_cast<Session *>(*handle);
+        *handle = nullptr;
+        report(context, {}, bytes("native analysis failure"), {}, true);
+    }
 }
 
 static std::vector<unsigned> coordinates(const Luau::Location &location) {
-  return {location.begin.line, location.begin.column, location.end.line, location.end.column};
+    return {location.begin.line, location.begin.column, location.end.line, location.end.column};
 }
 
 struct EditorAncestry : Luau::AstVisitor {
-  Luau::Position position;
-  std::vector<Luau::AstNode *> nodes;
+    Luau::Position position;
+    std::vector<Luau::AstNode *> nodes;
 
-  explicit EditorAncestry(Luau::Position position) : position(position) {}
+    explicit EditorAncestry(Luau::Position position) : position(position) {}
 
-  bool visit(Luau::AstNode *node) override {
-    if (!node->location.contains(position))
-      return false;
+    bool visit(Luau::AstNode *node) override {
+        if (!node->location.contains(position)) {
+            return false;
+        }
 
-    nodes.push_back(node);
+        nodes.push_back(node);
 
-    return true;
-  }
+        return true;
+    }
 
-  bool visit(Luau::AstType *type) override { return visit(static_cast<Luau::AstNode *>(type)); }
-  bool visit(Luau::AstTypePack *) override { return true; }
+    bool visit(Luau::AstType *type) override { return visit(static_cast<Luau::AstNode *>(type)); }
+    bool visit(Luau::AstTypePack *) override { return true; }
 };
 
 static std::vector<Luau::AstNode *> editorAncestry(const Luau::SourceModule &source, Luau::Position position) {
-  EditorAncestry visitor(position);
-  source.root->visit(&visitor);
+    EditorAncestry visitor(position);
+    source.root->visit(&visitor);
 
-  return visitor.nodes;
+    return visitor.nodes;
 }
 
-std::optional<Luau::TypeId> typeAt(const Luau::Module &module, const Luau::SourceModule &source, Luau::Position position) {
-  auto ancestry = editorAncestry(source, position);
+std::optional<Luau::TypeId> typeAt(const Luau::Module &module, const Luau::SourceModule &source,
+                                   Luau::Position position) {
+    auto ancestry = editorAncestry(source, position);
 
-  if (!ancestry.empty())
-    if (auto *annotation = ancestry.back()->asType()) {
-      if (auto *type = module.astResolvedTypes.find(annotation))
-        return *type;
+    if (!ancestry.empty()) {
+        if (auto *annotation = ancestry.back()->asType()) {
+            if (auto *type = module.astResolvedTypes.find(annotation)) {
+                return *type;
+            }
 
-      return std::nullopt;
+            return std::nullopt;
+        }
     }
 
-  if (!ancestry.empty())
-    if (auto *alias = ancestry.back()->as<Luau::AstStatTypeAlias>())
-      if (alias->nameLocation.contains(position))
-        if (auto scope = Luau::findScopeAtPosition(module, position))
-          if (auto type = scope->lookupType(alias->name.value))
-            return type->type;
+    if (!ancestry.empty()) {
+        if (auto *alias = ancestry.back()->as<Luau::AstStatTypeAlias>()) {
+            if (alias->nameLocation.contains(position)) {
+                if (auto scope = Luau::findScopeAtPosition(module, position)) {
+                    if (auto type = scope->lookupType(alias->name.value)) {
+                        return type->type;
+                    }
+                }
+            }
+        }
+    }
 
-  auto value = Luau::findExprOrLocalAtPosition(source, position);
+    auto value = Luau::findExprOrLocalAtPosition(source, position);
 
-  if (auto *local = value.getLocal()) {
-    if (auto scope = Luau::findScopeAtPosition(module, position))
-      return scope->lookup(local);
+    if (auto *local = value.getLocal()) {
+        if (auto scope = Luau::findScopeAtPosition(module, position)) {
+            return scope->lookup(local);
+        }
 
-    return std::nullopt;
-  }
+        return std::nullopt;
+    }
 
-  return Luau::findTypeAtPosition(module, source, position);
+    return Luau::findTypeAtPosition(module, source, position);
 }
 
-static std::string hoverDescription(const Luau::Module &module, const Luau::SourceModule &source, Luau::Position position, Luau::TypeId type) {
-  Luau::ToStringOptions options;
-  options.scope = Luau::findScopeAtPosition(module, position);
-  options.functionTypeArguments = true;
-  auto ancestry = editorAncestry(source, position);
-  auto *node = ancestry.empty() ? nullptr : ancestry.back();
-  std::string name;
-  std::optional<Luau::TypeFun> alias;
+static std::string hoverDescription(const Luau::Module &module, const Luau::SourceModule &source,
+                                    Luau::Position position, Luau::TypeId type) {
+    Luau::ToStringOptions options;
+    options.scope = Luau::findScopeAtPosition(module, position);
+    options.functionTypeArguments = true;
+    auto ancestry = editorAncestry(source, position);
+    auto *node = ancestry.empty() ? nullptr : ancestry.back();
+    std::string name;
+    std::optional<Luau::TypeFun> alias;
 
-  if (node && options.scope) {
-    if (auto *declaration = node->as<Luau::AstStatTypeAlias>(); declaration && declaration->nameLocation.contains(position)) {
-      name = declaration->name.value;
-      alias = options.scope->lookupType(name);
-    } else if (auto *reference = node->as<Luau::AstTypeReference>()) {
-      name = reference->name.value;
+    if (node && options.scope) {
+        if (auto *declaration = node->as<Luau::AstStatTypeAlias>();
+            declaration && declaration->nameLocation.contains(position)) {
+            name = declaration->name.value;
+            alias = options.scope->lookupType(name);
+        } else if (auto *reference = node->as<Luau::AstTypeReference>()) {
+            name = reference->name.value;
 
-      if (reference->prefix) {
-        alias = options.scope->lookupImportedType(reference->prefix->value, name);
-        name = std::string(reference->prefix->value) + "." + name;
-      } else
-        alias = options.scope->lookupType(name);
-    }
-  }
-
-  if (alias) {
-    std::vector<std::string> parameters;
-
-    for (const auto &parameter : alias->typeParams) {
-      auto text = Luau::toString(parameter.ty, options);
-
-      if (parameter.defaultValue)
-        text += " = " + Luau::toString(*parameter.defaultValue, options);
-
-      parameters.push_back(std::move(text));
+            if (reference->prefix) {
+                alias = options.scope->lookupImportedType(reference->prefix->value, name);
+                name = std::string(reference->prefix->value) + "." + name;
+            } else {
+                alias = options.scope->lookupType(name);
+            }
+        }
     }
 
-    for (const auto &parameter : alias->typePackParams) {
-      auto text = Luau::toString(parameter.tp, options);
+    if (alias) {
+        std::vector<std::string> parameters;
 
-      if (parameter.defaultValue)
-        text += " = " + Luau::toString(*parameter.defaultValue, options);
+        for (const auto &parameter : alias->typeParams) {
+            auto text = Luau::toString(parameter.ty, options);
 
-      parameters.push_back(std::move(text));
+            if (parameter.defaultValue) {
+                text += " = " + Luau::toString(*parameter.defaultValue, options);
+            }
+
+            parameters.push_back(std::move(text));
+        }
+
+        for (const auto &parameter : alias->typePackParams) {
+            auto text = Luau::toString(parameter.tp, options);
+
+            if (parameter.defaultValue) {
+                text += " = " + Luau::toString(*parameter.defaultValue, options);
+            }
+
+            parameters.push_back(std::move(text));
+        }
+
+        if (!parameters.empty()) {
+            name += "<";
+
+            for (size_t index = 0; index < parameters.size(); ++index) {
+                if (index) {
+                    name += ", ";
+                }
+
+                name += parameters[index];
+            }
+
+            name += ">";
+        }
+
+        options.exhaustive = true;
+        options.useLineBreaks = true;
+
+        return "type " + name + " = " + Luau::toString(alias->type, options);
     }
 
-    if (!parameters.empty()) {
-      name += "<";
+    auto value = Luau::findExprOrLocalAtPosition(source, position);
+    auto *expression = value.getExpr();
+    auto *local = value.getLocal();
 
-      for (size_t index = 0; index < parameters.size(); ++index) {
-        if (index)
-          name += ", ";
+    if (expression) {
+        if (auto *reference = expression->as<Luau::AstExprLocal>()) {
+            local = reference->local;
+        }
+    }
 
-        name += parameters[index];
-      }
+    if (local) {
+        name = local->name.value;
+    } else if (expression) {
+        name = Luau::getFunctionNameAsString(*expression).value_or("");
+    }
 
-      name += ">";
+    if (!node || !node->asType()) {
+        if (auto function = Luau::get<Luau::FunctionType>(Luau::follow(type))) {
+            if (expression) {
+                if (auto *index = expression->as<Luau::AstExprIndexName>(); index && index->op == ':') {
+                    options.hideFunctionSelfArgument = true;
+                    auto separator = name.rfind('.');
+
+                    if (separator != std::string::npos) {
+                        name[separator] = ':';
+                    }
+                }
+            }
+
+            return "function " + Luau::toStringNamedFunction(name, *function, options);
+        }
     }
 
     options.exhaustive = true;
     options.useLineBreaks = true;
+    auto description = Luau::toString(type, options);
 
-    return "type " + name + " = " + Luau::toString(alias->type, options);
-  }
-
-  auto value = Luau::findExprOrLocalAtPosition(source, position);
-  auto *expression = value.getExpr();
-  auto *local = value.getLocal();
-
-  if (expression)
-    if (auto *reference = expression->as<Luau::AstExprLocal>())
-      local = reference->local;
-
-  if (local)
-    name = local->name.value;
-  else if (expression)
-    name = Luau::getFunctionNameAsString(*expression).value_or("");
-
-  if (!node || !node->asType())
-    if (auto function = Luau::get<Luau::FunctionType>(Luau::follow(type))) {
-      if (expression)
-        if (auto *index = expression->as<Luau::AstExprIndexName>(); index && index->op == ':') {
-          options.hideFunctionSelfArgument = true;
-          auto separator = name.rfind('.');
-
-          if (separator != std::string::npos)
-            name[separator] = ':';
-        }
-
-      return "function " + Luau::toStringNamedFunction(name, *function, options);
+    if (node && node->asType()) {
+        return description;
     }
 
-  options.exhaustive = true;
-  options.useLineBreaks = true;
-  auto description = Luau::toString(type, options);
+    if (local) {
+        return std::string(local->isConst ? "const " : "local ") + name + ": " + description;
+    }
 
-  if (node && node->asType())
-    return description;
-
-  if (local)
-    return std::string(local->isConst ? "const " : "local ") + name + ": " + description;
-
-  return name.empty() ? description : name + ": " + description;
+    return name.empty() ? description : name + ": " + description;
 }
 
 struct Destination {
-  std::string path;
-  Luau::Location location;
-  std::string name;
+    std::string path;
+    Luau::Location location;
+    std::string name;
 };
 
 struct ExportValue : Luau::AstVisitor {
-  Luau::AstLocal *binding;
-  Luau::AstExpr *value = nullptr;
-  bool ambiguous = false;
+    Luau::AstLocal *binding;
+    Luau::AstExpr *value = nullptr;
+    bool ambiguous = false;
 
-  explicit ExportValue(Luau::AstLocal *binding) : binding(binding) {}
+    explicit ExportValue(Luau::AstLocal *binding) : binding(binding) {}
 
-  bool visit(Luau::AstExprFunction *) override { return false; }
+    bool visit(Luau::AstExprFunction *) override { return false; }
 
-  bool visit(Luau::AstStatLocal *statement) override {
-    if (binding)
-      for (size_t index = 0; index < statement->vars.size; ++index)
-        if (statement->vars.data[index] == binding) {
-          if (index < statement->values.size) value = statement->values.data[index];
-          else ambiguous = true;
+    bool visit(Luau::AstStatLocal *statement) override {
+        if (binding) {
+            for (size_t index = 0; index < statement->vars.size; ++index) {
+                if (statement->vars.data[index] == binding) {
+                    if (index < statement->values.size) {
+                        value = statement->values.data[index];
+                    } else {
+                        ambiguous = true;
+                    }
+                }
+            }
         }
 
-    return true;
-  }
-
-  bool visit(Luau::AstStatAssign *statement) override {
-    for (auto *target : statement->vars)
-      if (auto *local = target->as<Luau::AstExprLocal>(); local && local->local == binding) ambiguous = true;
-
-    return true;
-  }
-
-  bool visit(Luau::AstStatCompoundAssign *statement) override {
-    if (auto *local = statement->var->as<Luau::AstExprLocal>(); local && local->local == binding) ambiguous = true;
-
-    return true;
-  }
-
-  bool visit(Luau::AstStatReturn *statement) override {
-    if (!binding) {
-      if (value || statement->list.size != 1) ambiguous = true;
-      else value = statement->list.data[0];
+        return true;
     }
 
-    return true;
-  }
+    bool visit(Luau::AstStatAssign *statement) override {
+        for (auto *target : statement->vars) {
+            if (auto *local = target->as<Luau::AstExprLocal>(); local && local->local == binding) {
+                ambiguous = true;
+            }
+        }
+
+        return true;
+    }
+
+    bool visit(Luau::AstStatCompoundAssign *statement) override {
+        if (auto *local = statement->var->as<Luau::AstExprLocal>(); local && local->local == binding) {
+            ambiguous = true;
+        }
+
+        return true;
+    }
+
+    bool visit(Luau::AstStatReturn *statement) override {
+        if (!binding) {
+            if (value || statement->list.size != 1) {
+                ambiguous = true;
+            } else {
+                value = statement->list.data[0];
+            }
+        }
+
+        return true;
+    }
 };
 
 static std::optional<Destination> concreteProperty(Luau::Frontend &frontend, Luau::Module *module,
                                                    const Luau::SourceModule *source, std::string path,
                                                    Luau::AstExpr *expression, const std::string &name) {
-  std::unordered_set<Luau::AstExpr *> visited;
+    std::unordered_set<Luau::AstExpr *> visited;
 
-  while (expression && visited.insert(expression).second) {
-    if (auto *assertion = expression->as<Luau::AstExprTypeAssertion>()) {
-      expression = assertion->expr;
-      continue;
-    }
-
-    if (auto *group = expression->as<Luau::AstExprGroup>()) {
-      expression = group->expr;
-      continue;
-    }
-
-    if (auto type = module->astTypes.find(expression))
-      if (auto table = Luau::get<Luau::TableType>(Luau::follow(*type))) {
-        auto property = table->props.find(name);
-
-        if (property != table->props.end() && property->second.location) {
-          Destination target{table->definitionModuleName.empty() ? path : table->definitionModuleName, *property->second.location};
-
-          if (auto *parsed = frontend.getSourceModule(target.path)) {
-            auto ancestry = editorAncestry(*parsed, target.location.begin);
-
-            if (!ancestry.empty() && std::none_of(ancestry.begin(), ancestry.end(), [](auto *node) { return node->asType() != nullptr; }))
-              return target;
-          }
+    while (expression && visited.insert(expression).second) {
+        if (auto *assertion = expression->as<Luau::AstExprTypeAssertion>()) {
+            expression = assertion->expr;
+            continue;
         }
-      }
 
-    if (auto *local = expression->as<Luau::AstExprLocal>()) {
-      ExportValue initializer(local->local);
-      source->root->visit(&initializer);
+        if (auto *group = expression->as<Luau::AstExprGroup>()) {
+            expression = group->expr;
+            continue;
+        }
 
-      if (initializer.ambiguous) return std::nullopt;
+        if (auto type = module->astTypes.find(expression)) {
+            if (auto table = Luau::get<Luau::TableType>(Luau::follow(*type))) {
+                auto property = table->props.find(name);
 
-      expression = initializer.value;
-      continue;
+                if (property != table->props.end() && property->second.location) {
+                    Destination target{table->definitionModuleName.empty() ? path : table->definitionModuleName,
+                                       *property->second.location};
+
+                    if (auto *parsed = frontend.getSourceModule(target.path)) {
+                        auto ancestry = editorAncestry(*parsed, target.location.begin);
+
+                        if (!ancestry.empty() && std::none_of(ancestry.begin(), ancestry.end(),
+                                                              [](auto *node) { return node->asType() != nullptr; })) {
+                            return target;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (auto *local = expression->as<Luau::AstExprLocal>()) {
+            ExportValue initializer(local->local);
+            source->root->visit(&initializer);
+
+            if (initializer.ambiguous) {
+                return std::nullopt;
+            }
+
+            expression = initializer.value;
+            continue;
+        }
+
+        auto *call = expression->as<Luau::AstExprCall>();
+
+        if (!call || call->args.size != 1) {
+            return std::nullopt;
+        }
+
+        if (auto *member = call->func->as<Luau::AstExprIndexName>(); member && member->index == "freeze") {
+            if (auto *global = member->expr->as<Luau::AstExprGlobal>(); global && global->name == "table") {
+                expression = call->args.data[0];
+                continue;
+            }
+        }
+
+        auto *global = call->func->as<Luau::AstExprGlobal>();
+
+        if (!global || global->name != "require") {
+            return std::nullopt;
+        }
+
+        auto imported = frontend.moduleResolver.resolveModuleInfo(path, *call);
+
+        if (!imported) {
+            return std::nullopt;
+        }
+
+        auto checked = frontend.moduleResolver.getModule(imported->name);
+        auto *parsed = frontend.getSourceModule(imported->name);
+
+        if (!checked || !parsed) {
+            return std::nullopt;
+        }
+
+        ExportValue returned(nullptr);
+        parsed->root->visit(&returned);
+
+        if (returned.ambiguous) {
+            return std::nullopt;
+        }
+
+        module = checked.get();
+        source = parsed;
+        path = imported->name;
+        expression = returned.value;
     }
 
-    auto *call = expression->as<Luau::AstExprCall>();
-
-    if (!call || call->args.size != 1) return std::nullopt;
-
-    if (auto *member = call->func->as<Luau::AstExprIndexName>(); member && member->index == "freeze")
-      if (auto *global = member->expr->as<Luau::AstExprGlobal>(); global && global->name == "table") {
-        expression = call->args.data[0];
-        continue;
-      }
-
-    auto *global = call->func->as<Luau::AstExprGlobal>();
-
-    if (!global || global->name != "require") return std::nullopt;
-
-    auto imported = frontend.moduleResolver.resolveModuleInfo(path, *call);
-
-    if (!imported) return std::nullopt;
-
-    auto checked = frontend.moduleResolver.getModule(imported->name);
-    auto *parsed = frontend.getSourceModule(imported->name);
-
-    if (!checked || !parsed) return std::nullopt;
-
-    ExportValue returned(nullptr);
-    parsed->root->visit(&returned);
-
-    if (returned.ambiguous) return std::nullopt;
-
-    module = checked.get();
-    source = parsed;
-    path = imported->name;
-    expression = returned.value;
-  }
-
-  return std::nullopt;
+    return std::nullopt;
 }
 
-static std::optional<Destination> destination(Luau::Frontend &frontend, Luau::Module &module, const Luau::SourceModule &source,
-                                              const std::string &path, Luau::Position position, bool typeOnly) {
-  auto ancestry = editorAncestry(source, position);
+static std::optional<Destination> destination(Luau::Frontend &frontend, Luau::Module &module,
+                                              const Luau::SourceModule &source, const std::string &path,
+                                              Luau::Position position, bool typeOnly) {
+    auto ancestry = editorAncestry(source, position);
 
-  if (ancestry.empty())
-    return std::nullopt;
+    if (ancestry.empty()) {
+        return std::nullopt;
+    }
 
-  auto *node = ancestry.back();
+    auto *node = ancestry.back();
 
-  if (!typeOnly) {
-    for (auto *ancestor : ancestry)
-      if (auto *table = ancestor->as<Luau::AstExprTable>())
-        for (const auto &item : table->items)
-          if (item.kind == Luau::AstExprTable::Item::Kind::Record && item.key->location.contains(position))
-            return Destination{path, item.key->location};
-
-    auto value = Luau::findExprOrLocalAtPosition(source, position);
-
-    if (auto *local = value.getLocal())
-      return Destination{path, local->location};
-
-    if (auto *local = node->as<Luau::AstExprLocal>())
-      return Destination{path, local->local->location};
-
-    if (auto *alias = node->as<Luau::AstStatTypeAlias>())
-      if (alias->nameLocation.contains(position))
-        return Destination{path, alias->nameLocation};
-
-    if (auto *index = node->as<Luau::AstExprIndexName>())
-      if (auto target = concreteProperty(frontend, &module, &source, path, index->expr, index->index.value))
-        return target;
-
-    if (auto *index = node->as<Luau::AstExprIndexName>())
-      if (auto owner = module.astTypes.find(index->expr))
-        if (auto table = Luau::get<Luau::TableType>(Luau::follow(*owner))) {
-          auto property = table->props.find(index->index.value);
-
-          if (property != table->props.end()) {
-            const auto &location = property->second.location ? property->second.location : property->second.typeLocation;
-
-            if (location)
-              return Destination{table->definitionModuleName.empty() ? path : table->definitionModuleName, *location};
-          }
+    if (!typeOnly) {
+        for (auto *ancestor : ancestry) {
+            if (auto *table = ancestor->as<Luau::AstExprTable>()) {
+                for (const auto &item : table->items) {
+                    if (item.kind == Luau::AstExprTable::Item::Kind::Record && item.key->location.contains(position)) {
+                        return Destination{path, item.key->location};
+                    }
+                }
+            }
         }
-  }
 
-  if (auto *reference = node->as<Luau::AstTypeReference>()) {
-    for (auto scope = Luau::findScopeAtPosition(module, position); scope; scope = scope->parent) {
-      if (!typeOnly && reference->prefix && reference->prefixLocation && reference->prefixLocation->contains(position))
-        if (auto binding = scope->linearSearchForBinding(reference->prefix->value))
-          return Destination{path, binding->location};
+        auto value = Luau::findExprOrLocalAtPosition(source, position);
 
-      if (!reference->prefix) {
-        auto declaration = scope->typeAliasNameLocations.find(reference->name.value);
+        if (auto *local = value.getLocal()) {
+            return Destination{path, local->location};
+        }
 
-        if (declaration != scope->typeAliasNameLocations.end())
-          return Destination{path, declaration->second};
-      } else {
-        auto imported = scope->importedModules.find(reference->prefix->value);
+        if (auto *local = node->as<Luau::AstExprLocal>()) {
+            return Destination{path, local->local->location};
+        }
 
-        if (imported != scope->importedModules.end())
-          if (auto *parsed = frontend.getSourceModule(imported->second))
-            for (auto *statement : parsed->root->body)
-              if (auto *alias = statement->as<Luau::AstStatTypeAlias>(); alias && alias->exported && std::string_view(alias->name.value) == reference->name.value)
-                return Destination{imported->second, alias->nameLocation};
-      }
+        if (auto *alias = node->as<Luau::AstStatTypeAlias>()) {
+            if (alias->nameLocation.contains(position)) {
+                return Destination{path, alias->nameLocation};
+            }
+        }
+
+        if (auto *index = node->as<Luau::AstExprIndexName>()) {
+            if (auto target = concreteProperty(frontend, &module, &source, path, index->expr, index->index.value)) {
+                return target;
+            }
+        }
+
+        if (auto *index = node->as<Luau::AstExprIndexName>()) {
+            if (auto owner = module.astTypes.find(index->expr)) {
+                if (auto table = Luau::get<Luau::TableType>(Luau::follow(*owner))) {
+                    auto property = table->props.find(index->index.value);
+
+                    if (property != table->props.end()) {
+                        const auto &location =
+                            property->second.location ? property->second.location : property->second.typeLocation;
+
+                        if (location) {
+                            return Destination{table->definitionModuleName.empty() ? path : table->definitionModuleName,
+                                               *location};
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (auto *reference = node->as<Luau::AstTypeReference>()) {
+        for (auto scope = Luau::findScopeAtPosition(module, position); scope; scope = scope->parent) {
+            if (!typeOnly && reference->prefix && reference->prefixLocation &&
+                reference->prefixLocation->contains(position)) {
+                if (auto binding = scope->linearSearchForBinding(reference->prefix->value)) {
+                    return Destination{path, binding->location};
+                }
+            }
+
+            if (!reference->prefix) {
+                auto declaration = scope->typeAliasNameLocations.find(reference->name.value);
+
+                if (declaration != scope->typeAliasNameLocations.end()) {
+                    return Destination{path, declaration->second};
+                }
+            } else {
+                auto imported = scope->importedModules.find(reference->prefix->value);
+
+                if (imported != scope->importedModules.end()) {
+                    if (auto *parsed = frontend.getSourceModule(imported->second)) {
+                        for (auto *statement : parsed->root->body) {
+                            if (auto *alias = statement->as<Luau::AstStatTypeAlias>();
+                                alias && alias->exported &&
+                                std::string_view(alias->name.value) == reference->name.value) {
+                                return Destination{imported->second, alias->nameLocation};
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return std::nullopt;
+    }
+
+    if (auto type = typeAt(module, source, position)) {
+        auto followed = Luau::follow(*type);
+
+        if (auto function = Luau::get<Luau::FunctionType>(followed)) {
+            if (function->definition) {
+                const auto &definition = *function->definition;
+                Destination target{definition.definitionModuleName.value_or(path), definition.originalNameLocation};
+
+                if (target.location.begin == target.location.end) {
+                    target.location = definition.definitionLocation;
+                } else if (target.location.end.column) {
+                    if (auto *parsed = frontend.getSourceModule(target.path)) {
+                        if (auto *expression = Luau::findExprAtPosition(
+                                *parsed, {target.location.end.line, target.location.end.column - 1})) {
+                            if (auto *index = expression->as<Luau::AstExprIndexName>()) {
+                                target.location = index->indexLocation;
+                            }
+                        }
+                    }
+                }
+
+                return target;
+            }
+        }
+
+        if (typeOnly) {
+            if (auto table = Luau::get<Luau::TableType>(followed)) {
+                return Destination{table->definitionModuleName.empty() ? path : table->definitionModuleName,
+                                   table->definitionLocation};
+            }
+
+            if (auto external = Luau::get<Luau::ExternType>(followed)) {
+                if (external->definitionLocation) {
+                    return Destination{external->definitionModuleName, *external->definitionLocation};
+                }
+            }
+        }
     }
 
     return std::nullopt;
-  }
-
-  if (auto type = typeAt(module, source, position)) {
-    auto followed = Luau::follow(*type);
-
-    if (auto function = Luau::get<Luau::FunctionType>(followed))
-      if (function->definition) {
-        const auto &definition = *function->definition;
-        Destination target{definition.definitionModuleName.value_or(path), definition.originalNameLocation};
-
-        if (target.location.begin == target.location.end)
-          target.location = definition.definitionLocation;
-        else if (target.location.end.column)
-          if (auto *parsed = frontend.getSourceModule(target.path))
-            if (auto *expression = Luau::findExprAtPosition(*parsed, {target.location.end.line, target.location.end.column - 1}))
-              if (auto *index = expression->as<Luau::AstExprIndexName>())
-                target.location = index->indexLocation;
-
-        return target;
-      }
-
-    if (typeOnly) {
-      if (auto table = Luau::get<Luau::TableType>(followed))
-        return Destination{table->definitionModuleName.empty() ? path : table->definitionModuleName, table->definitionLocation};
-
-      if (auto external = Luau::get<Luau::ExternType>(followed))
-        if (external->definitionLocation)
-          return Destination{external->definitionModuleName, *external->definitionLocation};
-    }
-  }
-
-  return std::nullopt;
 }
 
 static std::string documentation(Luau::Frontend &frontend, Files &files, const Destination &target) {
-  auto *source = frontend.getSourceModule(target.path);
+    auto *source = frontend.getSourceModule(target.path);
 
-  if (!source)
-    return {};
+    if (!source) {
+        return {};
+    }
 
-  auto contents = text(files.read(files.context, bytes(target.path)));
-  std::vector<size_t> lines{0};
+    auto contents = text(files.read(files.context, bytes(target.path)));
+    std::vector<size_t> lines{0};
 
-  for (size_t index = 0; index < contents.size(); ++index)
-    if (contents[index] == '\n')
-      lines.push_back(index + 1);
+    for (size_t index = 0; index < contents.size(); ++index) {
+        if (contents[index] == '\n') {
+            lines.push_back(index + 1);
+        }
+    }
 
-  if (target.location.begin.line >= lines.size())
-    return {};
+    if (target.location.begin.line >= lines.size()) {
+        return {};
+    }
 
-  size_t boundary = lines[target.location.begin.line];
-  std::vector<std::string> comments;
+    size_t boundary = lines[target.location.begin.line];
+    std::vector<std::string> comments;
 
-  for (auto iterator = source->commentLocations.rbegin(); iterator != source->commentLocations.rend(); ++iterator) {
-    size_t begin = lines.at(iterator->location.begin.line) + iterator->location.begin.column;
-    size_t end = lines.at(iterator->location.end.line) + iterator->location.end.column;
+    for (auto iterator = source->commentLocations.rbegin(); iterator != source->commentLocations.rend(); ++iterator) {
+        size_t begin = lines.at(iterator->location.begin.line) + iterator->location.begin.column;
+        size_t end = lines.at(iterator->location.end.line) + iterator->location.end.column;
 
-    if (end > boundary)
-      continue;
+        if (end > boundary) {
+            continue;
+        }
 
-    if (contents.substr(end, boundary - end).find_first_not_of(" \t\r\n") != std::string::npos ||
-        contents.substr(lines.at(iterator->location.begin.line), iterator->location.begin.column).find_first_not_of(" \t") != std::string::npos)
-      break;
+        if (contents.substr(end, boundary - end).find_first_not_of(" \t\r\n") != std::string::npos ||
+            contents.substr(lines.at(iterator->location.begin.line), iterator->location.begin.column)
+                    .find_first_not_of(" \t") != std::string::npos) {
+            break;
+        }
 
-    auto comment = contents.substr(begin, end - begin);
+        auto comment = contents.substr(begin, end - begin);
 
-    if (comment == "---")
-      comments.emplace_back();
-    else if (comment.compare(0, 4, "--- ") == 0)
-      comments.push_back(comment.substr(4));
-    else if (comment.compare(0, 3, "--[") == 0) {
-      size_t opening = comment.find_first_not_of('=', 3);
+        if (comment == "---") {
+            comments.emplace_back();
+        } else if (comment.compare(0, 4, "--- ") == 0) {
+            comments.push_back(comment.substr(4));
+        } else if (comment.compare(0, 3, "--[") == 0) {
+            size_t opening = comment.find_first_not_of('=', 3);
 
-      if (opening == std::string::npos || comment[opening] != '[')
-        break;
+            if (opening == std::string::npos || comment[opening] != '[') {
+                break;
+            }
 
-      size_t ending = opening - 1;
+            size_t ending = opening - 1;
 
-      if (comment.size() < opening + 1 + ending)
-        break;
+            if (comment.size() < opening + 1 + ending) {
+                break;
+            }
 
-      comments.push_back(comment.substr(opening + 1, comment.size() - opening - 1 - ending));
-    } else
-      break;
+            comments.push_back(comment.substr(opening + 1, comment.size() - opening - 1 - ending));
+        } else {
+            break;
+        }
 
-    boundary = begin;
-  }
+        boundary = begin;
+    }
 
-  std::string result;
+    std::string result;
 
-  for (auto iterator = comments.rbegin(); iterator != comments.rend(); ++iterator) {
-    if (!result.empty())
-      result += "\n";
+    for (auto iterator = comments.rbegin(); iterator != comments.rend(); ++iterator) {
+        if (!result.empty()) {
+            result += "\n";
+        }
 
-    result += *iterator;
-  }
+        result += *iterator;
+    }
 
-  return result;
+    return result;
 }
 
 struct EditorSymbols : Luau::AstVisitor {
-  Files &files;
-  Luau::Frontend &frontend;
-  Luau::Json::JsonEmitter &output;
-  Luau::Module &module;
-  const Luau::SourceModule &source;
-  std::string path;
-  std::optional<Destination> target;
-  bool tokens;
-  bool links;
-  std::unordered_set<Luau::AstLocal *> parameters;
+    Files &files;
+    Luau::Frontend &frontend;
+    Luau::Json::JsonEmitter &output;
+    Luau::Module &module;
+    const Luau::SourceModule &source;
+    std::string path;
+    std::optional<Destination> target;
+    bool tokens;
+    bool links;
+    std::unordered_set<Luau::AstLocal *> parameters;
 
-  EditorSymbols(Files &files, Luau::Frontend &frontend, Luau::Json::JsonEmitter &output, Luau::Module &module, const Luau::SourceModule &source,
-                std::string path, std::optional<Destination> target, bool tokens, bool links)
-      : files(files), frontend(frontend), output(output), module(module), source(source), path(std::move(path)), target(std::move(target)), tokens(tokens), links(links) {
-    if (this->target)
-      this->target->path = files.physical(this->target->path);
-  }
-
-  void entry(const std::string &name, Luau::Location selection, Luau::Location range, unsigned kind, bool declaration, unsigned modifiers = 0) {
-    if (target) {
-      if (!target->name.empty() && name != target->name)
-        return;
-
-      auto resolved = destination(frontend, module, source, path, selection.begin, false);
-
-      if (!(declaration && files.physical(path) == target->path && selection == target->location) &&
-          (!resolved || files.physical(resolved->path) != target->path || resolved->location != target->location))
-        return;
-    } else if (!tokens && !links && !declaration)
-      return;
-
-    writeEntry(name, selection, range, kind, declaration, modifiers);
-  }
-
-  void writeEntry(const std::string &name, Luau::Location selection, Luau::Location range, unsigned kind, bool declaration, unsigned modifiers = 0) {
-    if (links && kind != 3)
-      return;
-
-    output.writeComma();
-    auto object = output.writeObject();
-    object.writePair("name", name);
-    object.writePair("path", path);
-    object.writePair("range", coordinates(tokens || target ? selection : range));
-    object.writePair("selection", coordinates(selection));
-    object.writePair("kind", kind);
-    object.writePair("declaration", declaration);
-    object.writePair("modifiers", modifiers);
-  }
-
-  void local(Luau::AstLocal *local, Luau::Location range) {
-    if (links)
-      return;
-
-    if (target && (files.physical(path) != target->path || local->location != target->location))
-      return;
-
-    unsigned kind = 13;
-
-    if (auto scope = Luau::findScopeAtPosition(module, local->location.begin))
-      if (auto type = scope->lookup(local))
-        if (Luau::get<Luau::FunctionType>(Luau::follow(*type)))
-          kind = 12;
-
-    writeEntry(local->name.value, local->location, range, tokens && parameters.count(local) ? 27 : kind, true, local->isConst ? 2 : 0);
-  }
-
-  bool visit(Luau::AstStatLocal *statement) override {
-    for (auto *value : statement->vars)
-      local(value, statement->location);
-
-    return true;
-  }
-
-  bool visit(Luau::AstStatLocalFunction *statement) override {
-    local(statement->name, statement->location);
-
-    return true;
-  }
-
-  bool visit(Luau::AstStatFunction *statement) override {
-    if (auto *global = statement->name->as<Luau::AstExprGlobal>())
-      entry(global->name.value, global->location, statement->location, 12, true);
-    else if (auto *index = statement->name->as<Luau::AstExprIndexName>()) {
-      entry(index->index.value, index->indexLocation, statement->location, tokens && index->op == ':' ? 6 : 12, true);
-      index->expr->visit(this);
-    } else
-      statement->name->visit(this);
-
-    statement->func->visit(this);
-
-    return false;
-  }
-
-  bool visit(Luau::AstExprFunction *function) override {
-    if (function->self) parameters.insert(function->self);
-
-    for (auto *argument : function->args) {
-      parameters.insert(argument);
-      local(argument, argument->location);
-    }
-
-    return true;
-  }
-
-  bool visit(Luau::AstStatFor *statement) override {
-    local(statement->var, statement->var->location);
-
-    return true;
-  }
-
-  bool visit(Luau::AstStatForIn *statement) override {
-    for (auto *value : statement->vars)
-      local(value, value->location);
-
-    return true;
-  }
-
-  bool visit(Luau::AstExprTable *expression) override {
-    for (const auto &item : expression->items)
-      if (item.kind == Luau::AstExprTable::Item::Kind::Record)
-        if (auto *key = item.key->as<Luau::AstExprConstantString>())
-          entry(std::string(key->value.data, key->value.size), key->location, Luau::Location(key->location.begin, item.value->location.end), item.value->is<Luau::AstExprFunction>() ? 12 : 7, true);
-
-    return true;
-  }
-
-  bool visit(Luau::AstType *type) override { return true; }
-  bool visit(Luau::AstTypePack *) override { return true; }
-
-  bool visit(Luau::AstExprCall *call) override {
-    if ((tokens || links) && !target && call->args.size == 1)
-      if (auto *global = call->func->as<Luau::AstExprGlobal>(); global && global->name == "require") {
-        auto *argument = call->args.data[0];
-
-        if (links || argument->is<Luau::AstExprConstantString>()) {
-          auto trace = frontend.requireTrace.find(path);
-
-          if (trace != frontend.requireTrace.end())
-            if (auto resolved = trace->second.exprs.find(argument))
-              if (frontend.getSourceModule(resolved->name))
-                entry(files.physical(resolved->name), argument->location, argument->location, 3, false);
+    EditorSymbols(Files &files, Luau::Frontend &frontend, Luau::Json::JsonEmitter &output, Luau::Module &module,
+                  const Luau::SourceModule &source, std::string path, std::optional<Destination> target, bool tokens,
+                  bool links)
+        : files(files), frontend(frontend), output(output), module(module), source(source), path(std::move(path)),
+          target(std::move(target)), tokens(tokens), links(links) {
+        if (this->target) {
+            this->target->path = files.physical(this->target->path);
         }
-      }
-
-    return true;
-  }
-
-  bool visit(Luau::AstGenericType *generic) override {
-    if (tokens) entry(generic->name.value, generic->location, generic->location, 28, true);
-
-    return true;
-  }
-
-  bool visit(Luau::AstGenericTypePack *generic) override {
-    if (tokens) entry(generic->name.value, generic->location, generic->location, 28, true);
-
-    return true;
-  }
-
-  bool visit(Luau::AstTypeReference *reference) override {
-    if (reference->prefix && reference->prefixLocation)
-      entry(reference->prefix->value, *reference->prefixLocation, *reference->prefixLocation, 13, false);
-
-    unsigned kind = 26;
-
-    if (tokens)
-      if (auto type = module.astResolvedTypes.find(reference)) {
-        auto followed = Luau::follow(*type);
-
-        if (Luau::get<Luau::GenericType>(followed)) kind = 28;
-        else if (Luau::get<Luau::ExternType>(followed)) kind = 5;
-      }
-
-    entry(reference->name.value, reference->nameLocation, reference->nameLocation, kind, false);
-
-    return true;
-  }
-
-  bool visit(Luau::AstStatTypeAlias *statement) override {
-    entry(statement->name.value, statement->nameLocation, statement->location, 26, true);
-
-    return true;
-  }
-
-  bool visit(Luau::AstExprLocal *expression) override {
-    if (target) {
-      if (files.physical(path) == target->path && expression->local->location == target->location)
-        writeEntry(expression->local->name.value, expression->location, expression->location, 13, false);
-    } else {
-      unsigned kind = 13;
-
-      if (tokens) {
-        if (parameters.count(expression->local)) kind = 27;
-        else if (auto type = module.astTypes.find(expression))
-          if (Luau::get<Luau::FunctionType>(Luau::follow(*type))) kind = 12;
-      }
-
-      entry(expression->local->name.value, expression->location, expression->location, kind, false, expression->local->isConst ? 2 : 0);
     }
 
-    return true;
-  }
+    void entry(const std::string &name, Luau::Location selection, Luau::Location range, unsigned kind, bool declaration,
+               unsigned modifiers = 0) {
+        if (target) {
+            if (!target->name.empty() && name != target->name) {
+                return;
+            }
 
-  bool visit(Luau::AstExprGlobal *expression) override {
-    entry(expression->name.value, expression->location, expression->location, 13, false);
+            auto resolved = destination(frontend, module, source, path, selection.begin, false);
 
-    return true;
-  }
+            if (!(declaration && files.physical(path) == target->path && selection == target->location) &&
+                (!resolved || files.physical(resolved->path) != target->path ||
+                 resolved->location != target->location)) {
+                return;
+            }
+        } else if (!tokens && !links && !declaration) {
+            return;
+        }
 
-  bool visit(Luau::AstExprIndexName *expression) override {
-    unsigned kind = 7;
+        writeEntry(name, selection, range, kind, declaration, modifiers);
+    }
 
-    if (tokens)
-      if (auto type = module.astTypes.find(expression))
-        if (Luau::get<Luau::FunctionType>(Luau::follow(*type))) kind = expression->op == ':' ? 6 : 12;
+    void writeEntry(const std::string &name, Luau::Location selection, Luau::Location range, unsigned kind,
+                    bool declaration, unsigned modifiers = 0) {
+        if (links && kind != 3) {
+            return;
+        }
 
-    entry(expression->index.value, expression->indexLocation, expression->indexLocation, kind, false);
+        output.writeComma();
+        auto object = output.writeObject();
+        object.writePair("name", name);
+        object.writePair("path", path);
+        object.writePair("range", coordinates(tokens || target ? selection : range));
+        object.writePair("selection", coordinates(selection));
+        object.writePair("kind", kind);
+        object.writePair("declaration", declaration);
+        object.writePair("modifiers", modifiers);
+    }
 
-    return true;
-  }
+    void local(Luau::AstLocal *local, Luau::Location range) {
+        if (links) {
+            return;
+        }
+
+        if (target && (files.physical(path) != target->path || local->location != target->location)) {
+            return;
+        }
+
+        unsigned kind = 13;
+
+        if (auto scope = Luau::findScopeAtPosition(module, local->location.begin)) {
+            if (auto type = scope->lookup(local)) {
+                if (Luau::get<Luau::FunctionType>(Luau::follow(*type))) {
+                    kind = 12;
+                }
+            }
+        }
+
+        writeEntry(local->name.value, local->location, range, tokens && parameters.count(local) ? 27 : kind, true,
+                   local->isConst ? 2 : 0);
+    }
+
+    bool visit(Luau::AstStatLocal *statement) override {
+        for (auto *value : statement->vars) {
+            local(value, statement->location);
+        }
+
+        return true;
+    }
+
+    bool visit(Luau::AstStatLocalFunction *statement) override {
+        local(statement->name, statement->location);
+
+        return true;
+    }
+
+    bool visit(Luau::AstStatFunction *statement) override {
+        if (auto *global = statement->name->as<Luau::AstExprGlobal>()) {
+            entry(global->name.value, global->location, statement->location, 12, true);
+        } else if (auto *index = statement->name->as<Luau::AstExprIndexName>()) {
+            entry(index->index.value, index->indexLocation, statement->location, tokens && index->op == ':' ? 6 : 12,
+                  true);
+
+            index->expr->visit(this);
+        } else {
+            statement->name->visit(this);
+        }
+
+        statement->func->visit(this);
+
+        return false;
+    }
+
+    bool visit(Luau::AstExprFunction *function) override {
+        if (function->self) {
+            parameters.insert(function->self);
+        }
+
+        for (auto *argument : function->args) {
+            parameters.insert(argument);
+            local(argument, argument->location);
+        }
+
+        return true;
+    }
+
+    bool visit(Luau::AstStatFor *statement) override {
+        local(statement->var, statement->var->location);
+
+        return true;
+    }
+
+    bool visit(Luau::AstStatForIn *statement) override {
+        for (auto *value : statement->vars) {
+            local(value, value->location);
+        }
+
+        return true;
+    }
+
+    bool visit(Luau::AstExprTable *expression) override {
+        for (const auto &item : expression->items) {
+            if (item.kind == Luau::AstExprTable::Item::Kind::Record) {
+                if (auto *key = item.key->as<Luau::AstExprConstantString>()) {
+                    entry(std::string(key->value.data, key->value.size), key->location,
+                          Luau::Location(key->location.begin, item.value->location.end),
+                          item.value->is<Luau::AstExprFunction>() ? 12 : 7, true);
+                }
+            }
+        }
+
+        return true;
+    }
+
+    bool visit(Luau::AstType *type) override { return true; }
+    bool visit(Luau::AstTypePack *) override { return true; }
+
+    bool visit(Luau::AstExprCall *call) override {
+        if ((tokens || links) && !target && call->args.size == 1) {
+            if (auto *global = call->func->as<Luau::AstExprGlobal>(); global && global->name == "require") {
+                auto *argument = call->args.data[0];
+
+                if (links || argument->is<Luau::AstExprConstantString>()) {
+                    auto trace = frontend.requireTrace.find(path);
+
+                    if (trace != frontend.requireTrace.end()) {
+                        if (auto resolved = trace->second.exprs.find(argument)) {
+                            if (frontend.getSourceModule(resolved->name)) {
+                                entry(files.physical(resolved->name), argument->location, argument->location, 3, false);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return true;
+    }
+
+    bool visit(Luau::AstGenericType *generic) override {
+        if (tokens) {
+            entry(generic->name.value, generic->location, generic->location, 28, true);
+        }
+
+        return true;
+    }
+
+    bool visit(Luau::AstGenericTypePack *generic) override {
+        if (tokens) {
+            entry(generic->name.value, generic->location, generic->location, 28, true);
+        }
+
+        return true;
+    }
+
+    bool visit(Luau::AstTypeReference *reference) override {
+        if (reference->prefix && reference->prefixLocation) {
+            entry(reference->prefix->value, *reference->prefixLocation, *reference->prefixLocation, 13, false);
+        }
+
+        unsigned kind = 26;
+
+        if (tokens) {
+            if (auto type = module.astResolvedTypes.find(reference)) {
+                auto followed = Luau::follow(*type);
+
+                if (Luau::get<Luau::GenericType>(followed)) {
+                    kind = 28;
+                } else if (Luau::get<Luau::ExternType>(followed)) {
+                    kind = 5;
+                }
+            }
+        }
+
+        entry(reference->name.value, reference->nameLocation, reference->nameLocation, kind, false);
+
+        return true;
+    }
+
+    bool visit(Luau::AstStatTypeAlias *statement) override {
+        entry(statement->name.value, statement->nameLocation, statement->location, 26, true);
+
+        return true;
+    }
+
+    bool visit(Luau::AstExprLocal *expression) override {
+        if (target) {
+            if (files.physical(path) == target->path && expression->local->location == target->location) {
+                writeEntry(expression->local->name.value, expression->location, expression->location, 13, false);
+            }
+        } else {
+            unsigned kind = 13;
+
+            if (tokens) {
+                if (parameters.count(expression->local)) {
+                    kind = 27;
+                } else if (auto type = module.astTypes.find(expression)) {
+                    if (Luau::get<Luau::FunctionType>(Luau::follow(*type))) {
+                        kind = 12;
+                    }
+                }
+            }
+
+            entry(expression->local->name.value, expression->location, expression->location, kind, false,
+                  expression->local->isConst ? 2 : 0);
+        }
+
+        return true;
+    }
+
+    bool visit(Luau::AstExprGlobal *expression) override {
+        entry(expression->name.value, expression->location, expression->location, 13, false);
+
+        return true;
+    }
+
+    bool visit(Luau::AstExprIndexName *expression) override {
+        unsigned kind = 7;
+
+        if (tokens) {
+            if (auto type = module.astTypes.find(expression)) {
+                if (Luau::get<Luau::FunctionType>(Luau::follow(*type))) {
+                    kind = expression->op == ':' ? 6 : 12;
+                }
+            }
+        }
+
+        entry(expression->index.value, expression->indexLocation, expression->indexLocation, kind, false);
+
+        return true;
+    }
 };
 
 struct EditorImplementations : Luau::AstVisitor {
-  Files &files;
-  Luau::Frontend &frontend;
-  Luau::Module &module;
-  const Luau::SourceModule &source;
-  Luau::Json::JsonEmitter &output;
-  std::string path;
-  Destination target;
-  const Luau::TableType *contract = nullptr;
+    Files &files;
+    Luau::Frontend &frontend;
+    Luau::Module &module;
+    const Luau::SourceModule &source;
+    Luau::Json::JsonEmitter &output;
+    std::string path;
+    Destination target;
+    const Luau::TableType *contract = nullptr;
 
-  EditorImplementations(Files &files, Luau::Frontend &frontend, Luau::Module &module, const Luau::SourceModule &source, Luau::Json::JsonEmitter &output, std::string path, Destination target)
-      : files(files), frontend(frontend), module(module), source(source), output(output), path(std::move(path)), target(std::move(target)) {}
+    EditorImplementations(Files &files, Luau::Frontend &frontend, Luau::Module &module,
+                          const Luau::SourceModule &source, Luau::Json::JsonEmitter &output, std::string path,
+                          Destination target)
+        : files(files), frontend(frontend), module(module), source(source), output(output), path(std::move(path)),
+          target(std::move(target)) {}
 
-  bool visit(Luau::AstExprFunction *function) override {
-    auto previous = contract;
-    contract = nullptr;
+    bool visit(Luau::AstExprFunction *function) override {
+        auto previous = contract;
+        contract = nullptr;
 
-    if (function->returnAnnotation)
-      if (auto pack = module.astResolvedTypePacks.find(function->returnAnnotation))
-        if (auto type = Luau::first(*pack)) contract = Luau::get<Luau::TableType>(Luau::follow(*type));
-
-    function->body->visit(this);
-    contract = previous;
-
-    return false;
-  }
-
-  bool visit(Luau::AstStatLocal *statement) override {
-    auto previous = contract;
-
-    for (size_t index = 0; index < statement->vars.size && index < statement->values.size; ++index)
-      if (auto annotation = statement->vars.data[index]->annotation)
-        if (auto type = module.astResolvedTypes.find(annotation)) {
-          contract = Luau::get<Luau::TableType>(Luau::follow(*type));
-          implement(statement->values.data[index]);
+        if (function->returnAnnotation) {
+            if (auto pack = module.astResolvedTypePacks.find(function->returnAnnotation)) {
+                if (auto type = Luau::first(*pack)) {
+                    contract = Luau::get<Luau::TableType>(Luau::follow(*type));
+                }
+            }
         }
 
-    contract = previous;
+        function->body->visit(this);
+        contract = previous;
 
-    return true;
-  }
-
-  bool visit(Luau::AstStatReturn *statement) override {
-    if (statement->list.size == 1) implement(statement->list.data[0]);
-
-    return true;
-  }
-
-  bool implement(Luau::AstExpr *expression) {
-    if (!contract || files.physical(contract->definitionModuleName) != files.physical(target.path)) return true;
-
-    if (auto *call = expression->as<Luau::AstExprCall>(); call && call->args.size == 1)
-      if (auto *member = call->func->as<Luau::AstExprIndexName>(); member && member->index == "freeze")
-        if (auto *global = member->expr->as<Luau::AstExprGlobal>(); global && global->name == "table") expression = call->args.data[0];
-
-    auto *table = expression->as<Luau::AstExprTable>();
-
-    if (!table) return true;
-
-    if (contract->definitionLocation == target.location) {
-      output.writeComma();
-      auto object = output.writeObject();
-      object.writePair("path", path);
-      object.writePair("range", coordinates(table->location));
-
-      return true;
+        return false;
     }
 
-    for (const auto &item : table->items) {
-      if (item.kind != Luau::AstExprTable::Item::Kind::Record) continue;
+    bool visit(Luau::AstStatLocal *statement) override {
+        auto previous = contract;
 
-      auto *key = item.key->as<Luau::AstExprConstantString>();
+        for (size_t index = 0; index < statement->vars.size && index < statement->values.size; ++index) {
+            if (auto annotation = statement->vars.data[index]->annotation) {
+                if (auto type = module.astResolvedTypes.find(annotation)) {
+                    contract = Luau::get<Luau::TableType>(Luau::follow(*type));
+                    implement(statement->values.data[index]);
+                }
+            }
+        }
 
-      if (!key) continue;
+        contract = previous;
 
-      auto property = contract->props.find(std::string(key->value.data, key->value.size));
-
-      if (property == contract->props.end()) continue;
-
-      auto location = property->second.location ? property->second.location : property->second.typeLocation;
-
-      if (!location || *location != target.location) continue;
-
-      auto implementation = destination(frontend, module, source, path, item.value->location.begin, false);
-
-      if (!implementation) continue;
-
-      output.writeComma();
-      auto object = output.writeObject();
-      object.writePair("path", implementation->path);
-      object.writePair("range", coordinates(implementation->location));
+        return true;
     }
 
-    return true;
-  }
+    bool visit(Luau::AstStatReturn *statement) override {
+        if (statement->list.size == 1) {
+            implement(statement->list.data[0]);
+        }
+
+        return true;
+    }
+
+    bool implement(Luau::AstExpr *expression) {
+        if (!contract || files.physical(contract->definitionModuleName) != files.physical(target.path)) {
+            return true;
+        }
+
+        if (auto *call = expression->as<Luau::AstExprCall>(); call && call->args.size == 1) {
+            if (auto *member = call->func->as<Luau::AstExprIndexName>(); member && member->index == "freeze") {
+                if (auto *global = member->expr->as<Luau::AstExprGlobal>(); global && global->name == "table") {
+                    expression = call->args.data[0];
+                }
+            }
+        }
+
+        auto *table = expression->as<Luau::AstExprTable>();
+
+        if (!table) {
+            return true;
+        }
+
+        if (contract->definitionLocation == target.location) {
+            output.writeComma();
+            auto object = output.writeObject();
+            object.writePair("path", path);
+            object.writePair("range", coordinates(table->location));
+
+            return true;
+        }
+
+        for (const auto &item : table->items) {
+            if (item.kind != Luau::AstExprTable::Item::Kind::Record) {
+                continue;
+            }
+
+            auto *key = item.key->as<Luau::AstExprConstantString>();
+
+            if (!key) {
+                continue;
+            }
+
+            auto property = contract->props.find(std::string(key->value.data, key->value.size));
+
+            if (property == contract->props.end()) {
+                continue;
+            }
+
+            auto location = property->second.location ? property->second.location : property->second.typeLocation;
+
+            if (!location || *location != target.location) {
+                continue;
+            }
+
+            auto implementation = destination(frontend, module, source, path, item.value->location.begin, false);
+
+            if (!implementation) {
+                continue;
+            }
+
+            output.writeComma();
+            auto object = output.writeObject();
+            object.writePair("path", implementation->path);
+            object.writePair("range", coordinates(implementation->location));
+        }
+
+        return true;
+    }
 };
 
 struct EditorHints : Luau::AstVisitor {
-  Luau::Module &module;
-  Luau::Json::JsonEmitter &output;
-  EditorHints(Luau::Module &module, Luau::Json::JsonEmitter &output) : module(module), output(output) {}
+    Luau::Module &module;
+    Luau::Json::JsonEmitter &output;
+    EditorHints(Luau::Module &module, Luau::Json::JsonEmitter &output) : module(module), output(output) {}
 
-  void hint(Luau::Position position, const std::string &description, unsigned kind) {
-    output.writeComma();
-    auto object = output.writeObject();
-    object.writePair("range", coordinates(Luau::Location(position, position)));
-    object.writePair("type", description);
-    object.writePair("kind", kind);
-  }
+    void hint(Luau::Position position, const std::string &description, unsigned kind) {
+        output.writeComma();
+        auto object = output.writeObject();
+        object.writePair("range", coordinates(Luau::Location(position, position)));
+        object.writePair("type", description);
+        object.writePair("kind", kind);
+    }
 
-  void local(Luau::AstLocal *local, unsigned kind) {
-    if (local->annotation) return;
-
-    if (auto scope = Luau::findScopeAtPosition(module, local->location.begin))
-      if (auto type = scope->lookup(local)) hint(local->location.end, Luau::toString(*type), kind);
-  }
-
-  bool visit(Luau::AstStatLocal *statement) override {
-    for (auto *variable : statement->vars) local(variable, 1);
-
-    return true;
-  }
-
-  bool visit(Luau::AstExprFunction *function) override {
-    for (auto *parameter : function->args) local(parameter, 2);
-
-    if (!function->returnAnnotation && function->argLocation)
-      if (auto type = module.astTypes.find(function))
-        if (auto signature = Luau::get<Luau::FunctionType>(Luau::follow(*type)))
-          hint(function->argLocation->end, Luau::toString(signature->retTypes), 3);
-
-    return true;
-  }
-
-  bool visit(Luau::AstExprCall *call) override {
-    if (auto type = module.astTypes.find(call->func))
-      if (auto signature = Luau::get<Luau::FunctionType>(Luau::follow(*type)))
-        for (size_t index = 0; index < call->args.size; ++index) {
-          size_t parameter = index + (call->self ? 1 : 0);
-
-          if (parameter < signature->argNames.size() && signature->argNames[parameter]) {
-            auto *argument = call->args.data[index];
-            hint(argument->location.begin, signature->argNames[parameter]->name, Luau::isConstantLiteral(argument) ? 5 : 4);
-          }
+    void local(Luau::AstLocal *local, unsigned kind) {
+        if (local->annotation) {
+            return;
         }
 
-    return true;
-  }
+        if (auto scope = Luau::findScopeAtPosition(module, local->location.begin)) {
+            if (auto type = scope->lookup(local)) {
+                hint(local->location.end, Luau::toString(*type), kind);
+            }
+        }
+    }
+
+    bool visit(Luau::AstStatLocal *statement) override {
+        for (auto *variable : statement->vars) {
+            local(variable, 1);
+        }
+
+        return true;
+    }
+
+    bool visit(Luau::AstExprFunction *function) override {
+        for (auto *parameter : function->args) {
+            local(parameter, 2);
+        }
+
+        if (!function->returnAnnotation && function->argLocation) {
+            if (auto type = module.astTypes.find(function)) {
+                if (auto signature = Luau::get<Luau::FunctionType>(Luau::follow(*type))) {
+                    hint(function->argLocation->end, Luau::toString(signature->retTypes), 3);
+                }
+            }
+        }
+
+        return true;
+    }
+
+    bool visit(Luau::AstExprCall *call) override {
+        if (auto type = module.astTypes.find(call->func)) {
+            if (auto signature = Luau::get<Luau::FunctionType>(Luau::follow(*type))) {
+                for (size_t index = 0; index < call->args.size; ++index) {
+                    size_t parameter = index + (call->self ? 1 : 0);
+
+                    if (parameter < signature->argNames.size() && signature->argNames[parameter]) {
+                        auto *argument = call->args.data[index];
+
+                        hint(argument->location.begin, signature->argNames[parameter]->name,
+                             Luau::isConstantLiteral(argument) ? 5 : 4);
+                    }
+                }
+            }
+        }
+
+        return true;
+    }
 };
 
 struct EditorCalls : Luau::AstVisitor {
-  Luau::Frontend &frontend;
-  Luau::Module &module;
-  const Luau::SourceModule &source;
-  Luau::Json::JsonEmitter &output;
-  std::string path;
+    Luau::Frontend &frontend;
+    Luau::Module &module;
+    const Luau::SourceModule &source;
+    Luau::Json::JsonEmitter &output;
+    std::string path;
 
-  EditorCalls(Luau::Frontend &frontend, Luau::Module &module, const Luau::SourceModule &source, Luau::Json::JsonEmitter &output, std::string path)
-      : frontend(frontend), module(module), source(source), output(output), path(std::move(path)) {}
+    EditorCalls(Luau::Frontend &frontend, Luau::Module &module, const Luau::SourceModule &source,
+                Luau::Json::JsonEmitter &output, std::string path)
+        : frontend(frontend), module(module), source(source), output(output), path(std::move(path)) {}
 
-  bool visit(Luau::AstExprCall *call) override {
-    auto position = call->func->location.end;
+    bool visit(Luau::AstExprCall *call) override {
+        auto position = call->func->location.end;
 
-    if (!position.column) return true;
+        if (!position.column) {
+            return true;
+        }
 
-    --position.column;
-    auto target = destination(frontend, module, source, path, position, false);
+        --position.column;
+        auto target = destination(frontend, module, source, path, position, false);
 
-    if (!target) return true;
+        if (!target) {
+            return true;
+        }
 
-    output.writeComma();
-    auto object = output.writeObject();
-    object.writePair("path", target->path);
-    object.writePair("range", coordinates(target->location));
-    object.writePair("caller", coordinates(call->func->location));
-    auto ancestry = editorAncestry(source, call->location.begin);
+        output.writeComma();
+        auto object = output.writeObject();
+        object.writePair("path", target->path);
+        object.writePair("range", coordinates(target->location));
+        object.writePair("caller", coordinates(call->func->location));
+        auto ancestry = editorAncestry(source, call->location.begin);
 
-    for (auto iterator = ancestry.rbegin(); iterator != ancestry.rend(); ++iterator)
-      if (auto *function = (*iterator)->as<Luau::AstExprFunction>()) {
-        object.writePair("container", coordinates(function->location));
-        break;
-      }
+        for (auto iterator = ancestry.rbegin(); iterator != ancestry.rend(); ++iterator) {
+            if (auto *function = (*iterator)->as<Luau::AstExprFunction>()) {
+                object.writePair("container", coordinates(function->location));
+                break;
+            }
+        }
 
-    return true;
-  }
+        return true;
+    }
 };
 
 static void rangeEntry(Luau::Json::JsonEmitter &output, Luau::Location location) {
-  output.writeComma();
-  auto object = output.writeObject();
-  object.writePair("range", coordinates(location));
+    output.writeComma();
+    auto object = output.writeObject();
+    object.writePair("range", coordinates(location));
 }
 
 struct FoldingRanges : Luau::AstVisitor {
-  Luau::Json::JsonEmitter &output;
-  Luau::AstNode *root;
-  FoldingRanges(Luau::Json::JsonEmitter &output, Luau::AstNode *root) : output(output), root(root) {}
+    Luau::Json::JsonEmitter &output;
+    Luau::AstNode *root;
+    FoldingRanges(Luau::Json::JsonEmitter &output, Luau::AstNode *root) : output(output), root(root) {}
 
-  bool visit(Luau::AstNode *node) override {
-    if (node != root && node->location.begin.line < node->location.end.line)
-      rangeEntry(output, node->location);
+    bool visit(Luau::AstNode *node) override {
+        if (node != root && node->location.begin.line < node->location.end.line) {
+            rangeEntry(output, node->location);
+        }
 
-    return true;
-  }
+        return true;
+    }
 
-  bool visit(Luau::AstType *type) override { return visit(static_cast<Luau::AstNode *>(type)); }
-  bool visit(Luau::AstTypePack *) override { return true; }
+    bool visit(Luau::AstType *type) override { return visit(static_cast<Luau::AstNode *>(type)); }
+    bool visit(Luau::AstTypePack *) override { return true; }
 };
 
 struct EditorSyntax : Luau::AstVisitor {
-  std::string output;
-  std::unordered_set<Luau::AstExprInstantiate *> visited;
+    std::string output;
+    std::unordered_set<Luau::AstExprInstantiate *> visited;
 
-  EditorSyntax(Luau::AstNode *root, std::string output) : output(std::move(output)) {
-    root->visit(this);
-  }
+    EditorSyntax(Luau::AstNode *root, std::string output) : output(std::move(output)) { root->visit(this); }
 
-  static std::string encode(Luau::AstNode *node) {
-    return EditorSyntax(node, Luau::toJson(node)).output;
-  }
+    static std::string encode(Luau::AstNode *node) { return EditorSyntax(node, Luau::toJson(node)).output; }
 
-  bool visit(Luau::AstExprInstantiate *node) override {
-    if (!visited.insert(node).second) return false;
+    bool visit(Luau::AstExprInstantiate *node) override {
+        if (!visited.insert(node).second) {
+            return false;
+        }
 
-    Luau::Json::JsonEmitter result;
+        Luau::Json::JsonEmitter result;
 
-    {
-      auto object = result.writeObject();
-      object.writePair("type", "AstExprInstantiate");
-      const auto &location = node->location;
+        {
+            auto object = result.writeObject();
+            object.writePair("type", "AstExprInstantiate");
+            const auto &location = node->location;
 
-      object.writePair("location", std::to_string(location.begin.line) + "," + std::to_string(location.begin.column) + " - " +
-          std::to_string(location.end.line) + "," + std::to_string(location.end.column));
+            object.writePair("location",
+                             std::to_string(location.begin.line) + "," + std::to_string(location.begin.column) + " - " +
+                                 std::to_string(location.end.line) + "," + std::to_string(location.end.column));
 
-      result.writeComma();
-      result.writeRaw("\"expr\":");
-      result.writeRaw(encode(node->expr));
-      result.writeComma();
-      result.writeRaw("\"typeArguments\":");
-      auto arguments = result.writeArray();
+            result.writeComma();
+            result.writeRaw("\"expr\":");
+            result.writeRaw(encode(node->expr));
+            result.writeComma();
+            result.writeRaw("\"typeArguments\":");
+            auto arguments = result.writeArray();
 
-      for (const auto &argument : node->typeArguments) {
-        result.writeComma();
-        result.writeRaw(encode(argument.type ? static_cast<Luau::AstNode *>(argument.type) : argument.typePack));
-      }
+            for (const auto &argument : node->typeArguments) {
+                result.writeComma();
+
+                result.writeRaw(
+                    encode(argument.type ? static_cast<Luau::AstNode *>(argument.type) : argument.typePack));
+            }
+        }
+
+        auto original = Luau::toJson(node);
+        auto replacement = result.str();
+        size_t position = 0;
+
+        while ((position = output.find(original, position)) != std::string::npos) {
+            output.replace(position, original.size(), replacement);
+            position += replacement.size();
+        }
+
+        return false;
     }
 
-    auto original = Luau::toJson(node);
-    auto replacement = result.str();
-    size_t position = 0;
+    bool visit(Luau::AstExprLocal *node) override {
+        if (node->local->annotation) {
+            node->local->annotation->visit(this);
+        }
 
-    while ((position = output.find(original, position)) != std::string::npos) {
-      output.replace(position, original.size(), replacement);
-      position += replacement.size();
+        return true;
     }
 
-    return false;
-  }
+    bool visit(Luau::AstTypeReference *node) override {
+        if (node->prefixLocal && node->prefixLocal->annotation) {
+            node->prefixLocal->annotation->visit(this);
+        }
 
-  bool visit(Luau::AstExprLocal *node) override {
-    if (node->local->annotation) node->local->annotation->visit(this);
+        return true;
+    }
 
-    return true;
-  }
-
-  bool visit(Luau::AstTypeReference *node) override {
-    if (node->prefixLocal && node->prefixLocal->annotation) node->prefixLocal->annotation->visit(this);
-
-    return true;
-  }
-
-  bool visit(Luau::AstType *) override { return true; }
-  bool visit(Luau::AstTypePack *) override { return true; }
+    bool visit(Luau::AstType *) override { return true; }
+    bool visit(Luau::AstTypePack *) override { return true; }
 };
 
-extern "C" void instar_query(void *handle, void *context, Bytes name, unsigned line, unsigned column,
-                              Bytes operation, Annotate output) noexcept {
-  std::lock_guard<std::mutex> lock(analysisMutex);
-  auto *session = static_cast<Session *>(handle);
-
-  if (!session) {
-    output(context, {}, bytes("null"));
-
-    return;
-  }
-
-  session->files.context = context;
-  session->configurations.context = context;
-
-  try {
-    auto &frontend = *session->frontend;
-    std::string path = text(name);
-    std::string command = text(operation);
-    Luau::Position position{line, column};
-    auto module = frontend.moduleResolver.getModule(path);
-    auto *source = frontend.getSourceModule(path);
-    Luau::Json::JsonEmitter result;
-
-    if (!module || !source)
-      Luau::Json::write(result, nullptr);
-    else if (command == "diagnostics") {
-      Luau::Json::write(result, nullptr);
-    } else if (command == "extract") {
-      auto array = result.writeArray();
-
-      for (auto *statement : source->root->body) {
-        Luau::AstExpr *expression = nullptr;
-
-        if (auto *local = statement->as<Luau::AstStatLocal>(); local && local->vars.size == 1 && local->values.size == 1)
-          expression = local->values.data[0];
-        else if (auto *returned = statement->as<Luau::AstStatReturn>(); returned && returned->list.size == 1 && !returned->list.data[0]->is<Luau::AstExprCall>() && !returned->list.data[0]->is<Luau::AstExprVarargs>())
-          expression = returned->list.data[0];
-
-        if (!expression || !expression->location.contains(position)) continue;
-
-        result.writeComma();
-        auto object = result.writeObject();
-        object.writePair("range", coordinates(expression->location));
-        object.writePair("selection", coordinates(statement->location));
-      }
-    } else if (command == "implementation") {
-      auto array = result.writeArray();
-      auto target = destination(frontend, *module, *source, path, position, false);
-
-      if (auto type = typeAt(*module, *source, position))
-        if (auto table = Luau::get<Luau::TableType>(Luau::follow(*type))) target = Destination{table->definitionModuleName, table->definitionLocation};
-
-      if (target) {
-        for (const auto &[name, node] : frontend.sourceNodes) {
-          if (frontend.isDirty(name)) continue;
-
-          auto checked = frontend.moduleResolver.getModule(name);
-          auto *parsed = frontend.getSourceModule(name);
-
-          if (!checked || !parsed) continue;
-
-          EditorImplementations visitor(session->files, frontend, *checked, *parsed, result, name, *target);
-          parsed->root->visit(&visitor);
-        }
-
-        if (auto type = typeAt(*module, *source, position))
-          if (auto function = Luau::get<Luau::FunctionType>(Luau::follow(*type)); function && function->definition) {
-            result.writeComma();
-            auto object = result.writeObject();
-            const auto &definition = *function->definition;
-            auto location = definition.originalNameLocation;
-
-            if (location.begin == location.end) location = definition.definitionLocation;
-
-            object.writePair("path", definition.definitionModuleName.value_or(path));
-            object.writePair("range", coordinates(location));
-          }
-      }
-    } else if (command == "syntax") {
-      auto object = result.writeObject();
-      object.writePair("type", EditorSyntax(source->root, Luau::toJson(source->root, source->commentLocations)).output);
-      std::vector<std::string> globals;
-
-      for (const auto &[symbol, binding] : frontend.globals.globalScope->bindings)
-        if (symbol.global.value) globals.emplace_back(symbol.global.value);
-
-      object.writePair("parameters", globals);
-    } else if (command == "hints") {
-      auto array = result.writeArray();
-      EditorHints visitor(*module, result);
-      source->root->visit(&visitor);
-    } else if (command == "calls" || command == "index") {
-      auto array = result.writeArray();
-
-      if (command == "index") {
-        EditorSymbols symbols(session->files, frontend, result, *module, *source, path, std::nullopt, false, false);
-        source->root->visit(&symbols);
-        EditorSymbols links(session->files, frontend, result, *module, *source, path, std::nullopt, false, true);
-        source->root->visit(&links);
-      }
-
-      EditorCalls visitor(frontend, *module, *source, result, path);
-      source->root->visit(&visitor);
-    } else if (command == "colors") {
-      auto array = result.writeArray();
-      Colors visitor(result);
-      source->root->visit(&visitor);
-    } else if (command == "folds") {
-      auto array = result.writeArray();
-      FoldingRanges visitor(result, source->root);
-      source->root->visit(&visitor);
-
-      for (const auto &comment : source->commentLocations)
-        if (comment.location.begin.line < comment.location.end.line)
-          rangeEntry(result, comment.location);
-    } else if (command == "selection") {
-      auto array = result.writeArray();
-      auto ancestry = editorAncestry(*source, position);
-
-      for (auto *node : ancestry)
-        rangeEntry(result, node->location);
-
-      if (!ancestry.empty()) {
-        if (auto *index = ancestry.back()->as<Luau::AstExprIndexName>(); index && index->indexLocation.contains(position))
-          rangeEntry(result, index->indexLocation);
-        else if (auto *alias = ancestry.back()->as<Luau::AstStatTypeAlias>(); alias && alias->nameLocation.contains(position))
-          rangeEntry(result, alias->nameLocation);
-      }
-    } else if (command == "scope") {
-      auto value = Luau::findExprOrLocalAtPosition(*source, position);
-      bool local = value.getLocal() || (value.getExpr() && value.getExpr()->is<Luau::AstExprLocal>());
-      auto object = result.writeObject();
-
-      if (local)
-        object.writePair("kind", 13);
-
-      auto ancestry = editorAncestry(*source, position);
-
-      if (!ancestry.empty())
-        if (auto *member = ancestry.back()->as<Luau::AstExprIndexName>(); member && member->indexLocation.contains(position))
-          if (auto type = typeAt(*module, *source, position); type && !Luau::get<Luau::TableType>(Luau::follow(*type)))
-            object.writePair("name", member->index.value);
-    } else if (command == "imports") {
-      auto array = result.writeArray();
-
-      for (auto *statement : source->root->body) {
-        auto *local = statement->as<Luau::AstStatLocal>();
-
-        if (!local || local->vars.size != 1 || local->values.size != 1 || !(local->location.end < position)) continue;
-
-        auto *call = local->values.data[0]->as<Luau::AstExprCall>();
-
-        if (!call || call->args.size != 1) continue;
-
-        std::string category;
-        std::string target;
-
-        if (auto *global = call->func->as<Luau::AstExprGlobal>(); global && global->name == "require") {
-          auto trace = frontend.requireTrace.find(path);
-
-          if (trace != frontend.requireTrace.end())
-            if (auto resolved = trace->second.exprs.find(call->args.data[0])) {
-              category = "module";
-              target = session->files.physical(resolved->name);
-            }
-        } else if (auto *member = call->func->as<Luau::AstExprIndexName>(); member && member->index == "GetService") {
-          auto *global = member->expr->as<Luau::AstExprGlobal>();
-          auto *service = call->args.data[0]->as<Luau::AstExprConstantString>();
-
-          if (global && global->name == "game" && service) {
-            category = "service";
-            target.assign(service->value.data, service->value.size);
-          }
-        }
-
-        if (category.empty()) continue;
-
-        result.writeComma();
-        auto object = result.writeObject();
-        object.writePair("name", local->vars.data[0]->name.value);
-        object.writePair("label", category);
-        object.writePair("type", target);
-        object.writePair("range", coordinates(local->location));
-      }
-    } else if (command == "completion" || command == "completionResolve") {
-      auto completions = Luau::autocomplete(frontend, path, position, {});
-      auto array = result.writeArray();
-
-      if (completions.context == Luau::AutocompleteContext::Expression || completions.context == Luau::AutocompleteContext::Statement) {
-        result.writeComma();
-        auto object = result.writeObject();
-        object.writePair("imports", true);
-        unsigned line = 0;
-
-        for (const auto &comment : source->hotcomments)
-          if (comment.header) line = comment.location.end.line + 1;
-
-        object.writePair("range", std::vector<unsigned>{line, 0, line, 0});
-      }
-
-      for (auto *node : completions.ancestry) {
-        auto *call = node->as<Luau::AstExprCall>();
-
-        if (!call || call->args.size != 1) continue;
-
-        auto *global = call->func->as<Luau::AstExprGlobal>();
-        auto *literal = call->args.data[0]->as<Luau::AstExprConstantString>();
-
-        if (!global || global->name != "require" || !literal || !literal->location.contains(position)) continue;
-
-        result.writeComma();
-        auto object = result.writeObject();
-        object.writePair("require", true);
-        object.writePair("range", coordinates(literal->location));
-      }
-
-      for (const auto &[label, completion] : completions.entryMap) {
-        result.writeComma();
-        auto object = result.writeObject();
-        object.writePair("name", label);
-
-        if (command == "completionResolve") {
-          object.writePair("type", completion.type ? Luau::toString(*completion.type) : std::string{});
-          object.writePair("documentation", completion.documentationSymbol.value_or(""));
-        }
-
-        object.writePair("insert", completion.insertText.value_or(label));
-        object.writePair("deprecated", completion.deprecated);
-
-        if (command == "completionResolve" && completion.type)
-          if (auto function = Luau::get<Luau::FunctionType>(Luau::follow(*completion.type)); function && function->definition)
-            object.writePair("documentation_text", documentation(frontend, session->files, {function->definition->definitionModuleName.value_or(path), function->definition->definitionLocation}));
-      }
-    } else if (command == "symbols" || command == "tokens" || command == "links" || command == "references" || command == "localReferences" || command == "prepare") {
-      auto target = command == "references" || command == "localReferences" || command == "prepare" ? destination(frontend, *module, *source, path, position, false) : std::nullopt;
-      auto array = result.writeArray();
-
-      if (target && target->location.begin.line == target->location.end.line) {
-        auto contents = text(session->files.read(context, bytes(target->path)));
-        size_t offset = 0;
-
-        for (unsigned line = 0; line < target->location.begin.line; ++line) {
-          auto newline = contents.find('\n', offset);
-
-          if (newline == std::string::npos)
-            break;
-
-          offset = newline + 1;
-        }
-
-        offset += target->location.begin.column;
-
-        if (offset <= contents.size())
-          target->name = contents.substr(offset, target->location.end.column - target->location.begin.column);
-      }
-
-      if ((command != "references" && command != "localReferences" && command != "prepare") || target) {
-        for (const auto &[moduleName, node] : frontend.sourceNodes) {
-          if (command != "references" && moduleName != path &&
-              !(command == "prepare" && target && session->files.physical(moduleName) == session->files.physical(target->path)))
-            continue;
-
-          auto checked = frontend.moduleResolver.getModule(moduleName);
-          auto *parsed = frontend.getSourceModule(moduleName);
-
-          if (checked && parsed) {
-            EditorSymbols visitor(session->files, frontend, result, *checked, *parsed, moduleName, target, command == "tokens", command == "links");
-            parsed->root->visit(&visitor);
-          }
-        }
-      }
-    } else if (command == "definition" || command == "typeDefinition") {
-      auto target = destination(frontend, *module, *source, path, position, command == "typeDefinition");
-
-      if (!target && command == "definition") {
-        auto ancestry = Luau::findAstAncestryOfPosition(*source, position, true);
-
-        for (auto *node : ancestry)
-          if (auto *call = node->as<Luau::AstExprCall>())
-            if (auto *global = call->func->as<Luau::AstExprGlobal>(); global && global->name == "require" && call->args.size) {
-              Luau::ModuleInfo from{path};
-
-              if (auto resolved = session->files.resolveModule(&from, call->args.data[0], {}))
-                target = Destination{resolved->name, {}};
-            }
-      }
-
-      if (target) {
-        auto object = result.writeObject();
-        object.writePair("path", target->path);
-        object.writePair("range", coordinates(target->location));
-      } else
-        Luau::Json::write(result, nullptr);
-    } else if (command == "signature") {
-      auto ancestry = Luau::findAstAncestryOfPosition(*source, position, true);
-      auto array = result.writeArray();
-
-      for (auto iterator = ancestry.rbegin(); iterator != ancestry.rend(); ++iterator) {
-        auto *call = (*iterator)->as<Luau::AstExprCall>();
-
-        if (!call || position < call->func->location.end)
-          continue;
-
-        if (auto type = module->astTypes.find(call->func)) {
-          std::vector<Luau::TypeId> signatures{Luau::follow(*type)};
-
-          if (auto intersection = Luau::get<Luau::IntersectionType>(signatures.front()))
-            signatures = intersection->parts;
-
-          for (auto signature : signatures) {
-            auto function = Luau::get<Luau::FunctionType>(Luau::follow(signature));
-
-            if (!function)
-              continue;
-
-            Luau::ToStringOptions options;
-            options.functionTypeArguments = true;
-            options.hideFunctionSelfArgument = call->self;
-            auto label = Luau::toString(signature, options);
-            auto [arguments, tail] = Luau::flatten(function->argTypes);
-            std::vector<std::string> parameters;
-
-            for (size_t index = call->self && function->hasSelf ? 1 : 0; index < arguments.size(); ++index) {
-              auto parameter = Luau::toString(arguments[index], options);
-
-              if (index < function->argNames.size() && function->argNames[index])
-                parameter = function->argNames[index]->name + ": " + parameter;
-
-              parameters.push_back(std::move(parameter));
-            }
-
-            if (tail)
-              parameters.push_back(Luau::toString(*tail, options));
-
-            result.writeComma();
-            auto object = result.writeObject();
-            object.writePair("label", label);
-            object.writePair("parameters", parameters);
-            object.writePair("documentation", Luau::getDocumentationSymbolAtPosition(*source, *module, call->func->location.begin).value_or(""));
-
-            if (function->definition)
-              object.writePair("documentation_text", documentation(frontend, session->files, {function->definition->definitionModuleName.value_or(path), function->definition->definitionLocation}));
-
-            unsigned active = 0;
-
-            for (auto *argument : call->args)
-              if (argument->location.end < position)
-                ++active;
-
-            if (!parameters.empty())
-              object.writePair("active", std::min(active, unsigned(parameters.size() - 1)));
-          }
-
-          break;
-        }
-      }
-    } else {
-      auto value = Luau::findExprOrLocalAtPosition(*source, position);
-      auto type = typeAt(*module, *source, position);
-
-      if (type) {
-        auto location = value.getLocation().value_or(Luau::Location{position, position});
-        auto ancestry = editorAncestry(*source, position);
-
-        if (!ancestry.empty()) {
-          auto *node = ancestry.back();
-
-          if (auto *annotation = node->asType())
-            location = annotation->location;
-          else if (auto *alias = node->as<Luau::AstStatTypeAlias>(); alias && alias->nameLocation.contains(position))
-            location = alias->nameLocation;
-          else if (auto *index = node->as<Luau::AstExprIndexName>())
-            location = index->indexLocation;
-        }
-
-        auto object = result.writeObject();
-        object.writePair("type", hoverDescription(*module, *source, position, *type));
-        object.writePair("name", value.getName() ? value.getName()->value : "");
-        object.writePair("range", coordinates(location));
-        auto symbol = Luau::follow(*type)->documentationSymbol;
-
-        if (!symbol && (ancestry.empty() || !ancestry.back()->asType()))
-          symbol = Luau::getDocumentationSymbolAtPosition(*source, *module, position);
-
-        object.writePair("documentation", symbol.value_or(""));
-
-        if (auto target = destination(frontend, *module, *source, path, position, false))
-          object.writePair("documentation_text", documentation(frontend, session->files, *target));
-      } else
-        Luau::Json::write(result, nullptr);
+extern "C" void instar_query(void *handle, void *context, Bytes name, unsigned line, unsigned column, Bytes operation,
+                             Annotate output) noexcept {
+    std::lock_guard<std::mutex> lock(analysisMutex);
+    auto *session = static_cast<Session *>(handle);
+
+    if (!session) {
+        output(context, {}, bytes("null"));
+
+        return;
     }
 
-    output(context, {}, bytes(result.str()));
-  } catch (const std::exception &error) {
-    Luau::Json::JsonEmitter result;
+    session->files.context = context;
+    session->configurations.context = context;
 
-    { auto object = result.writeObject(); object.writePair("error", error.what()); }
+    try {
+        auto &frontend = *session->frontend;
+        std::string path = text(name);
+        std::string command = text(operation);
+        Luau::Position position{line, column};
+        auto module = frontend.moduleResolver.getModule(path);
+        auto *source = frontend.getSourceModule(path);
+        Luau::Json::JsonEmitter result;
 
-    output(context, {}, bytes(result.str()));
-  } catch (...) {
-    output(context, {}, bytes("{\"error\":\"native editor query failed\"}"));
-  }
+        if (!module || !source) {
+            Luau::Json::write(result, nullptr);
+        } else if (command == "diagnostics") {
+            Luau::Json::write(result, nullptr);
+        } else if (command == "extract") {
+            auto array = result.writeArray();
 
-  session->files.context = nullptr;
-  session->configurations.context = nullptr;
+            for (auto *statement : source->root->body) {
+                Luau::AstExpr *expression = nullptr;
+
+                if (auto *local = statement->as<Luau::AstStatLocal>();
+                    local && local->vars.size == 1 && local->values.size == 1) {
+                    expression = local->values.data[0];
+                } else if (auto *returned = statement->as<Luau::AstStatReturn>();
+                           returned && returned->list.size == 1 && !returned->list.data[0]->is<Luau::AstExprCall>() &&
+                           !returned->list.data[0]->is<Luau::AstExprVarargs>()) {
+                    expression = returned->list.data[0];
+                }
+
+                if (!expression || !expression->location.contains(position)) {
+                    continue;
+                }
+
+                result.writeComma();
+                auto object = result.writeObject();
+                object.writePair("range", coordinates(expression->location));
+                object.writePair("selection", coordinates(statement->location));
+            }
+        } else if (command == "implementation") {
+            auto array = result.writeArray();
+            auto target = destination(frontend, *module, *source, path, position, false);
+
+            if (auto type = typeAt(*module, *source, position)) {
+                if (auto table = Luau::get<Luau::TableType>(Luau::follow(*type))) {
+                    target = Destination{table->definitionModuleName, table->definitionLocation};
+                }
+            }
+
+            if (target) {
+                for (const auto &[name, node] : frontend.sourceNodes) {
+                    if (frontend.isDirty(name)) {
+                        continue;
+                    }
+
+                    auto checked = frontend.moduleResolver.getModule(name);
+                    auto *parsed = frontend.getSourceModule(name);
+
+                    if (!checked || !parsed) {
+                        continue;
+                    }
+
+                    EditorImplementations visitor(session->files, frontend, *checked, *parsed, result, name, *target);
+                    parsed->root->visit(&visitor);
+                }
+
+                if (auto type = typeAt(*module, *source, position)) {
+                    if (auto function = Luau::get<Luau::FunctionType>(Luau::follow(*type));
+                        function && function->definition) {
+                        result.writeComma();
+                        auto object = result.writeObject();
+                        const auto &definition = *function->definition;
+                        auto location = definition.originalNameLocation;
+
+                        if (location.begin == location.end) {
+                            location = definition.definitionLocation;
+                        }
+
+                        object.writePair("path", definition.definitionModuleName.value_or(path));
+                        object.writePair("range", coordinates(location));
+                    }
+                }
+            }
+        } else if (command == "syntax") {
+            auto object = result.writeObject();
+
+            object.writePair("type",
+                             EditorSyntax(source->root, Luau::toJson(source->root, source->commentLocations)).output);
+
+            std::vector<std::string> globals;
+
+            for (const auto &[symbol, binding] : frontend.globals.globalScope->bindings) {
+                if (symbol.global.value) {
+                    globals.emplace_back(symbol.global.value);
+                }
+            }
+
+            object.writePair("parameters", globals);
+        } else if (command == "hints") {
+            auto array = result.writeArray();
+            EditorHints visitor(*module, result);
+            source->root->visit(&visitor);
+        } else if (command == "calls" || command == "index") {
+            auto array = result.writeArray();
+
+            if (command == "index") {
+                EditorSymbols symbols(session->files, frontend, result, *module, *source, path, std::nullopt, false,
+                                      false);
+
+                source->root->visit(&symbols);
+
+                EditorSymbols links(session->files, frontend, result, *module, *source, path, std::nullopt, false,
+                                    true);
+
+                source->root->visit(&links);
+            }
+
+            EditorCalls visitor(frontend, *module, *source, result, path);
+            source->root->visit(&visitor);
+        } else if (command == "colors") {
+            auto array = result.writeArray();
+            Colors visitor(result);
+            source->root->visit(&visitor);
+        } else if (command == "folds") {
+            auto array = result.writeArray();
+            FoldingRanges visitor(result, source->root);
+            source->root->visit(&visitor);
+
+            for (const auto &comment : source->commentLocations) {
+                if (comment.location.begin.line < comment.location.end.line) {
+                    rangeEntry(result, comment.location);
+                }
+            }
+        } else if (command == "selection") {
+            auto array = result.writeArray();
+            auto ancestry = editorAncestry(*source, position);
+
+            for (auto *node : ancestry) {
+                rangeEntry(result, node->location);
+            }
+
+            if (!ancestry.empty()) {
+                if (auto *index = ancestry.back()->as<Luau::AstExprIndexName>();
+                    index && index->indexLocation.contains(position)) {
+                    rangeEntry(result, index->indexLocation);
+                } else if (auto *alias = ancestry.back()->as<Luau::AstStatTypeAlias>();
+                           alias && alias->nameLocation.contains(position)) {
+                    rangeEntry(result, alias->nameLocation);
+                }
+            }
+        } else if (command == "scope") {
+            auto value = Luau::findExprOrLocalAtPosition(*source, position);
+            bool local = value.getLocal() || (value.getExpr() && value.getExpr()->is<Luau::AstExprLocal>());
+            auto object = result.writeObject();
+
+            if (local) {
+                object.writePair("kind", 13);
+            }
+
+            auto ancestry = editorAncestry(*source, position);
+
+            if (!ancestry.empty()) {
+                if (auto *member = ancestry.back()->as<Luau::AstExprIndexName>();
+                    member && member->indexLocation.contains(position)) {
+                    if (auto type = typeAt(*module, *source, position);
+                        type && !Luau::get<Luau::TableType>(Luau::follow(*type))) {
+                        object.writePair("name", member->index.value);
+                    }
+                }
+            }
+        } else if (command == "imports") {
+            auto array = result.writeArray();
+
+            for (auto *statement : source->root->body) {
+                auto *local = statement->as<Luau::AstStatLocal>();
+
+                if (!local || local->vars.size != 1 || local->values.size != 1 || !(local->location.end < position)) {
+                    continue;
+                }
+
+                auto *call = local->values.data[0]->as<Luau::AstExprCall>();
+
+                if (!call || call->args.size != 1) {
+                    continue;
+                }
+
+                std::string category;
+                std::string target;
+
+                if (auto *global = call->func->as<Luau::AstExprGlobal>(); global && global->name == "require") {
+                    auto trace = frontend.requireTrace.find(path);
+
+                    if (trace != frontend.requireTrace.end()) {
+                        if (auto resolved = trace->second.exprs.find(call->args.data[0])) {
+                            category = "module";
+                            target = session->files.physical(resolved->name);
+                        }
+                    }
+                } else if (auto *member = call->func->as<Luau::AstExprIndexName>();
+                           member && member->index == "GetService") {
+                    auto *global = member->expr->as<Luau::AstExprGlobal>();
+                    auto *service = call->args.data[0]->as<Luau::AstExprConstantString>();
+
+                    if (global && global->name == "game" && service) {
+                        category = "service";
+                        target.assign(service->value.data, service->value.size);
+                    }
+                }
+
+                if (category.empty()) {
+                    continue;
+                }
+
+                result.writeComma();
+                auto object = result.writeObject();
+                object.writePair("name", local->vars.data[0]->name.value);
+                object.writePair("label", category);
+                object.writePair("type", target);
+                object.writePair("range", coordinates(local->location));
+            }
+        } else if (command == "completion" || command == "completionResolve") {
+            auto completions = Luau::autocomplete(frontend, path, position, {});
+            auto array = result.writeArray();
+
+            if (completions.context == Luau::AutocompleteContext::Expression ||
+                completions.context == Luau::AutocompleteContext::Statement) {
+                result.writeComma();
+                auto object = result.writeObject();
+                object.writePair("imports", true);
+                unsigned line = 0;
+
+                for (const auto &comment : source->hotcomments) {
+                    if (comment.header) {
+                        line = comment.location.end.line + 1;
+                    }
+                }
+
+                object.writePair("range", std::vector<unsigned>{line, 0, line, 0});
+            }
+
+            for (auto *node : completions.ancestry) {
+                auto *call = node->as<Luau::AstExprCall>();
+
+                if (!call || call->args.size != 1) {
+                    continue;
+                }
+
+                auto *global = call->func->as<Luau::AstExprGlobal>();
+                auto *literal = call->args.data[0]->as<Luau::AstExprConstantString>();
+
+                if (!global || global->name != "require" || !literal || !literal->location.contains(position)) {
+                    continue;
+                }
+
+                result.writeComma();
+                auto object = result.writeObject();
+                object.writePair("require", true);
+                object.writePair("range", coordinates(literal->location));
+            }
+
+            for (const auto &[label, completion] : completions.entryMap) {
+                result.writeComma();
+                auto object = result.writeObject();
+                object.writePair("name", label);
+
+                if (command == "completionResolve") {
+                    object.writePair("type", completion.type ? Luau::toString(*completion.type) : std::string{});
+                    object.writePair("documentation", completion.documentationSymbol.value_or(""));
+                }
+
+                object.writePair("insert", completion.insertText.value_or(label));
+                object.writePair("deprecated", completion.deprecated);
+
+                if (command == "completionResolve" && completion.type) {
+                    if (auto function = Luau::get<Luau::FunctionType>(Luau::follow(*completion.type));
+                        function && function->definition) {
+                        object.writePair("documentation_text",
+                                         documentation(frontend, session->files,
+                                                       {function->definition->definitionModuleName.value_or(path),
+                                                        function->definition->definitionLocation}));
+                    }
+                }
+            }
+        } else if (command == "symbols" || command == "tokens" || command == "links" || command == "references" ||
+                   command == "localReferences" || command == "prepare") {
+            auto target = command == "references" || command == "localReferences" || command == "prepare"
+                              ? destination(frontend, *module, *source, path, position, false)
+                              : std::nullopt;
+
+            auto array = result.writeArray();
+
+            if (target && target->location.begin.line == target->location.end.line) {
+                auto contents = text(session->files.read(context, bytes(target->path)));
+                size_t offset = 0;
+
+                for (unsigned line = 0; line < target->location.begin.line; ++line) {
+                    auto newline = contents.find('\n', offset);
+
+                    if (newline == std::string::npos) {
+                        break;
+                    }
+
+                    offset = newline + 1;
+                }
+
+                offset += target->location.begin.column;
+
+                if (offset <= contents.size()) {
+                    target->name = contents.substr(offset, target->location.end.column - target->location.begin.column);
+                }
+            }
+
+            if ((command != "references" && command != "localReferences" && command != "prepare") || target) {
+                for (const auto &[moduleName, node] : frontend.sourceNodes) {
+                    if (command != "references" && moduleName != path &&
+                        !(command == "prepare" && target &&
+                          session->files.physical(moduleName) == session->files.physical(target->path))) {
+                        continue;
+                    }
+
+                    auto checked = frontend.moduleResolver.getModule(moduleName);
+                    auto *parsed = frontend.getSourceModule(moduleName);
+
+                    if (checked && parsed) {
+                        EditorSymbols visitor(session->files, frontend, result, *checked, *parsed, moduleName, target,
+                                              command == "tokens", command == "links");
+
+                        parsed->root->visit(&visitor);
+                    }
+                }
+            }
+        } else if (command == "definition" || command == "typeDefinition") {
+            auto target = destination(frontend, *module, *source, path, position, command == "typeDefinition");
+
+            if (!target && command == "definition") {
+                auto ancestry = Luau::findAstAncestryOfPosition(*source, position, true);
+
+                for (auto *node : ancestry) {
+                    if (auto *call = node->as<Luau::AstExprCall>()) {
+                        if (auto *global = call->func->as<Luau::AstExprGlobal>();
+                            global && global->name == "require" && call->args.size) {
+                            Luau::ModuleInfo from{path};
+
+                            if (auto resolved = session->files.resolveModule(&from, call->args.data[0], {})) {
+                                target = Destination{resolved->name, {}};
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (target) {
+                auto object = result.writeObject();
+                object.writePair("path", target->path);
+                object.writePair("range", coordinates(target->location));
+            } else {
+                Luau::Json::write(result, nullptr);
+            }
+        } else if (command == "signature") {
+            auto ancestry = Luau::findAstAncestryOfPosition(*source, position, true);
+            auto array = result.writeArray();
+
+            for (auto iterator = ancestry.rbegin(); iterator != ancestry.rend(); ++iterator) {
+                auto *call = (*iterator)->as<Luau::AstExprCall>();
+
+                if (!call || position < call->func->location.end) {
+                    continue;
+                }
+
+                if (auto type = module->astTypes.find(call->func)) {
+                    std::vector<Luau::TypeId> signatures{Luau::follow(*type)};
+
+                    if (auto intersection = Luau::get<Luau::IntersectionType>(signatures.front())) {
+                        signatures = intersection->parts;
+                    }
+
+                    for (auto signature : signatures) {
+                        auto function = Luau::get<Luau::FunctionType>(Luau::follow(signature));
+
+                        if (!function) {
+                            continue;
+                        }
+
+                        Luau::ToStringOptions options;
+                        options.functionTypeArguments = true;
+                        options.hideFunctionSelfArgument = call->self;
+                        auto label = Luau::toString(signature, options);
+                        auto [arguments, tail] = Luau::flatten(function->argTypes);
+                        std::vector<std::string> parameters;
+
+                        for (size_t index = call->self && function->hasSelf ? 1 : 0; index < arguments.size();
+                             ++index) {
+                            auto parameter = Luau::toString(arguments[index], options);
+
+                            if (index < function->argNames.size() && function->argNames[index]) {
+                                parameter = function->argNames[index]->name + ": " + parameter;
+                            }
+
+                            parameters.push_back(std::move(parameter));
+                        }
+
+                        if (tail) {
+                            parameters.push_back(Luau::toString(*tail, options));
+                        }
+
+                        result.writeComma();
+                        auto object = result.writeObject();
+                        object.writePair("label", label);
+                        object.writePair("parameters", parameters);
+
+                        object.writePair("documentation", Luau::getDocumentationSymbolAtPosition(
+                                                              *source, *module, call->func->location.begin)
+                                                              .value_or(""));
+
+                        if (function->definition) {
+                            object.writePair("documentation_text",
+                                             documentation(frontend, session->files,
+                                                           {function->definition->definitionModuleName.value_or(path),
+                                                            function->definition->definitionLocation}));
+                        }
+
+                        unsigned active = 0;
+
+                        for (auto *argument : call->args) {
+                            if (argument->location.end < position) {
+                                ++active;
+                            }
+                        }
+
+                        if (!parameters.empty()) {
+                            object.writePair("active", std::min(active, unsigned(parameters.size() - 1)));
+                        }
+                    }
+
+                    break;
+                }
+            }
+        } else {
+            auto value = Luau::findExprOrLocalAtPosition(*source, position);
+            auto type = typeAt(*module, *source, position);
+
+            if (type) {
+                auto location = value.getLocation().value_or(Luau::Location{position, position});
+                auto ancestry = editorAncestry(*source, position);
+
+                if (!ancestry.empty()) {
+                    auto *node = ancestry.back();
+
+                    if (auto *annotation = node->asType()) {
+                        location = annotation->location;
+                    } else if (auto *alias = node->as<Luau::AstStatTypeAlias>();
+                               alias && alias->nameLocation.contains(position)) {
+                        location = alias->nameLocation;
+                    } else if (auto *index = node->as<Luau::AstExprIndexName>()) {
+                        location = index->indexLocation;
+                    }
+                }
+
+                auto object = result.writeObject();
+                object.writePair("type", hoverDescription(*module, *source, position, *type));
+                object.writePair("name", value.getName() ? value.getName()->value : "");
+                object.writePair("range", coordinates(location));
+                auto symbol = Luau::follow(*type)->documentationSymbol;
+
+                if (!symbol && (ancestry.empty() || !ancestry.back()->asType())) {
+                    symbol = Luau::getDocumentationSymbolAtPosition(*source, *module, position);
+                }
+
+                object.writePair("documentation", symbol.value_or(""));
+
+                if (auto target = destination(frontend, *module, *source, path, position, false)) {
+                    object.writePair("documentation_text", documentation(frontend, session->files, *target));
+                }
+            } else {
+                Luau::Json::write(result, nullptr);
+            }
+        }
+
+        output(context, {}, bytes(result.str()));
+    } catch (const std::exception &error) {
+        Luau::Json::JsonEmitter result;
+
+        {
+            auto object = result.writeObject();
+            object.writePair("error", error.what());
+        }
+
+        output(context, {}, bytes(result.str()));
+    } catch (...) {
+        output(context, {}, bytes("{\"error\":\"native editor query failed\"}"));
+    }
+
+    session->files.context = nullptr;
+    session->configurations.context = nullptr;
 }
