@@ -154,7 +154,6 @@ def member [value: record, mappings: record]: nothing -> string {
 
     match $value.MemberType {
         Property => $"($name): ($value.ValueType | resolve $mappings)"
-
         Function => {
             let arguments = $value.Parameters | parameters $mappings
 
@@ -162,12 +161,10 @@ def member [value: record, mappings: record]: nothing -> string {
 
             $"function ($name)\(($arguments)\): (returns $value $mappings)"
         }
-
         Callback => {
             let arguments = $value.Parameters | parameters $mappings | str replace --all '...: ' ...
             $"($name): \(($arguments)\) -> (returns $value $mappings)"
         }
-
         Event => {
             let payload = returns {
                 TupleReturns: ($value.Parameters | get Type)
@@ -175,7 +172,6 @@ def member [value: record, mappings: record]: nothing -> string {
 
             $"($name): RBXScriptSignal<($payload)>"
         }
-
         _ => { error make $"Unsupported member kind: ($value.MemberType)" }
     }
 }
@@ -425,53 +421,52 @@ def references [value: record, mappings: record]: nothing -> list<string> {
 }
 
 def main []: nothing -> nothing {
-    try {
-        let corrections = open ($DATA | path join corrections.json)
-        let types = open ($DATA | path join types.json)
-        let tracker = 'https://raw.githubusercontent.com/MaximumADHD/Roblox-Client-Tracker/roblox'
-        let dump = http get --raw $"($tracker)/Full-API-Dump.json" | from json
-        let source = http get --raw $"($tracker)/LuauTypes.d.luau"
-        let documentation = http get --raw $"($tracker)/api-docs/en-us.json" | from json
+    let corrections = open ($DATA | path join corrections.json)
+    let types = open ($DATA | path join types.json)
+    let tracker = 'https://raw.githubusercontent.com/MaximumADHD/Roblox-Client-Tracker/roblox'
+    let dump = http get --raw $"($tracker)/Full-API-Dump.json" | from json
+    let source = http get --raw $"($tracker)/LuauTypes.d.luau"
+    let documentation = http get --raw $"($tracker)/api-docs/en-us.json" | from json
 
-        if not (($documentation | describe) starts-with record) { error make 'Invalid documentation object' }
+    if not (($documentation | describe) starts-with record) { error make 'Invalid documentation object' }
 
-        let classes = $dump.Classes | corrected ...$corrections.Classes
-        let datatypes = $types.DataTypes | corrected ...$corrections.Classes
-        let constructors = $types.Constructors | corrected ...$corrections.Classes
-        let declarations = open --raw ($DATA | path join declarations.d.luau)
-        let members = overrides (open --raw ($DATA | path join members.d.luau))
-        let injections = injected $source {corrections: $corrections, declarations: $declarations}
-        let declared = $"($declarations)\n($injections)"
+    let classes = $dump.Classes | corrected ...$corrections.Classes
+    let datatypes = $types.DataTypes | corrected ...$corrections.Classes
+    let constructors = $types.Constructors | corrected ...$corrections.Classes
+    let declarations = open --raw ($DATA | path join declarations.d.luau)
+    let members = overrides (open --raw ($DATA | path join members.d.luau))
+    let injections = injected $source {corrections: $corrections, declarations: $declarations}
+    let declared = $"($declarations)\n($injections)"
 
-        let defined = [
-            ...($classes | get Name)
-            ...($datatypes | get Name)
-            ...($dump.Enums | each {|value| $"Enum($value.Name)" })
-            ...(
+    let defined = [
+        ...($classes | get Name)
+        ...($datatypes | get Name)
+        ...($dump.Enums | each {|value| $"Enum($value.Name)" })
+        ...(
         $declared
         | parse --regex '(?:type|declare extern type) (?<name>[A-Za-z_][A-Za-z0-9_]*)'
         | get name
     )
-        ]
+    ]
 
-        let referenced = [$classes $datatypes $constructors] | flatten | get Members | flatten | each {|value|
+    let referenced = [$classes $datatypes $constructors] | flatten | get Members | flatten | each {|value|
         [$value.ValueType? $value.ReturnType? $value.TupleReturns?] | append ($value.Parameters? | default [] | each {|parameter| $parameter.Type })
     } | flatten | flatten | compact | each {|value| references $value $corrections.Types } | flatten | uniq | sort
 
-        let stubs = $referenced | where $it not-in $defined | each {|name| $"declare extern type ($name) with end" }
-        let enums = $dump.Enums | each {|value| enumeration $value } | str join "\n"
-        let fields = $dump.Enums | each {|value| $"\t(property $value.Name): Enumeration($value.Name)" } | str join "\n"
-        let namespace = $"declare extern type Enumerations with\n\t[string]: Enum\n($fields)\n\tfunction GetEnums\(self\): {Enum}\nend\ndeclare Enum: Enumerations"
+    let stubs = $referenced | where $it not-in $defined | each {|name| $"declare extern type ($name) with end" }
+    let enums = $dump.Enums | each {|value| enumeration $value } | str join "\n"
+    let fields = $dump.Enums | each {|value| $"\t(property $value.Name): Enumeration($value.Name)" } | str join "\n"
+    let namespace = $"declare extern type Enumerations with\n\t[string]: Enum\n($fields)\n\tfunction GetEnums\(self\): {Enum}\nend\ndeclare Enum: Enumerations"
 
-        let hierarchy = [
-            None
-            LocalUserSecurity
-            PluginSecurity
-            WritePlayerSecurity
-            RobloxScriptSecurity
-        ]
+    let hierarchy = [
+        None
+        LocalUserSecurity
+        PluginSecurity
+        WritePlayerSecurity
+        RobloxScriptSecurity
+    ]
 
-        let class_metadata = $classes | each {|class|
+    let class_metadata = $classes | each {|class|
         let tags = $class.Tags? | default []
 
         {
@@ -481,90 +476,83 @@ def main []: nothing -> nothing {
         }
     }
 
-        mut definitions = {}
+    mut definitions = {}
 
-        for level in [
-            {name: None, file: none}
-            {name: LocalUserSecurity, file: local}
-            {name: PluginSecurity, file: plugin}
-            {name: RobloxScriptSecurity, file: roblox}
-        ] {
-            let labels = $hierarchy | take until {|name| $name == $level.name } | append $level.name
+    for level in [
+        {name: None, file: none}
+        {name: LocalUserSecurity, file: local}
+        {name: PluginSecurity, file: plugin}
+        {name: RobloxScriptSecurity, file: roblox}
+    ] {
+        let labels = $hierarchy | take until {|name| $name == $level.name } | append $level.name
 
-            let context = {
-                classes: $classes
-                corrections: $corrections
-                labels: $labels
-                members: $members
-            }
-
-            let metadata = {
-                classes: $class_metadata
-                enumerations: ($dump.Enums | get Name)
-            } | to json --raw
-
-            let body = [
-                ...$stubs
-                $declarations
-                $enums
-                $namespace
-                ...($datatypes | each {|value| declaration $value $context })
-                $injections
-                ...($classes | each {|value| declaration $value $context })
-                ...($constructors | each {|value| constructor $value $corrections })
-            ] | str join "\n" | ordered $in
-
-            $definitions = $definitions | upsert $level.file $"--#METADATA#($metadata)\n($body)"
+        let context = {
+            classes: $classes
+            corrections: $corrections
+            labels: $labels
+            members: $members
         }
 
-        mkdir $ASSETS
+        let metadata = {
+            classes: $class_metadata
+            enumerations: ($dump.Enums | get Name)
+        } | to json --raw
 
-        for level in ($definitions | transpose name body) {
-            $level.body | save --raw --force ($ASSETS | path join $"($level.name).d.luau")
-        }
+        let body = [
+            ...$stubs
+            $declarations
+            $enums
+            $namespace
+            ...($datatypes | each {|value| declaration $value $context })
+            $injections
+            ...($classes | each {|value| declaration $value $context })
+            ...($constructors | each {|value| constructor $value $corrections })
+        ] | str join "\n" | ordered $in
 
-        $documentation | to json --raw | save --force ($ASSETS | path join documentation.json)
-        {definitions: $definitions, documentation: $documentation} | to json --raw | save --force ($ASSETS | path join bundle.json)
-    } catch {|failure| error make $failure }
+        $definitions = $definitions | upsert $level.file $"--#METADATA#($metadata)\n($body)"
+    }
+
+    mkdir $ASSETS
+
+    {definitions: $definitions, documentation: $documentation} | to json --raw | save --force ($ASSETS | path join bundle.json)
 }
 
 def "main check" []: nothing -> nothing {
-    try {
-        let corrections = open ($DATA | path join corrections.json)
-        let mappings = $corrections.Types
-        let declarations = "type Result<Value = Parent> = Value\ndeclare extern type Child extends Parent with end\ndeclare extern type Parent with end"
-        let names = ordered $declarations | blocks $in | get name
-        assert equal $names [Parent Result Child]
-        let decorated = blocks "@[deprecated {use = 'replacement'}]\ndeclare function sample(): number\ndeclare sample: string"
-        assert equal ($decorated | get key) [value:sample value:sample]
+    let corrections = open ($DATA | path join corrections.json)
+    let mappings = $corrections.Types
+    let declarations = "type Result<Value = Parent> = Value\ndeclare extern type Child extends Parent with end\ndeclare extern type Parent with end"
+    let names = ordered $declarations | blocks $in | get name
+    assert equal $names [Parent Result Child]
+    let decorated = blocks "@[deprecated {use = 'replacement'}]\ndeclare function sample(): number\ndeclare sample: string"
+    assert equal ($decorated | get key) [value:sample value:sample]
 
-        assert (
+    assert (
             $decorated
             | first
             | get text
             | str starts-with '@[deprecated'
         )
 
-        let context = {
-            corrections: $corrections
-            declarations: (open --raw ($DATA | path join declarations.d.luau))
-        }
+    let context = {
+        corrections: $corrections
+        declarations: (open --raw ($DATA | path join declarations.d.luau))
+    }
 
-        let source = "-- SECTION BEGIN: RobloxGlobals\ndeclare game: any\ndeclare other: string\n-- SECTION END: RobloxGlobals"
-        assert equal (injected $source $context) 'declare other: string'
-        assert equal (property Keypoints) Keypoints
-        assert equal (property function) '["function"]'
-        assert equal (property 'not valid') '["not valid"]'
-        assert equal ({Name: Array, Generic: ColorSequenceKeypoint} | resolve $mappings) '{ ColorSequenceKeypoint }'
+    let source = "-- SECTION BEGIN: RobloxGlobals\ndeclare game: any\ndeclare other: string\n-- SECTION END: RobloxGlobals"
+    assert equal (injected $source $context) 'declare other: string'
+    assert equal (property Keypoints) Keypoints
+    assert equal (property function) '["function"]'
+    assert equal (property 'not valid') '["not valid"]'
+    assert equal ({Name: Array, Generic: ColorSequenceKeypoint} | resolve $mappings) '{ ColorSequenceKeypoint }'
 
-        assert equal ({
+    assert equal ({
         Union: [
             {Name: number}
             {Name: string}
         ]
     } | resolve $mappings) 'number | string'
 
-        assert equal (
+    assert equal (
         [
             {
                 Name: values
@@ -577,62 +565,61 @@ def "main check" []: nothing -> nothing {
         ] | parameters $mappings
     ) 'values: any, last: string'
 
-        assert equal (returns {
+    assert equal (returns {
         TupleReturns: [
             {Name: Tuple}
             {Name: number}
         ]
     } $mappings) '(any, number)'
 
-        let original = {
-            Name: Sample
-            MemberType: Property
-            ValueType: {Name: Array}
-            Security: {Read: None, Write: PluginSecurity}
-        }
+    let original = {
+        Name: Sample
+        MemberType: Property
+        ValueType: {Name: Array}
+        Security: {Read: None, Write: PluginSecurity}
+    }
 
-        let patched = repair $original {
-            ValueType: {Generic: ColorSequenceKeypoint}
-        }
+    let patched = repair $original {
+        ValueType: {Generic: ColorSequenceKeypoint}
+    }
 
-        assert equal $patched.Security $original.Security
-        assert equal (access $patched None) true
-        assert equal (access $patched None PluginSecurity) true
-        assert equal (access {MemberType: Callback, Security: None} None) true
+    assert equal $patched.Security $original.Security
+    assert equal (access $patched None) true
+    assert equal (access $patched None PluginSecurity) true
+    assert equal (access {MemberType: Callback, Security: None} None) true
 
-        let class = {
-            Name: Sample
-            Members: [$original]
-        }
+    let class = {
+        Name: Sample
+        Members: [$original]
+    }
 
-        let settings = {
-            classes: [$class]
-            labels: [None]
-            corrections: $corrections
-            members: (overrides "declare extern type Sample with\n\tSample: number\nend")
-        }
+    let settings = {
+        classes: [$class]
+        labels: [None]
+        corrections: $corrections
+        members: (overrides "declare extern type Sample with\n\tSample: number\nend")
+    }
 
-        let rendered = declaration $class $settings
-        assert ($rendered =~ 'Sample: number')
+    let rendered = declaration $class $settings
+    assert ($rendered =~ 'Sample: number')
 
-        let method = "function Method(\nself,\ncallback: (value: {number}) -> (),\nlabel: \"(\"\n): ()"
-        let property = "Sample: {\nValue: number,\nCallback: (value: string) -> (),\n}"
-        let source = $"declare extern type Sample with\n($method)\n($property)\nend"
-        let members = overrides $source
-        assert equal $members.Sample [$method $property]
-        assert equal ([$method $property] | signatures) [$method $property]
-        let rendered = declaration $class ($settings | update members $members)
-        let emitted = overrides $rendered
-        assert equal $emitted.Sample [$property $method]
+    let method = "function Method(\nself,\ncallback: (value: {number}) -> (),\nlabel: \"(\"\n): ()"
+    let property = "Sample: {\nValue: number,\nCallback: (value: string) -> (),\n}"
+    let source = $"declare extern type Sample with\n($method)\n($property)\nend"
+    let members = overrides $source
+    assert equal $members.Sample [$method $property]
+    assert equal ([$method $property] | signatures) [$method $property]
+    let rendered = declaration $class ($settings | update members $members)
+    let emitted = overrides $rendered
+    assert equal $emitted.Sample [$property $method]
 
-        let denied = $class | update Members [
-            (
+    let denied = $class | update Members [
+        (
             $original
             | update Security {Read: PluginSecurity, Write: PluginSecurity}
         )
-        ]
+    ]
 
-        let rendered = declaration $denied $settings
-        assert ($rendered !~ 'Sample: number')
-    } catch {|failure| error make $failure }
+    let rendered = declaration $denied $settings
+    assert ($rendered !~ 'Sample: number')
 }
