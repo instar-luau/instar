@@ -2,11 +2,7 @@ use super::registry;
 use crate::{configuration::InstarConfig, source::SourceStore};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::BTreeMap,
-    io,
-    path::{Path, PathBuf},
-};
+use std::{collections::BTreeMap, io, path::Path};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -32,6 +28,12 @@ pub enum Level {
 pub struct Settings {
     /// Enable linting. Unset enables linting.
     pub enabled: Option<bool>,
+
+    /// Source patterns included only during linting.
+    pub include: Vec<String>,
+
+    /// Source patterns excluded only during linting.
+    pub exclude: Vec<String>,
 
     /// Group levels. Disabled-by-default rules require an individual rule override.
     pub groups: BTreeMap<String, Level>,
@@ -180,7 +182,7 @@ pub(crate) struct Configuration {
 
 pub(crate) fn discover(sources: &mut SourceStore, path: &Path) -> io::Result<Configuration> {
     let mut merged = serde_json::Map::new();
-    let mut grafts = BTreeMap::<String, PathBuf>::new();
+    let mut grafts = BTreeMap::new();
 
     let directory = path
         .parent()
@@ -199,21 +201,13 @@ pub(crate) fn discover(sources: &mut SourceStore, path: &Path) -> io::Result<Con
 
         let source = sources.read(&configuration).map_err(io::Error::other)?;
         let text = source.text().map_err(io::Error::other)?;
-        InstarConfig::parse(text).map_err(io::Error::other)?;
+        let parsed = InstarConfig::parse(text).map_err(io::Error::other)?;
 
         let mut value: serde_json::Value =
             toml_edit::de::from_str(text).map_err(io::Error::other)?;
 
-        if let Some(entries) = value["grafts"].as_object() {
-            for (name, path) in entries {
-                grafts.insert(
-                    name.clone(),
-                    ancestor.join(
-                        path.as_str()
-                            .ok_or_else(|| io::Error::other("invalid graft path"))?,
-                    ),
-                );
-            }
+        for (name, dependency) in parsed.grafts.unwrap_or_default() {
+            grafts.insert(name, (dependency, ancestor.to_owned()));
         }
 
         if let serde_json::Value::Object(value) = value["lint"].take() {
@@ -228,7 +222,10 @@ pub(crate) fn discover(sources: &mut SourceStore, path: &Path) -> io::Result<Con
         settings,
         grafts: grafts
             .into_iter()
-            .map(|(name, path)| crate::graft::Graft::load(&path, &name).map(|graft| (name, graft)))
+            .map(|(name, (dependency, directory))| {
+                crate::graft::Graft::load(&dependency.resolve(&directory, &name)?, &name)
+                    .map(|graft| (name, graft))
+            })
             .collect::<io::Result<_>>()?,
     })
 }

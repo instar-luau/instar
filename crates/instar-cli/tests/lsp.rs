@@ -215,7 +215,11 @@ fn has_errors(publication: &Value) -> bool {
 #[test]
 fn explicit_type_instantiations_preserve_lint_and_editor_analysis() -> TestResult {
     let directory = tempfile::tempdir()?;
-    fs::write(directory.path().join("instar.toml"), "mode = 'strict'")?;
+
+    fs::write(
+        directory.path().join("instar.toml"),
+        "[analyze]\nmode = 'strict'",
+    )?;
 
     fs::write(
         directory.path().join("types.luau"),
@@ -718,7 +722,7 @@ fn type_navigation_and_related_diagnostics_keep_ranges() -> TestResult {
 #[test]
 fn requests_cancel_while_analysis_is_running() -> TestResult {
     let directory = tempfile::tempdir()?;
-    fs::write(directory.path().join("instar.toml"), "[roblox]\n")?;
+    fs::write(directory.path().join("instar.toml"), "[analyze.roblox]\n")?;
     support::configure(directory.path())?;
 
     let uri = Uri::from_file_path(directory.path().join("main.luau"))
@@ -824,7 +828,7 @@ fn roblox_navigation_and_edits_share_physical_source_identity() -> TestResult {
 
     fs::write(
         root.join("instar.toml"),
-        "[roblox]\nsourcemap = 'sourcemap.json'\n",
+        "[analyze.roblox]\nsourcemap = 'sourcemap.json'\n",
     )?;
 
     fs::write(
@@ -1176,7 +1180,11 @@ fn implementation_navigation_preserves_multiple_providers_in_large_workspaces() 
     use std::fmt::Write as StringWrite;
 
     let directory = tempfile::tempdir()?;
-    fs::write(directory.path().join("instar.toml"), "mode = 'strict'")?;
+
+    fs::write(
+        directory.path().join("instar.toml"),
+        "[analyze]\nmode = 'strict'",
+    )?;
 
     fs::write(
         directory.path().join("contract.luau"),
@@ -1642,7 +1650,7 @@ fn require_paths_complete_aliases_relative_paths_and_self() -> TestResult {
 
     fs::write(
         root.join("instar.toml"),
-        "[aliases]\ncustomAlias = 'packages'\n",
+        "[analyze.aliases]\ncustomAlias = 'packages'\n",
     )?;
 
     let uri = Uri::from_file_path(root.join("nested/init.luau"))
@@ -1819,7 +1827,7 @@ fn roblox_imports_offer_services_datamodel_paths_and_actions() -> TestResult {
 
     fs::write(
         root.join("instar.toml"),
-        "[roblox]\nsourcemap = 'sourcemap.json'\n",
+        "[analyze.roblox]\nsourcemap = 'sourcemap.json'\n",
     )?;
 
     fs::write(
@@ -2414,7 +2422,7 @@ fn structured_comments_and_document_structure() -> TestResult {
 #[test]
 fn roblox_hover_includes_examples_and_reference_links() -> TestResult {
     let directory = tempfile::tempdir()?;
-    fs::write(directory.path().join("instar.toml"), "[roblox]\n")?;
+    fs::write(directory.path().join("instar.toml"), "[analyze.roblox]\n")?;
     support::configure(directory.path())?;
 
     let identifier = Uri::from_file_path(directory.path().join("main.luau"))
@@ -2455,7 +2463,7 @@ fn roblox_hover_includes_examples_and_reference_links() -> TestResult {
 #[test]
 fn return_annotations_show_class_documentation() -> TestResult {
     let directory = tempfile::tempdir()?;
-    fs::write(directory.path().join("instar.toml"), "[roblox]\n")?;
+    fs::write(directory.path().join("instar.toml"), "[analyze.roblox]\n")?;
     support::configure(directory.path())?;
 
     let identifier = Uri::from_file_path(directory.path().join("main.luau"))
@@ -2496,7 +2504,11 @@ fn document_links_resolve_imports_with_unicode_ranges() -> TestResult {
     let directory = tempfile::tempdir()?;
     let root = directory.path();
     fs::write(root.join("mód ü.luau"), "return {}")?;
-    fs::write(root.join("instar.toml"), "[aliases]\npackages = './'\n")?;
+
+    fs::write(
+        root.join("instar.toml"),
+        "[analyze.aliases]\npackages = './'\n",
+    )?;
 
     let identifier = Uri::from_file_path(root.join("main.luau"))
         .ok_or("URI")?
@@ -2539,7 +2551,7 @@ fn resolved_imports_receive_namespace_tokens() -> TestResult {
 
     fs::write(
         directory.path().join("instar.toml"),
-        "[aliases]\npackages = './'\n",
+        "[analyze.aliases]\npackages = './'\n",
     )?;
 
     let identifier = Uri::from_file_path(directory.path().join("main.luau"))
@@ -2612,7 +2624,7 @@ fn syntax_diagnostics_accept_unicode_errors() -> TestResult {
 #[test]
 fn editor_requests_reject_results_from_older_snapshots() -> TestResult {
     let directory = tempfile::tempdir()?;
-    fs::write(directory.path().join("instar.toml"), "[roblox]\n")?;
+    fs::write(directory.path().join("instar.toml"), "[analyze.roblox]\n")?;
     support::configure(directory.path())?;
 
     let uri = Uri::from_file_path(directory.path().join("main.luau"))
@@ -2705,7 +2717,7 @@ fn method_definitions_and_symbols_select_the_method_name() -> TestResult {
 fn diagnostics_measure_open_and_edits() -> TestResult {
     let directory = tempfile::tempdir()?;
     let root = directory.path();
-    fs::write(root.join("instar.toml"), "[roblox]\n")?;
+    fs::write(root.join("instar.toml"), "[analyze.roblox]\n")?;
     support::configure(root)?;
 
     let uri = Uri::from_file_path(root.join("main.luau"))

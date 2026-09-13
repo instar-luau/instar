@@ -43,7 +43,7 @@ fn execute(directory: &Path, source: &str, condition: &str) -> TestResult {
 #[test]
 fn directory_plans_rewrite_aliases_copy_assets_and_publish_incrementally() -> TestResult {
     let directory = project(
-        "[aliases]\nvalue = 'source/value'\n[build]\ninputs = ['source']\noutput = 'output'\n",
+        "[analyze.aliases]\nvalue = 'source/value'\n[build]\ninputs = ['source']\noutput = 'output'\n",
     );
 
     fs::write(
@@ -324,7 +324,7 @@ fn graft_compilation_exposes_dependencies_and_validated_source_mappings() -> Tes
 #[test]
 fn roblox_builds_generate_project_paths_and_reject_unsafe_realms() -> TestResult {
     let directory = project(
-        "[build]\ninputs = ['source']\noutput = 'output'\n[roblox]\nproject = 'default.project.json'\n",
+        "[build]\ninputs = ['source']\noutput = 'output'\n[analyze.roblox]\nproject = 'default.project.json'\n",
     );
 
     support::configure(directory.path())?;

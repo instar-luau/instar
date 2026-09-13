@@ -117,7 +117,7 @@ fn sessions_refresh_sources_dependencies_and_configuration() -> TestResult {
     let dependency = root.join("value.luau");
     let configuration = root.join("instar.toml");
     let source = "local value: number = require('@value')\nreturn value";
-    let settings = "mode = 'strict'\naliases = {value = './value'}";
+    let settings = "[analyze]\nmode = 'strict'\naliases = {value = './value'}";
     let mut session = analysis::Session::default();
 
     for old_solver in [false, true] {
@@ -156,7 +156,7 @@ fn sessions_refresh_sources_dependencies_and_configuration() -> TestResult {
 
         fs::write(
             &configuration,
-            "mode = 'nocheck'\naliases = {value = './value'}",
+            "[analyze]\nmode = 'nocheck'\naliases = {value = './value'}",
         )?;
 
         assert!(
@@ -203,7 +203,7 @@ fn sessions_refresh_sources_dependencies_and_configuration() -> TestResult {
 
         fs::write(
             &configuration,
-            "mode = 'strict'\naliases = {value = './other'}",
+            "[analyze]\nmode = 'strict'\naliases = {value = './other'}",
         )?;
 
         fs::write(root.join("other.luau"), "return 1")?;
@@ -231,7 +231,7 @@ fn sessions_refresh_checking_modes() -> TestResult {
     let directory = tempfile::tempdir()?;
     let root = directory.path();
     let main = root.join("main.luau");
-    fs::write(root.join("instar.toml"), "mode = 'nocheck'")?;
+    fs::write(root.join("instar.toml"), "[analyze]\nmode = 'nocheck'")?;
     fs::write(&main, "local value: number = 'wrong'\nreturn value")?;
     let mut session = analysis::Session::default();
     let mut sources = SourceStore::default();
@@ -269,7 +269,7 @@ fn sessions_reload_definitions_and_repeat_their_diagnostics() -> TestResult {
 
     fs::write(
         root.join("instar.toml"),
-        "mode = 'strict'\ndefinitions = ['types.d.luau']",
+        "[analyze]\nmode = 'strict'\ndefinitions = ['types.d.luau']",
     )?;
 
     fs::write(&main, "local value: number = application\nreturn value")?;
@@ -442,7 +442,7 @@ fn resolves_alias_chains_and_rejects_cycles() -> TestResult {
 
     fs::write(
         root.join("instar.toml"),
-        "[aliases]\nfirst = '@second'\nsecond = '@first'\n",
+        "[analyze.aliases]\nfirst = '@second'\nsecond = '@first'\n",
     )?;
 
     let error = Resolver::new(&mut sources)
@@ -526,7 +526,7 @@ fn aliases_follow_proximity_then_format_and_preserve_origins() -> TestResult {
 
     fs::write(
         root.join("instar.toml"),
-        "[aliases]\nvalue = './third'\ninherited = './third'\nchain = '@inherited'\n",
+        "[analyze.aliases]\nvalue = './third'\ninherited = './third'\nchain = '@inherited'\n",
     )?;
 
     let mut resolver = Resolver::new(&mut sources);
@@ -543,7 +543,7 @@ fn aliases_follow_proximity_then_format_and_preserve_origins() -> TestResult {
 
     fs::write(
         root.join("nested/instar.toml"),
-        "[aliases]\nvalue = '../first'\n",
+        "[analyze.aliases]\nvalue = '../first'\n",
     )?;
 
     let mut resolver = Resolver::new(&mut sources);
@@ -616,7 +616,12 @@ fn source_and_configuration_snapshots_remain_consistent() -> TestResult {
 fn native_analysis_uses_unsaved_modules_and_refreshes_between_operations() -> TestResult {
     let directory = tempfile::tempdir()?;
     let root = directory.path();
-    fs::write(root.join("instar.toml"), "[aliases]\nvalue = './value'\n")?;
+
+    fs::write(
+        root.join("instar.toml"),
+        "[analyze.aliases]\nvalue = './value'\n",
+    )?;
+
     let mut sources = SourceStore::default();
     let main = root.join("main.luau");
 
@@ -854,7 +859,7 @@ fn executable_aliases_use_shared_resolution_and_instar_precedence() -> TestResul
 
         fs::write(
             root.join("instar.toml"),
-            "[aliases]\nentries = './replacement'",
+            "[analyze.aliases]\nentries = './replacement'",
         )?;
 
         assert_eq!(

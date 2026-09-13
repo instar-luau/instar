@@ -1,5 +1,5 @@
 use super::{Metadata, invalid};
-use crate::{analysis::Documentation, configuration::RobloxConfig};
+use crate::analysis::Documentation;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     collections::BTreeMap,
@@ -128,24 +128,10 @@ fn download(
 
 fn cached(
     directory: &Path,
-    pinned: Option<&str>,
     force: bool,
     now: u64,
     fetch: &mut impl FnMut(&str) -> io::Result<String>,
 ) -> io::Result<Bundle> {
-    if let Some(selected) = pinned {
-        revision(selected)?;
-
-        if !force && let Some(bundle) = stored(directory, selected)? {
-            return Ok(bundle);
-        }
-
-        let bundle = download(selected, fetch)?;
-        write(&directory.join(format!("{selected}.json")), &bundle)?;
-
-        return Ok(bundle);
-    }
-
     let path = directory.join("current.json");
     let current = read::<Current>(&path)?.filter(|current| revision(&current.revision).is_ok());
 
@@ -237,50 +223,38 @@ fn cached(
     }
 }
 
-pub(super) fn load(configuration: &RobloxConfig, force: bool) -> io::Result<Bundle> {
-    let directory = configuration
-        .cache
-        .clone()
-        .or_else(|| dirs::cache_dir().map(|path| path.join("instar").join("roblox")))
-        .ok_or_else(|| io::Error::other("cannot locate the Roblox cache directory"))?;
-
+pub(super) fn load(directory: &Path, force: bool) -> io::Result<Bundle> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(io::Error::other)?
         .as_secs();
 
-    cached(
-        &directory,
-        configuration.revision.as_deref(),
-        force,
-        now,
-        &mut |url| {
-            let agent = ureq::AgentBuilder::new()
-                .https_only(true)
-                .tls_connector(std::sync::Arc::new(
-                    ureq::native_tls::TlsConnector::new().map_err(io::Error::other)?,
-                ))
-                .timeout(Duration::from_secs(60))
-                .build();
+    cached(directory, force, now, &mut |url| {
+        let agent = ureq::AgentBuilder::new()
+            .https_only(true)
+            .tls_connector(std::sync::Arc::new(
+                ureq::native_tls::TlsConnector::new().map_err(io::Error::other)?,
+            ))
+            .timeout(Duration::from_secs(60))
+            .build();
 
-            let limit = 512 * 1024 * 1024;
-            let mut bytes = Vec::new();
+        let limit = 512 * 1024 * 1024;
+        let mut bytes = Vec::new();
 
-            agent
-                .get(url)
-                .call()
-                .map_err(io::Error::other)?
-                .into_reader()
-                .take(limit + 1)
-                .read_to_end(&mut bytes)?;
+        agent
+            .get(url)
+            .call()
+            .map_err(io::Error::other)?
+            .into_reader()
+            .take(limit + 1)
+            .read_to_end(&mut bytes)?;
 
-            if bytes.len() as u64 > limit {
-                return Err(invalid("Roblox download exceeds the size limit"));
-            }
+        if bytes.len() as u64 > limit {
+            return Err(invalid("Roblox download exceeds the size limit"));
+        }
 
-            String::from_utf8(bytes).map_err(|error| invalid(error.to_string()))
-        },
-    )
+        String::from_utf8(bytes).map_err(|error| invalid(error.to_string()))
+    })
 }
 
 #[cfg(test)]
@@ -325,7 +299,7 @@ mod tests {
         let root = directory.path();
         let mut requests = Vec::new();
 
-        cached(root, None, false, 1, &mut |url| {
+        cached(root, false, 1, &mut |url| {
             requests.push(url.to_owned());
 
             fetch(url)
@@ -334,13 +308,13 @@ mod tests {
         assert_eq!(requests.len(), 2);
         assert!(requests[1].contains(FIRST));
 
-        cached(root, None, false, INTERVAL, &mut |_| {
+        cached(root, false, INTERVAL, &mut |_| {
             panic!("fresh cache requested the network")
         })?;
 
         requests.clear();
 
-        cached(root, None, false, INTERVAL + 1, &mut |url| {
+        cached(root, false, INTERVAL + 1, &mut |url| {
             requests.push(url.to_owned());
 
             fetch(url)
@@ -349,7 +323,7 @@ mod tests {
         assert_eq!(requests, [LATEST]);
         requests.clear();
 
-        cached(root, None, true, INTERVAL + 2, &mut |url| {
+        cached(root, true, INTERVAL + 2, &mut |url| {
             requests.push(url.to_owned());
 
             fetch(url)
@@ -358,7 +332,7 @@ mod tests {
         assert_eq!(requests.len(), 2);
         assert_eq!(fs::read_dir(root)?.count(), 2);
 
-        let updated = cached(root, None, false, INTERVAL * 2 + 2, &mut |url| {
+        let updated = cached(root, false, INTERVAL * 2 + 2, &mut |url| {
             if url == LATEST {
                 Ok(serde_json::json!([{ "sha": SECOND }]).to_string())
             } else {
@@ -383,49 +357,15 @@ mod tests {
     }
 
     #[test]
-    fn pins_are_offline_and_failures_preserve_cached_assets() -> io::Result<()> {
-        let directory = tempfile::tempdir()?;
-        let root = directory.path();
-
-        cached(root, Some(FIRST), false, 1, &mut |url| {
-            assert_ne!(url, LATEST);
-            assert!(url.contains(FIRST));
-
-            fetch(url)
-        })?;
-
-        assert!(!root.join("current.json").exists());
-        let path = root.join(format!("{FIRST}.json"));
-        let original = fs::read(&path)?;
-
-        cached(root, Some(FIRST), false, u64::MAX, &mut |_| {
-            panic!("pin requested the network")
-        })?;
-
-        assert!(cached(root, Some(FIRST), true, 1, &mut offline).is_err());
-        assert!(cached(root, Some(SECOND), false, 1, &mut offline).is_err());
-        assert_eq!(fs::read(&path)?, original);
-
-        assert!(
-            cached(root, Some("../outside"), false, 1, &mut |_| panic!(
-                "invalid revision requested the network"
-            ))
-            .is_err()
-        );
-
-        Ok(())
-    }
-
-    #[test]
     fn failed_updates_keep_the_previous_revision_and_back_off() -> io::Result<()> {
         let directory = tempfile::tempdir()?;
         let root = directory.path();
-        assert!(cached(root, None, false, 1, &mut offline).is_err());
-        cached(root, None, false, 1, &mut fetch)?;
+        assert!(cached(root, false, 1, &mut offline).is_err());
+        cached(root, false, 1, &mut fetch)?;
         let path = root.join(format!("{FIRST}.json"));
         let original = fs::read(&path)?;
 
-        cached(root, None, false, INTERVAL + 1, &mut |url| {
+        cached(root, false, INTERVAL + 1, &mut |url| {
             if url == LATEST {
                 Ok(serde_json::json!([{ "sha": SECOND }]).to_string())
             } else {
@@ -436,12 +376,12 @@ mod tests {
         assert_eq!(fs::read(&path)?, original);
         assert!(!root.join(format!("{SECOND}.json")).exists());
 
-        cached(root, None, false, INTERVAL + 2, &mut |_| {
+        cached(root, false, INTERVAL + 2, &mut |_| {
             panic!("failed check was immediately retried")
         })?;
 
         let current = fs::read(root.join("current.json"))?;
-        assert!(cached(root, None, true, INTERVAL + 3, &mut offline).is_err());
+        assert!(cached(root, true, INTERVAL + 3, &mut offline).is_err());
         assert_eq!(fs::read(root.join("current.json"))?, current);
 
         Ok(())
@@ -451,10 +391,10 @@ mod tests {
     fn corrupt_cache_and_clock_rollback_require_refresh() -> io::Result<()> {
         let directory = tempfile::tempdir()?;
         let root = directory.path();
-        cached(root, None, false, 10, &mut fetch)?;
+        cached(root, false, 10, &mut fetch)?;
         let mut requests = Vec::new();
 
-        cached(root, None, false, 1, &mut |url| {
+        cached(root, false, 1, &mut |url| {
             requests.push(url.to_owned());
 
             fetch(url)
@@ -464,7 +404,7 @@ mod tests {
         fs::write(root.join(format!("{FIRST}.json")), "invalid")?;
         requests.clear();
 
-        cached(root, None, false, 2, &mut |url| {
+        cached(root, false, 2, &mut |url| {
             requests.push(url.to_owned());
 
             fetch(url)
@@ -477,47 +417,7 @@ mod tests {
             r#"{"revision":"../outside","checked":2}"#,
         )?;
 
-        cached(root, None, false, 3, &mut fetch)?;
-
-        Ok(())
-    }
-
-    #[test]
-    fn cache_paths_and_revisions_inherit_and_override() -> io::Result<()> {
-        let directory = tempfile::tempdir()?;
-        let root = directory.path();
-        let child = root.join("child");
-        fs::create_dir(&child)?;
-
-        fs::write(
-            root.join("instar.toml"),
-            format!("[roblox]\ncache = 'shared'\nrevision = '{FIRST}'"),
-        )?;
-
-        fs::write(child.join("instar.toml"), "[roblox]")?;
-
-        let inherited =
-            crate::project::resolution::Resolver::new(&mut crate::source::SourceStore::default())
-                .discovery
-                .roblox(&child.join("main.luau"))?
-                .unwrap();
-
-        assert_eq!(inherited.cache, Some(root.join("shared")));
-        assert_eq!(inherited.revision.as_deref(), Some(FIRST));
-
-        fs::write(
-            child.join("instar.toml"),
-            format!("[roblox]\ncache = 'local'\nrevision = '{SECOND}'"),
-        )?;
-
-        let overridden =
-            crate::project::resolution::Resolver::new(&mut crate::source::SourceStore::default())
-                .discovery
-                .roblox(&child.join("main.luau"))?
-                .unwrap();
-
-        assert_eq!(overridden.cache, Some(child.join("local")));
-        assert_eq!(overridden.revision.as_deref(), Some(SECOND));
+        cached(root, false, 3, &mut fetch)?;
 
         Ok(())
     }

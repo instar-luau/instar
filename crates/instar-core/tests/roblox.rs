@@ -110,7 +110,7 @@ fn cached_environment_is_explicit_and_contains_datatypes_and_documented_signatur
         assert!(check(root, source, old_solver)?.has_errors());
     }
 
-    fs::write(root.join("instar.toml"), "[roblox]")?;
+    fs::write(root.join("instar.toml"), "[analyze.roblox]")?;
 
     for old_solver in [false, true] {
         let report = check(root, source, old_solver)?;
@@ -138,7 +138,7 @@ fn cached_environment_is_explicit_and_contains_datatypes_and_documented_signatur
 fn independent_roblox_snippets_preserve_types() -> TestResult {
     let directory = tempfile::tempdir()?;
     let root = directory.path();
-    fs::write(root.join("instar.toml"), "[roblox]")?;
+    fs::write(root.join("instar.toml"), "[analyze.roblox]")?;
 
     let cases = [
         roblox_globals_constructors_signals_and_equality(),
@@ -263,7 +263,7 @@ fn mappings_preserve_imports_properties_and_script_kinds() -> TestResult {
 
     fs::write(
         root.join("instar.toml"),
-        "[roblox]\nsourcemap = 'sourcemap.json'",
+        "[analyze.roblox]\nsourcemap = 'sourcemap.json'",
     )?;
 
     let sourcemap = r#"{"name":"Game","className":"DataModel","children":[{"name":"Storage","className":"ReplicatedStorage","children":[{"name":"Main","className":"ModuleScript","filePaths":["main.luau"]},{"name":"Entry","className":"ModuleScript","filePaths":["entry.luau"]},{"name":"Name","className":"ModuleScript","filePaths":["name.luau"]}]}]}"#;
@@ -341,7 +341,7 @@ fn security_levels_filter_inaccessible_members() -> TestResult {
     let root = directory.path();
 
     for old_solver in [false, true] {
-        fs::write(root.join("instar.toml"), "[roblox]\nlevel = 'None'")?;
+        fs::write(root.join("instar.toml"), "[analyze.roblox]\nlevel = 'None'")?;
 
         for source in [
             "--!strict\nreturn Instance.new('Part').RobloxLocked",
@@ -367,7 +367,7 @@ fn security_levels_filter_inaccessible_members() -> TestResult {
 
         fs::write(
             root.join("instar.toml"),
-            "[roblox]\nlevel = 'LocalUserSecurity'",
+            "[analyze.roblox]\nlevel = 'LocalUserSecurity'",
         )?;
 
         assert!(
@@ -379,7 +379,7 @@ fn security_levels_filter_inaccessible_members() -> TestResult {
             .has_errors()
         );
 
-        fs::write(root.join("instar.toml"), "[roblox]")?;
+        fs::write(root.join("instar.toml"), "[analyze.roblox]")?;
 
         valid(&check(
             root,
@@ -395,7 +395,7 @@ fn security_levels_filter_inaccessible_members() -> TestResult {
 
         fs::write(
             root.join("instar.toml"),
-            "[roblox]\nlevel = 'PluginSecurity'",
+            "[analyze.roblox]\nlevel = 'PluginSecurity'",
         )?;
 
         valid(&check(
@@ -415,7 +415,7 @@ fn security_levels_filter_inaccessible_members() -> TestResult {
 
         fs::write(
             root.join("instar.toml"),
-            "[roblox]\nlevel = 'RobloxScriptSecurity'",
+            "[analyze.roblox]\nlevel = 'RobloxScriptSecurity'",
         )?;
 
         valid(&check(
@@ -433,24 +433,25 @@ fn levels_inherit_and_validate() -> TestResult {
     let mut check = checker();
 
     assert!(
-        instar_core::configuration::InstarConfig::parse("[roblox]\nlevel = 'Unknown'").is_err()
+        instar_core::configuration::InstarConfig::parse("[analyze.roblox]\nlevel = 'Unknown'")
+            .is_err()
     );
 
     let directory = tempfile::tempdir()?;
     let root = directory.path();
     let child = root.join("child");
     fs::create_dir(&child)?;
-    fs::write(root.join("instar.toml"), "[roblox]\nlevel = 'None'")?;
-    fs::write(child.join("instar.toml"), "[roblox]")?;
+    fs::write(root.join("instar.toml"), "[analyze.roblox]\nlevel = 'None'")?;
+    fs::write(child.join("instar.toml"), "[analyze.roblox]")?;
     let source = "--!strict\nInstance.new('Part').RobloxLocked = true";
 
     for old_solver in [false, true] {
-        fs::write(child.join("instar.toml"), "[roblox]")?;
+        fs::write(child.join("instar.toml"), "[analyze.roblox]")?;
         assert!(check(&child, source, old_solver)?.has_errors());
 
         fs::write(
             child.join("instar.toml"),
-            "[roblox]\nlevel = 'PluginSecurity'",
+            "[analyze.roblox]\nlevel = 'PluginSecurity'",
         )?;
 
         valid(&check(&child, source, old_solver)?);
@@ -483,7 +484,7 @@ fn projects_apply_nested_settings_metadata_and_ignore_patterns() -> TestResult {
 
     fs::write(
         root.join("instar.toml"),
-        "[roblox]\nproject = 'project.json'",
+        "[analyze.roblox]\nproject = 'project.json'",
     )?;
 
     fs::write(
@@ -537,7 +538,7 @@ fn additional_definitions_and_upstream_configuration_remain_separate() -> TestRe
 
     fs::write(
         root.join("instar.toml"),
-        "definitions = ['types.d.luau']\n[roblox]",
+        "[analyze]\ndefinitions = ['types.d.luau']\n[analyze.roblox]",
     )?;
 
     fs::write(

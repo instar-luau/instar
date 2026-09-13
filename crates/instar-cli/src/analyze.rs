@@ -5,7 +5,10 @@ use std::{
 };
 
 use clap::Args;
-use instar_core::{analysis, project::selection::Selection};
+use instar_core::{
+    analysis,
+    project::selection::{Scope, Selection},
+};
 
 use crate::input::Input;
 
@@ -61,7 +64,7 @@ impl Analyze {
 
             let selection = match selections.entry(directory.to_owned()) {
                 Entry::Occupied(entry) => entry.into_mut(),
-                Entry::Vacant(entry) => entry.insert(Selection::discover(&path)?),
+                Entry::Vacant(entry) => entry.insert(Selection::discover(&path, Scope::Analyze)?),
             };
 
             selection.includes(&path)

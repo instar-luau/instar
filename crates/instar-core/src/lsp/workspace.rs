@@ -26,7 +26,11 @@ pub(super) fn files(roots: &BTreeSet<PathBuf>) -> io::Result<Vec<PathBuf>> {
             );
         } else if metadata.is_file()
             && (explicit
-                || crate::project::selection::Selection::discover(&path)?.includes(&path)?)
+                || crate::project::selection::Selection::discover(
+                    &path,
+                    crate::project::selection::Scope::Analyze,
+                )?
+                .includes(&path)?)
         {
             files.insert(crate::source::absolute(&path).map_err(io::Error::other)?);
         }

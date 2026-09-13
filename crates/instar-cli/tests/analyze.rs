@@ -286,7 +286,7 @@ fn instar_mode_inherits_and_overrides_upstream_settings() {
             let root = directory.path();
             let child = root.join("child");
             fs::create_dir(&child).unwrap();
-            fs::write(root.join("instar.toml"), "mode = 'strict'").unwrap();
+            fs::write(root.join("instar.toml"), "[analyze]\nmode = 'strict'").unwrap();
 
             let settings = if upstream == ".luaurc" {
                 r#"{"languageMode":"nocheck"}"#
@@ -309,14 +309,14 @@ fn instar_mode_inherits_and_overrides_upstream_settings() {
 
             for (configuration, mode, input, status) in [
                 ("", None, source, 0),
-                ("mode = 'strict'", None, source, 1),
-                ("mode = 'nonstrict'", None, source, 0),
-                ("mode = 'nocheck'", None, source, 0),
-                ("mode = 'nocheck'", Some("strict"), source, 1),
-                ("mode = 'strict'", Some("nonstrict"), source, 0),
-                ("mode = 'strict'", Some("nocheck"), source, 0),
-                ("mode = 'strict'", Some("strict"), unchecked, 0),
-                ("mode = 'nocheck'", Some("nocheck"), checked, 1),
+                ("[analyze]\nmode = 'strict'", None, source, 1),
+                ("[analyze]\nmode = 'nonstrict'", None, source, 0),
+                ("[analyze]\nmode = 'nocheck'", None, source, 0),
+                ("[analyze]\nmode = 'nocheck'", Some("strict"), source, 1),
+                ("[analyze]\nmode = 'strict'", Some("nonstrict"), source, 0),
+                ("[analyze]\nmode = 'strict'", Some("nocheck"), source, 0),
+                ("[analyze]\nmode = 'strict'", Some("strict"), unchecked, 0),
+                ("[analyze]\nmode = 'nocheck'", Some("nocheck"), checked, 1),
             ] {
                 fs::write(child.join("instar.toml"), configuration).unwrap();
                 let mut command = Command::new(assert_cmd::cargo::cargo_bin!("instar"));
@@ -332,7 +332,7 @@ fn instar_mode_inherits_and_overrides_upstream_settings() {
                 command.arg("-").write_stdin(input).assert().code(status);
             }
 
-            fs::write(child.join("instar.toml"), "mode = 'invalid'").unwrap();
+            fs::write(child.join("instar.toml"), "[analyze]\nmode = 'invalid'").unwrap();
 
             Command::new(assert_cmd::cargo::cargo_bin!("instar"))
                 .current_dir(&child)
