@@ -7,7 +7,9 @@ def main []: nothing -> nothing {
 def version [tag: string]: nothing -> nothing {
     let version = open Cargo.toml | get workspace.package.version
 
-    if $tag != $"v($version)" { error make $"Release tag must be v($version)" }
+    if $tag != $"v($version)" {
+        error make $"Release tag must be v($version)"
+    }
 }
 
 def "main build" [
@@ -16,7 +18,9 @@ def "main build" [
 ]: nothing -> nothing {
     version $env.TAG
 
-    if $target not-in $TARGETS { error make $"Unsupported release target: ($target)" }
+    if $target not-in $TARGETS {
+        error make $"Unsupported release target: ($target)"
+    }
 
     cargo build --release --locked --package instar-cli --target $target
 
