@@ -36,12 +36,14 @@ fn configuration<'cache>(
 ) -> io::Result<&'cache Configuration> {
     let path = std::path::absolute(path)?;
 
-    let directory = path
-        .parent()
-        .ok_or_else(|| io::Error::other("source has no parent"))?
-        .to_owned();
+    let configuration = explicit
+        .map(std::path::absolute)
+        .transpose()?
+        .or_else(|| instar_core::project::nearest_configuration(&path))
+        .or_else(|| path.parent().map(Path::to_owned))
+        .ok_or_else(|| io::Error::other("source has no parent"))?;
 
-    match cache.entry(directory) {
+    match cache.entry(configuration) {
         std::collections::btree_map::Entry::Occupied(entry) => Ok(entry.into_mut()),
 
         std::collections::btree_map::Entry::Vacant(entry) => {
@@ -55,9 +57,9 @@ impl Format {
         let mut configurations = BTreeMap::new();
 
         let input = self.input.load_selected(|path| {
-            configuration(&mut configurations, path, self.config.as_deref())?
-                .selection
-                .includes(path)
+            let configuration = configuration(&mut configurations, path, self.config.as_deref())?;
+
+            Ok(configuration.language(path) && configuration.selection.includes(path)?)
         })?;
 
         if self.stdout && input.sources.len() != 1 {
@@ -74,7 +76,7 @@ impl Format {
                 let configuration =
                     configuration(&mut configurations, path, self.config.as_deref())?;
 
-                let output = configuration.format(source.bytes())?;
+                let output = configuration.format(source.path(), source.bytes())?;
                 let changed = output != source.bytes();
 
                 if !self.check && (self.stdout || standard_input) {

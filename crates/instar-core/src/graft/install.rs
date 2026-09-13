@@ -265,7 +265,7 @@ fn extract(bytes: &[u8], destination: &Path) -> io::Result<()> {
 }
 
 fn validate(directory: &Path, name: &str) -> io::Result<()> {
-    let path = directory.join("instar.toml");
+    let path = directory.join("graft.toml");
 
     if Manifest::read(&path)?.name != name {
         return Err(io::Error::other(
@@ -421,7 +421,9 @@ mod tests {
     use std::io::Write;
     use zip::{ZipWriter, write::SimpleFileOptions};
 
-    const METADATA: &str = "[graft]\nname='example'\nprotocol=1\nruntime='luau'\nentry='dist/module.luau'\nlint=true\n";
+    const METADATA: &str =
+        "name='example'\nprotocol=1\nruntime='luau'\nentry='dist/module.luau'\nlint=true\n";
+
     const MODULE: &str = "return table.freeze({lint=function() return {} end})";
 
     fn archive(files: &[(&str, &str)]) -> Vec<u8> {
@@ -593,7 +595,7 @@ mod tests {
         let version = Version::new(0, 2, 1);
 
         let contents = archive(&[
-            ("instar.toml", METADATA),
+            ("graft.toml", METADATA),
             ("dist/module.luau", MODULE),
             ("source/helper.luau", "return 1"),
         ]);
@@ -656,7 +658,7 @@ mod tests {
         );
 
         fs::write(
-            installed.join("instar.toml"),
+            installed.join("graft.toml"),
             METADATA.replace("name='example'", "name='another'"),
         )
         .unwrap();
@@ -690,11 +692,11 @@ mod tests {
             ),
             (METADATA.replace("dist/module.luau", "missing.luau"), MODULE),
             (METADATA.replace("lint=true", "lint=false"), MODULE),
-            (METADATA.replace("[graft]", "[unknown]"), MODULE),
+            (format!("{METADATA}unknown=true\n"), MODULE),
             (METADATA.to_owned(), "not luau"),
         ] {
             let directory = tempfile::tempdir().unwrap();
-            let contents = archive(&[("instar.toml", &metadata), ("dist/module.luau", module)]);
+            let contents = archive(&[("graft.toml", &metadata), ("dist/module.luau", module)]);
 
             assert!(
                 project(

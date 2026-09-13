@@ -20,7 +20,7 @@ fn analysis_uses_project_selection_and_preserves_explicit_inputs() -> TestResult
 
     fs::write(
         root.join("instar.toml"),
-        "exclude = ['generated']\ngrafts = {unused = {path = 'missing'}}\n[analyze]\nmode = 'strict'\n[format]\ninclude = ['generated']\nexclude = ['[']",
+        "exclude = ['generated']\n[analyze]\nmode = 'strict'\n[format]\ninclude = ['generated']\nexclude = ['[']",
     )?;
 
     Command::new(env!("CARGO_BIN_EXE_instar"))

@@ -26,12 +26,7 @@ pub fn children(directory: &Path) -> io::Result<Vec<PathBuf>> {
             io::Error::new(error.kind(), format!("{}: {error}", path.display()))
         })?;
 
-        if metadata.is_dir()
-            || matches!(
-                path.extension().and_then(|extension| extension.to_str()),
-                Some("lua" | "luau")
-            )
-        {
+        if metadata.is_dir() || metadata.is_file() {
             children.push(path);
         }
     }

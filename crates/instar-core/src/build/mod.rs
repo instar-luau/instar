@@ -384,7 +384,7 @@ impl Session {
             }
         }
 
-        if !configuration.settings.languages.is_empty() {
+        if configuration.has_frontends() {
             for path in [&configuration.project, &configuration.sourcemap]
                 .into_iter()
                 .flatten()
@@ -697,17 +697,7 @@ impl Session {
 
         let mut dependencies = BTreeMap::new();
 
-        let extension = path
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .unwrap_or_default();
-
-        let text = if let Some(name) = configuration.settings.languages.get(extension) {
-            let graft = configuration
-                .grafts
-                .get(name)
-                .ok_or_else(|| io::Error::other("compiling graft missing"))?;
-
+        let text = if let Some(graft) = configuration.frontend(path) {
             let compilation = graft.compile(&input)?;
 
             for dependency in compilation.dependencies {
@@ -821,18 +811,12 @@ pub fn observe(
 fn language(path: &Path, configuration: &Configuration) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            matches!(extension, "lua" | "luau")
-                || configuration.settings.languages.contains_key(extension)
-        })
+        .is_some_and(|extension| matches!(extension, "lua" | "luau"))
+        || configuration.frontend(path).is_some()
 }
 
 fn logical(path: &Path, configuration: &Configuration) -> PathBuf {
-    if path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| configuration.settings.languages.contains_key(extension))
-    {
+    if configuration.frontend(path).is_some() {
         path.with_extension("luau")
     } else {
         path.to_owned()

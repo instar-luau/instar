@@ -2,7 +2,7 @@
 
 use instar_core::{
     configuration::{InstarConfig, format::Options},
-    graft::{self, Graft},
+    graft::{self, Graft, Manifest},
     project::Configuration,
 };
 
@@ -45,8 +45,9 @@ fn project_configuration_validates_dependencies_and_metadata() {
         );
     }
 
-    let metadata = "[graft]\nname='example'\nprotocol=1\nruntime='wasm'\nentry='dist/module.wasm'\nformat=true\nlint=true\ncompile=true\n";
-    assert!(InstarConfig::parse(metadata).is_ok());
+    let metadata = "name='example'\nprotocol=1\nruntime='wasm'\nentry='dist/module.wasm'\nformat=true\nlint=true\ncompile=true\n";
+    assert!(Manifest::parse(metadata).is_ok());
+    assert!(Manifest::parse(&format!("{metadata}extensions=['custom']\n")).is_ok());
 
     for invalid in [
         format!("{metadata}version='0.2.1'\n"),
@@ -55,8 +56,14 @@ fn project_configuration_validates_dependencies_and_metadata() {
         metadata.replace("dist/module.wasm", "../module.wasm"),
         metadata.replace("runtime='wasm'\n", ""),
         metadata.replace("true", "false"),
+        format!("{metadata}extensions=['lua']\n"),
+        format!("{metadata}extensions=['custom','custom']\n"),
+        format!(
+            "{}extensions=['custom']\n",
+            metadata.replace("compile=true\n", "")
+        ),
     ] {
-        assert!(InstarConfig::parse(&invalid).is_err(), "{invalid}");
+        assert!(Manifest::parse(&invalid).is_err(), "{invalid}");
     }
 }
 
@@ -85,15 +92,12 @@ fn local_projects_resolve_relative_to_the_declaring_configuration() {
 
     assert_eq!(
         configuration.grafts[0].manifest().canonicalize().unwrap(),
-        directory.path().join("instar.toml").canonicalize().unwrap()
+        directory.path().join("graft.toml").canonicalize().unwrap()
     );
 
-    let manifest = directory.path().join("instar.toml");
-
     fs::write(
-        &manifest,
-        fs::read_to_string(&manifest).unwrap()
-            + "\n[grafts]\nexample={repo='owner/project',version='0.2.1'}",
+        directory.path().join("instar.toml"),
+        "[grafts]\nexample={repo='owner/project',version='0.2.1'}",
     )
     .unwrap();
 
@@ -129,6 +133,42 @@ fn local_projects_resolve_relative_to_the_declaring_configuration() {
 }
 
 #[test]
+fn project_configuration_rejects_conflicting_frontends() {
+    let first = native::fixture("[]");
+    let second = native::fixture("[]");
+
+    fs::write(
+        first.path().join("graft.toml"),
+        "name='first'\nprotocol=1\nruntime='native'\ncompile=true\nextensions=['custom']\n",
+    )
+    .unwrap();
+
+    fs::write(
+        second.path().join("graft.toml"),
+        "name='second'\nprotocol=1\nruntime='native'\ncompile=true\nextensions=['custom']\n",
+    )
+    .unwrap();
+
+    let directory = tempfile::tempdir().unwrap();
+
+    fs::write(
+        directory.path().join("instar.toml"),
+        format!(
+            "[grafts]\nfirst={{path='{}'}}\nsecond={{path='{}'}}\n",
+            first.path().to_string_lossy().replace('\\', "/"),
+            second.path().to_string_lossy().replace('\\', "/"),
+        ),
+    )
+    .unwrap();
+
+    let error = Configuration::discover(&directory.path().join("source.custom"), None)
+        .err()
+        .expect("conflicting frontends accepted");
+
+    assert!(error.to_string().contains("multiple grafts own .custom"));
+}
+
+#[test]
 fn project_configuration_overrides_graft_defaults() {
     let directory = support::luau(
         r#"
@@ -141,12 +181,18 @@ return table.freeze({lint = lint})
         "lint",
     );
 
-    let manifest = directory.path().join("instar.toml");
+    let manifest = directory.path().join("graft.toml");
 
     fs::write(
         &manifest,
         fs::read_to_string(&manifest).unwrap()
-            + "[graft.configuration.factory]\nbackend='table'\ncreate='default.create'\n[grafts.example]\npath='.'\n[grafts.example.configuration.factory]\ncreate='fluid.create'\n",
+            + "[configuration.factory]\nbackend='table'\ncreate='default.create'\n",
+    )
+    .unwrap();
+
+    fs::write(
+        directory.path().join("instar.toml"),
+        "[grafts.example]\npath='.'\n[grafts.example.configuration.factory]\ncreate='fluid.create'\n",
     )
     .unwrap();
 
@@ -165,17 +211,93 @@ fn formatting_uses_the_host_renderer_and_configuration_pipeline() {
 
     fs::write(
         directory.path().join("instar.toml"),
-        fs::read_to_string(directory.path().join("instar.toml")).unwrap()
-            + "\n[grafts]\nexample = { path = '.' }",
+        "[grafts]\nexample = { path = '.' }",
     )
     .unwrap();
 
     let configuration =
         Configuration::discover(&directory.path().join("source.luau"), None).unwrap();
 
-    let output = configuration.format(b"local value=1").unwrap();
+    let path = directory.path().join("source.luau");
+    let output = configuration.format(&path, b"local value=1").unwrap();
     assert_eq!(output, b"local value =\n\t1\n");
-    assert_eq!(configuration.format(&output).unwrap(), output);
+    assert_eq!(configuration.format(&path, &output).unwrap(), output);
+}
+
+#[test]
+fn frontend_formatting_bypasses_luau_parsing() {
+    let directory = native::fixture(r#"{"version":1,"document":{"source":[0,9]}}"#);
+
+    fs::write(
+        directory.path().join("graft.toml"),
+        "name='example'\nprotocol=1\nruntime='native'\nformat=true\ncompile=true\nextensions=['custom']\n",
+    )
+    .unwrap();
+
+    fs::write(
+        directory.path().join("instar.toml"),
+        "[grafts]\nexample={path='.'}",
+    )
+    .unwrap();
+
+    let path = directory.path().join("source.custom");
+    let configuration = Configuration::discover(&path, None).unwrap();
+
+    assert_eq!(
+        configuration.format(&path, b"<frame />").unwrap(),
+        b"<frame />\n"
+    );
+}
+
+#[test]
+fn frontend_analysis_lowers_source_and_maps_diagnostics() {
+    let original = "<frame />";
+    let generated = "local value: string = 1";
+
+    let reply = serde_json::json!({
+        "version": 1,
+        "source": generated,
+        "dependencies": [],
+        "mappings": [{
+            "start": 0,
+            "end": generated.len(),
+            "original_start": 0,
+            "original_end": original.len(),
+        }],
+    });
+
+    let directory = native::fixture(&reply.to_string());
+
+    fs::write(
+        directory.path().join("graft.toml"),
+        "name='example'\nprotocol=1\nruntime='native'\ncompile=true\nextensions=['custom']\n",
+    )
+    .unwrap();
+
+    fs::write(
+        directory.path().join("instar.toml"),
+        "[grafts]\nexample={path='.'}",
+    )
+    .unwrap();
+
+    let path = directory.path().join("source.custom");
+    let mut sources = instar_core::source::SourceStore::default();
+    sources.open(&path, 1, original).unwrap();
+
+    let report = instar_core::analysis::Session::default()
+        .analyze(
+            &mut sources,
+            std::slice::from_ref(&path),
+            &instar_core::analysis::Options::default(),
+        )
+        .unwrap();
+
+    assert_eq!(report.diagnostics.len(), 1);
+    assert!(!report.diagnostics[0].message.starts_with("SyntaxError:"));
+    assert_eq!(report.diagnostics[0].line, 0);
+    assert_eq!(report.diagnostics[0].end_line, 0);
+    assert!(report.diagnostics[0].column <= u32::try_from(original.len()).unwrap());
+    assert!(report.diagnostics[0].end_column <= u32::try_from(original.len()).unwrap());
 }
 
 #[test]
@@ -187,7 +309,7 @@ fn malformed_layouts_and_syntax_changes_are_rejected() {
         r#"{"version":1,"document":{"text":"return 2"}}"#,
     ] {
         let directory = fixture(reply, "instar_format");
-        let graft = Graft::load(&directory.path().join("instar.toml"), "example").unwrap();
+        let graft = Graft::load(&directory.path().join("graft.toml"), "example").unwrap();
 
         assert!(
             graft.format(b"return 1", &Options::default()).is_err(),
@@ -203,14 +325,13 @@ fn lint_findings_validate_source_ranges() {
         "instar_lint",
     );
 
-    let graft = Graft::load(&directory.path().join("instar.toml"), "example").unwrap();
+    let graft = Graft::load(&directory.path().join("graft.toml"), "example").unwrap();
     assert_eq!(graft.lint(b"return 1").unwrap()[0].rule, "example");
     assert!(graft.lint(b"x").is_err());
 
     fs::write(
         directory.path().join("instar.toml"),
-        fs::read_to_string(directory.path().join("instar.toml")).unwrap()
-            + "\n[grafts]\nexample = { path = '.' }\n[lint.rules]\n'example/example' = 'deny'\n",
+        "[grafts]\nexample = { path = '.' }\n[lint.rules]\n'example/example' = 'deny'\n",
     )
     .unwrap();
 
@@ -254,7 +375,7 @@ fn traps_and_out_of_bounds_guest_responses_are_errors() {
     let reply = r#"{"version":1,"document":{"source":[0,8]}}"#;
     let directory = fixture(reply, "instar_format");
     let artifact = directory.path().join("module.wasm");
-    let manifest = directory.path().join("instar.toml");
+    let manifest = directory.path().join("graft.toml");
     let mut trapped = module(reply, "instar_format");
 
     let position = trapped
@@ -304,7 +425,7 @@ fn graft_layouts_preserve_suppression_and_comments() {
         "instar_format",
     );
 
-    let graft = Graft::load(&directory.path().join("instar.toml"), "example").unwrap();
+    let graft = Graft::load(&directory.path().join("graft.toml"), "example").unwrap();
 
     let error = graft
         .format(
@@ -319,13 +440,13 @@ fn graft_layouts_preserve_suppression_and_comments() {
 #[test]
 fn manifest_identity_exports_and_entry_boundaries_are_checked() {
     let directory = fixture(r#"{"version":1,"document":"empty"}"#, "instar_format");
-    let path = directory.path().join("instar.toml");
+    let path = directory.path().join("graft.toml");
     assert!(Graft::load(&path, "another").is_err());
 
     for manifest in [
-        "[graft]\nname='example'\nprotocol=2\nruntime='wasm'\nentry='module.wasm'\nformat=true",
-        "[graft]\nname='example'\nprotocol=1\nruntime='wasm'\nentry='../module.wasm'\nformat=true",
-        "[graft]\nname='example'\nprotocol=1\nruntime='wasm'\nentry='module.wasm'\nlint=true",
+        "name='example'\nprotocol=2\nruntime='wasm'\nentry='module.wasm'\nformat=true",
+        "name='example'\nprotocol=1\nruntime='wasm'\nentry='../module.wasm'\nformat=true",
+        "name='example'\nprotocol=1\nruntime='wasm'\nentry='module.wasm'\nlint=true",
     ] {
         fs::write(&path, manifest).unwrap();
         assert!(Graft::load(&path, "example").is_err());
@@ -335,12 +456,12 @@ fn manifest_identity_exports_and_entry_boundaries_are_checked() {
 #[test]
 fn runtime_is_required_and_validated() {
     let directory = fixture("[]", "instar_lint");
-    let path = directory.path().join("instar.toml");
+    let path = directory.path().join("graft.toml");
 
     for runtime in ["", "runtime='unknown'\n"] {
         fs::write(
             &path,
-            format!("[graft]\nname='example'\nprotocol=1\n{runtime}entry='module.wasm'\nlint=true"),
+            format!("name='example'\nprotocol=1\n{runtime}entry='module.wasm'\nlint=true"),
         )
         .unwrap();
 
@@ -355,7 +476,9 @@ fn runtime_is_required_and_validated() {
     for runtime in ["luau", "wasm"] {
         fs::write(
             &path,
-            format!("[graft]\nname='example'\nprotocol=1\nruntime='{runtime}'\nentry='../module'\nlint=true"),
+            format!(
+                "name='example'\nprotocol=1\nruntime='{runtime}'\nentry='../module'\nlint=true"
+            ),
         )
         .unwrap();
 
@@ -369,7 +492,7 @@ fn runtime_is_required_and_validated() {
 
     fs::write(
         &path,
-        "[graft]\nname='example'\nprotocol=1\nruntime='native'\nentry='module'\nlint=true",
+        "name='example'\nprotocol=1\nruntime='native'\nentry='module'\nlint=true",
     )
     .unwrap();
 
@@ -383,7 +506,7 @@ fn runtime_is_required_and_validated() {
     for runtime in ["luau", "wasm"] {
         fs::write(
             &path,
-            format!("[graft]\nname='example'\nprotocol=1\nruntime='{runtime}'\nlint=true"),
+            format!("name='example'\nprotocol=1\nruntime='{runtime}'\nlint=true"),
         )
         .unwrap();
 
@@ -417,26 +540,27 @@ return table.freeze({format = format})
         "format",
     );
 
-    let manifest = directory.path().join("instar.toml");
+    let manifest = directory.path().join("graft.toml");
 
     fs::write(
         &manifest,
-        fs::read_to_string(&manifest).unwrap() + "[graft.configuration]\nsetting='value'\n",
+        fs::read_to_string(&manifest).unwrap() + "[configuration]\nsetting='value'\n",
     )
     .unwrap();
 
     fs::write(
         directory.path().join("instar.toml"),
-        fs::read_to_string(&manifest).unwrap() + "\n[format]\nindentation.style='spaces'\nindentation.width=2\n[grafts]\nexample={path='.'}",
+        "[format]\nindentation.style='spaces'\nindentation.width=2\n[grafts]\nexample={path='.'}",
     )
     .unwrap();
 
     let configuration =
         Configuration::discover(&directory.path().join("source.luau"), None).unwrap();
 
-    let output = configuration.format(b"local value=1").unwrap();
+    let path = directory.path().join("source.luau");
+    let output = configuration.format(&path, b"local value=1").unwrap();
     assert_eq!(output, b"local value =\n  1\n");
-    assert_eq!(configuration.format(&output).unwrap(), output);
+    assert_eq!(configuration.format(&path, &output).unwrap(), output);
 }
 
 #[test]
@@ -451,11 +575,11 @@ return table.freeze({lint = lint})
         "lint",
     );
 
-    let manifest = directory.path().join("instar.toml");
+    let manifest = directory.path().join("graft.toml");
 
     fs::write(
         &manifest,
-        fs::read_to_string(&manifest).unwrap() + "[graft.configuration]\nmessage='雪\"\\123'\n",
+        fs::read_to_string(&manifest).unwrap() + "[configuration]\nmessage='雪\"\\123'\n",
     )
     .unwrap();
 
@@ -483,7 +607,7 @@ fn luau_modules_and_responses_are_checked() {
         let directory = support::luau(source, "format");
 
         assert!(
-            Graft::load(&directory.path().join("instar.toml"), "example").is_err(),
+            Graft::load(&directory.path().join("graft.toml"), "example").is_err(),
             "{source}"
         );
     }
@@ -507,7 +631,7 @@ fn luau_modules_and_responses_are_checked() {
             "format",
         );
 
-        let graft = Graft::load(&directory.path().join("instar.toml"), "example").unwrap();
+        let graft = Graft::load(&directory.path().join("graft.toml"), "example").unwrap();
 
         assert!(
             graft.format(b"return 1", &Options::default()).is_err(),
@@ -534,7 +658,7 @@ return table.freeze({lint=lint})
         "lint",
     );
 
-    let graft = Graft::load(&directory.path().join("instar.toml"), "example").unwrap();
+    let graft = Graft::load(&directory.path().join("graft.toml"), "example").unwrap();
     assert!(graft.lint(b"return 1").unwrap().is_empty());
     assert!(graft.lint(b"return 1").unwrap().is_empty());
 }
@@ -560,7 +684,7 @@ fn native_receives_json_settings_and_returns_shared_layouts() {
     );
 
     fs::write(directory.path().join("request.json"), request).unwrap();
-    let graft = Graft::load(&directory.path().join("instar.toml"), "example").unwrap();
+    let graft = Graft::load(&directory.path().join("graft.toml"), "example").unwrap();
     assert_eq!(graft.format(b"return 1", &options).unwrap(), b"return 1\n");
 }
 
@@ -569,7 +693,7 @@ fn native_lint_and_failure_paths_are_checked() {
     let directory =
         native::fixture(r#"[{"rule":"example","message":"reported","start":0,"end":6}]"#);
 
-    let graft = Graft::load(&directory.path().join("instar.toml"), "example").unwrap();
+    let graft = Graft::load(&directory.path().join("graft.toml"), "example").unwrap();
     assert_eq!(graft.lint(b"return 1").unwrap()[0].end, 6);
     assert!(graft.lint(b"x").is_err());
     fs::write(directory.path().join("response.json"), "not JSON").unwrap();
@@ -604,6 +728,6 @@ fn native_drains_output_while_sending_input() {
 
     let directory = native::fixture(&response.to_string());
     fs::write(directory.path().join("mode"), "early").unwrap();
-    let graft = Graft::load(&directory.path().join("instar.toml"), "example").unwrap();
+    let graft = Graft::load(&directory.path().join("graft.toml"), "example").unwrap();
     assert_eq!(graft.lint(source.as_bytes()).unwrap()[0].message, source);
 }

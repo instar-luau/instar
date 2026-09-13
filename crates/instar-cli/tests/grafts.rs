@@ -25,8 +25,7 @@ fn graft_layouts_reach_standard_output_checks_and_file_writes() {
 
         fs::write(
             root.join("instar.toml"),
-            fs::read_to_string(root.join("instar.toml")).unwrap()
-                + "\n[grafts]\nexample = { path = '.' }",
+            "[grafts]\nexample = { path = '.' }",
         )
         .unwrap();
 
@@ -80,6 +79,41 @@ fn graft_layouts_reach_standard_output_checks_and_file_writes() {
 }
 
 #[test]
+fn directory_inputs_include_frontend_sources() {
+    let directory = native::fixture(r#"{"version":1,"document":{"source":[0,9]}}"#);
+    let root = directory.path();
+
+    fs::write(
+        root.join("graft.toml"),
+        "name='example'\nprotocol=1\nruntime='native'\nformat=true\ncompile=true\nextensions=['custom']\n",
+    )
+    .unwrap();
+
+    fs::write(
+        root.join("instar.toml"),
+        "[grafts]\nexample = { path = '.' }",
+    )
+    .unwrap();
+
+    fs::write(root.join("source.custom"), "<frame />").unwrap();
+    fs::write(root.join("ignored.txt"), "ignored").unwrap();
+
+    Command::new(env!("CARGO_BIN_EXE_instar"))
+        .current_dir(root)
+        .args(["format", "."])
+        .assert()
+        .success()
+        .stdout("");
+
+    assert_eq!(
+        fs::read(root.join("source.custom")).unwrap(),
+        b"<frame />\n"
+    );
+
+    assert_eq!(fs::read(root.join("ignored.txt")).unwrap(), b"ignored");
+}
+
+#[test]
 fn invalid_graft_output_leaves_files_untouched() {
     let reply = r#"{"version":1,"document":{"text":"return 2"}}"#;
 
@@ -95,8 +129,7 @@ fn invalid_graft_output_leaves_files_untouched() {
 
         fs::write(
             root.join("instar.toml"),
-            fs::read_to_string(root.join("instar.toml")).unwrap()
-                + "\n[grafts]\nexample = { path = '.' }",
+            "[grafts]\nexample = { path = '.' }",
         )
         .unwrap();
 

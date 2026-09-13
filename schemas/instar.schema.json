@@ -51,18 +51,6 @@
       ],
       "default": null
     },
-    "graft": {
-      "description": "Identity, protocol, runtime, and hooks exported by this graft project.\n\nDefault: `unset`.",
-      "anyOf": [
-        {
-          "$ref": "#/$defs/Manifest"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null
-    },
     "grafts": {
       "description": "Graft projects loaded from local paths or installed GitHub releases. Entries inherit by name and run in name order.\n\nDefault: `unset`.",
       "type": [
@@ -755,14 +743,6 @@
             "type": "string"
           }
         },
-        "languages": {
-          "description": "Input extensions mapped to configured compiling graft names. A leading dot is omitted.\n\nDefault: `{}`.",
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          },
-          "default": {}
-        },
         "lower": {
           "description": "Remove type-only syntax, assertions, and const declarations while retaining Luau runtime syntax.\n\nDefault: `false`.",
           "type": "boolean",
@@ -1154,7 +1134,7 @@
               "additionalProperties": true
             },
             "path": {
-              "description": "Directory containing the graft project's instar.toml.",
+              "description": "Directory containing the graft project's graft.toml.",
               "type": "string"
             }
           },
@@ -1532,61 +1512,6 @@
         }
       },
       "additionalProperties": false
-    },
-    "Manifest": {
-      "description": "Graft identity, entry point, exported hooks, and default configuration.",
-      "type": "object",
-      "properties": {
-        "compile": {
-          "description": "Whether the graft exports a compilation hook.\n\nDefault: `false`.",
-          "type": "boolean",
-          "default": false
-        },
-        "configuration": {
-          "description": "Default settings passed to exported hooks.\n\nDefault: `{}`.",
-          "type": "object",
-          "additionalProperties": true,
-          "default": {}
-        },
-        "entry": {
-          "description": "Entry path relative to the manifest.\n\nDefault: `unset`.",
-          "type": [
-            "string",
-            "null"
-          ],
-          "default": null
-        },
-        "format": {
-          "description": "Whether the graft exports a formatting hook.\n\nDefault: `false`.",
-          "type": "boolean",
-          "default": false
-        },
-        "lint": {
-          "description": "Whether the graft exports a lint hook.\n\nDefault: `false`.",
-          "type": "boolean",
-          "default": false
-        },
-        "name": {
-          "description": "Graft identifier used by project configuration.",
-          "type": "string"
-        },
-        "protocol": {
-          "description": "Graft protocol version.",
-          "type": "integer",
-          "format": "uint32",
-          "minimum": 0
-        },
-        "runtime": {
-          "description": "Runtime responsible for executing the entry point.",
-          "$ref": "#/$defs/Runtime"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "name",
-        "protocol",
-        "runtime"
-      ]
     },
     "Mode": {
       "description": "Type-checking mode supplied to Luau.",
@@ -1995,26 +1920,6 @@
           "description": "Members additionally available to Roblox internal scripts.",
           "type": "string",
           "const": "RobloxScriptSecurity"
-        }
-      ]
-    },
-    "Runtime": {
-      "description": "Execution environment selected by a graft manifest.",
-      "oneOf": [
-        {
-          "description": "Invoke a native executable through the JSON protocol.",
-          "type": "string",
-          "const": "native"
-        },
-        {
-          "description": "Execute Luau code in an isolated virtual machine.",
-          "type": "string",
-          "const": "luau"
-        },
-        {
-          "description": "Execute a WebAssembly module in the graft runtime.",
-          "type": "string",
-          "const": "wasm"
         }
       ]
     },

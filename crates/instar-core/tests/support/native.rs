@@ -66,8 +66,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     fs::write(directory.path().join("response.json"), response).unwrap();
 
     fs::write(
-        directory.path().join("instar.toml"),
-        "[graft]\nname='example'\nprotocol=1\nruntime='native'\nformat=true\nlint=true\n",
+        directory.path().join("graft.toml"),
+        "name='example'\nprotocol=1\nruntime='native'\nformat=true\nlint=true\n",
     )
     .unwrap();
 

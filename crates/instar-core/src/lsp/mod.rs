@@ -406,7 +406,15 @@ impl LanguageServer for Backend {
                 .and_then(|capabilities| capabilities.dynamic_registration)
                 == Some(true)
             {
-                registrations.push(protocol::Registration { id: "files".into(), method: "workspace/didChangeWatchedFiles".into(), register_options: Some(r#"{"watchers":[{"globPattern":"**/.luaurc"},{"globPattern":"**/.config.luau"},{"globPattern":"**/instar.toml"},{"globPattern":"**/*.{lua,luau,json}"}]}"#.parse().map_err(internal_error)?) });
+                registrations.push(protocol::Registration {
+                    id: "files".into(),
+                    method: "workspace/didChangeWatchedFiles".into(),
+                    register_options: Some(
+                        r#"{"watchers":[{"globPattern":"**/*"}]}"#
+                            .parse()
+                            .map_err(internal_error)?,
+                    ),
+                });
             }
 
             if workspace

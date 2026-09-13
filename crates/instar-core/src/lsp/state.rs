@@ -733,7 +733,7 @@ impl State {
         let configuration = Configuration::discover(source.path(), None).map_err(internal_error)?;
 
         let output = configuration
-            .format(source.bytes())
+            .format(source.path(), source.bytes())
             .map_err(internal_error)?;
 
         if output == source.bytes() {

@@ -4,11 +4,15 @@ use clap::Args;
 use instar_core::{
     analysis,
     lint::{self, configuration::Level},
-    project::selection::{Scope, Selection},
+    project::{
+        Configuration,
+        selection::{Scope, Selection},
+    },
     source::{PositionEncoding, Source, SourceStore},
 };
 
 use std::{
+    collections::{BTreeMap, btree_map::Entry},
     io::{self, Write},
     path::PathBuf,
     process::ExitCode,
@@ -109,8 +113,26 @@ impl Lint {
             return Ok(ExitCode::SUCCESS);
         }
 
-        let mut input = Input::new(self.files, self.filename)
-            .load_selected(|path| Selection::discover(path, Scope::Lint)?.includes(path))?;
+        let mut configurations = BTreeMap::new();
+
+        let mut input = Input::new(self.files, self.filename).load_selected(|path| {
+            let path = std::path::absolute(path)?;
+
+            let configuration_path = instar_core::project::nearest_configuration(&path)
+                .or_else(|| path.parent().map(std::path::Path::to_owned))
+                .ok_or_else(|| io::Error::other("source has no parent"))?;
+
+            let (selection, configuration) = match configurations.entry(configuration_path) {
+                Entry::Occupied(entry) => entry.into_mut(),
+
+                Entry::Vacant(entry) => entry.insert((
+                    Selection::discover(&path, Scope::Lint)?,
+                    Configuration::discover_frontends(&path)?,
+                )),
+            };
+
+            Ok(configuration.language(&path) && selection.includes(&path)?)
+        })?;
 
         let mut session = analysis::Session::default();
         let mut failed = false;

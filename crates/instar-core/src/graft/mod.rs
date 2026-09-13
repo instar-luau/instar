@@ -6,12 +6,12 @@ mod wasm;
 
 pub use install::install;
 
-use crate::configuration::{InstarConfig, format::Options};
+use crate::configuration::format::Options;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs, io,
     path::{Component, Path, PathBuf},
 };
@@ -61,26 +61,46 @@ pub struct Manifest {
     #[serde(default)]
     pub compile: bool,
 
+    /// Input extensions owned by this graft, without a leading dot.
+    #[serde(default)]
+    pub extensions: Vec<String>,
+
     /// Default settings passed to exported hooks.
     #[serde(default)]
     pub configuration: BTreeMap<String, serde_json::Value>,
 }
 
 impl Manifest {
-    fn read(path: &Path) -> io::Result<Self> {
-        InstarConfig::parse(&fs::read_to_string(path)?)
-            .map_err(io::Error::other)?
-            .graft
-            .ok_or_else(|| {
-                io::Error::other(format!("{}: missing [graft] metadata", path.display()))
-            })
+    /// # Errors
+    /// Returns malformed TOML or invalid graft metadata.
+    pub fn parse(source: &str) -> io::Result<Self> {
+        let manifest: Self = toml_edit::de::from_str(source).map_err(io::Error::other)?;
+        manifest.validate()?;
+
+        Ok(manifest)
     }
 
-    pub(crate) fn validate(&self) -> io::Result<()> {
+    fn read(path: &Path) -> io::Result<Self> {
+        Self::parse(&fs::read_to_string(path)?)
+    }
+
+    fn validate(&self) -> io::Result<()> {
         component(&self.name)?;
 
         if self.protocol != 1 || !self.format && !self.lint && !self.compile {
             return Err(io::Error::other("graft protocol or hooks are invalid"));
+        }
+
+        let mut extensions = BTreeSet::new();
+
+        if self.extensions.iter().any(|extension| {
+            extension.is_empty()
+                || matches!(extension.as_str(), "lua" | "luau")
+                || !extension.bytes().all(|byte| byte.is_ascii_alphanumeric())
+                || !extensions.insert(extension)
+        }) || !extensions.is_empty() && !self.compile
+        {
+            return Err(io::Error::other("graft extensions are invalid"));
         }
 
         match (&self.runtime, &self.entry) {
@@ -118,7 +138,7 @@ impl Manifest {
 pub enum Dependency {
     /// A project directory relative to the declaring configuration.
     Local {
-        /// Directory containing the graft project's instar.toml.
+        /// Directory containing the graft project's graft.toml.
         path: PathBuf,
         /// Project settings merged over the graft's defaults.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -213,7 +233,7 @@ impl Dependency {
         self.validate(name)?;
 
         match self {
-            Self::Local { path, .. } => Ok(directory.join(path).join("instar.toml")),
+            Self::Local { path, .. } => Ok(directory.join(path).join("graft.toml")),
             Self::Remote { .. } => self.cached(&cache()?, name),
         }
     }
@@ -263,7 +283,7 @@ impl Dependency {
                     "graft {name} ({repo} {version}) is not cached; run instar graft install"
                 ))
             })?
-            .join("instar.toml");
+            .join("graft.toml");
 
         if Manifest::read(&path)?.name != name {
             return Err(io::Error::other(
@@ -291,6 +311,7 @@ pub struct Graft {
     format: bool,
     lint: bool,
     compile: bool,
+    extensions: BTreeSet<String>,
     configuration: BTreeMap<String, serde_json::Value>,
 }
 
@@ -354,6 +375,27 @@ pub struct Mapping {
     pub original_end: usize,
 }
 
+impl Mapping {
+    pub(crate) fn to_original(&self, offset: usize) -> Option<usize> {
+        if offset < self.start || offset > self.end {
+            return None;
+        }
+
+        Some(
+            self.original_start
+                + (offset - self.start).min(self.original_end - self.original_start),
+        )
+    }
+
+    pub(crate) fn to_generated(&self, offset: usize) -> Option<usize> {
+        if offset < self.original_start || offset > self.original_end {
+            return None;
+        }
+
+        Some(self.start + (offset - self.original_start).min(self.end - self.start))
+    }
+}
+
 impl Graft {
     #[must_use]
     /// Resolved path of the graft manifest.
@@ -371,6 +413,24 @@ impl Graft {
     /// Whether this graft exports a compilation hook.
     pub const fn compiles(&self) -> bool {
         self.compile
+    }
+
+    #[must_use]
+    /// Whether this graft owns the input path's extension.
+    pub fn owns(&self, path: &Path) -> bool {
+        path.extension()
+            .and_then(std::ffi::OsStr::to_str)
+            .is_some_and(|extension| self.extensions.contains(extension))
+    }
+
+    #[must_use]
+    /// Whether this graft owns any input extensions.
+    pub fn is_frontend(&self) -> bool {
+        !self.extensions.is_empty()
+    }
+
+    pub(crate) fn extensions(&self) -> impl Iterator<Item = &str> {
+        self.extensions.iter().map(String::as_str)
     }
 
     /// # Errors
@@ -396,10 +456,12 @@ impl Graft {
         }
 
         let mut previous = 0;
+        let mut previous_original = 0;
 
         for mapping in &result.mappings {
-            if mapping.start < previous
+            if mapping.start != previous
                 || mapping.start == mapping.end
+                || mapping.original_start != previous_original
                 || result.source.get(mapping.start..mapping.end).is_none()
                 || original
                     .get(mapping.original_start..mapping.original_end)
@@ -409,6 +471,13 @@ impl Graft {
             }
 
             previous = mapping.end;
+            previous_original = mapping.original_end;
+        }
+
+        if !result.source.is_empty()
+            && (previous != result.source.len() || previous_original != original.len())
+        {
+            return Err(io::Error::other("incomplete graft compilation mappings"));
         }
 
         if !vermis::parse(result.source.as_bytes().into())
@@ -506,6 +575,7 @@ impl Graft {
             format: manifest.format,
             lint: manifest.lint,
             compile: manifest.compile,
+            extensions: manifest.extensions.into_iter().collect(),
             configuration,
         })
     }
@@ -551,6 +621,7 @@ impl Graft {
             source,
             &self.invoke("format", source, Some(options))?,
             options,
+            !self.is_frontend(),
         )
     }
 

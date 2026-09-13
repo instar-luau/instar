@@ -212,7 +212,9 @@ fn configuration_preserves_selection_paths() {
             .unwrap();
 
     assert_eq!(
-        configuration.format(b"f(first,second)").unwrap(),
+        configuration
+            .format(&directory.path().join("source.luau"), b"f(first,second)")
+            .unwrap(),
         b"f(\n    first,\n    second\n)\n"
     );
 

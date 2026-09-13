@@ -225,13 +225,16 @@ impl Session {
         position: line_index::LineCol,
         operation: &str,
     ) -> io::Result<Report> {
-        self.native.query(
-            &mut Resolver::new(sources),
-            modules,
-            path,
-            position,
-            operation,
-        )
+        let mut resolver = Resolver::new(sources);
+        let position = resolver.generated_position(path, position)?;
+
+        let mut report = self
+            .native
+            .query(&mut resolver, modules, path, position, operation)?;
+
+        map_report(&resolver, path, &mut report)?;
+
+        Ok(report)
     }
 
     /// Invalidate cached native state after environment or configuration changes.
@@ -252,8 +255,16 @@ impl Session {
         modules: &[PathBuf],
         options: &Options,
     ) -> io::Result<Report> {
-        self.native
-            .analyze(&mut Resolver::new(sources), modules, options)
+        let mut resolver = Resolver::new(sources);
+        let mut report = self.native.analyze(&mut resolver, modules, options)?;
+
+        map_report(
+            &resolver,
+            modules.first().map_or(Path::new(""), PathBuf::as_path),
+            &mut report,
+        )?;
+
+        Ok(report)
     }
 }
 
@@ -264,5 +275,67 @@ pub fn analyze(
     modules: &[PathBuf],
     options: &Options,
 ) -> io::Result<Report> {
-    luau::Session::default().analyze(resolver, modules, options)
+    let mut report = luau::Session::default().analyze(resolver, modules, options)?;
+
+    map_report(
+        resolver,
+        modules.first().map_or(Path::new(""), PathBuf::as_path),
+        &mut report,
+    )?;
+
+    Ok(report)
+}
+
+fn map_report(resolver: &Resolver<'_>, path: &Path, report: &mut Report) -> io::Result<()> {
+    for diagnostic in &mut report.diagnostics {
+        let [line, column, end_line, end_column] = resolver.original_range(
+            &diagnostic.path,
+            [
+                diagnostic.line,
+                diagnostic.column,
+                diagnostic.end_line,
+                diagnostic.end_column,
+            ],
+        )?;
+
+        diagnostic.line = line;
+        diagnostic.column = column;
+        diagnostic.end_line = end_line;
+        diagnostic.end_column = end_column;
+
+        for related in &mut diagnostic.related {
+            related.range = resolver.original_range(&related.path, related.range)?;
+        }
+    }
+
+    let map_entry = |entry: &mut EditorEntry| -> io::Result<()> {
+        let path = entry.path.as_deref().unwrap_or(path);
+
+        for coordinates in [
+            &mut entry.range,
+            &mut entry.caller,
+            &mut entry.container,
+            &mut entry.selection,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            *coordinates = resolver.original_range(path, *coordinates)?;
+        }
+
+        Ok(())
+    };
+
+    match &mut report.editor {
+        Some(EditorResult::Entries(entries)) => {
+            for entry in entries {
+                map_entry(entry)?;
+            }
+        }
+
+        Some(EditorResult::Entry(entry)) => map_entry(entry)?,
+        None => {}
+    }
+
+    Ok(())
 }

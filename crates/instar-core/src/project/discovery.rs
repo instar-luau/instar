@@ -2,7 +2,7 @@ use super::selection::{Scope, Selection};
 use crate::{configuration::InstarConfig, luau, source::absolute};
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs, io,
     path::{Path, PathBuf},
 };
@@ -500,6 +500,22 @@ impl super::Configuration {
     /// # Errors
     /// Returns filesystem, encoding, configuration, or glob failures.
     pub fn discover(path: &Path, explicit: Option<&Path>) -> io::Result<Self> {
+        Self::discover_with_selection(path, explicit, true)
+    }
+
+    /// Discover graft frontends without validating formatting selection.
+    ///
+    /// # Errors
+    /// Returns filesystem, encoding, configuration, or graft failures.
+    pub fn discover_frontends(path: &Path) -> io::Result<Self> {
+        Self::discover_with_selection(path, None, false)
+    }
+
+    fn discover_with_selection(
+        path: &Path,
+        explicit: Option<&Path>,
+        select: bool,
+    ) -> io::Result<Self> {
         let path = crate::source::absolute(path).map_err(io::Error::other)?;
         let mut merged = serde_json::Map::new();
         let mut selection = Selection::default();
@@ -518,7 +534,7 @@ impl super::Configuration {
                         merge(
                             &mut merged,
                             &text,
-                            &mut selection,
+                            select.then_some(&mut selection),
                             &mut grafts,
                             &configuration,
                         )
@@ -539,25 +555,39 @@ impl super::Configuration {
             merge(
                 &mut merged,
                 &fs::read_to_string(&explicit)?,
-                &mut selection,
+                select.then_some(&mut selection),
                 &mut grafts,
                 &explicit,
             )?;
         }
 
+        let grafts = grafts
+            .into_iter()
+            .map(|(name, (dependency, directory))| {
+                crate::graft::Graft::load_with_configuration(
+                    &dependency.resolve(&directory, &name)?,
+                    &name,
+                    dependency.configuration(),
+                )
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+
+        let mut extensions = BTreeSet::new();
+
+        for graft in &grafts {
+            for extension in graft.extensions() {
+                if !extensions.insert(extension) {
+                    return Err(io::Error::other(format!(
+                        "multiple grafts own .{extension}"
+                    )));
+                }
+            }
+        }
+
         Ok(Self {
             options: serde_json::from_value(merged.into()).map_err(io::Error::other)?,
             selection,
-            grafts: grafts
-                .into_iter()
-                .map(|(name, (dependency, directory))| {
-                    crate::graft::Graft::load_with_configuration(
-                        &dependency.resolve(&directory, &name)?,
-                        &name,
-                        dependency.configuration(),
-                    )
-                })
-                .collect::<io::Result<Vec<_>>>()?,
+            grafts,
         })
     }
 }
@@ -565,13 +595,16 @@ impl super::Configuration {
 fn merge(
     merged: &mut serde_json::Map<String, serde_json::Value>,
     text: &str,
-    selection: &mut Selection,
+    selection: Option<&mut Selection>,
     grafts: &mut BTreeMap<String, (crate::graft::Dependency, PathBuf)>,
     configuration: &Path,
 ) -> io::Result<()> {
     let parsed = crate::configuration::InstarConfig::parse(text).map_err(io::Error::other)?;
     let mut value: serde_json::Value = toml_edit::de::from_str(text).map_err(io::Error::other)?;
-    selection.merge(&value, configuration, Scope::Format)?;
+
+    if let Some(selection) = selection {
+        selection.merge(&value, configuration, Scope::Format)?;
+    }
 
     for (name, dependency) in parsed.grafts.unwrap_or_default() {
         let directory = configuration

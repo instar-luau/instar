@@ -228,7 +228,7 @@ pub(super) fn validate(
             });
 
             if (name == "script" && !internal)
-                || matches!(name, "getfenv" | "setfenv" | "loadstring")
+                || matches!(name, "getfenv" | "setfenv")
                 || (name == "require"
                     && !module.dependencies.iter().any(|dependency| {
                         dependency.callee.start <= location.start
