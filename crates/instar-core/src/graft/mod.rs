@@ -1,6 +1,5 @@
 mod install;
 mod layout;
-mod luau;
 mod native;
 mod wasm;
 
@@ -24,9 +23,6 @@ const RESPONSE_LIMIT: usize = 64 * 1024 * 1024;
 pub enum Runtime {
     /// Invoke a native executable through the JSON protocol.
     Native,
-
-    /// Execute Luau code in an isolated virtual machine.
-    Luau,
 
     /// Execute a WebAssembly module in the graft runtime.
     Wasm,
@@ -108,12 +104,10 @@ impl Manifest {
                 return Err(io::Error::other("native grafts must not define an entry"));
             }
 
-            (Runtime::Native, None) | (Runtime::Luau | Runtime::Wasm, Some(_)) => {}
+            (Runtime::Native, None) | (Runtime::Wasm, Some(_)) => {}
 
-            (Runtime::Luau | Runtime::Wasm, None) => {
-                return Err(io::Error::other(
-                    "Luau and WebAssembly grafts require an entry",
-                ));
+            (Runtime::Wasm, None) => {
+                return Err(io::Error::other("WebAssembly grafts require an entry"));
             }
         }
 
@@ -298,7 +292,6 @@ impl Dependency {
 #[derive(Clone, Debug)]
 enum Artifact {
     Native(PathBuf),
-    Luau(Vec<u8>),
     Wasm(Vec<u8>),
 }
 
@@ -556,13 +549,6 @@ impl Graft {
                 Artifact::Native(entry.clone())
             }
 
-            Runtime::Luau => {
-                let bytes = fs::read(&entry)?;
-                luau::validate(&bytes, manifest.format, manifest.lint, manifest.compile)?;
-
-                Artifact::Luau(bytes)
-            }
-
             Runtime::Wasm => {
                 let bytes = fs::read(&entry)?;
 
@@ -608,10 +594,6 @@ impl Graft {
 
         let result = match &self.artifact {
             Artifact::Native(entry) => native::invoke(entry, &request),
-
-            Artifact::Luau(bytes) => {
-                luau::invoke(bytes, &request, self.format, self.lint, self.compile)
-            }
 
             Artifact::Wasm(bytes) => wasm::Host::load(
                 bytes,

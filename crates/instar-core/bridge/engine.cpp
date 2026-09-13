@@ -31,6 +31,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <regex>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -60,8 +61,9 @@ namespace {
 
     class Sources final : public Luau::FileResolver {
         public:
-        Sources(const std::vector<instar::Module> &modules, instar::ModuleResolver resolver)
-            : resolver(std::move(resolver)) {
+        Sources(
+            const std::vector<instar::Module> &modules, instar::ModuleReader reader, instar::ModuleResolver resolver)
+            : reader(std::move(reader)), resolver(std::move(resolver)) {
             set_modules(modules);
         }
 
@@ -77,7 +79,17 @@ namespace {
             auto iterator = sources.find(normalize(name));
 
             if (iterator == sources.end()) {
-                return std::nullopt;
+                if (!reader) {
+                    return std::nullopt;
+                }
+
+                auto source = reader(name);
+
+                if (!source) {
+                    return std::nullopt;
+                }
+
+                return Luau::SourceCode{std::move(*source), Luau::SourceCode::Module};
             }
 
             return Luau::SourceCode{iterator->second, Luau::SourceCode::Module};
@@ -104,6 +116,7 @@ namespace {
 
         private:
         std::map<std::string, std::string> sources;
+        instar::ModuleReader reader;
         instar::ModuleResolver resolver;
     };
 
@@ -115,8 +128,8 @@ namespace {
 
     class Configurations final : public Luau::ConfigResolver {
         public:
-        explicit Configurations(std::vector<instar::Configuration> configurations)
-            : configurations(std::move(configurations)) {}
+        explicit Configurations(std::vector<instar::Configuration> configurations, std::optional<instar::Mode> mode)
+            : configurations(std::move(configurations)), mode(mode) {}
 
         void set_configurations(std::vector<instar::Configuration> values) {
             configurations = std::move(values);
@@ -147,11 +160,18 @@ namespace {
                 }
             }
 
+            if (mode) {
+                iterator->second.mode = mode.value() == instar::Mode::Strict    ? Luau::Mode::Strict
+                                        : mode.value() == instar::Mode::NoCheck ? Luau::Mode::NoCheck
+                                                                                : Luau::Mode::Nonstrict;
+            }
+
             return iterator->second;
         }
 
         private:
         std::vector<instar::Configuration> configurations;
+        std::optional<instar::Mode> mode;
         mutable std::map<std::string, Luau::Config> cache;
     };
 
@@ -605,10 +625,11 @@ namespace {
     }
 
     struct Implementation {
-        Implementation(std::vector<instar::Module> modules, instar::ModuleResolver resolver,
-            std::vector<instar::Configuration> configurations)
-            : modules(std::move(modules)), sources(this->modules, std::move(resolver)),
-              configurations(std::move(configurations)) {}
+        Implementation(std::vector<instar::Module> modules, instar::ModuleReader reader,
+            instar::ModuleResolver resolver, std::vector<instar::Configuration> configurations, instar::Solver solver,
+            std::optional<instar::Mode> mode)
+            : modules(std::move(modules)), sources(this->modules, std::move(reader), std::move(resolver)),
+              configurations(std::move(configurations), mode), solver(solver) {}
 
         void reset() {
             sources.set_modules(modules);
@@ -627,7 +648,10 @@ namespace {
             Luau::FrontendOptions options;
             options.retainFullTypeGraphs = true;
             options.runLintChecks = true;
-            frontend = std::make_unique<Luau::Frontend>(Luau::SolverMode::New, &sources, &configurations, options);
+
+            frontend = std::make_unique<Luau::Frontend>(
+                solver == instar::Solver::Old ? Luau::SolverMode::Old : Luau::SolverMode::New, &sources,
+                &configurations, options);
         }
 
         void ensure_builtins() {
@@ -724,6 +748,7 @@ namespace {
         std::vector<instar::Module> modules;
         Sources sources;
         Configurations configurations;
+        instar::Solver solver;
         std::unique_ptr<Luau::Frontend> frontend;
         std::vector<std::string> checked_modules;
         std::map<std::string, std::shared_ptr<Luau::Scope>> target_scopes;
@@ -970,9 +995,10 @@ namespace instar {
         using ::Implementation::Implementation;
     };
 
-    Engine::Engine(std::vector<Module> modules, ModuleResolver resolver, std::vector<Configuration> configurations)
-        : implementation(
-              std::make_unique<Implementation>(std::move(modules), std::move(resolver), std::move(configurations))) {}
+    Engine::Engine(std::vector<Module> modules, ModuleReader reader, ModuleResolver resolver,
+        std::vector<Configuration> configurations, Solver solver, std::optional<Mode> mode)
+        : implementation(std::make_unique<Implementation>(
+              std::move(modules), std::move(reader), std::move(resolver), std::move(configurations), solver, mode)) {}
 
     Engine::~Engine() = default;
     Engine::Engine(Engine &&) noexcept = default;
@@ -1321,8 +1347,457 @@ namespace instar {
         return result;
     }
 
-    std::vector<Diagnostic> analyze(const std::vector<Module> &modules) {
-        return Engine(modules).check();
+} // namespace instar
+
+namespace {
+
+    std::string native_text(NativeBytes value) {
+        if (value.size && !value.data) {
+            throw std::runtime_error("native byte range is invalid");
+        }
+
+        return value.size ? std::string(value.data, value.size) : std::string{};
     }
 
-} // namespace instar
+    NativeBytes native_bytes(const std::string &value) {
+        return {value.data(), value.size()};
+    }
+
+    NativeRange native_range(const instar::Range &value) {
+        return {
+            {value.begin.line, value.begin.column},
+            {value.end.line, value.end.column},
+        };
+    }
+
+    std::vector<instar::Module> native_modules(const NativeModule *values, std::size_t count) {
+        if (count && !values) {
+            throw std::runtime_error("native module list is invalid");
+        }
+
+        std::vector<instar::Module> modules;
+
+        for (std::size_t index = 0; index < count; ++index) {
+            modules.push_back({native_text(values[index].name), native_text(values[index].source)});
+        }
+
+        return modules;
+    }
+
+    instar::ModuleReader native_reader(void *context, NativeModuleReader reader) {
+        if (!reader) {
+            return {};
+        }
+
+        return [context, reader](const std::string &name) {
+            auto result = reader(context, native_bytes(name));
+
+            if (!result.data) {
+                return std::optional<std::string>{};
+            }
+
+            return std::optional<std::string>{native_text(result)};
+        };
+    }
+
+    instar::ModuleResolver native_resolver(void *context, NativeModuleResolver resolver) {
+        if (!resolver) {
+            return {};
+        }
+
+        return [context, resolver](const std::string &from, instar::Range range, std::string_view specifier) {
+            auto result =
+                resolver(context, native_bytes(from), native_range(range), {specifier.data(), specifier.size()});
+
+            if (!result.data) {
+                return std::optional<std::string>{};
+            }
+
+            return std::optional<std::string>{native_text(result)};
+        };
+    }
+
+    void report_failure(void *context, NativeFailure failure, const std::string &message) {
+        if (failure) {
+            failure(context, native_bytes(message));
+        }
+    }
+
+    template <typename Operation> void run(void *context, NativeFailure failure, Operation operation) {
+        try {
+            operation();
+        } catch (const std::exception &error) {
+            report_failure(context, failure, error.what());
+        } catch (...) {
+            report_failure(context, failure, "native engine failure");
+        }
+    }
+
+} // namespace
+
+extern "C" {
+
+    void *instar_engine_create(const NativeModule *modules, std::size_t count, void *context, NativeModuleReader reader,
+        NativeModuleResolver resolver, const NativeConfiguration *configurations, std::size_t configuration_count,
+        int mode_value, int old_solver) {
+
+        try {
+            if (old_solver != 0 && old_solver != 1) {
+                throw std::runtime_error("native solver selection is invalid");
+            }
+
+            std::optional<instar::Mode> mode;
+
+            switch (mode_value) {
+            case NativeModeConfigured:
+                break;
+
+            case NativeModeStrict:
+                mode = instar::Mode::Strict;
+                break;
+
+            case NativeModeNonstrict:
+                mode = instar::Mode::Nonstrict;
+                break;
+
+            case NativeModeNoCheck:
+                mode = instar::Mode::NoCheck;
+                break;
+
+            default:
+                throw std::runtime_error("native type-checking mode is invalid");
+            }
+
+            if (configuration_count && !configurations) {
+                throw std::runtime_error("native configuration list is invalid");
+            }
+
+            std::vector<instar::Configuration> native_configurations;
+
+            for (std::size_t index = 0; index < configuration_count; ++index) {
+                native_configurations.push_back({
+                    native_text(configurations[index].module),
+                    native_text(configurations[index].path),
+                    native_text(configurations[index].source),
+                });
+            }
+
+            return new instar::Engine(native_modules(modules, count), native_reader(context, reader),
+                native_resolver(context, resolver), std::move(native_configurations),
+                old_solver ? instar::Solver::Old : instar::Solver::New, mode);
+        } catch (...) {
+            return nullptr;
+        }
+    }
+
+    void instar_engine_destroy(void *engine) {
+        delete static_cast<instar::Engine *>(engine);
+    }
+
+    int instar_engine_load_definitions(void *engine, const NativeModule *definitions, std::size_t definition_count,
+        const NativeBytes *target_paths, std::size_t target_count, int all_targets, void *context,
+        NativeFailure failure) {
+
+        if (!engine) {
+            report_failure(context, failure, "native engine is unavailable");
+
+            return 0;
+        }
+
+        int success = 0;
+
+        run(context, failure, [&] {
+            std::optional<std::vector<std::string>> targets;
+
+            if (!all_targets) {
+                if (target_count && !target_paths) {
+                    throw std::runtime_error("native target list is invalid");
+                }
+
+                std::vector<std::string> values;
+
+                for (std::size_t index = 0; index < target_count; ++index) {
+                    values.push_back(native_text(target_paths[index]));
+                }
+
+                targets = std::move(values);
+            }
+
+            static_cast<instar::Engine *>(engine)->load_definitions(
+                native_modules(definitions, definition_count), std::move(targets));
+            success = 1;
+        });
+
+        return success;
+    }
+
+    int instar_engine_prepare_roblox(void *engine, const NativeBytes *enumerations, std::size_t enumeration_count,
+        const NativeRobloxClass *classes, std::size_t class_count, const NativeRobloxNode *nodes,
+        std::size_t node_count, void *context, NativeFailure failure) {
+
+        if (!engine) {
+            report_failure(context, failure, "native engine is unavailable");
+
+            return 0;
+        }
+
+        int success = 0;
+
+        run(context, failure, [&] {
+            if ((enumeration_count && !enumerations) || (class_count && !classes) || (node_count && !nodes)) {
+                throw std::runtime_error("native Roblox metadata is invalid");
+            }
+
+            instar::RobloxMetadata metadata;
+
+            for (std::size_t index = 0; index < enumeration_count; ++index) {
+                metadata.enumerations.push_back(native_text(enumerations[index]));
+            }
+
+            for (std::size_t index = 0; index < class_count; ++index) {
+                metadata.classes.push_back({
+                    native_text(classes[index].name),
+                    classes[index].service != 0,
+                    classes[index].creatable != 0,
+                });
+            }
+
+            for (std::size_t index = 0; index < node_count; ++index) {
+                std::optional<std::size_t> parent;
+
+                if (nodes[index].has_parent) {
+                    if (nodes[index].parent >= node_count) {
+                        throw std::runtime_error("native Roblox parent index is invalid");
+                    }
+
+                    parent = nodes[index].parent;
+                }
+
+                metadata.nodes.push_back({
+                    native_text(nodes[index].name),
+                    native_text(nodes[index].class_name),
+                    parent,
+                });
+            }
+
+            static_cast<instar::Engine *>(engine)->prepare_roblox(metadata);
+            success = 1;
+        });
+
+        return success;
+    }
+
+    void instar_engine_check(void *engine, void *context, NativeReport report, NativeFailure failure) {
+        if (!engine) {
+            report_failure(context, failure, "native engine is unavailable");
+
+            return;
+        }
+
+        run(context, failure, [&] {
+            for (const auto &diagnostic : static_cast<instar::Engine *>(engine)->check()) {
+                if (report) {
+                    report(context, native_bytes(diagnostic.path), native_bytes(diagnostic.message),
+                        native_range(diagnostic.range), diagnostic.error ? 1 : 0);
+                }
+            }
+        });
+    }
+
+    void instar_engine_type_at(void *engine, NativeBytes path, NativePosition position, void *context,
+        NativeType report, NativeFailure failure) {
+
+        if (!engine || !report) {
+            return;
+        }
+
+        run(context, failure, [&] {
+            auto value =
+                static_cast<instar::Engine *>(engine)->type_at(native_text(path), {position.line, position.column});
+
+            if (value) {
+                report(context, native_bytes(value->description));
+            }
+        });
+    }
+
+    void instar_engine_hover(void *engine, NativeBytes path, NativePosition position, void *context, NativeType report,
+        NativeFailure failure) {
+
+        if (!engine || !report) {
+            return;
+        }
+
+        run(context, failure, [&] {
+            auto value =
+                static_cast<instar::Engine *>(engine)->hover(native_text(path), {position.line, position.column});
+
+            if (value) {
+                report(context, native_bytes(value->description));
+            }
+        });
+    }
+
+    void instar_engine_complete(void *engine, NativeBytes path, NativePosition position, void *context,
+        NativeCompletion report, NativeFailure failure) {
+
+        if (!engine || !report) {
+            return;
+        }
+
+        run(context, failure, [&] {
+            for (const auto &completion :
+                static_cast<instar::Engine *>(engine)->complete(native_text(path), {position.line, position.column})) {
+                report(context, native_bytes(completion.label), native_bytes(completion.description),
+                    native_bytes(completion.documentation), native_bytes(completion.insert_text), completion.kind,
+                    completion.deprecated ? 1 : 0);
+            }
+        });
+    }
+
+    void instar_engine_signature(void *engine, NativeBytes path, NativePosition position, void *context,
+        NativeSignature report, NativeFailure failure) {
+
+        if (!engine || !report) {
+            return;
+        }
+
+        run(context, failure, [&] {
+            auto value =
+                static_cast<instar::Engine *>(engine)->signature(native_text(path), {position.line, position.column});
+
+            if (!value) {
+                return;
+            }
+
+            std::vector<NativeBytes> parameters;
+
+            for (const auto &parameter : value->parameters) {
+                parameters.push_back(native_bytes(parameter));
+            }
+
+            report(context, native_bytes(value->description), parameters.data(), parameters.size(),
+                value->active_parameter);
+        });
+    }
+
+    void instar_engine_definition(void *engine, NativeBytes path, NativePosition position, void *context,
+        NativeDestination report, NativeFailure failure) {
+
+        if (!engine || !report) {
+            return;
+        }
+
+        run(context, failure, [&] {
+            auto value =
+                static_cast<instar::Engine *>(engine)->definition(native_text(path), {position.line, position.column});
+
+            if (value) {
+                report(context, native_bytes(value->path), native_range(value->range), native_bytes(value->name));
+            }
+        });
+    }
+
+    void instar_engine_type_definition(void *engine, NativeBytes path, NativePosition position, void *context,
+        NativeDestination report, NativeFailure failure) {
+
+        if (!engine || !report) {
+            return;
+        }
+
+        run(context, failure, [&] {
+            auto value = static_cast<instar::Engine *>(engine)->type_definition(
+                native_text(path), {position.line, position.column});
+
+            if (value) {
+                report(context, native_bytes(value->path), native_range(value->range), native_bytes(value->name));
+            }
+        });
+    }
+
+    void instar_engine_implementations(void *engine, NativeBytes path, NativePosition position, void *context,
+        NativeDestination report, NativeFailure failure) {
+
+        if (!engine || !report) {
+            return;
+        }
+
+        run(context, failure, [&] {
+            for (const auto &value : static_cast<instar::Engine *>(engine)->implementations(
+                     native_text(path), {position.line, position.column})) {
+                report(context, native_bytes(value.path), native_range(value.range), native_bytes(value.name));
+            }
+        });
+    }
+
+    void instar_engine_references(void *engine, NativeBytes path, NativePosition position, void *context,
+        NativeDestination report, NativeFailure failure) {
+
+        if (!engine || !report) {
+            return;
+        }
+
+        run(context, failure, [&] {
+            for (const auto &value : static_cast<instar::Engine *>(engine)->references(
+                     native_text(path), {position.line, position.column})) {
+                report(context, native_bytes(value.path), native_range(value.range), native_bytes(value.name));
+            }
+        });
+    }
+
+    void instar_engine_annotations(
+        void *engine, NativeBytes path, void *context, NativeAnnotation report, NativeFailure failure) {
+
+        if (!engine || !report) {
+            return;
+        }
+
+        run(context, failure, [&] {
+            for (const auto &value : static_cast<instar::Engine *>(engine)->annotations(native_text(path))) {
+                report(context, native_bytes(value.path), {value.position.line, value.position.column},
+                    native_bytes(value.text));
+            }
+        });
+    }
+
+    void instar_engine_calls(void *engine, NativeBytes path, void *context, NativeCall report, NativeFailure failure) {
+        if (!engine || !report) {
+            return;
+        }
+
+        run(context, failure, [&] {
+            for (const auto &value : static_cast<instar::Engine *>(engine)->calls(native_text(path))) {
+                report(context, native_bytes(value.target.path), native_range(value.target.range),
+                    native_bytes(value.target.name), native_range(value.caller), value.container ? 1 : 0,
+                    value.container ? native_range(*value.container) : NativeRange{{0, 0}, {0, 0}});
+            }
+        });
+    }
+
+    void instar_parse_aliases(
+        NativeBytes source, int executable, void *context, NativeAlias alias, NativeFailure failure) {
+
+        run(context, failure, [&] {
+            auto result = instar::parse_aliases(native_text(source), executable != 0);
+
+            if (result.error) {
+                report_failure(context, failure, *result.error);
+                return;
+            }
+
+            for (const auto &entry : result.aliases) {
+                if (alias) {
+                    alias(context, native_bytes(entry.name), native_bytes(entry.value));
+                }
+            }
+        });
+    }
+
+    int instar_matches(NativeBytes pattern, NativeBytes source) {
+        try {
+            return std::regex_search(native_text(source), std::regex(native_text(pattern))) ? 1 : 0;
+        } catch (...) {
+            return -1;
+        }
+    }
+}
