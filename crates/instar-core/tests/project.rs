@@ -27,11 +27,12 @@ fn configurations_coexist_without_evaluation_or_merging() -> TestResult {
     let text = r#"
 include = ["src/**/*.luau", "src/**/*.lua"]
 exclude = ["dist/**"]
+[analyze]
 definitions = ["types/environment.d.luau"]
-[aliases]
+[analyze.aliases]
 shared = "./src/shared"
 packages = "./packages"
-[roblox]
+[analyze.roblox]
 project = "default.project.json"
 sourcemap = "sourcemap.json"
 "#;
@@ -45,12 +46,14 @@ sourcemap = "sourcemap.json"
         &["dist/**"]
     );
 
+    let analyze = config.analyze.as_ref().ok_or("missing analyze")?;
+
     assert_eq!(
-        config.definitions.as_ref().ok_or("missing definitions")?[0],
+        analyze.definitions.as_ref().ok_or("missing definitions")?[0],
         Path::new("types/environment.d.luau")
     );
 
-    let aliases = config.aliases.as_ref().ok_or("missing aliases")?;
+    let aliases = analyze.aliases.as_ref().ok_or("missing aliases")?;
     assert_eq!(aliases.len(), 2);
 
     assert_eq!(
@@ -58,7 +61,7 @@ sourcemap = "sourcemap.json"
         root.path().join("./src/shared")
     );
 
-    let roblox = config.roblox.as_ref().ok_or("missing Roblox config")?;
+    let roblox = analyze.roblox.as_ref().ok_or("missing Roblox config")?;
 
     assert_eq!(
         roblox.project.as_deref(),
@@ -90,8 +93,7 @@ fn omission_and_invalid_configuration_remain_distinct() -> TestResult {
     let source = root.path().join("main.luau");
     Configuration::discover(&source, None)?;
     let empty = InstarConfig::parse("")?;
-    assert!(empty.include.is_none() && empty.exclude.is_none() && empty.definitions.is_none());
-    assert!(empty.aliases.is_none() && empty.roblox.is_none());
+    assert!(empty.include.is_none() && empty.exclude.is_none() && empty.analyze.is_none());
 
     assert_eq!(
         InstarConfig::parse("include = []")?.include,
@@ -101,10 +103,16 @@ fn omission_and_invalid_configuration_remain_distinct() -> TestResult {
     for text in [
         "unknown = 1",
         "include = 1",
-        "definitions = [1]",
-        "[aliases]\nx = false",
-        "[roblox]\nunknown = 1",
-        "[roblox]\nproject = 3",
+        "mode = 'strict'",
+        "definitions = []",
+        "[roblox]",
+        "[analyze]\ndefinitions = [1]",
+        "[analyze]\ndocumentation = [1]",
+        "[analyze.aliases]\nx = false",
+        "[analyze.roblox]\nunknown = 1",
+        "[analyze.roblox]\nproject = 3",
+        "[analyze.roblox]\ncache = 'cache'",
+        "[analyze.roblox]\nrevision = '0000000000000000000000000000000000000000'",
         "[broken",
     ] {
         fs::write(root.path().join("instar.toml"), text)?;
@@ -140,13 +148,7 @@ fn generated_schema_matches_the_configuration_model() -> TestResult {
     assert_eq!(schema["additionalProperties"], false);
 
     for field in [
-        "format",
-        "grafts",
-        "include",
-        "exclude",
-        "definitions",
-        "aliases",
-        "roblox",
+        "analyze", "build", "format", "graft", "grafts", "include", "exclude", "lint",
     ] {
         assert!(schema["properties"].get(field).is_some());
     }
@@ -174,6 +176,13 @@ fn generated_schema_matches_the_configuration_model() -> TestResult {
                     !description.split("\n\nDefault:").next().unwrap().is_empty(),
                     "{name}"
                 );
+
+                if definition["required"].as_array().is_some_and(|required| {
+                    required.iter().any(|field| field.as_str() == Some(name))
+                }) {
+                    assert!(property.get("default").is_none(), "{name}");
+                    continue;
+                }
 
                 let default = property.get("default").ok_or("missing default")?;
 

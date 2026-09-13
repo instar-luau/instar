@@ -16,7 +16,7 @@ fn definitions_are_checked_and_loaded_in_order() -> TestResult {
 
     fs::write(
         root.join("instar.toml"),
-        "definitions=['types.d.luau','globals.d.luau']",
+        "[analyze]\ndefinitions=['types.d.luau','globals.d.luau']",
     )?;
 
     fs::write(root.join("types.d.luau"), "export type Value = number")?;
@@ -59,7 +59,7 @@ fn definition_diagnostics_keep_their_source_paths() -> TestResult {
 
     fs::write(
         directory.path().join("instar.toml"),
-        "definitions=['types.d.luau']",
+        "[analyze]\ndefinitions=['types.d.luau']",
     )?;
 
     let main = directory.path().join("main.luau");
@@ -94,7 +94,12 @@ fn definition_diagnostics_keep_their_source_paths() -> TestResult {
 fn configured_definitions_use_editor_snapshots() -> TestResult {
     let directory = tempfile::tempdir()?;
     let root = directory.path();
-    fs::write(root.join("instar.toml"), "definitions=['globals.luau']")?;
+
+    fs::write(
+        root.join("instar.toml"),
+        "[analyze]\ndefinitions=['globals.luau']",
+    )?;
+
     let main = root.join("main.luau");
 
     fs::write(
@@ -133,9 +138,14 @@ fn definition_environments_do_not_leak_between_entry_projects() -> TestResult {
     let directory = tempfile::tempdir()?;
     let root = directory.path();
     fs::create_dir(root.join("nested"))?;
-    fs::write(root.join("instar.toml"), "definitions=['globals.d.luau']")?;
+
+    fs::write(
+        root.join("instar.toml"),
+        "[analyze]\ndefinitions=['globals.d.luau']",
+    )?;
+
     fs::write(root.join("globals.d.luau"), "declare value: number")?;
-    fs::write(root.join("nested/instar.toml"), "definitions=[]")?;
+    fs::write(root.join("nested/instar.toml"), "[analyze]\ndefinitions=[]")?;
     let main = root.join("main.luau");
     let nested = root.join("nested/main.luau");
 

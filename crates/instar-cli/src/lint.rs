@@ -3,7 +3,7 @@ use clap::Args;
 use instar_core::{
     analysis,
     lint::{self, configuration::Level},
-    project::selection::Selection,
+    project::selection::{Scope, Selection},
     source::{PositionEncoding, Source, SourceStore},
 };
 use std::{
@@ -108,7 +108,7 @@ impl Lint {
         }
 
         let mut input = Input::new(self.files, self.filename)
-            .load_selected(|path| Selection::discover(path)?.includes(path))?;
+            .load_selected(|path| Selection::discover(path, Scope::Lint)?.includes(path))?;
 
         let mut session = analysis::Session::default();
         let mut failed = false;

@@ -625,7 +625,7 @@ fn configuration_and_suppression_apply_to_snapshots() -> TestResult {
 #[test]
 fn roblox_rules_require_the_environment() -> TestResult {
     let directory = tempfile::tempdir()?;
-    fs::write(directory.path().join("instar.toml"), "[roblox]\n")?;
+    fs::write(directory.path().join("instar.toml"), "[analyze.roblox]\n")?;
     support::configure(directory.path())?;
     let mut sources = SourceStore::default();
 

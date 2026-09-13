@@ -926,7 +926,11 @@ fn inputs(configuration: &mut Configuration, output: &Path) -> io::Result<Vec<Pa
 
         for path in paths::walk(&root)? {
             if root.is_file()
-                || crate::project::selection::Selection::discover(&path)?.includes(&path)?
+                || crate::project::selection::Selection::discover(
+                    &path,
+                    crate::project::selection::Scope::Build,
+                )?
+                .includes(&path)?
             {
                 files.insert(path);
             }

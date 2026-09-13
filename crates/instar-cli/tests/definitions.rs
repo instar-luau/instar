@@ -7,7 +7,13 @@ use std::fs;
 fn definition_inputs_support_files_directories_and_stdin() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
-    fs::write(root.join("instar.toml"), "definitions=['globals.d.luau']").unwrap();
+
+    fs::write(
+        root.join("instar.toml"),
+        "[analyze]\ndefinitions=['globals.d.luau']",
+    )
+    .unwrap();
+
     fs::write(root.join("globals.d.luau"), "declare value: number").unwrap();
     fs::write(root.join("main.luau"), "--!strict\nreturn value").unwrap();
 

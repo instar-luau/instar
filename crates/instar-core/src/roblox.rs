@@ -67,7 +67,17 @@ impl Environment {
         configuration: &RobloxConfig,
         update: bool,
     ) -> io::Result<Self> {
-        let bundle = cache::load(configuration, update)?;
+        let project_cache = configuration.root.join(".instar/roblox");
+
+        let directory = if project_cache.join("current.json").is_file() {
+            project_cache
+        } else {
+            dirs::cache_dir()
+                .map(|path| path.join("instar").join("roblox"))
+                .ok_or_else(|| io::Error::other("cannot locate the Roblox cache directory"))?
+        };
+
+        let bundle = cache::load(&directory, update)?;
 
         let level = match configuration.level.unwrap_or_default() {
             RobloxLevel::None => "none",

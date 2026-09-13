@@ -20,7 +20,7 @@ fn analysis_uses_project_selection_and_preserves_explicit_inputs() -> TestResult
 
     fs::write(
         root.join("instar.toml"),
-        "mode = 'strict'\nexclude = ['generated']\ngrafts = {unused = 'missing.toml'}\n[format]\ninclude = ['generated']\nexclude = ['[']",
+        "exclude = ['generated']\ngrafts = {unused = {path = 'missing'}}\n[analyze]\nmode = 'strict'\n[format]\ninclude = ['generated']\nexclude = ['[']",
     )?;
 
     Command::new(env!("CARGO_BIN_EXE_instar"))
@@ -46,7 +46,7 @@ fn analysis_uses_project_selection_and_preserves_explicit_inputs() -> TestResult
 
     fs::write(
         root.join("instar.toml"),
-        "mode = 'strict'\nexclude = ['generated']\ninclude = ['generated/keep.luau']\n[format]\nexclude = ['generated']",
+        "exclude = ['generated']\ninclude = ['generated/keep.luau']\n[analyze]\nmode = 'strict'\n[format]\nexclude = ['generated']",
     )?;
 
     let result = Command::new(env!("CARGO_BIN_EXE_instar"))
@@ -68,7 +68,7 @@ fn analysis_checks_dependencies_excluded_from_entry_selection() -> TestResult {
 
     fs::write(
         root.join("instar.toml"),
-        "mode = 'strict'\nexclude = ['generated']",
+        "exclude = ['generated']\n[analyze]\nmode = 'strict'",
     )?;
 
     fs::write(
@@ -100,7 +100,7 @@ fn analysis_inherits_selection_origins_and_empty_overrides() -> TestResult {
 
     fs::write(
         root.join("instar.toml"),
-        "mode = 'strict'\nexclude = ['nested/*.luau']\ninclude = ['nested/keep.luau']",
+        "exclude = ['nested/*.luau']\ninclude = ['nested/keep.luau']\n[analyze]\nmode = 'strict'",
     )?;
 
     for name in ["keep.luau", "skip.luau"] {

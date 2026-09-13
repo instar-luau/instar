@@ -4,15 +4,16 @@
   "description": "Settings read from an `instar.toml` project configuration.",
   "type": "object",
   "properties": {
-    "aliases": {
-      "description": "Require aliases mapped to paths relative to this configuration. Entries inherit by name.\n\nDefault: `unset`.",
-      "type": [
-        "object",
-        "null"
+    "analyze": {
+      "description": "Type checking, external definitions and documentation, aliases, Roblox integration, and source selection.\n\nDefault: `unset`.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AnalyzeConfig"
+        },
+        {
+          "type": "null"
+        }
       ],
-      "additionalProperties": {
-        "type": "string"
-      },
       "default": null
     },
     "build": {
@@ -26,17 +27,6 @@
         }
       ],
       "default": null
-    },
-    "definitions": {
-      "description": "External Luau definition files, resolved relative to this configuration.\n\nDefault: `unset`.",
-      "type": [
-        "array",
-        "null"
-      ],
-      "default": null,
-      "items": {
-        "type": "string"
-      }
     },
     "exclude": {
       "description": "Source exclusion patterns relative to this configuration. Explicit file inputs bypass selection; an empty list clears inherited patterns.\n\nDefault: `unset`.",
@@ -61,14 +51,26 @@
       ],
       "default": null
     },
+    "graft": {
+      "description": "Identity, protocol, runtime, and hooks exported by this graft project.\n\nDefault: `unset`.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Manifest"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "grafts": {
-      "description": "Graft names mapped to manifest paths relative to this configuration. Entries inherit by name and run in name order.\n\nDefault: `unset`.",
+      "description": "Graft projects loaded from local paths or installed GitHub releases. Entries inherit by name and run in name order.\n\nDefault: `unset`.",
       "type": [
         "object",
         "null"
       ],
       "additionalProperties": {
-        "type": "string"
+        "$ref": "#/$defs/Dependency"
       },
       "default": null
     },
@@ -84,34 +86,10 @@
       }
     },
     "lint": {
-      "description": "Lint rules, groups, globals, and options. Settings inherit from ancestor configurations.\n\nDefault: `unset`.",
+      "description": "Lint rules, groups, globals, selection, and options. Settings inherit from ancestor configurations.\n\nDefault: `unset`.",
       "anyOf": [
         {
           "$ref": "#/$defs/LintSettings"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null
-    },
-    "mode": {
-      "description": "Checking mode. Inherits from ancestor configurations; defaults to nonstrict. CLI mode and file directives take precedence.\n\nDefault: `unset`.",
-      "anyOf": [
-        {
-          "$ref": "#/$defs/Mode"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null
-    },
-    "roblox": {
-      "description": "Downloaded Roblox types, instance mappings, and analysis permissions.\n\nDefault: `unset`.",
-      "anyOf": [
-        {
-          "$ref": "#/$defs/RobloxConfig"
         },
         {
           "type": "null"
@@ -122,6 +100,92 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "AnalyzeConfig": {
+      "description": "Type analysis settings inherited from ancestor configurations.",
+      "type": "object",
+      "properties": {
+        "aliases": {
+          "description": "Require aliases mapped to paths relative to this configuration.\n\nDefault: `unset`.",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": null
+        },
+        "definitions": {
+          "description": "External Luau definition files resolved relative to this configuration.\n\nDefault: `unset`.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "type": "string"
+          }
+        },
+        "documentation": {
+          "description": "External documentation files resolved relative to this configuration.\n\nDefault: `unset`.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "type": "string"
+          }
+        },
+        "exclude": {
+          "description": "Source patterns excluded only during analysis.\n\nDefault: `unset`.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "type": "string"
+          }
+        },
+        "include": {
+          "description": "Source patterns included only during analysis.\n\nDefault: `unset`.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "type": "string"
+          }
+        },
+        "mode": {
+          "description": "Checking mode. CLI mode and file directives take precedence.\n\nDefault: `unset`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Mode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "roblox": {
+          "description": "Roblox types, instance mappings, and analysis permissions.\n\nDefault: `unset`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RobloxConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
     "Binding": {
       "description": "Declaration form for eligible require bindings.",
       "oneOf": [
@@ -268,8 +332,24 @@
           ],
           "default": null
         },
+        "exclude": {
+          "description": "Source patterns excluded only during builds.\n\nDefault: `[]`.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
         "external": {
           "description": "Exact require specifiers supplied by the deployment runtime rather than this build.\n\nDefault: `[]`.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "include": {
+          "description": "Source patterns included only during builds.\n\nDefault: `[]`.",
           "type": "array",
           "default": [],
           "items": {
@@ -628,6 +708,44 @@
         }
       ]
     },
+    "Dependency": {
+      "description": "A local graft project or an installed GitHub release requirement.",
+      "anyOf": [
+        {
+          "description": "A project directory relative to the declaring configuration.",
+          "type": "object",
+          "properties": {
+            "path": {
+              "description": "Directory containing the graft project's instar.toml.",
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "path"
+          ]
+        },
+        {
+          "description": "A GitHub project installed into Instar's graft cache.",
+          "type": "object",
+          "properties": {
+            "repo": {
+              "description": "GitHub owner and repository separated by a slash.",
+              "type": "string"
+            },
+            "version": {
+              "description": "Exact semantic version or an explicit compatible version requirement.",
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "repo",
+            "version"
+          ]
+        }
+      ]
+    },
     "Deprecated": {
       "description": "Project-specific deprecated function declarations.",
       "type": "object",
@@ -883,6 +1001,14 @@
           ],
           "default": null
         },
+        "exclude": {
+          "description": "Source patterns excluded only during linting.\n\nDefault: `[]`.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
         "globals": {
           "description": "Additional global names available to this project.\n\nDefault: `[]`.",
           "type": "array",
@@ -898,6 +1024,14 @@
             "$ref": "#/$defs/Level"
           },
           "default": {}
+        },
+        "include": {
+          "description": "Source patterns included only during linting.\n\nDefault: `[]`.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
         },
         "options": {
           "description": "Options for configurable rules.\n\nDefault: `{\"constant_binding\":{\"mutated_tables_stay_local\":false},\"deprecated_function\":{\"additional\":{}},\"function_complexity\":{\"maximum_complexity\":40},\"restricted_global\":{},\"restricted_import\":{\"paths\":{}},\"unused_variable\":{\"ignore_pattern\":\"^_\",\"loop_variables\":false,\"parameters\":false}}`.",
@@ -955,6 +1089,63 @@
         }
       },
       "additionalProperties": false
+    },
+    "Manifest": {
+      "description": "Graft identity, entry point, exported hooks, and default configuration.",
+      "type": "object",
+      "properties": {
+        "compile": {
+          "description": "Whether the graft exports a compilation hook.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "configuration": {
+          "description": "Default settings passed to exported hooks.\n\nDefault: `{}`.",
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "entry": {
+          "description": "Entry path relative to the manifest.",
+          "type": "string"
+        },
+        "format": {
+          "description": "Whether the graft exports a formatting hook.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "lint": {
+          "description": "Whether the graft exports a lint hook.\n\nDefault: `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "name": {
+          "description": "Graft identifier used by project configuration.",
+          "type": "string"
+        },
+        "protocol": {
+          "description": "Graft protocol version.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "runtime": {
+          "description": "Runtime responsible for executing the entry point.",
+          "$ref": "#/$defs/Runtime"
+        },
+        "version": {
+          "description": "Semantic version of the graft project.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version",
+        "protocol",
+        "runtime",
+        "entry"
+      ]
     },
     "Mode": {
       "description": "Type-checking mode supplied to Luau.",
@@ -1310,14 +1501,6 @@
       "description": "Opt-in Roblox environment and generated-asset selection.",
       "type": "object",
       "properties": {
-        "cache": {
-          "description": "Roblox cache directory, relative to this configuration. Defaults to the platform cache directory under instar/roblox.\n\nDefault: `unset`.",
-          "type": [
-            "string",
-            "null"
-          ],
-          "default": null
-        },
         "level": {
           "description": "Roblox API security level. Inherits from ancestor configurations; defaults to `PluginSecurity`.\n\nDefault: `unset`.",
           "anyOf": [
@@ -1332,14 +1515,6 @@
         },
         "project": {
           "description": "Rojo project path relative to this configuration.\n\nDefault: `unset`.",
-          "type": [
-            "string",
-            "null"
-          ],
-          "default": null
-        },
-        "revision": {
-          "description": "Full commit hash of the generated Roblox assets. Unset checks for updates every 24 hours.\n\nDefault: `unset`.",
           "type": [
             "string",
             "null"
@@ -1379,6 +1554,26 @@
           "description": "Members additionally available to Roblox internal scripts.",
           "type": "string",
           "const": "RobloxScriptSecurity"
+        }
+      ]
+    },
+    "Runtime": {
+      "description": "Execution environment selected by a graft manifest.",
+      "oneOf": [
+        {
+          "description": "Invoke a native executable through the JSON protocol.",
+          "type": "string",
+          "const": "native"
+        },
+        {
+          "description": "Execute Luau code in an isolated virtual machine.",
+          "type": "string",
+          "const": "luau"
+        },
+        {
+          "description": "Execute a WebAssembly module in the graft runtime.",
+          "type": "string",
+          "const": "wasm"
         }
       ]
     },

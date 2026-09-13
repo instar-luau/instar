@@ -36,7 +36,7 @@ fn analyzes_instance_imports_from_sourcemaps_and_editor_input() -> TestResult {
 
     fs::write(
         root.join("instar.toml"),
-        "[roblox]\nsourcemap = 'sourcemap.json'",
+        "[analyze.roblox]\nsourcemap = 'sourcemap.json'",
     )?;
 
     fs::write(

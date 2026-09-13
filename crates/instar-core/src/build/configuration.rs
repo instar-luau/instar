@@ -15,6 +15,12 @@ pub struct Settings {
     /// Input files and directories relative to the build configuration. Required for directory output.
     pub inputs: Vec<PathBuf>,
 
+    /// Source patterns included only during builds.
+    pub include: Vec<String>,
+
+    /// Source patterns excluded only during builds.
+    pub exclude: Vec<String>,
+
     /// Output directory or bundle file relative to the build configuration. Required.
     pub output: Option<PathBuf>,
 
@@ -284,7 +290,15 @@ fn select(mut settings: Settings, profile: Option<&str>) -> io::Result<Settings>
         ));
     }
 
-    for (name, constant) in &settings.constants {
+    constant_definitions(&settings.constants)?;
+
+    Ok(settings)
+}
+
+pub(crate) fn constant_definitions(constants: &BTreeMap<String, Constant>) -> io::Result<Vec<u8>> {
+    let mut definitions = String::new();
+
+    for (name, constant) in constants {
         let tokens = vermis::tokenize(name.as_bytes().into());
 
         if !matches!(
@@ -304,7 +318,19 @@ fn select(mut settings: Settings, profile: Option<&str>) -> io::Result<Settings>
         {
             return Err(io::Error::other(format!("invalid build constant: {name}")));
         }
+
+        definitions.push_str("declare ");
+        definitions.push_str(name);
+        definitions.push_str(": ");
+
+        definitions.push_str(match constant {
+            Constant::Boolean(_) => "boolean",
+            Constant::Number(_) => "number",
+            Constant::String(_) => "string",
+        });
+
+        definitions.push('\n');
     }
 
-    Ok(settings)
+    Ok(definitions.into_bytes())
 }

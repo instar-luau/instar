@@ -31,13 +31,13 @@ pub struct InstarConfig {
     #[schemars(default)]
     pub build: Option<crate::build::configuration::Settings>,
 
-    /// Lint rules, groups, globals, and options. Settings inherit from ancestor configurations.
+    /// Lint rules, groups, globals, selection, and options. Settings inherit from ancestor configurations.
     #[schemars(default)]
     pub lint: Option<crate::lint::configuration::Settings>,
 
-    /// Checking mode. Inherits from ancestor configurations; defaults to nonstrict. CLI mode and file directives take precedence.
+    /// Type checking, external definitions and documentation, aliases, Roblox integration, and source selection.
     #[schemars(default)]
-    pub mode: Option<crate::analysis::Mode>,
+    pub analyze: Option<AnalyzeConfig>,
 
     /// Formatter settings. Ancestor settings merge field by field; absent settings use their documented defaults.
     #[schemars(default)]
@@ -58,17 +58,31 @@ pub struct InstarConfig {
     /// Source exclusion patterns relative to this configuration. Explicit file inputs bypass selection; an empty list clears inherited patterns.
     #[schemars(default)]
     pub exclude: Option<Vec<String>>,
+}
 
-    /// External Luau definition files, resolved relative to this configuration.
-    #[schemars(default)]
+/// Type analysis settings inherited from ancestor configurations.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct AnalyzeConfig {
+    /// Source patterns included only during analysis.
+    pub include: Option<Vec<String>>,
+
+    /// Source patterns excluded only during analysis.
+    pub exclude: Option<Vec<String>>,
+
+    /// Checking mode. CLI mode and file directives take precedence.
+    pub mode: Option<crate::analysis::Mode>,
+
+    /// External Luau definition files resolved relative to this configuration.
     pub definitions: Option<Vec<PathBuf>>,
 
-    /// Require aliases mapped to paths relative to this configuration. Entries inherit by name.
-    #[schemars(default)]
+    /// External documentation files resolved relative to this configuration.
+    pub documentation: Option<Vec<PathBuf>>,
+
+    /// Require aliases mapped to paths relative to this configuration.
     pub aliases: Option<BTreeMap<String, PathBuf>>,
 
-    /// Downloaded Roblox types, instance mappings, and analysis permissions.
-    #[schemars(default)]
+    /// Roblox types, instance mappings, and analysis permissions.
     pub roblox: Option<RobloxConfig>,
 }
 
@@ -78,13 +92,9 @@ pub struct InstarConfig {
 )]
 #[serde(deny_unknown_fields)]
 pub struct RobloxConfig {
-    /// Roblox cache directory, relative to this configuration. Defaults to the platform cache directory under instar/roblox.
-    #[schemars(default)]
-    pub cache: Option<PathBuf>,
-
-    /// Full commit hash of the generated Roblox assets. Unset checks for updates every 24 hours.
-    #[schemars(default)]
-    pub revision: Option<String>,
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub(crate) root: PathBuf,
 
     /// Rojo project path relative to this configuration.
     #[schemars(default)]
