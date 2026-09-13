@@ -119,7 +119,7 @@ namespace instar {
         Engine &operator=(const Engine &) = delete;
 
         void update(std::vector<Module> modules, std::vector<Configuration> configurations = {});
-        void load_definitions(std::vector<Module> definitions);
+        void load_definitions(std::vector<Module> definitions, std::optional<std::vector<std::string>> target_paths);
         void prepare_roblox(const RobloxMetadata &metadata);
         std::vector<Diagnostic> check();
 
