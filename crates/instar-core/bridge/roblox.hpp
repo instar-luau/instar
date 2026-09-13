@@ -6,8 +6,6 @@
 #include <string>
 #include <vector>
 
-using RobloxMetadata =
-    std::function<std::optional<std::string>(const std::string &, size_t)>;
+using RobloxMetadata = std::function<std::optional<std::string>(const std::string &, size_t)>;
 
-std::vector<Luau::TypeId> prepareRoblox(Luau::Frontend &frontend,
-                                        const RobloxMetadata &metadata);
+std::vector<Luau::TypeId> prepareRoblox(Luau::Frontend &frontend, const RobloxMetadata &metadata);
