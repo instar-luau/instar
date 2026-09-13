@@ -615,6 +615,7 @@ namespace {
             frontend.reset();
             checked = false;
             checked_modules.clear();
+            target_scopes.clear();
             builtins_loaded = false;
         }
 
@@ -638,13 +639,51 @@ namespace {
             }
         }
 
-        void load_definitions(const std::vector<instar::Module> &definitions) {
+        void load_definitions(
+            std::vector<instar::Module> definitions, std::optional<std::vector<std::string>> target_paths) {
             ensure_builtins();
+            target_scopes.clear();
+            frontend->prepareModuleScope = {};
 
-            for (const auto &definition : definitions) {
-                frontend->loadDefinitionFile(frontend->globals, frontend->globals.globalScope, definition.source,
-                    normalize(definition.name), true);
+            if (!target_paths) {
+                for (const auto &definition : definitions) {
+                    frontend->loadDefinitionFile(frontend->globals, frontend->globals.globalScope, definition.source,
+                        normalize(definition.name), true);
+                }
+
+                return;
             }
+
+            for (const auto &target : *target_paths) {
+                auto scope = std::make_shared<Luau::Scope>(frontend->globals.globalScope);
+
+                for (const auto &definition : definitions) {
+                    auto result = frontend->loadDefinitionFile(
+                        frontend->globals, scope, definition.source, normalize(definition.name), false);
+
+                    if (!result.success) {
+                        throw std::runtime_error("definition source failed: " + definition.name);
+                    }
+                }
+
+                target_scopes.emplace(normalize(target), std::move(scope));
+            }
+
+            frontend->prepareModuleScope = [this](const Luau::ModuleName &name, const Luau::ScopePtr &scope, bool) {
+                auto target = target_scopes.find(normalize(name));
+
+                if (target == target_scopes.end()) {
+                    return;
+                }
+
+                for (const auto &binding : target->second->exportedTypeBindings) {
+                    scope->exportedTypeBindings[binding.first] = binding.second;
+                }
+
+                if (auto configuration = target->second->lookupType("Config")) {
+                    scope->returnType = frontend->globals.globalTypes.addTypePack({configuration->type});
+                }
+            };
         }
 
         void prepare_roblox(const instar::RobloxMetadata &metadata) {
@@ -687,6 +726,7 @@ namespace {
         Configurations configurations;
         std::unique_ptr<Luau::Frontend> frontend;
         std::vector<std::string> checked_modules;
+        std::map<std::string, std::shared_ptr<Luau::Scope>> target_scopes;
         bool checked = false;
         bool builtins_loaded = false;
     };
@@ -944,8 +984,9 @@ namespace instar {
         implementation->reset();
     }
 
-    void Engine::load_definitions(std::vector<Module> definitions) {
-        implementation->load_definitions(definitions);
+    void Engine::load_definitions(
+        std::vector<Module> definitions, std::optional<std::vector<std::string>> target_paths) {
+        implementation->load_definitions(std::move(definitions), std::move(target_paths));
     }
 
     void Engine::prepare_roblox(const RobloxMetadata &metadata) {
