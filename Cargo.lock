@@ -662,7 +662,7 @@ dependencies = [
 
 [[package]]
 name = "instar-cli"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -674,7 +674,7 @@ dependencies = [
 
 [[package]]
 name = "instar-core"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "cmake",
  "dirs",
