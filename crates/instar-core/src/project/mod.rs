@@ -1,4 +1,8 @@
+/// Project configuration and its JSON schema.
+pub mod configuration;
+
 mod discovery;
+pub(crate) mod roblox;
 
 /// Require path resolution using source and configuration snapshots.
 pub mod resolution;
@@ -6,7 +10,7 @@ pub mod resolution;
 /// Inherited source inclusion and exclusion patterns.
 pub mod selection;
 
-use crate::configuration::format::Options;
+use configuration::format::Options;
 use selection::Selection;
 
 use std::{

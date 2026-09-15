@@ -1,4 +1,4 @@
-use crate::{configuration::InstarConfig, source::absolute};
+use crate::{project::configuration::InstarConfig, source::absolute};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -332,28 +332,28 @@ fn comment_location() -> String {
 }
 
 impl RemoveComments {
-    pub(super) const fn enabled(&self) -> bool {
+    pub(crate) const fn enabled(&self) -> bool {
         !matches!(self, Self::Enabled(false))
     }
 
-    pub(super) fn exceptions(&self) -> &[String] {
+    pub(crate) fn exceptions(&self) -> &[String] {
         match self {
             Self::Enabled(_) => &[],
             Self::Options { except } => except,
         }
     }
 
-    pub(super) const fn retains_directives(&self) -> bool {
+    pub(crate) const fn retains_directives(&self) -> bool {
         matches!(self, Self::Enabled(true))
     }
 }
 
 impl RemoveAttribute {
-    pub(super) const fn enabled(&self) -> bool {
+    pub(crate) const fn enabled(&self) -> bool {
         !matches!(self, Self::Enabled(false))
     }
 
-    pub(super) fn patterns(&self) -> &[String] {
+    pub(crate) fn patterns(&self) -> &[String] {
         match self {
             Self::Enabled(_) => &[],
             Self::Options { patterns } => patterns,
@@ -362,11 +362,11 @@ impl RemoveAttribute {
 }
 
 impl RemoveInterpolatedString {
-    pub(super) const fn enabled(&self) -> bool {
+    pub(crate) const fn enabled(&self) -> bool {
         !matches!(self, Self::Enabled(false))
     }
 
-    pub(super) fn strategy(&self) -> &str {
+    pub(crate) fn strategy(&self) -> &str {
         match self {
             Self::Enabled(_) => "string",
             Self::Options { strategy } => strategy,
@@ -375,11 +375,11 @@ impl RemoveInterpolatedString {
 }
 
 impl PreserveSideEffects {
-    pub(super) const fn enabled(&self) -> bool {
+    pub(crate) const fn enabled(&self) -> bool {
         !matches!(self, Self::Enabled(false))
     }
 
-    pub(super) const fn preserve(&self) -> bool {
+    pub(crate) const fn preserve(&self) -> bool {
         match self {
             Self::Enabled(_) => true,
 
@@ -391,13 +391,13 @@ impl PreserveSideEffects {
 }
 
 impl RemoveCalls {
-    pub(super) fn functions(&self) -> &[String] {
+    pub(crate) fn functions(&self) -> &[String] {
         match self {
             Self::Functions(functions) | Self::Options { functions, .. } => functions,
         }
     }
 
-    pub(super) const fn preserve(&self) -> bool {
+    pub(crate) const fn preserve(&self) -> bool {
         match self {
             Self::Functions(_) => true,
 
@@ -436,7 +436,7 @@ pub struct Profile {
     pub minify: Option<bool>,
 }
 
-pub(super) struct Configuration {
+pub(crate) struct Configuration {
     pub root: PathBuf,
     pub settings: Settings,
     pub files: BTreeMap<PathBuf, Vec<u8>>,
@@ -446,16 +446,16 @@ pub(super) struct Configuration {
 }
 
 impl Configuration {
-    pub(super) fn frontend(&self, path: &Path) -> Option<&crate::graft::Graft> {
+    pub(crate) fn frontend(&self, path: &Path) -> Option<&crate::graft::Graft> {
         self.grafts.values().find(|graft| graft.owns(path))
     }
 
-    pub(super) fn has_frontends(&self) -> bool {
+    pub(crate) fn has_frontends(&self) -> bool {
         self.grafts.values().any(crate::graft::Graft::is_frontend)
     }
 }
 
-pub(super) fn discover(from: &Path, profile: Option<&str>) -> io::Result<Configuration> {
+pub(crate) fn discover(from: &Path, profile: Option<&str>) -> io::Result<Configuration> {
     let from = absolute(from).map_err(io::Error::other)?;
 
     if from.is_file() && from.file_name().and_then(|name| name.to_str()) != Some("instar.toml") {
@@ -524,7 +524,7 @@ pub(super) fn discover(from: &Path, profile: Option<&str>) -> io::Result<Configu
     let mut grafts = BTreeMap::new();
 
     for (name, (dependency, directory)) in manifests {
-        let path = super::paths::absolute(&dependency.resolve(&directory, &name)?)?;
+        let path = crate::build::paths::absolute(&dependency.resolve(&directory, &name)?)?;
 
         let graft =
             crate::graft::Graft::load_with_configuration(&path, &name, dependency.configuration())?;
@@ -612,7 +612,7 @@ fn validate_rules(
         }
 
         if let Some(path) = &comment.file {
-            let path = super::paths::absolute(&root.join(path))?;
+            let path = crate::build::paths::absolute(&root.join(path))?;
 
             if !path.starts_with(root) {
                 return Err(io::Error::other(
@@ -620,7 +620,7 @@ fn validate_rules(
                 ));
             }
 
-            super::paths::safe(root, path.strip_prefix(root).map_err(io::Error::other)?)?;
+            crate::build::paths::safe(root, path.strip_prefix(root).map_err(io::Error::other)?)?;
 
             files.insert(path.clone(), fs::read(path)?);
         }

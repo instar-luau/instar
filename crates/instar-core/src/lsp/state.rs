@@ -107,7 +107,7 @@ impl State {
     pub(super) fn environment(
         &mut self,
         path: &std::path::Path,
-    ) -> Result<std::sync::Arc<crate::roblox::Environment>> {
+    ) -> Result<std::sync::Arc<crate::project::roblox::Environment>> {
         self.session
             .environment(&mut self.sources, path)
             .map_err(internal_error)

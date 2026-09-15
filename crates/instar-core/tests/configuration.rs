@@ -1,6 +1,6 @@
 //! Formatter configuration and inherited layout settings.
 
-use instar_core::{configuration::format::Options, format::format};
+use instar_core::{format::format, project::configuration::format::Options};
 
 fn check(configuration: &str, source: &str, expected: &str) {
     let options: Options = toml_edit::de::from_str(configuration).expect("valid configuration");

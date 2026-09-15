@@ -6,9 +6,6 @@ pub mod analysis;
 /// Build planning, compilation, and artifact publication.
 pub mod build;
 
-/// Project configuration and its JSON schema.
-pub mod configuration;
-
 /// Source-preserving Luau formatting.
 pub mod format;
 
@@ -21,12 +18,12 @@ pub mod lint;
 /// Language Server Protocol transport and request handling.
 pub mod lsp;
 
+mod emit;
 mod luau;
+mod syntax;
 
-/// Configuration discovery, source selection, and module resolution.
+/// Configuration discovery, source selection, module resolution, and project environment.
 pub mod project;
-
-mod roblox;
 
 /// Source snapshots, revisions, and position conversion.
 pub mod source;

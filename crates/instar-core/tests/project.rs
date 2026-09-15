@@ -3,7 +3,7 @@
 use std::{error::Error, fs, path::Path};
 
 use instar_core::{
-    configuration::{InstarConfig, format::Whitespace},
+    project::configuration::{InstarConfig, format::Whitespace},
     project::{ConfigKind, Configuration},
 };
 
@@ -200,7 +200,8 @@ fn generated_schema_matches_the_configuration_model() -> TestResult {
         }
     }
 
-    let defaults = serde_json::to_value(instar_core::configuration::format::Options::default())?;
+    let defaults =
+        serde_json::to_value(instar_core::project::configuration::format::Options::default())?;
 
     for (name, value) in defaults.as_object().ok_or("missing formatter defaults")? {
         assert_eq!(

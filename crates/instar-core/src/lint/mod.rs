@@ -1,5 +1,5 @@
 /// Inherited lint settings and rule-specific options.
-pub mod configuration;
+pub use crate::project::configuration::lint as configuration;
 
 /// Built-in rule names, groups, defaults, and explanations.
 pub mod registry;
@@ -228,20 +228,15 @@ pub fn edits(findings: &[Finding]) -> io::Result<Vec<Edit>> {
 /// # Errors
 /// Returns invalid source, edit range, overlap, or resulting syntax errors.
 pub fn apply(source: &Source, edits: &[Edit]) -> io::Result<Vec<u8>> {
-    let mut output = source.text().map_err(io::Error::other)?.to_owned();
-    let mut previous = output.len();
+    let edits = edits
+        .iter()
+        .map(|edit| crate::emit::Edit {
+            range: edit.start..edit.end,
+            text: edit.text.clone(),
+        })
+        .collect();
 
-    for edit in edits.iter().rev() {
-        if edit.start > edit.end
-            || edit.end > previous
-            || output.get(edit.start..edit.end).is_none()
-        {
-            return Err(io::Error::other("invalid or overlapping lint edits"));
-        }
-
-        output.replace_range(edit.start..edit.end, &edit.text);
-        previous = edit.start;
-    }
+    let output = crate::emit::apply(source.text().map_err(io::Error::other)?, edits)?;
 
     let tree = vermis::parse(output.as_bytes().into());
 

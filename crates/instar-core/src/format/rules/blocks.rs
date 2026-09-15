@@ -1,7 +1,7 @@
-use super::{Document, Emitter, Kind, TokenKind, View, io};
-use crate::configuration::format::Gaps;
+use super::{Document, DocumentBuilder, Kind, TokenKind, View, io};
+use crate::project::configuration::format::Gaps;
 
-impl<'tree, 'source> Emitter<'tree, 'source> {
+impl<'tree, 'source> DocumentBuilder<'tree, 'source> {
     pub(super) fn boundaries(&self, body: View<'tree, 'source>) -> (usize, usize) {
         let significant = |kind| {
             !matches!(
@@ -139,7 +139,9 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
                 Document::Line,
                 statement,
                 Document::text(
-                    if self.options.semicolons == crate::configuration::format::Semicolons::Always {
+                    if self.options.semicolons
+                        == crate::project::configuration::format::Semicolons::Always
+                    {
                         ";"
                     } else {
                         ""

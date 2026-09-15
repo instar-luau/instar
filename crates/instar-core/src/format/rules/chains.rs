@@ -1,7 +1,7 @@
-use super::{Document, Emitter, Parts, View, io};
-use crate::configuration::format::Chain;
+use super::{Document, DocumentBuilder, Parts, View, io};
+use crate::project::configuration::format::Chain;
 
-impl<'tree, 'source> Emitter<'tree, 'source> {
+impl<'tree, 'source> DocumentBuilder<'tree, 'source> {
     pub(super) fn chain(
         &self,
         view: View<'tree, 'source>,

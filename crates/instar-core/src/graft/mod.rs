@@ -5,7 +5,7 @@ mod wasm;
 
 pub use install::install;
 
-use crate::configuration::format::Options;
+use crate::project::configuration::format::Options;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -535,7 +535,7 @@ impl Graft {
             .into_iter()
             .collect::<serde_json::Map<_, _>>();
 
-        crate::configuration::overlay(
+        crate::project::configuration::overlay(
             &mut configuration,
             project_configuration.clone().into_iter().collect(),
         );

@@ -1,5 +1,5 @@
 use super::{Dependency, Graft, Manifest, cache, requirement};
-use crate::configuration::InstarConfig;
+use crate::project::configuration::InstarConfig;
 use semver::Version;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};

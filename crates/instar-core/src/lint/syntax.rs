@@ -7,22 +7,12 @@ use super::{
 use crate::source::{PositionEncoding, Source};
 use serde_json::Value;
 
+pub(super) use crate::syntax::{array, field, kind};
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     ops::Range,
 };
-
-pub(super) fn kind(value: &Value) -> &str {
-    value["type"].as_str().unwrap_or("")
-}
-
-pub(super) fn array(value: &Value) -> &[Value] {
-    value.as_array().map_or(&[], Vec::as_slice)
-}
-
-pub(super) fn field<'value>(value: &'value Value, name: &str) -> &'value str {
-    value[name].as_str().unwrap_or("")
-}
 
 pub(super) fn unwrap(mut value: &Value) -> &Value {
     while matches!(

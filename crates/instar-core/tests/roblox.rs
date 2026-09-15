@@ -434,8 +434,10 @@ fn levels_inherit_and_validate() -> TestResult {
     let mut check = checker();
 
     assert!(
-        instar_core::configuration::InstarConfig::parse("[analyze.roblox]\nlevel = 'Unknown'")
-            .is_err()
+        instar_core::project::configuration::InstarConfig::parse(
+            "[analyze.roblox]\nlevel = 'Unknown'"
+        )
+        .is_err()
     );
 
     let directory = tempfile::tempdir()?;

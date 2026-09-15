@@ -13,7 +13,7 @@ use super::{
     mapping::{Edit, Text},
 };
 
-use crate::{roblox::Environment, source::Source};
+use crate::{project::roblox::Environment, source::Source};
 use serde_json::Value;
 
 use std::{

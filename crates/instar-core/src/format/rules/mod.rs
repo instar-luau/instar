@@ -3,26 +3,50 @@ mod chains;
 mod comments;
 mod conditional;
 mod expressions;
+mod rewrite;
+mod sorting;
 mod types;
 
 use std::{io, ops::Range};
 
 use vermis::{Children, Kind, Parts, TokenKind, Tree, View};
 
-use super::{Options, document::Document};
+use super::Options;
+use super::document::Document;
 
-use crate::configuration::format::{
+use crate::project::configuration::format::{
     CallStyle, Collapse, Expansion, Parentheses, Semicolons, Separation,
 };
 
-pub(super) struct Emitter<'tree, 'source> {
+pub(super) fn emit<'tree, 'source>(
+    source: &'source str,
+    tree: &'tree Tree<'source>,
+    options: &'tree Options,
+    held: &'tree [Range<usize>],
+) -> io::Result<Document<'source>> {
+    DocumentBuilder::new(source, tree, options, held).root()
+}
+
+pub(super) fn node<'tree, 'source>(
+    source: &'source str,
+    tree: &'tree Tree<'source>,
+    options: &'tree Options,
+    held: &'tree [Range<usize>],
+    view: View<'tree, 'source>,
+) -> io::Result<Document<'source>> {
+    DocumentBuilder::new(source, tree, options, held).node(view)
+}
+
+pub(super) use rewrite::prepare;
+
+pub(super) struct DocumentBuilder<'tree, 'source> {
     source: &'source str,
     tree: &'tree Tree<'source>,
     options: &'tree Options,
     held: &'tree [Range<usize>],
 }
 
-impl<'tree, 'source> Emitter<'tree, 'source> {
+impl<'tree, 'source> DocumentBuilder<'tree, 'source> {
     pub(super) fn new(
         source: &'source str,
         tree: &'tree Tree<'source>,
@@ -296,14 +320,14 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
         }
 
         if view.kind() == Kind::String {
-            return Ok(Document::text(super::literals::quote(
+            return Ok(Document::text(crate::format::literals::quote(
                 self.text(view),
                 self.options.quotes,
             )));
         }
 
         if view.kind() == Kind::Number {
-            return Ok(Document::text(super::literals::number(
+            return Ok(Document::text(crate::format::literals::number(
                 self.text(view),
                 self.options.leading_zero,
             )));

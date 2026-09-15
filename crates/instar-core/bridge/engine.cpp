@@ -1,6 +1,7 @@
 #include "engine.hpp"
 
 #include "Luau/Ast.h"
+#include "Luau/AstJsonEncoder.h"
 #include "Luau/AstQuery.h"
 #include "Luau/Autocomplete.h"
 #include "Luau/BuiltinDefinitions.h"
@@ -1338,6 +1339,24 @@ namespace instar {
         return diagnostics;
     }
 
+    std::optional<Syntax> Engine::syntax(const std::string &path) {
+        auto *source = implementation->source(path);
+
+        if (!source || !source->root) {
+            return std::nullopt;
+        }
+
+        std::vector<std::string> parameters;
+
+        for (const auto &[symbol, binding] : implementation->frontend->globals.globalScope->bindings) {
+            if (symbol.global.value) {
+                parameters.emplace_back(symbol.global.value);
+            }
+        }
+
+        return Syntax{Luau::toJson(source->root, source->commentLocations), std::move(parameters)};
+    }
+
     std::optional<TypeInformation> Engine::type_at(const std::string &path, Position position) {
         auto *module = implementation->module(path);
         auto *source = implementation->source(path);
@@ -1991,6 +2010,28 @@ extern "C" {
                         native_range(diagnostic.range), diagnostic.error ? 1 : 0);
                 }
             }
+        });
+    }
+
+    void instar_engine_syntax(void *engine, NativeBytes path, void *context, NativeSyntax report, NativeFailure failure) {
+        if (!engine || !report) {
+            return;
+        }
+
+        run(context, failure, [&] {
+            auto value = static_cast<instar::Engine *>(engine)->syntax(native_text(path));
+
+            if (!value) {
+                return;
+            }
+
+            std::vector<NativeBytes> parameters;
+
+            for (const auto &parameter : value->parameters) {
+                parameters.push_back(native_bytes(parameter));
+            }
+
+            report(context, native_bytes(value->description), parameters.data(), parameters.size());
         });
     }
 

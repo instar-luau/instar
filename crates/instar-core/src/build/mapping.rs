@@ -1,3 +1,4 @@
+pub(super) use crate::emit::Edit;
 use crate::graft::Mapping;
 use serde::Serialize;
 
@@ -23,12 +24,6 @@ pub(super) struct Segment {
 pub(super) struct Text {
     pub text: String,
     pub segments: Vec<Segment>,
-}
-
-#[derive(Clone)]
-pub(super) struct Edit {
-    pub range: Range<usize>,
-    pub text: String,
 }
 
 impl Text {

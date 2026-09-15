@@ -3,7 +3,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-pub(super) fn absolute(path: &Path) -> io::Result<PathBuf> {
+pub(crate) fn absolute(path: &Path) -> io::Result<PathBuf> {
     crate::source::absolute(path).map_err(io::Error::other)
 }
 
@@ -47,7 +47,7 @@ pub(super) fn relative(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-pub(super) fn safe(root: &Path, relative_path: &Path) -> io::Result<PathBuf> {
+pub(crate) fn safe(root: &Path, relative_path: &Path) -> io::Result<PathBuf> {
     relative(relative_path)?;
 
     match fs::symlink_metadata(root) {

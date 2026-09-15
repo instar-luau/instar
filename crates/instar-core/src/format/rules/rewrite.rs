@@ -1,21 +1,20 @@
-mod sorting;
-
-use super::{Options, scope::Names};
-use crate::configuration::format::{Binding, Declaration, Unused};
+use super::{Options, sorting};
+use crate::format::scope::Names;
+use crate::project::configuration::format::{Binding, Declaration, Unused};
 use std::{io, ops::Range};
 use vermis::{Kind, Parts, Tree, View};
 
-pub(super) fn prepare(
+pub(in crate::format) fn prepare(
     source: &str,
     tree: &Tree<'_>,
     options: &Options,
     held: &[Range<usize>],
 ) -> io::Result<String> {
-    let mut original_comments = super::comments(tree, source.as_bytes());
+    let mut original_comments = crate::format::comments(tree, source.as_bytes());
     original_comments.sort_unstable();
     let source = bindings(source, tree, options, held)?;
     let tree = vermis::parse(source.as_bytes().into());
-    let held = super::regions::held(&source, &tree);
+    let held = crate::format::regions::held(&source, &tree);
     let output = sorting::sort(&source, &tree, options, &held)?;
     let parsed = vermis::parse(output.as_bytes().into());
 
@@ -25,7 +24,7 @@ pub(super) fn prepare(
         ));
     }
 
-    let mut output_comments = super::comments(&parsed, output.as_bytes());
+    let mut output_comments = crate::format::comments(&parsed, output.as_bytes());
     output_comments.sort_unstable();
 
     if original_comments != output_comments {
@@ -292,21 +291,11 @@ fn bindings(
         }
     }
 
-    changes.sort_by_key(|(range, _)| range.start);
-    let mut output = String::new();
-    let mut cursor = 0;
-
-    for (range, text) in changes {
-        if range.start < cursor {
-            return Err(io::Error::other("overlapping format rewrites"));
-        }
-
-        output.push_str(&source[cursor..range.start]);
-        output.push_str(&text);
-        cursor = range.end;
-    }
-
-    output.push_str(&source[cursor..]);
-
-    Ok(output)
+    crate::emit::apply(
+        source,
+        changes
+            .into_iter()
+            .map(|(range, text)| crate::emit::Edit { range, text })
+            .collect(),
+    )
 }

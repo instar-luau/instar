@@ -24,7 +24,7 @@ type AnalysisGroup = (
     Vec<PathBuf>,
     Vec<PathBuf>,
     Vec<u8>,
-    Option<std::sync::Arc<crate::roblox::Environment>>,
+    Option<std::sync::Arc<crate::project::roblox::Environment>>,
     Vec<PathBuf>,
 );
 
@@ -117,6 +117,7 @@ type ReadCallback = extern "C" fn(*mut c_void, Bytes) -> Bytes;
 type Resolve = extern "C" fn(*mut c_void, Bytes, Range, Bytes) -> Bytes;
 type ReportCallback = extern "C" fn(*mut c_void, Bytes, Bytes, Range, i32);
 type TypeCallback = extern "C" fn(*mut c_void, Bytes);
+type SyntaxCallback = extern "C" fn(*mut c_void, Bytes, *const Bytes, usize);
 type CompletionCallback = extern "C" fn(*mut c_void, Bytes, Bytes, Bytes, Bytes, u32, i32);
 type SignatureCallback = extern "C" fn(*mut c_void, Bytes, *const Bytes, usize, u32);
 type DestinationCallback = extern "C" fn(*mut c_void, Bytes, Range, Bytes);
@@ -171,6 +172,14 @@ unsafe extern "C" {
         engine: *mut c_void,
         context: *mut c_void,
         report: Option<ReportCallback>,
+        failure: Option<FailureCallback>,
+    );
+
+    fn instar_engine_syntax(
+        engine: *mut c_void,
+        path: Bytes,
+        context: *mut c_void,
+        report: Option<SyntaxCallback>,
         failure: Option<FailureCallback>,
     );
 
@@ -332,7 +341,7 @@ pub(crate) fn matches(pattern: &str, source: &str) -> io::Result<bool> {
 
 struct Context<'resolver, 'store> {
     resolver: &'resolver mut Resolver<'store>,
-    environment: std::sync::Arc<crate::roblox::Environment>,
+    environment: std::sync::Arc<crate::project::roblox::Environment>,
     constants: Vec<u8>,
     buffer: Vec<u8>,
     report: Report,
@@ -508,6 +517,35 @@ extern "C" fn type_result(context: *mut c_void, description: Bytes) {
         let mut entry = empty_entry();
 
         entry.description = Some(unsafe { description.string()? });
+
+        context.report.editor = Some(EditorResult::Entry(Box::new(entry)));
+
+        Ok(())
+    });
+}
+
+extern "C" fn syntax_result(
+    context: *mut c_void,
+    description: Bytes,
+    parameters: *const Bytes,
+    count: usize,
+) {
+    let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
+
+    context.call(|context| {
+        if count != 0 && parameters.is_null() {
+            return Err(io::Error::other("native syntax parameters are invalid"));
+        }
+
+        let mut entry = empty_entry();
+
+        entry.description = Some(unsafe { description.string()? });
+
+        entry.parameters = Some(
+            (0..count)
+                .map(|index| unsafe { (*parameters.add(index)).string() })
+                .collect::<io::Result<Vec<_>>>()?,
+        );
 
         context.report.editor = Some(EditorResult::Entry(Box::new(entry)));
 
@@ -835,8 +873,10 @@ pub(crate) struct Session {
     refresh: bool,
     query: Option<(PathBuf, line_index::LineCol, String)>,
 
-    environments:
-        BTreeMap<crate::configuration::RobloxConfig, std::sync::Arc<crate::roblox::Environment>>,
+    environments: BTreeMap<
+        crate::project::configuration::RobloxConfig,
+        std::sync::Arc<crate::project::roblox::Environment>,
+    >,
 }
 
 impl Session {
@@ -983,9 +1023,9 @@ impl Session {
     pub(crate) fn environment(
         &mut self,
         resolver: &mut Resolver<'_>,
-        settings: Option<&crate::configuration::RobloxConfig>,
+        settings: Option<&crate::project::configuration::RobloxConfig>,
         update: bool,
-    ) -> io::Result<std::sync::Arc<crate::roblox::Environment>> {
+    ) -> io::Result<std::sync::Arc<crate::project::roblox::Environment>> {
         let Some(settings) = settings else {
             return Ok(std::sync::Arc::default());
         };
@@ -994,7 +1034,7 @@ impl Session {
             return Ok(std::sync::Arc::clone(environment));
         }
 
-        let environment = std::sync::Arc::new(crate::roblox::Environment::load(
+        let environment = std::sync::Arc::new(crate::project::roblox::Environment::load(
             resolver, settings, update,
         )?);
 
@@ -1013,7 +1053,7 @@ impl Session {
         resolver: &mut Resolver<'_>,
         modules: &[PathBuf],
         assets: (&[PathBuf], &[PathBuf], &[u8]),
-        environment: Option<&std::sync::Arc<crate::roblox::Environment>>,
+        environment: Option<&std::sync::Arc<crate::project::roblox::Environment>>,
         options: &Options,
         _changed: &[PathBuf],
     ) -> io::Result<Report> {
@@ -1163,7 +1203,7 @@ impl Session {
         if !configuration_targets.is_empty() {
             let configuration_definition = OwnedModule {
                 name: b"configuration.d.luau".to_vec(),
-                source: include_bytes!("configuration.d.luau").to_vec(),
+                source: include_bytes!("project/configuration/configuration.d.luau").to_vec(),
             };
 
             let native_configuration_definition = configuration_definition.ffi();
@@ -1406,6 +1446,16 @@ fn query_engine(
     let path_bytes = Bytes::new(path.as_bytes());
 
     match operation {
+        "syntax" => unsafe {
+            instar_engine_syntax(
+                engine.0,
+                path_bytes,
+                context_pointer,
+                Some(syntax_result),
+                Some(failure),
+            );
+        },
+
         "type" => unsafe {
             instar_engine_type_at(
                 engine.0,

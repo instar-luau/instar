@@ -207,7 +207,7 @@ impl Session {
         &mut self,
         sources: &mut SourceStore,
         path: &Path,
-    ) -> io::Result<Arc<crate::roblox::Environment>> {
+    ) -> io::Result<Arc<crate::project::roblox::Environment>> {
         let mut resolver = Resolver::new(sources);
         let settings = resolver.discovery.roblox(path)?;
 

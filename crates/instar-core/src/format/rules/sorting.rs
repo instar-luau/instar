@@ -1,7 +1,6 @@
-use crate::{
-    configuration::format::{Grouping, Indexer, Options, Order},
-    format::emit::Emitter,
-};
+use crate::project::configuration::format::{Grouping, Indexer, Options, Order};
+
+use super::DocumentBuilder;
 
 use std::{cmp::Ordering, io, ops::Range};
 use vermis::{Kind, Parts, TokenKind, Tree, View};
@@ -147,7 +146,7 @@ impl<'tree, 'source> Sorter<'tree, 'source> {
             return Ok(());
         }
 
-        let emitter = Emitter::new(self.source, self.tree, self.options, self.held);
+        let builder = DocumentBuilder::new(self.source, self.tree, self.options, self.held);
         let mut entries = Vec::new();
 
         for (field, text) in children.iter() {
@@ -180,7 +179,7 @@ impl<'tree, 'source> Sorter<'tree, 'source> {
                 key
             };
 
-            let width = emitter.node(*field)?.width().unwrap_or(usize::MAX);
+            let width = builder.node(*field)?.width().unwrap_or(usize::MAX);
             entries.push((key, width, field.kind() == Kind::TypeIndexer, text.clone()));
         }
 
