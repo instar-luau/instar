@@ -84,6 +84,11 @@ namespace instar {
         std::string description;
     };
 
+    struct Syntax {
+        std::string description;
+        std::vector<std::string> parameters;
+    };
+
     struct Completion {
         std::string label;
         std::string description;
@@ -162,6 +167,7 @@ namespace instar {
         void load_definitions(std::vector<Module> definitions, std::optional<std::vector<std::string>> target_paths);
         void prepare_roblox(const RobloxMetadata &metadata);
         std::vector<Diagnostic> check();
+        std::optional<Syntax> syntax(const std::string &path);
         std::optional<TypeInformation> type_at(const std::string &path, Position position);
         std::optional<TypeInformation> hover(const std::string &path, Position position);
         std::vector<Completion> complete(const std::string &path, Position position);
@@ -237,6 +243,7 @@ using NativeModuleReader = NativeBytes (*)(void *, NativeBytes);
 using NativeModuleResolver = NativeBytes (*)(void *, NativeBytes, NativeRange, NativeBytes);
 using NativeReport = void (*)(void *, NativeBytes, NativeBytes, NativeRange, int);
 using NativeType = void (*)(void *, NativeBytes);
+using NativeSyntax = void (*)(void *, NativeBytes, const NativeBytes *, std::size_t);
 using NativeCompletion = void (*)(void *, NativeBytes, NativeBytes, NativeBytes, NativeBytes, unsigned, int);
 using NativeSignature = void (*)(void *, NativeBytes, const NativeBytes *, std::size_t, unsigned);
 using NativeDestination = void (*)(void *, NativeBytes, NativeRange, NativeBytes);
@@ -262,6 +269,7 @@ extern "C" {
         const NativeRobloxNode *, std::size_t, void *, NativeFailure);
 
     void instar_engine_check(void *, void *, NativeReport, NativeFailure);
+    void instar_engine_syntax(void *, NativeBytes, void *, NativeSyntax, NativeFailure);
     void instar_engine_type_at(void *, NativeBytes, NativePosition, void *, NativeType, NativeFailure);
     void instar_engine_hover(void *, NativeBytes, NativePosition, void *, NativeType, NativeFailure);
     void instar_engine_complete(void *, NativeBytes, NativePosition, void *, NativeCompletion, NativeFailure);

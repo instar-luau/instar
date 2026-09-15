@@ -1,9 +1,9 @@
 //! Graft execution, protocol validation, and transformation behavior.
 
 use instar_core::{
-    configuration::{InstarConfig, format::Options},
     graft::{self, Graft, Manifest},
     project::Configuration,
+    project::configuration::{InstarConfig, format::Options},
 };
 
 use std::fs;

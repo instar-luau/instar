@@ -2,7 +2,7 @@
 
 use std::{env, error::Error, fs, path::PathBuf};
 
-use instar_core::configuration::InstarConfig;
+use instar_core::project::configuration::InstarConfig;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os().skip(1);

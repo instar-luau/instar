@@ -1,5 +1,5 @@
 use super::selection::{Scope, Selection};
-use crate::{configuration::InstarConfig, luau, source::absolute};
+use crate::{luau, project::configuration::InstarConfig, source::absolute};
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -30,7 +30,7 @@ pub(crate) struct Discovery {
     definitions: BTreeMap<PathBuf, Vec<PathBuf>>,
     documentation: BTreeMap<PathBuf, Vec<PathBuf>>,
     constants: BTreeMap<PathBuf, Vec<u8>>,
-    environments: BTreeMap<PathBuf, Option<crate::configuration::RobloxConfig>>,
+    environments: BTreeMap<PathBuf, Option<crate::project::configuration::RobloxConfig>>,
 }
 
 impl Discovery {
@@ -274,7 +274,7 @@ impl Discovery {
     pub(crate) fn roblox(
         &mut self,
         from: &Path,
-    ) -> io::Result<Option<crate::configuration::RobloxConfig>> {
+    ) -> io::Result<Option<crate::project::configuration::RobloxConfig>> {
         let directory = from
             .parent()
             .ok_or_else(|| io::Error::other("module has no parent"))?;
@@ -297,7 +297,9 @@ impl Discovery {
                 .as_ref()
                 .and_then(|configuration| configuration.roblox.as_ref())
             {
-                let merged = result.get_or_insert_with(crate::configuration::RobloxConfig::default);
+                let merged =
+                    result.get_or_insert_with(crate::project::configuration::RobloxConfig::default);
+
                 ancestor.clone_into(&mut merged.root);
 
                 for (target, value) in [
@@ -599,7 +601,9 @@ fn merge(
     grafts: &mut BTreeMap<String, (crate::graft::Dependency, PathBuf)>,
     configuration: &Path,
 ) -> io::Result<()> {
-    let parsed = crate::configuration::InstarConfig::parse(text).map_err(io::Error::other)?;
+    let parsed =
+        crate::project::configuration::InstarConfig::parse(text).map_err(io::Error::other)?;
+
     let mut value: serde_json::Value = toml_edit::de::from_str(text).map_err(io::Error::other)?;
 
     if let Some(selection) = selection {
@@ -619,7 +623,7 @@ fn merge(
         .map_or(serde_json::Value::Null, serde_json::Value::take);
 
     if let serde_json::Value::Object(fields) = value {
-        crate::configuration::overlay(merged, fields);
+        crate::project::configuration::overlay(merged, fields);
     }
 
     Ok(())
@@ -657,7 +661,7 @@ mod tests {
 
             assert_eq!(
                 environment.level,
-                Some(crate::configuration::RobloxLevel::None)
+                Some(crate::project::configuration::RobloxLevel::None)
             );
 
             assert_eq!(environment.sourcemap, None);

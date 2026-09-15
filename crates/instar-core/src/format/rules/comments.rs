@@ -1,6 +1,6 @@
-use super::{Document, Emitter, Kind, TokenKind, View, io};
+use super::{Document, DocumentBuilder, Kind, TokenKind, View, io};
 
-impl<'tree, 'source> Emitter<'tree, 'source> {
+impl<'tree, 'source> DocumentBuilder<'tree, 'source> {
     pub(super) fn trivia(
         &self,
         start: usize,

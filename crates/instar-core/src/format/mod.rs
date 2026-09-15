@@ -1,13 +1,12 @@
 pub(crate) mod document;
-mod emit;
 mod literals;
 mod regions;
-mod rewrite;
+mod rules;
 mod scope;
 
 use std::{borrow::Cow, io};
 
-use crate::configuration::format::{Options, Quotes, Zero};
+use crate::project::configuration::format::{Options, Quotes, Zero};
 use vermis::{Kind, TokenKind, Tree};
 
 /// # Errors
@@ -87,13 +86,12 @@ pub fn format(source: &[u8], options: &Options) -> io::Result<Vec<u8>> {
         return Ok(original.as_bytes().to_vec());
     }
 
-    let prepared = rewrite::prepare(text, &tree, options, &held)?;
+    let prepared = rules::prepare(text, &tree, options, &held)?;
     let text = prepared.as_str();
     let source = text.as_bytes();
     let tree = vermis::parse(source.into());
     let held = regions::held(text, &tree);
-    let emitter = emit::Emitter::new(text, &tree, options, &held);
-    let document = emitter.root()?;
+    let document = rules::emit(text, &tree, options, &held)?;
     let mut output = document::render(&document, options);
     output.truncate(output.trim_end_matches([' ', '\t', '\r', '\n']).len());
 
@@ -161,10 +159,9 @@ pub(crate) fn fragment(
     }
 
     let held = regions::held(&source, &tree);
-    let source = rewrite::prepare(&source, &tree, options, &held)?;
+    let source = rules::prepare(&source, &tree, options, &held)?;
     let tree = vermis::parse(source.as_bytes().into());
     let held = regions::held(&source, &tree);
-    let emitter = emit::Emitter::new(&source, &tree, options, &held);
 
     if expression {
         let block = tree
@@ -190,11 +187,16 @@ pub(crate) fn fragment(
             ));
         }
 
-        Ok(emitter
-            .node(values.clone().next().expect("one expression"))?
-            .owned())
+        Ok(rules::node(
+            &source,
+            &tree,
+            options,
+            &held,
+            values.clone().next().expect("one expression"),
+        )?
+        .owned())
     } else {
-        Ok(emitter.root()?.owned())
+        Ok(rules::emit(&source, &tree, options, &held)?.owned())
     }
 }
 

@@ -1,8 +1,8 @@
 //! Syntax layout, comments, and formatter idempotence.
 
-use instar_core::configuration::format::Options;
+use instar_core::project::configuration::format::Options;
 
-use instar_core::configuration::format::{
+use instar_core::project::configuration::format::{
     Blocks, CallStyle, Calls, Chains, Collapse, Conditional, ConditionalExpansion,
     ConditionalStyle, Constants, Endings, Expansion, Functions, Imports, Indentation, Indexer,
     Operators, Order, Parameters, Parentheses, Placement, Quotes, Separation, Separator, Sorting,
@@ -653,7 +653,7 @@ fn attributes_stay_above_their_function() {
     assert_eq!(formatted(source), source);
 }
 
-use instar_core::configuration::format::Grouping;
+use instar_core::project::configuration::format::Grouping;
 
 fn sorting(grouping: Grouping) -> Options {
     Options {
@@ -970,7 +970,7 @@ fn a_comment_is_placed_or_the_file_is_refused_never_dropped() {
     }
 }
 
-fn gaps(mode: instar_core::configuration::format::Gaps) -> Options {
+fn gaps(mode: instar_core::project::configuration::format::Gaps) -> Options {
     Options {
         blocks: Blocks {
             blank_lines: mode,
@@ -994,7 +994,7 @@ fn preserve_keeps_the_blank_at_both_edges() {
     assert_eq!(
         configured(
             source,
-            gaps(instar_core::configuration::format::Gaps::Preserve)
+            gaps(instar_core::project::configuration::format::Gaps::Preserve)
         ),
         source
     );
@@ -1002,7 +1002,7 @@ fn preserve_keeps_the_blank_at_both_edges() {
 
 #[test]
 fn preserve_keeps_one_edge_when_only_one_has_a_blank() {
-    let configuration = gaps(instar_core::configuration::format::Gaps::Preserve);
+    let configuration = gaps(instar_core::project::configuration::format::Gaps::Preserve);
 
     assert_eq!(
         configured("do\n\n\tx()\nend\n", configuration.clone()),
@@ -1024,14 +1024,14 @@ fn a_blank_between_statements_is_not_an_edge_gap() {
 
 #[test]
 fn preserving_gaps_is_still_idempotent() {
-    let configuration = gaps(instar_core::configuration::format::Gaps::Preserve);
+    let configuration = gaps(instar_core::project::configuration::format::Gaps::Preserve);
     let source = "local function f()\n\n\tif a then\n\n\t\tb()\n\n\tend\n\nend\n";
     let once = configured(source, configuration.clone());
 
     assert_eq!(configured(&once, configuration), once);
 }
 
-fn binding(mode: instar_core::configuration::format::Binding) -> Options {
+fn binding(mode: instar_core::project::configuration::format::Binding) -> Options {
     Options {
         imports: Imports {
             binding: mode,
@@ -1053,7 +1053,7 @@ fn const_converts_a_local_require() {
     assert_eq!(
         configured(
             "local Signal = require(\"@pkg/signal\")\nreturn Signal\n",
-            binding(instar_core::configuration::format::Binding::Const)
+            binding(instar_core::project::configuration::format::Binding::Const)
         ),
         "const Signal = require(\"@pkg/signal\")\nreturn Signal\n"
     );
@@ -1064,7 +1064,7 @@ fn local_converts_a_const_require_back() {
     assert_eq!(
         configured(
             "const Signal = require(\"@pkg/signal\")\nreturn Signal\n",
-            binding(instar_core::configuration::format::Binding::Local)
+            binding(instar_core::project::configuration::format::Binding::Local)
         ),
         "local Signal = require(\"@pkg/signal\")\nreturn Signal\n"
     );
@@ -1077,7 +1077,7 @@ fn a_require_whose_name_is_reassigned_keeps_local() {
     assert_eq!(
         configured(
             source,
-            binding(instar_core::configuration::format::Binding::Const)
+            binding(instar_core::project::configuration::format::Binding::Const)
         ),
         source
     );
@@ -1085,7 +1085,7 @@ fn a_require_whose_name_is_reassigned_keeps_local() {
 
 #[test]
 fn only_a_single_unannotated_binding_converts() {
-    let configuration = binding(instar_core::configuration::format::Binding::Const);
+    let configuration = binding(instar_core::project::configuration::format::Binding::Const);
 
     for source in [
         "local A, B = require(\"@pkg/a\"), require(\"@pkg/b\")\nreturn A, B\n",
@@ -1104,7 +1104,7 @@ fn only_a_single_unannotated_binding_converts() {
 fn a_nested_require_converts_too() {
     let output = configured(
         "local function f()\n\tlocal S = require(\"@pkg/s\")\n\treturn S\nend\nreturn f\n",
-        binding(instar_core::configuration::format::Binding::Const),
+        binding(instar_core::project::configuration::format::Binding::Const),
     );
 
     assert!(output.contains("const S = require"), "{output}");
@@ -1112,7 +1112,7 @@ fn a_nested_require_converts_too() {
 
 #[test]
 fn converting_the_binding_is_idempotent() {
-    let configuration = binding(instar_core::configuration::format::Binding::Const);
+    let configuration = binding(instar_core::project::configuration::format::Binding::Const);
 
     let once = configured(
         "local S = require(\"@pkg/s\")\nreturn S\n",
@@ -1122,7 +1122,7 @@ fn converting_the_binding_is_idempotent() {
     assert_eq!(configured(&once, configuration), once);
 }
 
-fn semicolons(mode: instar_core::configuration::format::Semicolons) -> Options {
+fn semicolons(mode: instar_core::project::configuration::format::Semicolons) -> Options {
     Options {
         semicolons: mode,
         ..Default::default()
@@ -1142,7 +1142,7 @@ fn always_terminates_every_statement() {
     assert_eq!(
         configured(
             "local a = 1\nlocal b = 2\nreturn b\n",
-            semicolons(instar_core::configuration::format::Semicolons::Always)
+            semicolons(instar_core::project::configuration::format::Semicolons::Always)
         ),
         "local a = 1;\nlocal b = 2;\nreturn b;\n"
     );
@@ -1151,8 +1151,8 @@ fn always_terminates_every_statement() {
 #[test]
 fn the_one_semicolon_luau_requires_survives_every_setting() {
     for mode in [
-        instar_core::configuration::format::Semicolons::Never,
-        instar_core::configuration::format::Semicolons::Always,
+        instar_core::project::configuration::format::Semicolons::Never,
+        instar_core::project::configuration::format::Semicolons::Always,
     ] {
         let output = configured("local a = b\n;(c)()\nreturn a\n", semicolons(mode));
 
@@ -1165,7 +1165,7 @@ fn a_semicolon_lands_before_a_trailing_comment_not_after_it() {
     assert_eq!(
         configured(
             "local a = 1 -- note\nreturn a\n",
-            semicolons(instar_core::configuration::format::Semicolons::Always)
+            semicolons(instar_core::project::configuration::format::Semicolons::Always)
         ),
         "local a = 1; -- note\nreturn a;\n"
     );
@@ -1173,7 +1173,7 @@ fn a_semicolon_lands_before_a_trailing_comment_not_after_it() {
 
 #[test]
 fn terminating_every_statement_is_idempotent() {
-    let configuration = semicolons(instar_core::configuration::format::Semicolons::Always);
+    let configuration = semicolons(instar_core::project::configuration::format::Semicolons::Always);
 
     let once = configured(
         "local a = 1\nif a then\n\treturn a\nend\n",
@@ -1187,7 +1187,7 @@ fn terminating_every_statement_is_idempotent() {
 fn bare_calls_keep_parentheses_where_required() {
     let configuration = Options {
         calls: Calls {
-            parentheses: instar_core::configuration::format::Parentheses::OmitOptional,
+            parentheses: instar_core::project::configuration::format::Parentheses::OmitOptional,
             ..Default::default()
         },
         ..Default::default()
@@ -2368,7 +2368,8 @@ fn table_type_configuration_preserves_existing_blank_lines() {
     let options: Options =
         toml_edit::de::from_str("[types.tables]\nblank_lines = 'preserve'").unwrap();
 
-    let schema = serde_json::to_value(instar_core::configuration::InstarConfig::schema()).unwrap();
+    let schema =
+        serde_json::to_value(instar_core::project::configuration::InstarConfig::schema()).unwrap();
 
     assert_eq!(
         schema["$defs"]["Tables"]["properties"]["blank_lines"]["default"],
@@ -3063,7 +3064,7 @@ fn width_orders_measure_the_field() {
 
 #[test]
 fn the_indexer_takes_its_position() {
-    use instar_core::configuration::format::Indexer;
+    use instar_core::project::configuration::format::Indexer;
 
     let configuration = |indexer| Options {
         types: Types {
@@ -3125,7 +3126,7 @@ fn a_tie_sorts_the_same_way_every_run() {
 
 #[test]
 fn the_function_style_leaves_the_forms_that_have_no_keyword() {
-    use instar_core::configuration::format::Declaration;
+    use instar_core::project::configuration::format::Declaration;
 
     let configuration = |style| Options {
         functions: Functions {
@@ -3155,7 +3156,7 @@ fn the_function_style_leaves_the_forms_that_have_no_keyword() {
 fn the_const_style_refuses_a_reassigned_name() {
     let configuration = Options {
         functions: Functions {
-            binding: instar_core::configuration::format::Declaration::Const,
+            binding: instar_core::project::configuration::format::Declaration::Const,
             ..Default::default()
         },
         ..Default::default()
@@ -3174,7 +3175,7 @@ fn the_const_style_refuses_a_reassigned_name() {
 fn a_removed_import_leaves_no_blank_line() {
     let configuration = Options {
         imports: Imports {
-            unused: instar_core::configuration::format::Unused::Remove,
+            unused: instar_core::project::configuration::format::Unused::Remove,
             ..Default::default()
         },
         ..Default::default()
@@ -3191,7 +3192,10 @@ fn a_removed_import_leaves_no_blank_line() {
     );
 }
 
-fn chained(style: instar_core::configuration::format::Chain, minimum_calls: usize) -> Options {
+fn chained(
+    style: instar_core::project::configuration::format::Chain,
+    minimum_calls: usize,
+) -> Options {
     Options {
         calls: Calls {
             chains: Chains {
@@ -3213,7 +3217,7 @@ fn a_chain_keeps_its_line_by_default() {
 
 #[test]
 fn the_method_style_breaks_at_each_call() {
-    use instar_core::configuration::format::Chain;
+    use instar_core::project::configuration::format::Chain;
 
     let output = configured(
         "local a = map.new():some():some1():some2()\nreturn a\n",
@@ -3228,7 +3232,7 @@ fn the_method_style_breaks_at_each_call() {
 
 #[test]
 fn the_full_style_breaks_before_every_step() {
-    use instar_core::configuration::format::Chain;
+    use instar_core::project::configuration::format::Chain;
 
     let output = configured(
         "local a = map.new():some():some1()\nreturn a\n",
@@ -3243,7 +3247,7 @@ fn the_full_style_breaks_before_every_step() {
 
 #[test]
 fn the_threshold_and_the_width_both_open_a_chain() {
-    use instar_core::configuration::format::Chain;
+    use instar_core::project::configuration::format::Chain;
 
     let short = "local a = obj:one():two()\nreturn a\n";
     assert_eq!(configured(short, chained(Chain::Method, 3)), short);
@@ -3266,7 +3270,7 @@ fn the_threshold_and_the_width_both_open_a_chain() {
 
 #[test]
 fn an_opened_chain_formats_to_itself() {
-    use instar_core::configuration::format::Chain;
+    use instar_core::project::configuration::format::Chain;
 
     let configuration = chained(Chain::Full, 3);
 
@@ -3284,7 +3288,7 @@ fn an_opened_chain_formats_to_itself() {
 
 #[test]
 fn a_plain_index_is_not_a_chain() {
-    use instar_core::configuration::format::Chain;
+    use instar_core::project::configuration::format::Chain;
 
     for source in [
         "local a = one.two.three\nreturn a\n",
@@ -3298,7 +3302,7 @@ fn a_plain_index_is_not_a_chain() {
     }
 }
 
-fn zero(mode: instar_core::configuration::format::Zero) -> Options {
+fn zero(mode: instar_core::project::configuration::format::Zero) -> Options {
     Options {
         leading_zero: mode,
         ..Default::default()
@@ -3315,7 +3319,7 @@ fn a_fraction_takes_its_leading_zero_by_default() {
 
 #[test]
 fn strip_removes_the_leading_zero_where_a_fraction_follows() {
-    use instar_core::configuration::format::Zero;
+    use instar_core::project::configuration::format::Zero;
 
     let source = "local a = 0.5\nlocal b = -0.25\nlocal c = 0.5e3\nlocal d = 0.\nlocal e = 0x10\nlocal f = 10.5\nlocal g = 0\nreturn { a, b, c, d, e, f, g }\n";
     let want = "local a = .5\nlocal b = -.25\nlocal c = .5e3\nlocal d = 0.\nlocal e = 0x10\nlocal f = 10.5\nlocal g = 0\nreturn { a, b, c, d, e, f, g }\n";
@@ -3325,7 +3329,7 @@ fn strip_removes_the_leading_zero_where_a_fraction_follows() {
 
 #[test]
 fn the_leading_zero_modes_are_stable() {
-    use instar_core::configuration::format::Zero;
+    use instar_core::project::configuration::format::Zero;
 
     let mixed = "local a = .5\nlocal b = 0.5\nreturn { a, b }\n";
 

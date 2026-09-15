@@ -7,7 +7,7 @@ use super::{
 };
 
 use crate::{
-    roblox::Environment,
+    project::roblox::Environment,
     source::{PositionEncoding, Source},
 };
 

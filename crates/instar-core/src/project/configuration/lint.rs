@@ -1,5 +1,5 @@
-use super::registry;
-use crate::{configuration::InstarConfig, source::SourceStore};
+use crate::lint::registry;
+use crate::{project::configuration::InstarConfig, source::SourceStore};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, io, path::Path};
@@ -217,7 +217,7 @@ pub(crate) fn discover(sources: &mut SourceStore, path: &Path) -> io::Result<Con
         }
 
         if let serde_json::Value::Object(value) = value["lint"].take() {
-            crate::configuration::overlay(&mut merged, value);
+            crate::project::configuration::overlay(&mut merged, value);
         }
     }
 

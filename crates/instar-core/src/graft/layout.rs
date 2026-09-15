@@ -1,6 +1,6 @@
 use crate::{
-    configuration::format::Options,
     format::document::{self, Document},
+    project::configuration::format::Options,
 };
 
 use serde::Deserialize;

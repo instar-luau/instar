@@ -1,8 +1,8 @@
 //! Formatter output, configuration, and source preservation.
 
 use instar_core::{
-    configuration::format::{Endings, Options, Quotes, Whitespace, Zero},
     format,
+    project::configuration::format::{Endings, Options, Quotes, Whitespace, Zero},
 };
 
 fn formatted(source: &str, options: &Options) -> String {
@@ -100,7 +100,7 @@ fn widths_and_line_endings_are_configurable() {
     );
 
     let options = Options {
-        indentation: instar_core::configuration::format::Indentation {
+        indentation: instar_core::project::configuration::format::Indentation {
             style: Whitespace::Spaces,
             ..Default::default()
         },
@@ -183,7 +183,9 @@ fn formatting_uses_luau_parsing() {
 
 #[test]
 fn calls_declarations_and_separators_follow_configuration() {
-    use instar_core::configuration::format::{Expansion, Parentheses, Semicolons, Separation};
+    use instar_core::project::configuration::format::{
+        Expansion, Parentheses, Semicolons, Separation,
+    };
 
     for (parentheses, source, expected) in [
         (Parentheses::OmitString, "f('x')", "f \"x\"\n"),
@@ -192,7 +194,7 @@ fn calls_declarations_and_separators_follow_configuration() {
         (Parentheses::Preserve, "f 'x'", "f \"x\"\n"),
     ] {
         let options = Options {
-            calls: instar_core::configuration::format::Calls {
+            calls: instar_core::project::configuration::format::Calls {
                 parentheses,
                 ..Default::default()
             },
@@ -204,7 +206,7 @@ fn calls_declarations_and_separators_follow_configuration() {
     }
 
     let options = Options {
-        spacing: instar_core::configuration::format::Spacing {
+        spacing: instar_core::project::configuration::format::Spacing {
             function_names: Separation::Always,
             ..Default::default()
         },
@@ -237,8 +239,8 @@ fn calls_declarations_and_separators_follow_configuration() {
     );
 
     let options = Options {
-        functions: instar_core::configuration::format::Functions {
-            parameters: instar_core::configuration::format::Parameters {
+        functions: instar_core::project::configuration::format::Functions {
+            parameters: instar_core::project::configuration::format::Parameters {
                 expand: Expansion::Always,
                 ..Default::default()
             },
@@ -254,8 +256,8 @@ fn calls_declarations_and_separators_follow_configuration() {
 
     let options = Options {
         column_width: 8,
-        functions: instar_core::configuration::format::Functions {
-            parameters: instar_core::configuration::format::Parameters {
+        functions: instar_core::project::configuration::format::Functions {
+            parameters: instar_core::project::configuration::format::Parameters {
                 expand: Expansion::Never,
                 ..Default::default()
             },
@@ -272,12 +274,12 @@ fn calls_declarations_and_separators_follow_configuration() {
 
 #[test]
 fn call_and_conditional_layouts_follow_configuration() {
-    use instar_core::configuration::format::{
+    use instar_core::project::configuration::format::{
         CallStyle, ConditionalExpansion, ConditionalStyle, Expansion, Placement,
     };
 
     let options = Options {
-        calls: instar_core::configuration::format::Calls {
+        calls: instar_core::project::configuration::format::Calls {
             expand: Expansion::Always,
             indentation: 2,
             ..Default::default()
@@ -289,7 +291,7 @@ fn call_and_conditional_layouts_follow_configuration() {
 
     let options = Options {
         column_width: 5,
-        calls: instar_core::configuration::format::Calls {
+        calls: instar_core::project::configuration::format::Calls {
             expand: Expansion::Never,
             ..Default::default()
         },
@@ -307,7 +309,7 @@ fn call_and_conditional_layouts_follow_configuration() {
     );
 
     let options = Options {
-        calls: instar_core::configuration::format::Calls {
+        calls: instar_core::project::configuration::format::Calls {
             style: CallStyle::HugLast,
             ..Default::default()
         },
@@ -320,7 +322,7 @@ fn call_and_conditional_layouts_follow_configuration() {
     );
 
     let options = Options {
-        conditionals: instar_core::configuration::format::Conditional {
+        conditionals: instar_core::project::configuration::format::Conditional {
             expand: ConditionalExpansion::Always,
             ..Default::default()
         },
@@ -337,7 +339,7 @@ fn call_and_conditional_layouts_follow_configuration() {
     assert_eq!(formatted(expected, &options), expected);
 
     let options = Options {
-        conditionals: instar_core::configuration::format::Conditional {
+        conditionals: instar_core::project::configuration::format::Conditional {
             expand: ConditionalExpansion::Always,
             style: ConditionalStyle::Leading,
             placement: Placement::NextLine,
@@ -354,12 +356,12 @@ fn call_and_conditional_layouts_follow_configuration() {
 
 #[test]
 fn table_type_layout_follows_configuration() {
-    use instar_core::configuration::format::Separator;
+    use instar_core::project::configuration::format::Separator;
     let source = "type Record = { first: number, second: string }";
 
     let options = Options {
-        types: instar_core::configuration::format::Types {
-            tables: instar_core::configuration::format::Tables {
+        types: instar_core::project::configuration::format::Types {
+            tables: instar_core::project::configuration::format::Tables {
                 width: 10,
                 separator: Separator::Semicolon,
                 ..Default::default()
@@ -375,8 +377,8 @@ fn table_type_layout_follows_configuration() {
 
     let options = Options {
         column_width: 10,
-        types: instar_core::configuration::format::Types {
-            tables: instar_core::configuration::format::Tables {
+        types: instar_core::project::configuration::format::Types {
+            tables: instar_core::project::configuration::format::Tables {
                 enabled: false,
                 ..Default::default()
             },

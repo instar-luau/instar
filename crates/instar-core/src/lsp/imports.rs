@@ -504,7 +504,7 @@ fn member(expression: &mut String, name: &str) {
 }
 
 fn instances(
-    environment: &crate::roblox::Environment,
+    environment: &crate::project::roblox::Environment,
     from: &Path,
     target: usize,
     existing: &[super::EditorEntry],

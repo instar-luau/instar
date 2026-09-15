@@ -1,12 +1,12 @@
 mod bundle;
 
 /// Build settings and profile overrides.
-pub mod configuration;
+pub use crate::project::configuration::build as configuration;
 
 mod graph;
 mod mapping;
 mod output;
-mod paths;
+pub(crate) mod paths;
 mod project;
 mod rules;
 mod syntax;
@@ -407,7 +407,7 @@ impl Session {
         &mut self,
         configuration: &Configuration,
         inputs: &mut Inputs,
-        environment: &crate::roblox::Environment,
+        environment: &crate::project::roblox::Environment,
         target: Target,
         mut pending: Vec<PathBuf>,
     ) -> io::Result<Graph> {
@@ -503,7 +503,7 @@ impl Session {
         configuration: &Configuration,
         inputs: &mut Inputs,
         graph: &Graph,
-        environment: &crate::roblox::Environment,
+        environment: &crate::project::roblox::Environment,
         target: Target,
         entry: Option<&Path>,
         (output, directory): (&Path, &Path),
@@ -617,7 +617,7 @@ impl Session {
         path: &Path,
         text: &Text,
         configuration: &Configuration,
-        environment: &crate::roblox::Environment,
+        environment: &crate::project::roblox::Environment,
     ) -> io::Result<graph::Module> {
         transform::validate(&text.text)?;
         let source = self.snapshot(path, &text.text)?;

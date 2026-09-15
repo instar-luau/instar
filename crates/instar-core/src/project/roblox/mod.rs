@@ -1,7 +1,7 @@
 mod cache;
 
 use crate::{
-    configuration::{RobloxConfig, RobloxLevel},
+    project::configuration::{RobloxConfig, RobloxLevel},
     project::resolution::Resolver,
     source::absolute,
 };

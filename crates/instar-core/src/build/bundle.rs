@@ -6,7 +6,7 @@ use super::{
     transform,
 };
 
-use crate::roblox::Environment;
+use crate::project::roblox::Environment;
 
 use std::{
     collections::BTreeMap,

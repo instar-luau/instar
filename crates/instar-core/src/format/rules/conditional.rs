@@ -1,7 +1,7 @@
-use super::{Document, Emitter, Kind, Parts, View, io};
-use crate::configuration::format::{ConditionalExpansion, ConditionalStyle, Placement};
+use super::{Document, DocumentBuilder, Kind, Parts, View, io};
+use crate::project::configuration::format::{ConditionalExpansion, ConditionalStyle, Placement};
 
-impl<'tree, 'source> Emitter<'tree, 'source> {
+impl<'tree, 'source> DocumentBuilder<'tree, 'source> {
     pub(super) fn conditional(&self, view: View<'tree, 'source>) -> io::Result<Document<'source>> {
         let options = &self.options.conditionals;
         let mut branches = Vec::new();

@@ -1,6 +1,6 @@
-use super::{Document, Emitter, Kind, Parts, View, io};
+use super::{Document, DocumentBuilder, Kind, Parts, View, io};
 
-impl<'tree, 'source> Emitter<'tree, 'source> {
+impl<'tree, 'source> DocumentBuilder<'tree, 'source> {
     pub(super) fn binary(&self, view: View<'tree, 'source>) -> io::Result<Document<'source>> {
         let Some(Parts::Binary { operator, .. }) = view.parts() else {
             return Err(io::Error::other("invalid binary expression"));

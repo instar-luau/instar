@@ -1,11 +1,11 @@
-use super::{Document, Emitter, io};
+use super::{Document, DocumentBuilder, io};
 
-impl<'tree, 'source> Emitter<'tree, 'source> {
+impl<'tree, 'source> DocumentBuilder<'tree, 'source> {
     pub(super) fn operators(
         &self,
         view: vermis::View<'tree, 'source>,
     ) -> io::Result<Document<'source>> {
-        use crate::configuration::format::TypeExpansion;
+        use crate::project::configuration::format::TypeExpansion;
         use vermis::{Kind, Parts};
         let mut pending = vec![view];
         let mut members = Vec::new();
@@ -111,7 +111,8 @@ impl<'tree, 'source> Emitter<'tree, 'source> {
         let fields = fields
             .map(|field| {
                 gaps.push(
-                    if options.blank_lines == crate::configuration::format::Gaps::Preserve {
+                    if options.blank_lines == crate::project::configuration::format::Gaps::Preserve
+                    {
                         previous.map_or(0, |end| {
                             self.source[end..field.span().start]
                                 .matches('\n')
