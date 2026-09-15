@@ -286,49 +286,6 @@ impl Environment {
 
         Some(index)
     }
-
-    pub(crate) fn resolve(&self, from: &Path, name: &str, kind: u32) -> Option<PathBuf> {
-        let index = match kind {
-            1 => match name {
-                "script" => self.node(from)?,
-                "game" | "Game" => (self.nodes.first()?.class_name == "DataModel").then_some(0)?,
-
-                "workspace" | "Workspace" => self
-                    .nodes
-                    .first()?
-                    .descendants
-                    .iter()
-                    .copied()
-                    .find(|index| self.nodes[*index].class_name == "Workspace")?,
-
-                _ => return None,
-            },
-
-            2..=4 => {
-                let index = self.node(from)?;
-
-                if kind == 2 && name == "Parent" {
-                    self.nodes[index].parent?
-                } else {
-                    self.nodes[index]
-                        .descendants
-                        .iter()
-                        .copied()
-                        .find(|index| {
-                            if kind == 4 {
-                                self.nodes[*index].class_name == name
-                            } else {
-                                self.nodes[*index].name == name
-                            }
-                        })?
-                }
-            }
-
-            _ => return None,
-        };
-
-        Some(self.identity(index))
-    }
 }
 
 struct Rule {
