@@ -20,6 +20,14 @@ use crate::{
 const BUILD_CONSTANT_DEFINITIONS: &str = "@instar/build/constants.d.luau";
 const ROBLOX_DEFINITIONS: &str = "@instar/roblox.d.luau";
 
+type AnalysisGroup = (
+    Vec<PathBuf>,
+    Vec<PathBuf>,
+    Vec<u8>,
+    Option<std::sync::Arc<crate::roblox::Environment>>,
+    Vec<PathBuf>,
+);
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(crate) struct Bytes {
@@ -868,13 +876,7 @@ impl Session {
             self.environments.clear();
         }
 
-        let mut groups: Vec<(
-            Vec<PathBuf>,
-            Vec<PathBuf>,
-            Vec<u8>,
-            Option<std::sync::Arc<crate::roblox::Environment>>,
-            Vec<PathBuf>,
-        )> = Vec::new();
+        let mut groups: Vec<AnalysisGroup> = Vec::new();
 
         for path in modules {
             let source = resolver.load(path)?;
@@ -1002,6 +1004,10 @@ impl Session {
         Ok(environment)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Native engine setup remains one FFI transaction"
+    )]
     fn analyze_group(
         &mut self,
         resolver: &mut Resolver<'_>,
@@ -1157,7 +1163,7 @@ impl Session {
         if !configuration_targets.is_empty() {
             let configuration_definition = OwnedModule {
                 name: b"configuration.d.luau".to_vec(),
-                source: include_bytes!("../bridge/configuration.d.luau").to_vec(),
+                source: include_bytes!("configuration.d.luau").to_vec(),
             };
 
             let native_configuration_definition = configuration_definition.ffi();
@@ -1165,7 +1171,7 @@ impl Session {
             let result = unsafe {
                 instar_engine_load_definitions(
                     engine.0,
-                    &native_configuration_definition,
+                    &raw const native_configuration_definition,
                     1,
                     configuration_targets.as_ptr(),
                     configuration_targets.len(),
@@ -1295,7 +1301,7 @@ impl Session {
                     })
                     .collect::<io::Result<Vec<_>>>()?;
 
-                offsets.sort_by(|left, right| right.0.cmp(&left.0));
+                offsets.sort_by_key(|left| std::cmp::Reverse(left.0));
 
                 for (offset, text) in offsets {
                     bytes.splice(offset..offset, text);
@@ -1378,6 +1384,10 @@ fn line_column_offset(source: &[u8], position: Position) -> io::Result<usize> {
     Ok(offset + column)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "Native query dispatch stays centralized with the FFI declarations"
+)]
 fn query_engine(
     engine: &NativeEngine,
     context: &mut Context<'_, '_>,
@@ -1404,7 +1414,7 @@ fn query_engine(
                 context_pointer,
                 Some(type_result),
                 Some(failure),
-            )
+            );
         },
 
         "hover" => unsafe {
@@ -1415,7 +1425,7 @@ fn query_engine(
                 context_pointer,
                 Some(type_result),
                 Some(failure),
-            )
+            );
         },
 
         "complete" | "completion" | "completionResolve" => unsafe {
@@ -1426,7 +1436,7 @@ fn query_engine(
                 context_pointer,
                 Some(completion_result),
                 Some(failure),
-            )
+            );
         },
 
         "signature" => unsafe {
@@ -1437,7 +1447,7 @@ fn query_engine(
                 context_pointer,
                 Some(signature_result),
                 Some(failure),
-            )
+            );
         },
 
         "definition" => unsafe {
@@ -1448,7 +1458,7 @@ fn query_engine(
                 context_pointer,
                 Some(destination_result),
                 Some(failure),
-            )
+            );
         },
 
         "prepare" => {
@@ -1462,7 +1472,7 @@ fn query_engine(
                     context_pointer,
                     Some(destination_result),
                     Some(failure),
-                )
+                );
             }
 
             context.declaration = false;
@@ -1476,7 +1486,7 @@ fn query_engine(
                 context_pointer,
                 Some(destination_result),
                 Some(failure),
-            )
+            );
         },
 
         "implementation" | "implementations" => unsafe {
@@ -1487,7 +1497,7 @@ fn query_engine(
                 context_pointer,
                 Some(destination_result),
                 Some(failure),
-            )
+            );
         },
 
         "references" | "localReferences" => unsafe {
@@ -1498,7 +1508,7 @@ fn query_engine(
                 context_pointer,
                 Some(destination_result),
                 Some(failure),
-            )
+            );
         },
 
         "scope" => unsafe {
@@ -1509,7 +1519,7 @@ fn query_engine(
                 context_pointer,
                 Some(scope_result),
                 Some(failure),
-            )
+            );
         },
 
         "annotations" => unsafe {
@@ -1519,7 +1529,7 @@ fn query_engine(
                 context_pointer,
                 Some(annotation_result),
                 Some(failure),
-            )
+            );
         },
 
         "calls" => unsafe {
@@ -1529,7 +1539,7 @@ fn query_engine(
                 context_pointer,
                 Some(call_result),
                 Some(failure),
-            )
+            );
         },
 
         "extract" => unsafe {
@@ -1540,7 +1550,7 @@ fn query_engine(
                 context_pointer,
                 Some(extract_result),
                 Some(failure),
-            )
+            );
         },
 
         "tokens" => unsafe {
@@ -1550,7 +1560,7 @@ fn query_engine(
                 context_pointer,
                 Some(symbol_result),
                 Some(failure),
-            )
+            );
         },
 
         "index" => unsafe {
@@ -1561,7 +1571,7 @@ fn query_engine(
                 Some(symbol_result),
                 Some(call_result),
                 Some(failure),
-            )
+            );
         },
 
         "imports" => unsafe {
@@ -1572,7 +1582,7 @@ fn query_engine(
                 context_pointer,
                 Some(import_result),
                 Some(failure),
-            )
+            );
         },
 
         _ => {

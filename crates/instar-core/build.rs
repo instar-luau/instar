@@ -5,6 +5,7 @@ use std::{env, path::PathBuf};
 fn main() {
     let root = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("Cargo manifest directory"));
     println!("cargo:rerun-if-changed=bridge");
+    println!("cargo:rerun-if-changed=src/configuration.d.luau");
 
     println!(
         "cargo:rerun-if-changed={}",
