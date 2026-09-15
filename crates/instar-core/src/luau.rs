@@ -113,6 +113,10 @@ type CompletionCallback = extern "C" fn(*mut c_void, Bytes, Bytes, Bytes, Bytes,
 type SignatureCallback = extern "C" fn(*mut c_void, Bytes, *const Bytes, usize, u32);
 type DestinationCallback = extern "C" fn(*mut c_void, Bytes, Range, Bytes);
 type CallCallback = extern "C" fn(*mut c_void, Bytes, Range, Bytes, Range, i32, Range);
+type ExtractCallback = extern "C" fn(*mut c_void, Range, Range);
+type SymbolCallback = extern "C" fn(*mut c_void, Bytes, Bytes, Range, Range, u32, i32, u32);
+type ImportCallback = extern "C" fn(*mut c_void, Bytes, Bytes, Bytes, Range);
+type ScopeCallback = extern "C" fn(*mut c_void, Bytes, i32, u32, i32);
 type AnnotationCallback = extern "C" fn(*mut c_void, Bytes, Position, Bytes);
 type AliasCallback = extern "C" fn(*mut c_void, Bytes, Bytes);
 type FailureCallback = extern "C" fn(*mut c_void, Bytes);
@@ -250,6 +254,50 @@ unsafe extern "C" {
         failure: Option<FailureCallback>,
     );
 
+    fn instar_engine_extract(
+        engine: *mut c_void,
+        path: Bytes,
+        position: Position,
+        context: *mut c_void,
+        report: Option<ExtractCallback>,
+        failure: Option<FailureCallback>,
+    );
+
+    fn instar_engine_tokens(
+        engine: *mut c_void,
+        path: Bytes,
+        context: *mut c_void,
+        report: Option<SymbolCallback>,
+        failure: Option<FailureCallback>,
+    );
+
+    fn instar_engine_index(
+        engine: *mut c_void,
+        path: Bytes,
+        context: *mut c_void,
+        symbol: Option<SymbolCallback>,
+        call: Option<CallCallback>,
+        failure: Option<FailureCallback>,
+    );
+
+    fn instar_engine_imports(
+        engine: *mut c_void,
+        path: Bytes,
+        position: Position,
+        context: *mut c_void,
+        report: Option<ImportCallback>,
+        failure: Option<FailureCallback>,
+    );
+
+    fn instar_engine_scope(
+        engine: *mut c_void,
+        path: Bytes,
+        position: Position,
+        context: *mut c_void,
+        report: Option<ScopeCallback>,
+        failure: Option<FailureCallback>,
+    );
+
     fn instar_parse_aliases(
         source: Bytes,
         executable: i32,
@@ -282,6 +330,7 @@ struct Context<'resolver, 'store> {
     report: Report,
     error: Option<io::Error>,
     annotations: Vec<NativeAnnotation>,
+    declaration: bool,
 }
 
 #[derive(Clone)]
@@ -544,10 +593,119 @@ extern "C" fn destination_result(context: *mut c_void, path: Bytes, range: Range
 
         entry.name = Some(unsafe { name.string()? });
 
+        entry.declaration = context.declaration.then_some(true);
+
         match &mut context.report.editor {
             Some(EditorResult::Entries(entries)) => entries.push(entry),
             _ => context.report.editor = Some(EditorResult::Entries(vec![entry])),
         }
+
+        Ok(())
+    });
+}
+
+extern "C" fn extract_result(context: *mut c_void, range: Range, selection: Range) {
+    let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
+
+    context.call(|context| {
+        let mut entry = empty_entry();
+        entry.range = Some(range_values(range));
+        entry.selection = Some(range_values(selection));
+
+        match &mut context.report.editor {
+            Some(EditorResult::Entries(entries)) => entries.push(entry),
+            _ => context.report.editor = Some(EditorResult::Entries(vec![entry])),
+        }
+
+        Ok(())
+    });
+}
+
+extern "C" fn symbol_result(
+    context: *mut c_void,
+    name: Bytes,
+    path: Bytes,
+    range: Range,
+    selection: Range,
+    kind: u32,
+    declaration: i32,
+    modifiers: u32,
+) {
+    let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
+
+    context.call(|context| {
+        let mut entry = empty_entry();
+
+        entry.name = Some(unsafe { name.string()? });
+
+        entry.path = Some(PathBuf::from(unsafe { path.string()? }));
+
+        entry.range = Some(range_values(range));
+        entry.selection = Some(range_values(selection));
+        entry.kind = Some(kind);
+        entry.declaration = Some(declaration != 0);
+        entry.modifiers = Some(modifiers);
+
+        match &mut context.report.editor {
+            Some(EditorResult::Entries(entries)) => entries.push(entry),
+            _ => context.report.editor = Some(EditorResult::Entries(vec![entry])),
+        }
+
+        Ok(())
+    });
+}
+
+extern "C" fn import_result(
+    context: *mut c_void,
+    name: Bytes,
+    label: Bytes,
+    target: Bytes,
+    range: Range,
+) {
+    let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
+
+    context.call(|context| {
+        let mut entry = empty_entry();
+
+        entry.name = Some(unsafe { name.string()? });
+
+        entry.label = Some(unsafe { label.string()? });
+
+        entry.description = Some(unsafe { target.string()? });
+
+        entry.range = Some(range_values(range));
+        entry.imports = Some(true);
+
+        match &mut context.report.editor {
+            Some(EditorResult::Entries(entries)) => entries.push(entry),
+            _ => context.report.editor = Some(EditorResult::Entries(vec![entry])),
+        }
+
+        Ok(())
+    });
+}
+
+extern "C" fn scope_result(
+    context: *mut c_void,
+    name: Bytes,
+    has_name: i32,
+    kind: u32,
+    has_kind: i32,
+) {
+    let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
+
+    context.call(|context| {
+        let mut entry = empty_entry();
+
+        if has_name != 0 {
+            entry.name = Some(unsafe { name.string()? });
+        }
+
+        if has_kind != 0 {
+            entry.kind = Some(kind);
+        }
+
+        context.report.editor = Some(EditorResult::Entry(Box::new(entry)));
 
         Ok(())
     });
@@ -926,6 +1084,7 @@ impl Session {
             report: Report::default(),
             error: None,
             annotations: Vec::new(),
+            declaration: false,
         };
 
         let native_modules: Vec<_> = module_values.iter().map(OwnedModule::ffi).collect();
@@ -1259,7 +1418,7 @@ fn query_engine(
             )
         },
 
-        "complete" | "completion" => unsafe {
+        "complete" | "completion" | "completionResolve" => unsafe {
             instar_engine_complete(
                 engine.0,
                 path_bytes,
@@ -1292,7 +1451,24 @@ fn query_engine(
             )
         },
 
-        "type_definition" => unsafe {
+        "prepare" => {
+            context.declaration = true;
+
+            unsafe {
+                instar_engine_definition(
+                    engine.0,
+                    path_bytes,
+                    position,
+                    context_pointer,
+                    Some(destination_result),
+                    Some(failure),
+                )
+            }
+
+            context.declaration = false;
+        }
+
+        "type_definition" | "typeDefinition" => unsafe {
             instar_engine_type_definition(
                 engine.0,
                 path_bytes,
@@ -1314,13 +1490,24 @@ fn query_engine(
             )
         },
 
-        "references" => unsafe {
+        "references" | "localReferences" => unsafe {
             instar_engine_references(
                 engine.0,
                 path_bytes,
                 position,
                 context_pointer,
                 Some(destination_result),
+                Some(failure),
+            )
+        },
+
+        "scope" => unsafe {
+            instar_engine_scope(
+                engine.0,
+                path_bytes,
+                position,
+                context_pointer,
+                Some(scope_result),
                 Some(failure),
             )
         },
@@ -1341,6 +1528,49 @@ fn query_engine(
                 path_bytes,
                 context_pointer,
                 Some(call_result),
+                Some(failure),
+            )
+        },
+
+        "extract" => unsafe {
+            instar_engine_extract(
+                engine.0,
+                path_bytes,
+                position,
+                context_pointer,
+                Some(extract_result),
+                Some(failure),
+            )
+        },
+
+        "tokens" => unsafe {
+            instar_engine_tokens(
+                engine.0,
+                path_bytes,
+                context_pointer,
+                Some(symbol_result),
+                Some(failure),
+            )
+        },
+
+        "index" => unsafe {
+            instar_engine_index(
+                engine.0,
+                path_bytes,
+                context_pointer,
+                Some(symbol_result),
+                Some(call_result),
+                Some(failure),
+            )
+        },
+
+        "imports" => unsafe {
+            instar_engine_imports(
+                engine.0,
+                path_bytes,
+                position,
+                context_pointer,
+                Some(import_result),
                 Some(failure),
             )
         },

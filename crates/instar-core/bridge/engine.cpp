@@ -34,6 +34,7 @@
 #include <regex>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -948,7 +949,7 @@ namespace {
 
     struct CallVisitor final : Luau::AstVisitor {
         Implementation &implementation;
-        const std::string &path;
+        std::string path;
         Luau::Module &module;
         const Luau::SourceModule &source;
         std::vector<instar::Call> results;
@@ -984,6 +985,282 @@ namespace {
             results.push_back({*target, range(call->func->location), container});
 
             return true;
+        }
+    };
+
+    struct SymbolVisitor final : Luau::AstVisitor {
+        Implementation &implementation;
+        Luau::Module &module;
+        const Luau::SourceModule &source;
+        std::string path;
+        bool tokens;
+        bool links;
+        std::unordered_set<Luau::AstLocal *> parameters;
+        std::vector<instar::Symbol> results;
+
+        SymbolVisitor(Implementation &implementation, Luau::Module &module, const Luau::SourceModule &source,
+            std::string path, bool tokens, bool links)
+            : implementation(implementation), module(module), source(source), path(std::move(path)), tokens(tokens),
+              links(links) {}
+
+        void entry(const std::string &name, Luau::Location selection, Luau::Location location, unsigned kind,
+            bool declaration, unsigned modifiers = 0) {
+
+            if (links && kind != 3) {
+                return;
+            }
+
+            if (!tokens && !links && !declaration) {
+                return;
+            }
+
+            results.push_back(
+                {path, path, range(tokens ? selection : location), range(selection), kind, declaration, modifiers});
+        }
+
+        void local(Luau::AstLocal *local, Luau::Location location) {
+            unsigned kind = 13;
+
+            if (auto scope = Luau::findScopeAtPosition(module, local->location.begin)) {
+                if (auto type = scope->lookup(local); type && Luau::get<Luau::FunctionType>(Luau::follow(*type))) {
+                    kind = 12;
+                }
+            }
+
+            entry(local->name.value, local->location, location, tokens && parameters.count(local) ? 27 : kind, true,
+                local->isConst ? 2 : 0);
+        }
+
+        bool visit(Luau::AstStatLocal *statement) override {
+            for (auto *local : statement->vars) {
+                this->local(local, statement->location);
+            }
+
+            return true;
+        }
+
+        bool visit(Luau::AstStatLocalFunction *statement) override {
+            local(statement->name, statement->location);
+
+            return true;
+        }
+
+        bool visit(Luau::AstStatFunction *statement) override {
+            if (auto *global = statement->name->as<Luau::AstExprGlobal>()) {
+                entry(global->name.value, global->location, statement->location, 12, true);
+            } else if (auto *index = statement->name->as<Luau::AstExprIndexName>()) {
+                entry(index->index.value, index->indexLocation, statement->location,
+                    tokens && index->op == ':' ? 6 : 12, true);
+
+                index->expr->visit(this);
+            } else {
+                statement->name->visit(this);
+            }
+
+            statement->func->visit(this);
+
+            return false;
+        }
+
+        bool visit(Luau::AstExprFunction *function) override {
+            if (function->self) {
+                parameters.insert(function->self);
+            }
+
+            for (auto *argument : function->args) {
+                parameters.insert(argument);
+                local(argument, argument->location);
+            }
+
+            return true;
+        }
+
+        bool visit(Luau::AstStatFor *statement) override {
+            local(statement->var, statement->var->location);
+
+            return true;
+        }
+
+        bool visit(Luau::AstStatForIn *statement) override {
+            for (auto *local : statement->vars) {
+                this->local(local, local->location);
+            }
+
+            return true;
+        }
+
+        bool visit(Luau::AstExprTable *expression) override {
+            for (const auto &item : expression->items) {
+                if (item.kind == Luau::AstExprTable::Item::Kind::Record) {
+                    if (auto *key = item.key->as<Luau::AstExprConstantString>()) {
+                        entry(std::string(key->value.data, key->value.size), key->location,
+                            Luau::Location(key->location.begin, item.value->location.end),
+                            item.value->is<Luau::AstExprFunction>() ? 12 : 7, true);
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        bool visit(Luau::AstType *) override { return true; }
+
+        bool visit(Luau::AstTypePack *) override { return true; }
+
+        bool visit(Luau::AstExprCall *call) override {
+            if (!tokens && !links || call->args.size != 1) {
+                return true;
+            }
+
+            if (auto *global = call->func->as<Luau::AstExprGlobal>(); global && global->name == "require") {
+                auto *argument = call->args.data[0];
+
+                if (links || argument->is<Luau::AstExprConstantString>()) {
+                    auto trace = implementation.frontend->requireTrace.find(path);
+
+                    if (trace != implementation.frontend->requireTrace.end()) {
+                        if (auto resolved = trace->second.exprs.find(argument);
+                            resolved && implementation.frontend->getSourceModule(resolved->name)) {
+                            entry(resolved->name, argument->location, argument->location, 3, false);
+                        }
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        bool visit(Luau::AstGenericType *generic) override {
+            if (tokens) {
+                entry(generic->name.value, generic->location, generic->location, 28, true);
+            }
+
+            return true;
+        }
+
+        bool visit(Luau::AstGenericTypePack *generic) override {
+            if (tokens) {
+                entry(generic->name.value, generic->location, generic->location, 28, true);
+            }
+
+            return true;
+        }
+
+        bool visit(Luau::AstTypeReference *reference) override {
+            if (reference->prefix && reference->prefixLocation) {
+                entry(reference->prefix->value, *reference->prefixLocation, *reference->prefixLocation, 13, false);
+            }
+
+            unsigned kind = 26;
+
+            if (tokens) {
+                if (auto type = module.astResolvedTypes.find(reference)) {
+                    auto followed = Luau::follow(*type);
+
+                    if (Luau::get<Luau::GenericType>(followed)) {
+                        kind = 28;
+                    } else if (Luau::get<Luau::ExternType>(followed)) {
+                        kind = 5;
+                    }
+                }
+            }
+
+            entry(reference->name.value, reference->nameLocation, reference->nameLocation, kind, false);
+
+            return true;
+        }
+
+        bool visit(Luau::AstStatTypeAlias *statement) override {
+            entry(statement->name.value, statement->nameLocation, statement->location, 26, true);
+
+            return true;
+        }
+
+        bool visit(Luau::AstExprLocal *expression) override {
+            unsigned kind = 13;
+
+            if (tokens) {
+                if (parameters.count(expression->local)) {
+                    kind = 27;
+                } else if (auto type = module.astTypes.find(expression);
+                    type && Luau::get<Luau::FunctionType>(Luau::follow(*type))) {
+                    kind = 12;
+                }
+            }
+
+            entry(expression->local->name.value, expression->location, expression->location, kind, false,
+                expression->local->isConst ? 2 : 0);
+
+            return true;
+        }
+
+        bool visit(Luau::AstExprGlobal *expression) override {
+            entry(expression->name.value, expression->location, expression->location, 13, false);
+
+            return true;
+        }
+
+        bool visit(Luau::AstExprIndexName *expression) override {
+            unsigned kind = 7;
+
+            if (tokens) {
+                if (auto type = module.astTypes.find(expression);
+                    type && Luau::get<Luau::FunctionType>(Luau::follow(*type))) {
+                    kind = expression->op == ':' ? 6 : 12;
+                }
+            }
+
+            entry(expression->index.value, expression->indexLocation, expression->indexLocation, kind, false);
+
+            return true;
+        }
+    };
+
+    struct ImportVisitor {
+        Implementation &implementation;
+        std::string path;
+        Luau::Position position;
+        std::vector<instar::Import> results;
+
+        void visit(Luau::AstStat *statement) {
+            auto local = statement->as<Luau::AstStatLocal>();
+
+            if (!local || local->vars.size != 1 || local->values.size != 1 || !(local->location.end < position)) {
+                return;
+            }
+
+            auto call = local->values.data[0]->as<Luau::AstExprCall>();
+
+            if (!call || call->args.size != 1) {
+                return;
+            }
+
+            std::string label;
+            std::string target;
+
+            if (auto global = call->func->as<Luau::AstExprGlobal>(); global && global->name == "require") {
+                auto trace = implementation.frontend->requireTrace.find(path);
+
+                if (trace != implementation.frontend->requireTrace.end()) {
+                    if (auto resolved = trace->second.exprs.find(call->args.data[0])) {
+                        label = "module";
+                        target = resolved->name;
+                    }
+                }
+            } else if (auto member = call->func->as<Luau::AstExprIndexName>();
+                member && member->index == "GetService") {
+                auto global = member->expr->as<Luau::AstExprGlobal>();
+                auto service = call->args.data[0]->as<Luau::AstExprConstantString>();
+
+                if (global && global->name == "game" && service) {
+                    label = "service";
+                    target.assign(service->value.data, service->value.size);
+                }
+            }
+
+            if (!label.empty()) {
+                results.push_back({local->vars.data[0]->name.value, label, target, range(local->location)});
+            }
         }
     };
 
@@ -1320,6 +1597,119 @@ namespace instar {
         source->root->visit(&visitor);
 
         return visitor.results;
+    }
+
+    std::vector<Extract> Engine::extract(const std::string &path, Position position) {
+        std::vector<Extract> result;
+        auto *source = implementation->source(path);
+
+        if (!source) {
+            return result;
+        }
+
+        auto native_position = Luau::Position{position.line, position.column};
+
+        for (auto *statement : source->root->body) {
+            Luau::AstExpr *expression = nullptr;
+
+            if (auto *local = statement->as<Luau::AstStatLocal>();
+                local && local->vars.size == 1 && local->values.size == 1) {
+                expression = local->values.data[0];
+            } else if (auto *returned = statement->as<Luau::AstStatReturn>();
+                returned && returned->list.size == 1 && !returned->list.data[0]->is<Luau::AstExprCall>() &&
+                !returned->list.data[0]->is<Luau::AstExprVarargs>()) {
+                expression = returned->list.data[0];
+            }
+
+            if (expression && expression->location.contains(native_position)) {
+                result.push_back({range(expression->location), range(statement->location)});
+            }
+        }
+
+        return result;
+    }
+
+    std::vector<Symbol> Engine::tokens(const std::string &path) {
+        std::vector<Symbol> result;
+        auto *module = implementation->module(path);
+        auto *source = implementation->source(path);
+
+        if (!module || !source) {
+            return result;
+        }
+
+        SymbolVisitor visitor(*implementation, *module, *source, normalize(path), true, false);
+        source->root->visit(&visitor);
+
+        return visitor.results;
+    }
+
+    std::vector<Symbol> Engine::index(const std::string &path) {
+        std::vector<Symbol> result;
+        auto *module = implementation->module(path);
+        auto *source = implementation->source(path);
+
+        if (!module || !source) {
+            return result;
+        }
+
+        SymbolVisitor symbols(*implementation, *module, *source, normalize(path), false, false);
+        source->root->visit(&symbols);
+        result.insert(result.end(), symbols.results.begin(), symbols.results.end());
+
+        SymbolVisitor links(*implementation, *module, *source, normalize(path), false, true);
+        source->root->visit(&links);
+        result.insert(result.end(), links.results.begin(), links.results.end());
+
+        return result;
+    }
+
+    std::vector<Import> Engine::imports(const std::string &path, Position position) {
+        std::vector<Import> result;
+        auto *source = implementation->source(path);
+
+        if (!source) {
+            return result;
+        }
+
+        ImportVisitor visitor{*implementation, normalize(path), {position.line, position.column}, {}};
+
+        for (auto *statement : source->root->body) {
+            visitor.visit(statement);
+        }
+
+        return visitor.results;
+    }
+
+    std::optional<Scope> Engine::scope(const std::string &path, Position position) {
+        auto *module = implementation->module(path);
+        auto *source = implementation->source(path);
+
+        if (!module || !source) {
+            return std::nullopt;
+        }
+
+        Scope result;
+        auto native_position = Luau::Position{position.line, position.column};
+        auto value = Luau::findExprOrLocalAtPosition(*source, native_position);
+
+        if (value.getLocal() || (value.getExpr() && value.getExpr()->is<Luau::AstExprLocal>())) {
+            result.kind = 13;
+        }
+
+        auto ancestry = Luau::findAstAncestryOfPosition(*source, native_position, true);
+
+        if (!ancestry.empty()) {
+            if (auto *member = ancestry.back()->as<Luau::AstExprIndexName>();
+                member && member->indexLocation.contains(native_position)) {
+                if (auto type = ::type_at(*module, *source, position);
+                    type && !Luau::get<Luau::TableType>(Luau::follow(*type))) {
+                    result.name = member->index.value;
+                }
+            }
+        }
+
+        return result;
     }
 
     AliasResult parse_aliases(const std::string &source, bool executable) {
@@ -1770,6 +2160,97 @@ extern "C" {
                 report(context, native_bytes(value.target.path), native_range(value.target.range),
                     native_bytes(value.target.name), native_range(value.caller), value.container ? 1 : 0,
                     value.container ? native_range(*value.container) : NativeRange{{0, 0}, {0, 0}});
+            }
+        });
+    }
+
+    void instar_engine_extract(void *engine, NativeBytes path, NativePosition position, void *context,
+        NativeExtract report, NativeFailure failure) {
+
+        if (!engine || !report) {
+            return;
+        }
+
+        run(context, failure, [&] {
+            for (const auto &value :
+                static_cast<instar::Engine *>(engine)->extract(native_text(path), {position.line, position.column})) {
+                report(context, native_range(value.range), native_range(value.selection));
+            }
+        });
+    }
+
+    void instar_engine_tokens(
+        void *engine, NativeBytes path, void *context, NativeSymbol report, NativeFailure failure) {
+
+        if (!engine || !report) {
+            return;
+        }
+
+        run(context, failure, [&] {
+            for (const auto &value : static_cast<instar::Engine *>(engine)->tokens(native_text(path))) {
+                report(context, native_bytes(value.name), native_bytes(value.path), native_range(value.range),
+                    native_range(value.selection), value.kind, value.declaration ? 1 : 0, value.modifiers);
+            }
+        });
+    }
+
+    void instar_engine_index(
+        void *engine, NativeBytes path, void *context, NativeSymbol symbol, NativeCall call, NativeFailure failure) {
+
+        if (!engine || (!symbol && !call)) {
+            return;
+        }
+
+        run(context, failure, [&] {
+            auto *value = static_cast<instar::Engine *>(engine);
+
+            if (symbol) {
+                for (const auto &entry : value->index(native_text(path))) {
+                    symbol(context, native_bytes(entry.name), native_bytes(entry.path), native_range(entry.range),
+                        native_range(entry.selection), entry.kind, entry.declaration ? 1 : 0, entry.modifiers);
+                }
+            }
+
+            if (call) {
+                for (const auto &entry : value->calls(native_text(path))) {
+                    call(context, native_bytes(entry.target.path), native_range(entry.target.range),
+                        native_bytes(entry.target.name), native_range(entry.caller), entry.container ? 1 : 0,
+                        entry.container ? native_range(*entry.container) : NativeRange{{0, 0}, {0, 0}});
+                }
+            }
+        });
+    }
+
+    void instar_engine_imports(void *engine, NativeBytes path, NativePosition position, void *context,
+        NativeImport report, NativeFailure failure) {
+
+        if (!engine || !report) {
+            return;
+        }
+
+        run(context, failure, [&] {
+            for (const auto &value :
+                static_cast<instar::Engine *>(engine)->imports(native_text(path), {position.line, position.column})) {
+                report(context, native_bytes(value.name), native_bytes(value.label), native_bytes(value.target),
+                    native_range(value.range));
+            }
+        });
+    }
+
+    void instar_engine_scope(void *engine, NativeBytes path, NativePosition position, void *context, NativeScope report,
+        NativeFailure failure) {
+
+        if (!engine || !report) {
+            return;
+        }
+
+        run(context, failure, [&] {
+            auto value =
+                static_cast<instar::Engine *>(engine)->scope(native_text(path), {position.line, position.column});
+
+            if (value) {
+                report(context, value->name ? native_bytes(*value->name) : NativeBytes{nullptr, 0}, value->name ? 1 : 0,
+                    value->kind.value_or(0), value->kind ? 1 : 0);
             }
         });
     }
