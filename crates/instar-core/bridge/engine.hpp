@@ -117,6 +117,33 @@ namespace instar {
         std::string text;
     };
 
+    struct Extract {
+        Range range;
+        Range selection;
+    };
+
+    struct Symbol {
+        std::string name;
+        std::string path;
+        Range range;
+        Range selection;
+        unsigned kind;
+        bool declaration;
+        unsigned modifiers;
+    };
+
+    struct Import {
+        std::string name;
+        std::string label;
+        std::string target;
+        Range range;
+    };
+
+    struct Scope {
+        std::optional<std::string> name;
+        std::optional<unsigned> kind;
+    };
+
     class Engine final {
         public:
         explicit Engine(std::vector<Module> modules = {}, ModuleReader reader = {}, ModuleResolver resolver = {},
@@ -145,6 +172,11 @@ namespace instar {
         std::vector<Destination> references(const std::string &path, Position position);
         std::vector<Annotation> annotations(const std::string &path);
         std::vector<Call> calls(const std::string &path);
+        std::vector<Extract> extract(const std::string &path, Position position);
+        std::vector<Symbol> tokens(const std::string &path);
+        std::vector<Symbol> index(const std::string &path);
+        std::vector<Import> imports(const std::string &path, Position position);
+        std::optional<Scope> scope(const std::string &path, Position position);
 
         private:
         struct Implementation;
@@ -209,6 +241,10 @@ using NativeCompletion = void (*)(void *, NativeBytes, NativeBytes, NativeBytes,
 using NativeSignature = void (*)(void *, NativeBytes, const NativeBytes *, std::size_t, unsigned);
 using NativeDestination = void (*)(void *, NativeBytes, NativeRange, NativeBytes);
 using NativeCall = void (*)(void *, NativeBytes, NativeRange, NativeBytes, NativeRange, int, NativeRange);
+using NativeExtract = void (*)(void *, NativeRange, NativeRange);
+using NativeSymbol = void (*)(void *, NativeBytes, NativeBytes, NativeRange, NativeRange, unsigned, int, unsigned);
+using NativeImport = void (*)(void *, NativeBytes, NativeBytes, NativeBytes, NativeRange);
+using NativeScope = void (*)(void *, NativeBytes, int, unsigned, int);
 using NativeAnnotation = void (*)(void *, NativeBytes, NativePosition, NativeBytes);
 using NativeAlias = void (*)(void *, NativeBytes, NativeBytes);
 using NativeFailure = void (*)(void *, NativeBytes);
@@ -236,6 +272,11 @@ extern "C" {
     void instar_engine_references(void *, NativeBytes, NativePosition, void *, NativeDestination, NativeFailure);
     void instar_engine_annotations(void *, NativeBytes, void *, NativeAnnotation, NativeFailure);
     void instar_engine_calls(void *, NativeBytes, void *, NativeCall, NativeFailure);
+    void instar_engine_extract(void *, NativeBytes, NativePosition, void *, NativeExtract, NativeFailure);
+    void instar_engine_tokens(void *, NativeBytes, void *, NativeSymbol, NativeFailure);
+    void instar_engine_index(void *, NativeBytes, void *, NativeSymbol, NativeCall, NativeFailure);
+    void instar_engine_imports(void *, NativeBytes, NativePosition, void *, NativeImport, NativeFailure);
+    void instar_engine_scope(void *, NativeBytes, NativePosition, void *, NativeScope, NativeFailure);
     void instar_parse_aliases(NativeBytes, int, void *, NativeAlias, NativeFailure);
     int instar_matches(NativeBytes, NativeBytes);
 }
