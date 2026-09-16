@@ -1,5 +1,6 @@
 #include "Luau/AstJsonEncoder.h"
 #include "Luau/BuiltinDefinitions.h"
+#include "Luau/Common.h"
 #include "Luau/Config.h"
 #include "Luau/Error.h"
 #include "Luau/FileResolver.h"
@@ -24,6 +25,8 @@
 #include <string>
 #include <string_view>
 #include <utility>
+
+LUAU_FASTINT(LuauTarjanChildLimit)
 
 extern "C" {
     struct InstarSlice {
@@ -533,6 +536,8 @@ extern "C" {
 
                 return nullptr;
             }
+
+            FInt::LuauTarjanChildLimit.value = 50'000;
 
             return new Checker(*callbacks, context, *options);
         } catch (...) {
