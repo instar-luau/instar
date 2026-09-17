@@ -158,33 +158,6 @@ impl State {
         ))
     }
 
-    fn operation(
-        &mut self,
-        path: &std::path::Path,
-        position: LineCol,
-        operation: &'static str,
-    ) -> Result<&'static str> {
-        if operation == "references" {
-            let scope = self
-                .session
-                .query(
-                    &mut self.sources,
-                    &[path.to_owned()],
-                    path,
-                    position,
-                    "scope",
-                )
-                .map_err(internal_error)?;
-
-            if matches!(scope.editor, Some(analysis::EditorResult::Entry(entry)) if entry.kind == Some(13))
-            {
-                return Ok("localReferences");
-            }
-        }
-
-        Ok(operation)
-    }
-
     pub(super) fn query(
         &mut self,
         parameters: &protocol::TextDocumentPositionParams,
@@ -209,12 +182,10 @@ impl State {
             .position(offset, PositionEncoding::Utf8)
             .map_err(internal_error)?;
 
-        let operation = self.operation(source.path(), position, operation)?;
-
-        let member = if operation == "implementation" {
+        let operation = if operation == "references" {
             let scope = self
                 .session
-                .query(
+                .editor_query(
                     &mut self.sources,
                     &[source.path().to_owned()],
                     source.path(),
@@ -223,31 +194,81 @@ impl State {
                 )
                 .map_err(internal_error)?;
 
-            match scope.editor {
-                Some(analysis::EditorResult::Entry(entry)) => {
-                    entry.name.filter(|name| !name.is_empty())
-                }
+            let local = match scope.editor {
+                Some(analysis::EditorResult::Entries(entries)) =>
+                    entries.iter().any(|entry| entry.kind == Some(13)),
 
-                _ => None,
+                Some(analysis::EditorResult::Entry(entry)) => entry.kind == Some(13),
+                None => false,
+            };
+
+            if local {
+                "localReferences"
+            } else {
+                operation
             }
         } else {
-            None
+            operation
+        };
+
+        let mut include_table_members = false;
+
+        let members = if operation == "implementation" {
+            let scope = self
+                .session
+                .editor_query(
+                    &mut self.sources,
+                    &[source.path().to_owned()],
+                    source.path(),
+                    position,
+                    "scope",
+                )
+                .map_err(internal_error)?;
+
+            include_table_members = match scope.editor.as_ref() {
+                Some(analysis::EditorResult::Entries(entries)) =>
+                    entries.iter().any(|entry| entry.kind == Some(8)),
+
+                Some(analysis::EditorResult::Entry(entry)) => entry.kind == Some(8),
+                None => false,
+            };
+
+            let members = match scope.editor {
+                Some(analysis::EditorResult::Entries(entries)) => entries
+                    .into_iter()
+                    .filter_map(|entry| entry.name)
+                    .filter(|name| !name.is_empty())
+                    .collect(),
+
+                Some(analysis::EditorResult::Entry(entry)) => entry
+                    .name
+                    .filter(|name| !name.is_empty())
+                    .into_iter()
+                    .collect(),
+
+                None => Vec::new(),
+            };
+
+            members
+        } else {
+            Vec::new()
         };
 
         let modules = if matches!(operation, "references" | "implementation") {
             let mut modules = self.workspace()?;
 
-            if let Some(member) = member {
+            if !members.is_empty() {
                 let mut candidates = Vec::new();
 
                 for path in modules {
                     let candidate = self.sources.read(&path).map_err(internal_error)?;
 
-                    if candidate
-                        .bytes()
-                        .windows(member.len())
-                        .any(|bytes| bytes == member.as_bytes())
-                        || candidate.bytes().contains(&b'\\')
+                    if members.iter().any(|member| {
+                        candidate
+                            .bytes()
+                            .windows(member.len())
+                            .any(|bytes| bytes == member.as_bytes())
+                    }) || candidate.bytes().contains(&b'\\')
                     {
                         candidates.push(path);
                     }
@@ -267,7 +288,7 @@ impl State {
 
         let report = self
             .session
-            .query(
+            .editor_query(
                 &mut self.sources,
                 &modules,
                 source.path(),
@@ -276,7 +297,35 @@ impl State {
             )
             .map_err(internal_error)?;
 
-        self.entries(report, source.path())
+        let response = self.entries(report, source.path())?;
+
+        if operation == "implementation" && !members.is_empty() {
+            let Response::Editor(mut entries) = response else {
+                return Err(internal_error("unexpected editor response"));
+            };
+
+            self.indexed()?;
+
+            for file in self.index.files.values() {
+                entries.extend(file.symbols.iter().filter(|entry| {
+                    entry.native.kind == Some(if include_table_members { 8 } else { 12 })
+                        && entry.native.name.as_ref().is_some_and(|name| members.contains(name))
+                }).cloned());
+            }
+
+            entries.sort_by_key(|entry| {
+                (
+                    entry.location.as_ref().map(|location| location.uri.to_string()),
+                    entry.location.as_ref().map(|location| location.range.start),
+                )
+            });
+
+            entries.dedup_by(|left, right| left.location == right.location);
+
+            Ok(Response::Editor(entries))
+        } else {
+            Ok(response)
+        }
     }
 
     fn entries(&mut self, report: analysis::Report, path: &std::path::Path) -> Result<Response> {
@@ -385,6 +434,12 @@ impl State {
             return Err(Error::invalid_params("symbol has no editable declaration"));
         }
 
+        if entries.iter().any(|entry| {
+            entry.native.declaration == Some(true) && entry.native.name.as_ref() == Some(name)
+        }) {
+            return Err(Error::invalid_params("new name is unchanged"));
+        }
+
         let mut changes = BTreeMap::<String, Vec<TextEdit>>::new();
 
         for entry in entries {
@@ -455,8 +510,6 @@ impl State {
             self.files = None;
             self.index.files.clear();
             self.session.refresh();
-        } else {
-            self.session.change(path);
         }
     }
 
