@@ -12,8 +12,10 @@
 #include "Luau/Scope.h"
 #include "Luau/ToString.h"
 #include "Luau/TypeAttach.h"
+#include "editor.hpp"
 #include "lua.h"
 #include "lualib.h"
+#include "roblox.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -25,6 +27,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 LUAU_FASTINT(LuauTarjanChildLimit)
 
@@ -59,6 +62,17 @@ extern "C" {
         uint8_t type_check_for_autocomplete;
     };
 
+    struct InstarRobloxClass {
+        InstarSlice name;
+        uint8_t service;
+        uint8_t creatable;
+    };
+
+    struct InstarRobloxNode {
+        InstarSlice name;
+        InstarSlice class_name;
+    };
+
     struct InstarTypeCheckLimits {
         uint8_t has_finish_time;
         double finish_time;
@@ -75,8 +89,8 @@ extern "C" {
     using InstarResolveCallback = uint8_t (*)(
         void *, InstarSlice, uint8_t, InstarSlice, InstarTypeCheckLimits, InstarSlice *, uint8_t *, uint8_t *);
 
-    using InstarDiagnosticCallback = uint8_t (*)(
-        void *, InstarSlice, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, int32_t, uint32_t, uint8_t, InstarSlice);
+    using InstarDiagnosticCallback = uint8_t (*)(void *, InstarSlice, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t,
+        int32_t, uint32_t, uint8_t, InstarSlice, InstarSlice, uint32_t, uint32_t, uint32_t, uint32_t, InstarSlice);
 
     using InstarAliasCallback = uint8_t (*)(void *, InstarSlice, InstarSlice, InstarSlice);
     using InstarItemCallback = uint8_t (*)(void *, InstarSlice);
@@ -245,10 +259,15 @@ namespace {
                   }) {}
 
         bool emit_diagnostic(std::string_view path, const Luau::Location &location, uint32_t native_kind, int32_t code,
-            uint32_t variant, uint8_t is_error, std::string_view message) {
+            uint32_t variant, uint8_t is_error, std::string_view message, std::string_view related_path = {},
+            const Luau::Location *related_location = nullptr, std::string_view related_message = {}) {
 
             if (!callbacks.diagnostic(context, slice(path), location.begin.line, location.begin.column,
-                    location.end.line, location.end.column, native_kind, code, variant, is_error, slice(message))) {
+                    location.end.line, location.end.column, native_kind, code, variant, is_error, slice(message),
+                    slice(related_path), related_location ? related_location->begin.line : 0,
+                    related_location ? related_location->begin.column : 0,
+                    related_location ? related_location->end.line : 0,
+                    related_location ? related_location->end.column : 0, slice(related_message))) {
                 return false;
             }
 
@@ -257,14 +276,25 @@ namespace {
 
         bool emit(const Luau::TypeError &error) {
             const std::string message = Luau::toString(error, Luau::TypeErrorToStringOptions{&files});
+            const uint32_t kind = Luau::get<Luau::SyntaxError>(error) ? native_parse_error : native_type_error;
 
-            return emit_diagnostic(error.moduleName, error.location, native_type_error, error.code(),
+            const Luau::DuplicateTypeDefinition *duplicate = Luau::get<Luau::DuplicateTypeDefinition>(error);
+
+            if (duplicate && duplicate->previousLocation) {
+                return emit_diagnostic(error.moduleName, error.location, kind, error.code(),
+                    static_cast<uint32_t>(error.data.index()), 1, message, error.moduleName,
+                    &*duplicate->previousLocation, "previous definition");
+            }
+
+            return emit_diagnostic(error.moduleName, error.location, kind, error.code(),
                 static_cast<uint32_t>(error.data.index()), 1, message);
         }
 
         bool emit(std::string_view path, const Luau::LintWarning &warning, bool is_error) {
+            const std::string message = std::string(Luau::LintWarning::getName(warning.code)) + ": " + warning.text;
+
             return emit_diagnostic(path, warning.location, native_lint_warning, static_cast<int32_t>(warning.code), 0,
-                uint8_t(is_error), warning.text);
+                uint8_t(is_error), message);
         }
 
         bool emit(const Luau::CheckResult &result, std::string_view path) {
@@ -627,6 +657,53 @@ extern "C" {
         }
     }
 
+    int instar_checker_register_roblox_magic(Checker *checker, const InstarRobloxClass *classes, size_t count,
+        const InstarRobloxNode *nodes, size_t node_count, InstarString *error) {
+
+        try {
+            if (error) {
+                *error = {};
+            }
+
+            if (!checker || (count != 0 && !classes) || (node_count != 0 && !nodes)) {
+                return failure(error, "invalid Roblox magic request");
+            }
+
+            std::vector<instar::RobloxClass> metadata;
+            metadata.reserve(count);
+
+            for (size_t index = 0; index < count; ++index) {
+                const std::optional<std::string_view> name = view(classes[index].name);
+
+                if (!name || name->empty()) {
+                    return failure(error, "invalid Roblox class metadata");
+                }
+
+                metadata.push_back({std::string(*name), classes[index].service != 0, classes[index].creatable != 0});
+            }
+
+            std::vector<instar::RobloxNode> instances;
+            instances.reserve(node_count);
+
+            for (size_t index = 0; index < node_count; ++index) {
+                const std::optional<std::string_view> name = view(nodes[index].name);
+                const std::optional<std::string_view> class_name = view(nodes[index].class_name);
+
+                if (!name || name->empty() || !class_name || class_name->empty()) {
+                    return failure(error, "invalid Roblox node metadata");
+                }
+
+                instances.push_back({std::string(*name), std::string(*class_name)});
+            }
+
+            instar::register_roblox_magic(checker->frontend.globals, metadata, instances);
+
+            return 0;
+        } catch (...) {
+            return exception_noexcept(error);
+        }
+    }
+
     int instar_checker_parse(Checker *checker, InstarSlice name, InstarString *error) {
         try {
             if (error) {
@@ -774,6 +851,33 @@ extern "C" {
             checker->check_result = *result;
 
             return checker->emit(*result, *name_view) ? 0 : 2;
+        } catch (...) {
+            return exception_noexcept(error);
+        }
+    }
+
+    int instar_checker_editor(Checker *checker, InstarSlice name, uint32_t line, uint32_t column, InstarSlice operation,
+        InstarString *output_value, InstarString *error) {
+
+        try {
+            if (error) {
+                *error = {};
+            }
+
+            if (output_value) {
+                *output_value = {};
+            }
+
+            const std::optional<std::string_view> name_view = view(name);
+            const std::optional<std::string_view> operation_view = view(operation);
+
+            if (!checker || !name_view || !operation_view || !output_value) {
+                return failure(error, "invalid editor request");
+            }
+
+            output(output_value, instar::editor_query(checker->frontend, *name_view, line, column, *operation_view));
+
+            return 0;
         } catch (...) {
             return exception_noexcept(error);
         }

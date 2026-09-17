@@ -6,7 +6,7 @@ set(LUAU_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../../vendor/luau luau)
 
-add_library(Instar STATIC bridge.cpp)
+add_library(Instar STATIC bridge.cpp editor.cpp roblox.cpp)
 target_link_libraries(Instar PRIVATE Luau.Analysis Luau.Config Luau.Compiler Luau.VM)
 
 install(
