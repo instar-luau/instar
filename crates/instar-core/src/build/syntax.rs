@@ -13,13 +13,8 @@ pub(super) fn parse(
     sources: &mut SourceStore,
     path: &Path,
 ) -> io::Result<Value> {
-    let report = session.query(
-        sources,
-        &[path.to_owned()],
-        path,
-        line_index::LineCol { line: 0, col: 0 },
-        "syntax",
-    )?;
+    let source = sources.read(path).map_err(io::Error::other)?;
+    let report = session.parse(sources, path)?;
 
     if let Some(error) = report.diagnostics.iter().find(|diagnostic| {
         diagnostic.path == path && diagnostic.message.starts_with("SyntaxError:")
@@ -37,7 +32,8 @@ pub(super) fn parse(
         return Err(io::Error::other("build syntax unavailable"));
     };
 
-    let mut document: Value = serde_json::from_str(
+    let mut document = crate::syntax::decode(
+        &source,
         entry
             .description
             .as_deref()
@@ -45,25 +41,14 @@ pub(super) fn parse(
     )
     .map_err(io::Error::other)?;
 
-    let links = session.query(
-        sources,
-        &[path.to_owned()],
-        path,
-        line_index::LineCol { line: 0, col: 0 },
-        "links",
-    )?;
-
-    if let Some(EditorResult::Entries(entries)) = links.editor {
-        document["dependencies"] = Value::Array(
-            entries
-                .into_iter()
-                .filter(|entry| entry.path.as_deref() == Some(path))
-                .filter_map(|entry| {
-                    Some(serde_json::json!({"path":entry.name?,"range":entry.range?}))
-                })
-                .collect(),
-        );
-    }
+    document["dependencies"] = Value::Array(
+        report
+            .links
+            .into_iter()
+            .filter(|entry| entry.path.as_deref() == Some(path))
+            .filter_map(|entry| Some(serde_json::json!({"path":entry.name?,"range":entry.range?})))
+            .collect(),
+    );
 
     Ok(document)
 }

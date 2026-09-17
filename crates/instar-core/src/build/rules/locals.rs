@@ -21,12 +21,18 @@ pub(super) fn apply(
     settings: &Rules,
     edits: &mut Vec<Edit>,
 ) -> io::Result<()> {
+    let (reads, writes) = if settings.const_requires || settings.remove_unused_variable {
+        uses(context.document)
+    } else {
+        (BTreeMap::new(), BTreeSet::new())
+    };
+
     if settings.const_requires {
-        const_requires(context, edits)?;
+        const_requires(context, &writes, edits)?;
     }
 
     if settings.remove_unused_variable {
-        remove_unused(context, edits)?;
+        remove_unused(context, &reads, edits)?;
     }
 
     if settings.rename_variables {
@@ -67,9 +73,11 @@ fn uses(document: &Value) -> (BTreeMap<String, usize>, BTreeSet<String>) {
     (reads, writes)
 }
 
-fn const_requires(context: &Context<'_, '_, '_, '_, '_>, edits: &mut Vec<Edit>) -> io::Result<()> {
-    let (_, writes) = uses(context.document);
-
+fn const_requires(
+    context: &Context<'_, '_, '_, '_, '_>,
+    writes: &BTreeSet<String>,
+    edits: &mut Vec<Edit>,
+) -> io::Result<()> {
     for node in nodes(&context.document["root"]) {
         if kind(node) != "AstStatLocal" {
             continue;
@@ -167,9 +175,11 @@ fn inert(value: &Value) -> bool {
     }
 }
 
-fn remove_unused(context: &Context<'_, '_, '_, '_, '_>, edits: &mut Vec<Edit>) -> io::Result<()> {
-    let (reads, _) = uses(context.document);
-
+fn remove_unused(
+    context: &Context<'_, '_, '_, '_, '_>,
+    reads: &BTreeMap<String, usize>,
+    edits: &mut Vec<Edit>,
+) -> io::Result<()> {
     for node in nodes(&context.document["root"]) {
         let removable = match kind(node) {
             "AstStatLocal" => {
