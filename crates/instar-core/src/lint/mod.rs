@@ -75,13 +75,7 @@ pub fn analyze(
         return Ok(Report::default());
     }
 
-    let native = session.query(
-        sources,
-        &[source.path().to_owned()],
-        source.path(),
-        line_index::LineCol { line: 0, col: 0 },
-        "syntax",
-    )?;
+    let native = session.parse_with_definitions(sources, source.path(), true)?;
 
     let mut report = Report {
         diagnostics: native
@@ -106,13 +100,12 @@ pub fn analyze(
         return Ok(report);
     };
 
-    let document = syntax::decode(
-        entry
-            .description
-            .as_deref()
-            .ok_or_else(|| io::Error::other("native lint syntax unavailable"))?,
-    )
-    .map_err(io::Error::other)?;
+    let description = entry
+        .description
+        .as_deref()
+        .ok_or_else(|| io::Error::other("native lint syntax unavailable"))?;
+
+    let document = syntax::decode(&source, description).map_err(io::Error::other)?;
 
     let environment = session.environment(sources, source.path())?;
 

@@ -587,7 +587,6 @@ fn fixes_preserve_comments_unicode_and_are_idempotent() -> TestResult {
     );
 
     let source = sources.update(&source, 2, std::str::from_utf8(&output)?)?;
-    session.change(source.path());
     let report = lint::analyze(&mut session, &mut sources, source.path())?;
     assert_eq!(lint::edits(&report.findings)?, []);
 
