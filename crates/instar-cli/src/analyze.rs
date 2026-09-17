@@ -94,6 +94,7 @@ impl Analyze {
             old_solver: self.solver.as_deref() == Some("old"),
             annotations: self.annotate,
             update: self.update,
+            ..analysis::Options::default()
         };
 
         let report = analysis::Session::default().analyze(&mut input.store, &modules, &options)?;

@@ -1,486 +1,2565 @@
-#![expect(
-    unsafe_code,
-    reason = "This module owns the native Luau FFI and its callback lifetimes"
-)]
-
-use std::{
-    collections::BTreeMap,
-    ffi::c_void,
-    io,
-    panic::{AssertUnwindSafe, catch_unwind},
-    path::{Path, PathBuf},
-    ptr, slice,
-};
+#![expect(unsafe_code, reason = "Luau is exposed through a checked native ABI")]
 
 use crate::{
-    analysis::{Annotation, Diagnostic, EditorEntry, EditorResult, Options, Report},
-    project::resolution::Resolver,
+    analysis::{
+        Annotation, Diagnostic, Documentation, EditorEntry, EditorResult, Mode, Options, RelatedDiagnostic, Report,
+    },
+    project::{resolution::Resolver, roblox::Environment},
+    source::Source,
 };
 
-const BUILD_CONSTANT_DEFINITIONS: &str = "@instar/build/constants.d.luau";
-const ROBLOX_DEFINITIONS: &str = "@instar/roblox.d.luau";
+use serde_json::Value;
 
-type AnalysisGroup = (
-    Vec<PathBuf>,
-    Vec<PathBuf>,
-    Vec<u8>,
-    Option<std::sync::Arc<crate::project::roblox::Environment>>,
-    Vec<PathBuf>,
-);
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ffi::c_void,
+    io,
+    path::{Path, PathBuf},
+    ptr,
+    sync::Arc,
+};
+
+const NATIVE_TYPE_ERROR: u32 = 1;
+const NATIVE_PARSE_ERROR: u32 = 2;
+const NATIVE_LINT_WARNING: u32 = 3;
 
 #[repr(C)]
-#[derive(Clone, Copy)]
-pub(crate) struct Bytes {
-    pub(crate) data: *const u8,
-    pub(crate) size: usize,
+#[derive(Clone, Copy, Default)]
+struct NativeSlice {
+    data: *const u8,
+    length: usize,
 }
 
-impl Bytes {
+impl NativeSlice {
     fn new(bytes: &[u8]) -> Self {
         Self {
             data: bytes.as_ptr(),
-            size: bytes.len(),
+            length: bytes.len(),
         }
     }
+}
 
-    fn absent() -> Self {
-        Self {
-            data: ptr::null(),
-            size: 0,
-        }
-    }
+#[repr(C)]
+#[derive(Default)]
+struct NativeString {
+    data: *mut u8,
+    length: usize,
+}
 
-    unsafe fn slice<'value>(self) -> io::Result<&'value [u8]> {
-        if self.size == 0 {
-            Ok(&[])
-        } else if self.data.is_null() {
-            Err(io::Error::other("native byte range is invalid"))
-        } else {
-            Ok(unsafe { slice::from_raw_parts(self.data, self.size) })
-        }
-    }
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct NativeFrontendOptions {
+    old_solver: u8,
+    retain_full_type_graphs: u8,
+    for_autocomplete: u8,
+    run_lint_checks: u8,
+}
 
-    unsafe fn string(self) -> io::Result<String> {
-        std::str::from_utf8(unsafe { self.slice()? })
-            .map(str::to_owned)
-            .map_err(io::Error::other)
-    }
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct NativeConfigurationOptions {
+    compat: u8,
+    has_alias_options: u8,
+    overwrite_aliases: u8,
+    has_config_location: u8,
+    config_location: NativeSlice,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct NativeDefinitionOptions {
+    capture_comments: u8,
+    type_check_for_autocomplete: u8,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct Position {
-    line: u32,
-    column: u32,
+struct NativeRobloxClass {
+    name: NativeSlice,
+    service: u8,
+    creatable: u8,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct Range {
-    begin: Position,
-    end: Position,
+struct NativeRobloxNode {
+    name: NativeSlice,
+    class_name: NativeSlice,
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
-struct Module {
-    name: Bytes,
-    source: Bytes,
+#[derive(Clone, Copy, Default)]
+struct NativeTypeCheckLimits {
+    has_finish_time: u8,
+    finish_time: f64,
+    has_instantiation_child_limit: u8,
+    instantiation_child_limit: i32,
+    has_unifier_iteration_limit: u8,
+    unifier_iteration_limit: i32,
+    cancellation_token: *const c_void,
 }
+
+type SourceCallback = extern "C" fn(*mut c_void, NativeSlice, *mut NativeSlice, *mut u32) -> u8;
+type ConfigurationCallback = extern "C" fn(*mut c_void, NativeSlice, *mut *const c_void) -> u8;
+
+type ResolveCallback = extern "C" fn(
+    *mut c_void,
+    NativeSlice,
+    u8,
+    NativeSlice,
+    NativeTypeCheckLimits,
+    *mut NativeSlice,
+    *mut u8,
+    *mut u8,
+) -> u8;
+
+type DiagnosticCallback = extern "C" fn(
+    *mut c_void,
+    NativeSlice,
+    u32,
+    u32,
+    u32,
+    u32,
+    u32,
+    i32,
+    u32,
+    u8,
+    NativeSlice,
+    NativeSlice,
+    u32,
+    u32,
+    u32,
+    u32,
+    NativeSlice,
+) -> u8;
+
+type AliasCallback = extern "C" fn(*mut c_void, NativeSlice, NativeSlice, NativeSlice) -> u8;
+type ItemCallback = extern "C" fn(*mut c_void, NativeSlice) -> u8;
 
 #[repr(C)]
-#[derive(Clone, Copy)]
-struct Configuration {
-    module: Bytes,
-    path: Bytes,
-    source: Bytes,
+struct NativeCallbacks {
+    source: SourceCallback,
+    configuration: ConfigurationCallback,
+    resolve: ResolveCallback,
+    diagnostic: DiagnosticCallback,
 }
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct RobloxClass {
-    name: Bytes,
-    service: i32,
-    creatable: i32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct RobloxNode {
-    name: Bytes,
-    class_name: Bytes,
-    parent: usize,
-    has_parent: i32,
-}
-
-type ReadCallback = extern "C" fn(*mut c_void, Bytes) -> Bytes;
-type Resolve = extern "C" fn(*mut c_void, Bytes, Range, Bytes) -> Bytes;
-type ReportCallback = extern "C" fn(*mut c_void, Bytes, Bytes, Range, i32);
-type TypeCallback = extern "C" fn(*mut c_void, Bytes);
-type SyntaxCallback = extern "C" fn(*mut c_void, Bytes, *const Bytes, usize);
-type CompletionCallback = extern "C" fn(*mut c_void, Bytes, Bytes, Bytes, Bytes, u32, i32);
-type SignatureCallback = extern "C" fn(*mut c_void, Bytes, *const Bytes, usize, u32);
-type DestinationCallback = extern "C" fn(*mut c_void, Bytes, Range, Bytes);
-type CallCallback = extern "C" fn(*mut c_void, Bytes, Range, Bytes, Range, i32, Range);
-type ExtractCallback = extern "C" fn(*mut c_void, Range, Range);
-type SymbolCallback = extern "C" fn(*mut c_void, Bytes, Bytes, Range, Range, u32, i32, u32);
-type ImportCallback = extern "C" fn(*mut c_void, Bytes, Bytes, Bytes, Range);
-type ScopeCallback = extern "C" fn(*mut c_void, Bytes, i32, u32, i32);
-type AnnotationCallback = extern "C" fn(*mut c_void, Bytes, Position, Bytes);
-type AliasCallback = extern "C" fn(*mut c_void, Bytes, Bytes);
-type FailureCallback = extern "C" fn(*mut c_void, Bytes);
 
 unsafe extern "C" {
-    fn instar_engine_create(
-        modules: *const Module,
-        count: usize,
+    fn instar_string_destroy(value: NativeString);
+
+    fn instar_configuration_new(error: *mut NativeString) -> *mut c_void;
+    fn instar_configuration_destroy(configuration: *mut c_void);
+    fn instar_configuration_parse_json(
+        configuration: *mut c_void,
+        source: NativeSlice,
+        options: *const NativeConfigurationOptions,
+        error: *mut NativeString,
+    ) -> i32;
+    fn instar_configuration_extract_luau(
+        configuration: *mut c_void,
+        source: NativeSlice,
+        options: *const NativeConfigurationOptions,
+        error: *mut NativeString,
+    ) -> i32;
+    fn instar_configuration_set_capture_comments(
+        configuration: *mut c_void,
+        capture_comments: u8,
+        error: *mut NativeString,
+    ) -> i32;
+    fn instar_configuration_set_mode(
+        configuration: *mut c_void,
+        mode: u32,
+        error: *mut NativeString,
+    ) -> i32;
+    fn instar_configuration_aliases(
+        configuration: *const c_void,
+        callback: AliasCallback,
         context: *mut c_void,
-        reader: Option<ReadCallback>,
-        resolver: Option<Resolve>,
-        configurations: *const Configuration,
-        configuration_count: usize,
-        mode: i32,
-        old_solver: i32,
+        error: *mut NativeString,
+    ) -> i32;
+
+    fn instar_checker_new(
+        callbacks: *const NativeCallbacks,
+        context: *mut c_void,
+        options: *const NativeFrontendOptions,
+        error: *mut NativeString,
     ) -> *mut c_void;
-
-    fn instar_engine_destroy(engine: *mut c_void);
-
-    fn instar_engine_load_definitions(
-        engine: *mut c_void,
-        definitions: *const Module,
-        definition_count: usize,
-        target_paths: *const Bytes,
-        target_count: usize,
-        all_targets: i32,
-        context: *mut c_void,
-        failure: Option<FailureCallback>,
+    fn instar_checker_register_builtins(
+        checker: *mut c_void,
+        for_autocomplete: u8,
+        error: *mut NativeString,
     ) -> i32;
-
-    fn instar_engine_prepare_roblox(
-        engine: *mut c_void,
-        enumerations: *const Bytes,
-        enumeration_count: usize,
-        classes: *const RobloxClass,
-        class_count: usize,
-        nodes: *const RobloxNode,
+    fn instar_checker_destroy(checker: *mut c_void);
+    fn instar_checker_freeze(checker: *mut c_void, error: *mut NativeString) -> i32;
+    fn instar_checker_load_definition(
+        checker: *mut c_void,
+        source: NativeSlice,
+        package_name: NativeSlice,
+        options: *const NativeDefinitionOptions,
+        error: *mut NativeString,
+    ) -> i32;
+    fn instar_checker_register_roblox_magic(
+        checker: *mut c_void,
+        classes: *const NativeRobloxClass,
+        count: usize,
+        nodes: *const NativeRobloxNode,
         node_count: usize,
-        context: *mut c_void,
-        failure: Option<FailureCallback>,
+        error: *mut NativeString,
     ) -> i32;
-
-    fn instar_engine_check(
-        engine: *mut c_void,
+    fn instar_checker_parse(
+        checker: *mut c_void,
+        name: NativeSlice,
+        error: *mut NativeString,
+    ) -> i32;
+    fn instar_checker_parse_diagnostics(
+        checker: *mut c_void,
+        name: NativeSlice,
+        error: *mut NativeString,
+    ) -> i32;
+    fn instar_checker_ast(
+        checker: *mut c_void,
+        name: NativeSlice,
+        output: *mut NativeString,
+        error: *mut NativeString,
+    ) -> i32;
+    fn instar_checker_globals(
+        checker: *mut c_void,
+        callback: ItemCallback,
         context: *mut c_void,
-        report: Option<ReportCallback>,
-        failure: Option<FailureCallback>,
-    );
-
-    fn instar_engine_syntax(
-        engine: *mut c_void,
-        path: Bytes,
+        error: *mut NativeString,
+    ) -> i32;
+    fn instar_checker_check(
+        checker: *mut c_void,
+        name: NativeSlice,
+        error: *mut NativeString,
+    ) -> i32;
+    fn instar_checker_result(
+        checker: *mut c_void,
+        name: NativeSlice,
+        accumulate_nested: u8,
+        for_autocomplete: u8,
+        error: *mut NativeString,
+    ) -> i32;
+    fn instar_checker_editor(
+        checker: *mut c_void,
+        name: NativeSlice,
+        line: u32,
+        column: u32,
+        operation: NativeSlice,
+        output: *mut NativeString,
+        error: *mut NativeString,
+    ) -> i32;
+    fn instar_checker_timeouts(
+        checker: *mut c_void,
+        callback: ItemCallback,
         context: *mut c_void,
-        report: Option<SyntaxCallback>,
-        failure: Option<FailureCallback>,
-    );
-
-    fn instar_engine_type_at(
-        engine: *mut c_void,
-        path: Bytes,
-        position: Position,
+        error: *mut NativeString,
+    ) -> i32;
+    fn instar_checker_modules(
+        checker: *mut c_void,
+        callback: ItemCallback,
         context: *mut c_void,
-        report: Option<TypeCallback>,
-        failure: Option<FailureCallback>,
-    );
-
-    fn instar_engine_hover(
-        engine: *mut c_void,
-        path: Bytes,
-        position: Position,
-        context: *mut c_void,
-        report: Option<TypeCallback>,
-        failure: Option<FailureCallback>,
-    );
-
-    fn instar_engine_complete(
-        engine: *mut c_void,
-        path: Bytes,
-        position: Position,
-        context: *mut c_void,
-        report: Option<CompletionCallback>,
-        failure: Option<FailureCallback>,
-    );
-
-    fn instar_engine_signature(
-        engine: *mut c_void,
-        path: Bytes,
-        position: Position,
-        context: *mut c_void,
-        report: Option<SignatureCallback>,
-        failure: Option<FailureCallback>,
-    );
-
-    fn instar_engine_definition(
-        engine: *mut c_void,
-        path: Bytes,
-        position: Position,
-        context: *mut c_void,
-        report: Option<DestinationCallback>,
-        failure: Option<FailureCallback>,
-    );
-
-    fn instar_engine_type_definition(
-        engine: *mut c_void,
-        path: Bytes,
-        position: Position,
-        context: *mut c_void,
-        report: Option<DestinationCallback>,
-        failure: Option<FailureCallback>,
-    );
-
-    fn instar_engine_implementations(
-        engine: *mut c_void,
-        path: Bytes,
-        position: Position,
-        context: *mut c_void,
-        report: Option<DestinationCallback>,
-        failure: Option<FailureCallback>,
-    );
-
-    fn instar_engine_references(
-        engine: *mut c_void,
-        path: Bytes,
-        position: Position,
-        context: *mut c_void,
-        report: Option<DestinationCallback>,
-        failure: Option<FailureCallback>,
-    );
-
-    fn instar_engine_annotations(
-        engine: *mut c_void,
-        path: Bytes,
-        context: *mut c_void,
-        report: Option<AnnotationCallback>,
-        failure: Option<FailureCallback>,
-    );
-
-    fn instar_engine_calls(
-        engine: *mut c_void,
-        path: Bytes,
-        context: *mut c_void,
-        report: Option<CallCallback>,
-        failure: Option<FailureCallback>,
-    );
-
-    fn instar_engine_extract(
-        engine: *mut c_void,
-        path: Bytes,
-        position: Position,
-        context: *mut c_void,
-        report: Option<ExtractCallback>,
-        failure: Option<FailureCallback>,
-    );
-
-    fn instar_engine_tokens(
-        engine: *mut c_void,
-        path: Bytes,
-        context: *mut c_void,
-        report: Option<SymbolCallback>,
-        failure: Option<FailureCallback>,
-    );
-
-    fn instar_engine_index(
-        engine: *mut c_void,
-        path: Bytes,
-        context: *mut c_void,
-        symbol: Option<SymbolCallback>,
-        call: Option<CallCallback>,
-        failure: Option<FailureCallback>,
-    );
-
-    fn instar_engine_imports(
-        engine: *mut c_void,
-        path: Bytes,
-        position: Position,
-        context: *mut c_void,
-        report: Option<ImportCallback>,
-        failure: Option<FailureCallback>,
-    );
-
-    fn instar_engine_scope(
-        engine: *mut c_void,
-        path: Bytes,
-        position: Position,
-        context: *mut c_void,
-        report: Option<ScopeCallback>,
-        failure: Option<FailureCallback>,
-    );
-
-    fn instar_parse_aliases(
-        source: Bytes,
-        executable: i32,
-        context: *mut c_void,
-        alias: Option<AliasCallback>,
-        failure: Option<FailureCallback>,
-    );
-
-    fn instar_matches(pattern: Bytes, source: Bytes) -> i32;
+        error: *mut NativeString,
+    ) -> i32;
+    fn instar_checker_attach_type_data(
+        checker: *mut c_void,
+        name: NativeSlice,
+        error: *mut NativeString,
+    ) -> i32;
+    fn instar_state_new(error: *mut NativeString) -> *mut c_void;
+    fn instar_state_destroy(state: *mut c_void);
+    fn instar_state_openlibs(state: *mut c_void, error: *mut NativeString) -> i32;
+    fn instar_state_get_global(
+        state: *mut c_void,
+        name: NativeSlice,
+        error: *mut NativeString,
+    ) -> i32;
+    fn instar_state_get_field(
+        state: *mut c_void,
+        index: i32,
+        name: NativeSlice,
+        error: *mut NativeString,
+    ) -> i32;
+    fn instar_state_push_string(
+        state: *mut c_void,
+        value: NativeSlice,
+        error: *mut NativeString,
+    ) -> i32;
+    fn instar_state_call(
+        state: *mut c_void,
+        arguments: i32,
+        results: i32,
+        error_function: i32,
+        lua_status: *mut i32,
+        error: *mut NativeString,
+    ) -> i32;
+    fn instar_state_is_nil(
+        state: *mut c_void,
+        index: i32,
+        result: *mut u8,
+        error: *mut NativeString,
+    ) -> i32;
+    fn instar_state_to_string(
+        state: *mut c_void,
+        index: i32,
+        present: *mut u8,
+        output: *mut NativeString,
+        error: *mut NativeString,
+    ) -> i32;
 }
 
-pub(crate) fn matches(pattern: &str, source: &str) -> io::Result<bool> {
-    match unsafe {
-        instar_matches(
-            Bytes::new(pattern.as_bytes()),
-            Bytes::new(source.as_bytes()),
-        )
-    } {
-        0 => Ok(false),
-        1 => Ok(true),
-        _ => Err(io::Error::other("invalid lint ignore pattern")),
+fn native_bytes<'value>(value: NativeSlice) -> io::Result<&'value [u8]> {
+    if value.data.is_null() {
+        return if value.length == 0 {
+            Ok(&[])
+        } else {
+            Err(io::Error::other("invalid native string"))
+        };
+    }
+
+    Ok(unsafe { std::slice::from_raw_parts(value.data, value.length) })
+}
+
+fn native_text(value: NativeSlice) -> io::Result<String> {
+    std::str::from_utf8(native_bytes(value)?)
+        .map(str::to_owned)
+        .map_err(io::Error::other)
+}
+
+fn owned_text(value: NativeString) -> io::Result<String> {
+    let result = if value.data.is_null() {
+        if value.length == 0 {
+            Ok(String::new())
+        } else {
+            Err(io::Error::other("invalid owned native string"))
+        }
+    } else {
+        String::from_utf8(unsafe { std::slice::from_raw_parts(value.data, value.length) }.to_vec())
+            .map_err(io::Error::other)
+    };
+
+    unsafe { instar_string_destroy(value) };
+
+    result
+}
+
+fn status(
+    code: i32,
+    error: NativeString,
+    callback_error: &mut Option<io::Error>,
+) -> io::Result<()> {
+    let message = owned_text(error)?;
+
+    if let Some(error) = callback_error.take() {
+        return Err(error);
+    }
+
+    match code {
+        0 => Ok(()),
+        2 if message.is_empty() => Err(io::Error::other("native callback failed")),
+        _ if message.is_empty() => Err(io::Error::other("native operation failed")),
+        _ => Err(io::Error::other(message)),
     }
 }
 
-struct Context<'resolver, 'store> {
-    resolver: &'resolver mut Resolver<'store>,
-    environment: std::sync::Arc<crate::project::roblox::Environment>,
-    constants: Vec<u8>,
-    buffer: Vec<u8>,
-    report: Report,
+struct Configuration {
+    handle: usize,
+}
+
+impl Configuration {
+    fn new() -> io::Result<Self> {
+        let mut error = NativeString::default();
+
+        let handle = unsafe { instar_configuration_new(&raw mut error) };
+
+        if handle.is_null() {
+            let message = owned_text(error)?;
+
+            return Err(io::Error::other(if message.is_empty() {
+                "cannot create native configuration".into()
+            } else {
+                message
+            }));
+        }
+
+        Ok(Self {
+            handle: handle as usize,
+        })
+    }
+
+    fn parse_json(&mut self, source: &[u8]) -> io::Result<()> {
+        self.parse(source, false)
+    }
+
+    fn extract_luau(&mut self, source: &[u8]) -> io::Result<()> {
+        self.parse(source, true)
+    }
+
+    fn parse(&mut self, source: &[u8], executable: bool) -> io::Result<()> {
+        let options = NativeConfigurationOptions {
+            has_alias_options: 1,
+            overwrite_aliases: 1,
+            ..NativeConfigurationOptions::default()
+        };
+
+        let mut error = NativeString::default();
+
+        let code = unsafe {
+            if executable {
+                instar_configuration_extract_luau(
+                    self.handle as *mut c_void,
+                    NativeSlice::new(source),
+                    &raw const options,
+                    &raw mut error,
+                )
+            } else {
+                instar_configuration_parse_json(
+                    self.handle as *mut c_void,
+                    NativeSlice::new(source),
+                    &raw const options,
+                    &raw mut error,
+                )
+            }
+        };
+
+        status(code, error, &mut None)
+    }
+
+    fn set_capture_comments(&mut self) -> io::Result<()> {
+        let mut error = NativeString::default();
+
+        let code = unsafe {
+            instar_configuration_set_capture_comments(self.handle as *mut c_void, 1, &raw mut error)
+        };
+
+        status(code, error, &mut None)
+    }
+
+    fn set_mode(&mut self, mode: Mode) -> io::Result<()> {
+        let mode = match mode {
+            Mode::Nocheck => 0,
+            Mode::Nonstrict => 1,
+            Mode::Strict => 2,
+        };
+
+        let mut error = NativeString::default();
+
+        let code = unsafe {
+            instar_configuration_set_mode(self.handle as *mut c_void, mode, &raw mut error)
+        };
+
+        status(code, error, &mut None)
+    }
+
+    fn pointer(&self) -> *const c_void {
+        self.handle as *const c_void
+    }
+}
+
+impl Drop for Configuration {
+    fn drop(&mut self) {
+        unsafe { instar_configuration_destroy(self.handle as *mut c_void) };
+    }
+}
+
+struct AliasContext {
+    values: BTreeMap<String, String>,
     error: Option<io::Error>,
-    annotations: Vec<NativeAnnotation>,
-    declaration: bool,
 }
 
-#[derive(Clone)]
-struct NativeAnnotation {
-    path: String,
-    position: Position,
-    text: Vec<u8>,
-}
+extern "C" fn alias_callback(
+    context: *mut c_void,
+    key: NativeSlice,
+    original_case: NativeSlice,
+    value: NativeSlice,
+) -> u8 {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let context = unsafe { &mut *context.cast::<AliasContext>() };
 
-impl Context<'_, '_> {
-    fn call_bytes(
-        &mut self,
-        operation: impl FnOnce(&mut Self) -> io::Result<Option<Vec<u8>>>,
-    ) -> Bytes {
-        if self.error.is_some() {
-            return Bytes::absent();
+        let key = native_text(key)?;
+        let original_case = native_text(original_case)?;
+
+        context.values.insert(
+            if original_case.is_empty() {
+                key
+            } else {
+                original_case
+            },
+            native_text(value)?,
+        );
+
+        Ok::<_, io::Error>(())
+    }));
+
+    match result {
+        Ok(Ok(())) => 1,
+
+        Ok(Err(error)) => {
+            unsafe { &mut *context.cast::<AliasContext>() }.error = Some(error);
+
+            0
         }
 
-        match catch_unwind(AssertUnwindSafe(|| operation(self))) {
-            Ok(Ok(Some(bytes))) => {
-                self.buffer = bytes;
+        Err(_) => {
+            unsafe { &mut *context.cast::<AliasContext>() }.error =
+                Some(io::Error::other("alias callback panicked"));
 
-                Bytes::new(&self.buffer)
-            }
-
-            Ok(Ok(None)) => Bytes::absent(),
-
-            Ok(Err(error)) => {
-                self.error = Some(error);
-
-                Bytes::absent()
-            }
-
-            Err(_) => {
-                self.error = Some(io::Error::other("native callback panicked"));
-
-                Bytes::absent()
-            }
-        }
-    }
-
-    fn call(&mut self, operation: impl FnOnce(&mut Self) -> io::Result<()>) {
-        if self.error.is_some() {
-            return;
-        }
-
-        match catch_unwind(AssertUnwindSafe(|| operation(self))) {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => self.error = Some(error),
-            Err(_) => self.error = Some(io::Error::other("native callback panicked")),
+            0
         }
     }
 }
 
-extern "C" fn read(context: *mut c_void, name: Bytes) -> Bytes {
-    let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
+pub(crate) fn aliases(source: &[u8], executable: bool) -> io::Result<BTreeMap<String, String>> {
+    let mut configuration = Configuration::new()?;
 
-    context.call_bytes(|context| {
-        let name = unsafe { name.string()? };
+    if executable {
+        configuration.extract_luau(source)?;
+    } else {
+        configuration.parse_json(source)?;
+    }
 
-        if name == BUILD_CONSTANT_DEFINITIONS {
-            return Ok(Some(context.constants.clone()));
+    let mut context = AliasContext {
+        values: BTreeMap::new(),
+        error: None,
+    };
+
+    let mut error = NativeString::default();
+
+    let code = unsafe {
+        instar_configuration_aliases(
+            configuration.pointer(),
+            alias_callback,
+            ptr::from_mut(&mut context).cast(),
+            &raw mut error,
+        )
+    };
+
+    status(code, error, &mut context.error)?;
+
+    Ok(context.values)
+}
+
+struct State {
+    handle: *mut c_void,
+}
+
+impl State {
+    fn new() -> io::Result<Self> {
+        let mut error = NativeString::default();
+
+        let handle = unsafe { instar_state_new(&raw mut error) };
+
+        if handle.is_null() {
+            let message = owned_text(error)?;
+
+            return Err(io::Error::other(if message.is_empty() {
+                "cannot create Luau state".into()
+            } else {
+                message
+            }));
         }
 
-        let path = Path::new(&name);
+        Ok(Self { handle })
+    }
 
-        if !context.environment.readable(path) {
-            return Ok(None);
+    fn open_libraries(&self) -> io::Result<()> {
+        let mut error = NativeString::default();
+
+        let code = unsafe { instar_state_openlibs(self.handle, &raw mut error) };
+
+        status(code, error, &mut None)
+    }
+
+    fn get_global(&self, name: &[u8]) -> io::Result<()> {
+        let mut error = NativeString::default();
+
+        let code =
+            unsafe { instar_state_get_global(self.handle, NativeSlice::new(name), &raw mut error) };
+
+        status(code, error, &mut None)
+    }
+
+    fn get_field(&self, index: i32, name: &[u8]) -> io::Result<()> {
+        let mut error = NativeString::default();
+
+        let code = unsafe {
+            instar_state_get_field(self.handle, index, NativeSlice::new(name), &raw mut error)
+        };
+
+        status(code, error, &mut None)
+    }
+
+    fn push_string(&self, value: &[u8]) -> io::Result<()> {
+        let mut error = NativeString::default();
+
+        let code = unsafe {
+            instar_state_push_string(self.handle, NativeSlice::new(value), &raw mut error)
+        };
+
+        status(code, error, &mut None)
+    }
+
+    fn call(&self, arguments: i32, results: i32, error_function: i32) -> io::Result<()> {
+        let mut lua_status = 0;
+        let mut error = NativeString::default();
+
+        let adapter_status = unsafe {
+            instar_state_call(
+                self.handle,
+                arguments,
+                results,
+                error_function,
+                &raw mut lua_status,
+                &raw mut error,
+            )
+        };
+
+        let message = owned_text(error)?;
+
+        if adapter_status != 0 {
+            return Err(io::Error::other(if message.is_empty() {
+                "Luau call adapter failed".into()
+            } else {
+                message
+            }));
         }
 
-        Ok(Some(
-            context
+        if lua_status == 0 {
+            return Ok(());
+        }
+
+        if !message.is_empty() {
+            return Err(io::Error::other(message));
+        }
+
+        let mut present = 0;
+        let mut output = NativeString::default();
+        let mut text_error = NativeString::default();
+
+        let text_code = unsafe {
+            instar_state_to_string(
+                self.handle,
+                -1,
+                &raw mut present,
+                &raw mut output,
+                &raw mut text_error,
+            )
+        };
+
+        status(text_code, text_error, &mut None)?;
+        let message = owned_text(output)?;
+
+        Err(io::Error::other(if present != 0 && !message.is_empty() {
+            message
+        } else {
+            format!("Luau call failed with status {lua_status}")
+        }))
+    }
+
+    fn is_nil(&self, index: i32) -> io::Result<bool> {
+        let mut result = 0;
+        let mut error = NativeString::default();
+
+        let code =
+            unsafe { instar_state_is_nil(self.handle, index, &raw mut result, &raw mut error) };
+
+        status(code, error, &mut None)?;
+
+        Ok(result != 0)
+    }
+}
+
+impl Drop for State {
+    fn drop(&mut self) {
+        unsafe { instar_state_destroy(self.handle) };
+    }
+}
+
+pub(crate) fn matches(pattern: &str, subject: &str) -> io::Result<bool> {
+    let state = State::new()?;
+    state.open_libraries()?;
+    state.get_global(b"string")?;
+    state.get_field(-1, b"find")?;
+    state.push_string(subject.as_bytes())?;
+    state.push_string(pattern.as_bytes())?;
+    state.call(2, 1, 0)?;
+
+    Ok(!state.is_nil(-1)?)
+}
+
+struct CallbackContext<'resolver, 'store> {
+    resolver: &'resolver mut Resolver<'store>,
+    options: &'resolver Options,
+    environment: Option<Arc<Environment>>,
+    configurations: BTreeMap<PathBuf, Box<Configuration>>,
+    source_buffer: Option<Arc<Source>>,
+    output_buffer: Vec<u8>,
+    report: Report,
+    syntax: Option<String>,
+    globals: BTreeSet<String>,
+    modules: Vec<PathBuf>,
+    timeout_hits: BTreeSet<PathBuf>,
+    identities: BTreeMap<PathBuf, PathBuf>,
+    error: Option<io::Error>,
+}
+
+impl CallbackContext<'_, '_> {
+    fn physical(&self, path: &Path) -> PathBuf {
+        self.environment.as_ref().map_or_else(
+            || path.to_owned(),
+            |environment| environment.configuration(path),
+        )
+    }
+
+    fn configuration(&mut self, path: &Path) -> io::Result<*const c_void> {
+        let path = self.physical(path);
+
+        let key = path
+            .parent()
+            .ok_or_else(|| io::Error::other("module has no parent directory"))?
+            .to_owned();
+
+        if !self.configurations.contains_key(&key) {
+            let configuration_source = matches!(
+                path.file_name().and_then(|name| name.to_str()),
+                Some(".config.luau" | "config.luau")
+            );
+
+            let sources = self
                 .resolver
-                .load(&context.environment.source(path))?
-                .bytes()
-                .to_vec(),
-        ))
-    })
-}
+                .discovery
+                .configurations(&path)?
+                .iter()
+                .filter(|source| !configuration_source || source.path != path)
+                .cloned()
+                .collect::<Vec<_>>();
 
-extern "C" fn resolve(context: *mut c_void, from: Bytes, range: Range, specifier: Bytes) -> Bytes {
-    let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
+            let mut configuration = Box::new(Configuration::new()?);
 
-    context.call_bytes(|context| {
-        let from = unsafe { from.string()? };
+            for source in sources {
+                let executable = matches!(
+                    source.path.file_name().and_then(|name| name.to_str()),
+                    Some(".config.luau" | "config.luau")
+                );
 
-        let specifier = unsafe { specifier.string()? };
+                let result = if executable {
+                    configuration.extract_luau(&source.bytes)
+                } else {
+                    configuration.parse_json(&source.bytes)
+                };
 
-        let path = context
+                if let Err(error) = result {
+                    let message = error.to_string();
+
+                    let message = if message.starts_with("Unknown lint ") {
+                        message
+                    } else {
+                        format!("TypeError: {message}")
+                    };
+
+                    self.report.diagnostics.push(Diagnostic {
+                        path: source.path,
+                        line: 0,
+                        column: 0,
+                        end_line: 0,
+                        end_column: 0,
+                        message,
+                        is_error: true,
+                        related: Vec::new(),
+                    });
+                }
+            }
+
+            if let Some(mode) = self.options.mode {
+                configuration.set_mode(mode)?;
+            }
+
+            configuration.set_capture_comments()?;
+            self.configurations.insert(key.clone(), configuration);
+        }
+
+        Ok(self
+            .configurations
+            .get(&key)
+            .expect("configuration inserted")
+            .pointer())
+    }
+
+    fn source(&mut self, path: &Path) -> io::Result<(Option<Arc<Source>>, u32)> {
+        if self
             .environment
-            .require(context.resolver, Path::new(&from), &specifier)?;
+            .as_ref()
+            .is_some_and(|environment| !environment.readable(path))
+        {
+            return Ok((None, 0));
+        }
 
-        let _ = range;
+        let physical = self
+            .environment
+            .as_ref()
+            .map_or_else(|| path.to_owned(), |environment| environment.source(path));
 
-        path.map(|path| module_name(&path).map(String::into_bytes))
-            .transpose()
-    })
+        let source = self.resolver.load(&physical)?;
+
+        let source_type = self
+            .environment
+            .as_ref()
+            .and_then(|environment| {
+                environment
+                    .node(path)
+                    .or_else(|| environment.node(&physical))
+            })
+            .map(|index| {
+                u32::from(matches!(
+                    self.environment.as_ref().expect("environment").nodes[index]
+                        .class_name
+                        .as_str(),
+                    "Script" | "LocalScript"
+                )) + 1
+            })
+            .unwrap_or_else(|| {
+                let name = physical.file_stem().and_then(|name| name.to_str());
+
+                u32::from(name.is_some_and(|name| {
+                    name.ends_with(".server") || name.ends_with(".client") || name.ends_with(".plugin")
+                })) + 1
+            });
+
+        Ok((Some(source), source_type))
+    }
+
+    fn resolve(
+        &mut self,
+        from: &Path,
+        optional: bool,
+        expression: &Value,
+        _limits: NativeTypeCheckLimits,
+    ) -> io::Result<Option<(PathBuf, bool)>> {
+        let instance = string_expression(expression).is_none();
+
+        let resolved = if let Some(specifier) = string_expression(expression) {
+            if let Some(environment) = self.environment.clone() {
+                environment.require(self.resolver, from, specifier)?
+            } else {
+                self.resolver.resolve(from, specifier)?
+            }
+        } else if let Some(environment) = self.environment.as_ref() {
+            let origin = self
+                .identities
+                .get(from)
+                .cloned()
+                .unwrap_or_else(|| environment.source(from));
+
+            instance_expression(environment, &origin, expression).map(|index| environment.identity(index))
+        } else {
+            None
+        };
+
+        let resolved = resolved.map(|path| {
+            self.environment
+                .as_ref()
+                .map_or(path.clone(), |environment| environment.source(&path))
+        });
+
+        if instance
+            && let Some(environment) = &self.environment
+            && let Some(resolved) = &resolved
+        {
+            let origin = self
+                .identities
+                .get(from)
+                .cloned()
+                .unwrap_or_else(|| environment.source(from));
+
+            self.identities.insert(resolved.clone(), origin);
+        }
+
+        Ok(resolved.map(|path| (path, optional)))
+    }
 }
 
-extern "C" fn failure(context: *mut c_void, message: Bytes) {
-    let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
+fn callback_context<'value>(context: *mut c_void) -> &'value mut CallbackContext<'value, 'value> {
+    unsafe { &mut *context.cast::<CallbackContext<'value, 'value>>() }
+}
 
-    context.call(|context| {
-        context.error = Some(io::Error::other(unsafe { message.string()? }));
+extern "C" fn source_callback(
+    context: *mut c_void,
+    name: NativeSlice,
+    output: *mut NativeSlice,
+    source_type: *mut u32,
+) -> u8 {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let path = PathBuf::from(native_text(name)?);
+        let context = callback_context(context);
+        let (source, kind) = context.source(&path)?;
+        context.source_buffer = source;
+
+        unsafe {
+            *source_type = kind;
+
+            *output = context
+                .source_buffer
+                .as_ref()
+                .map_or_else(NativeSlice::default, |source| {
+                    NativeSlice::new(source.bytes())
+                });
+        }
+
+        Ok::<_, io::Error>(())
+    }));
+
+    callback_status(context, result, "source callback panicked")
+}
+
+extern "C" fn configuration_callback(
+    context: *mut c_void,
+    name: NativeSlice,
+    output: *mut *const c_void,
+) -> u8 {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let path = PathBuf::from(native_text(name)?);
+        let configuration = callback_context(context).configuration(&path)?;
+
+        unsafe { *output = configuration };
+
+        Ok::<_, io::Error>(())
+    }));
+
+    callback_status(context, result, "configuration callback panicked")
+}
+
+extern "C" fn resolve_callback(
+    context: *mut c_void,
+    from: NativeSlice,
+    optional: u8,
+    expression: NativeSlice,
+    limits: NativeTypeCheckLimits,
+    output: *mut NativeSlice,
+    output_optional: *mut u8,
+    present: *mut u8,
+) -> u8 {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let from = PathBuf::from(native_text(from)?);
+        let expression: Value = serde_json::from_slice(native_bytes(expression)?)?;
+        let context = callback_context(context);
+        let resolved = context.resolve(&from, optional != 0, &expression, limits)?;
+
+        context.output_buffer = resolved
+            .as_ref()
+            .map(|(path, _)| {
+                path.to_str()
+                    .ok_or_else(|| io::Error::other("module identity requires UTF-8"))
+                    .map(str::as_bytes)
+            })
+            .transpose()?
+            .unwrap_or_default()
+            .to_vec();
+
+        unsafe {
+            *present = u8::from(resolved.is_some());
+
+            *output_optional = resolved
+                .as_ref()
+                .map_or(0, |(_, optional)| u8::from(*optional));
+
+            *output = NativeSlice::new(&context.output_buffer);
+        }
+
+        Ok::<_, io::Error>(())
+    }));
+
+    callback_status(context, result, "resolution callback panicked")
+}
+
+extern "C" fn diagnostic_callback(
+    context: *mut c_void,
+    path: NativeSlice,
+    line: u32,
+    column: u32,
+    end_line: u32,
+    end_column: u32,
+    native_kind: u32,
+    _native_code: i32,
+    _native_variant: u32,
+    is_error: u8,
+    message: NativeSlice,
+    related_path: NativeSlice,
+    related_line: u32,
+    related_column: u32,
+    related_end_line: u32,
+    related_end_column: u32,
+    related_message: NativeSlice,
+) -> u8 {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let category = match native_kind {
+            NATIVE_TYPE_ERROR => "TypeError",
+            NATIVE_PARSE_ERROR => "SyntaxError",
+            NATIVE_LINT_WARNING => "LintWarning",
+            _ => return Err(io::Error::other("unknown native diagnostic kind")),
+        };
+
+        let path = PathBuf::from(native_text(path)?);
+        let related_path = native_text(related_path)?;
+        let related_message = native_text(related_message)?;
+
+        let related = if related_path.is_empty() || related_message.is_empty() {
+            Vec::new()
+        } else {
+            vec![RelatedDiagnostic {
+                path: PathBuf::from(related_path),
+                range: [related_line, related_column, related_end_line, related_end_column],
+                message: related_message,
+            }]
+        };
+
+        callback_context(context)
+            .report
+            .diagnostics
+            .push(Diagnostic {
+                path,
+                line,
+                column,
+                end_line,
+                end_column,
+                message: format!("{category}: {}", native_text(message)?),
+                is_error: is_error != 0,
+                related,
+            });
+
+        Ok::<_, io::Error>(())
+    }));
+
+    callback_status(context, result, "diagnostic callback panicked")
+}
+
+fn callback_status(
+    context: *mut c_void,
+    result: Result<Result<(), io::Error>, Box<dyn std::any::Any + Send>>,
+    panic_message: &'static str,
+) -> u8 {
+    match result {
+        Ok(Ok(())) => 1,
+
+        Ok(Err(error)) => {
+            callback_context(context).error = Some(error);
+
+            0
+        }
+
+        Err(_) => {
+            callback_context(context).error = Some(io::Error::other(panic_message));
+
+            0
+        }
+    }
+}
+
+extern "C" fn global_callback(context: *mut c_void, name: NativeSlice) -> u8 {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        callback_context(context).globals.insert(native_text(name)?);
+
+        Ok::<_, io::Error>(())
+    }));
+
+    callback_status(context, result, "global callback panicked")
+}
+
+extern "C" fn module_callback(context: *mut c_void, name: NativeSlice) -> u8 {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        callback_context(context)
+            .modules
+            .push(PathBuf::from(native_text(name)?));
+
+        Ok::<_, io::Error>(())
+    }));
+
+    callback_status(context, result, "module callback panicked")
+}
+
+extern "C" fn timeout_callback(context: *mut c_void, name: NativeSlice) -> u8 {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        callback_context(context)
+            .timeout_hits
+            .insert(PathBuf::from(native_text(name)?));
+
+        Ok::<_, io::Error>(())
+    }));
+
+    callback_status(context, result, "timeout callback panicked")
+}
+
+const CALLBACKS: NativeCallbacks = NativeCallbacks {
+    source: source_callback,
+    configuration: configuration_callback,
+    resolve: resolve_callback,
+    diagnostic: diagnostic_callback,
+};
+
+struct Checker {
+    handle: usize,
+}
+
+impl Checker {
+    fn new(context: &mut CallbackContext<'_, '_>, options: &Options) -> io::Result<Self> {
+        let frontend_options = NativeFrontendOptions {
+            old_solver: u8::from(options.old_solver),
+            retain_full_type_graphs: u8::from(options.annotations || options.retain_full_type_graphs),
+            run_lint_checks: 1,
+            ..NativeFrontendOptions::default()
+        };
+
+        let mut error = NativeString::default();
+
+        let handle = unsafe {
+            instar_checker_new(
+                &CALLBACKS,
+                ptr::from_mut(context).cast(),
+                &raw const frontend_options,
+                &raw mut error,
+            )
+        };
+
+        if handle.is_null() {
+            let message = owned_text(error)?;
+
+            return Err(io::Error::other(if message.is_empty() {
+                "cannot create native checker".into()
+            } else {
+                message
+            }));
+        }
+
+        Ok(Self {
+            handle: handle as usize,
+        })
+    }
+
+    fn register_builtins(&self, context: &mut CallbackContext<'_, '_>) -> io::Result<()> {
+        let mut error = NativeString::default();
+
+        let code = unsafe {
+            instar_checker_register_builtins(self.handle as *mut c_void, 0, &raw mut error)
+        };
+
+        status(code, error, &mut context.error)
+    }
+
+    fn call(
+        &self,
+        context: &mut CallbackContext<'_, '_>,
+        operation: unsafe extern "C" fn(*mut c_void, *mut NativeString) -> i32,
+    ) -> io::Result<()> {
+        let mut error = NativeString::default();
+
+        let code = unsafe { operation(self.handle as *mut c_void, &raw mut error) };
+
+        status(code, error, &mut context.error)
+    }
+
+    fn call_named(
+        &self,
+        context: &mut CallbackContext<'_, '_>,
+        name: &Path,
+        operation: unsafe extern "C" fn(*mut c_void, NativeSlice, *mut NativeString) -> i32,
+    ) -> io::Result<()> {
+        let name = name
+            .to_str()
+            .ok_or_else(|| io::Error::other("module identity requires UTF-8"))?;
+
+        let mut error = NativeString::default();
+
+        let code = unsafe {
+            operation(
+                self.handle as *mut c_void,
+                NativeSlice::new(name.as_bytes()),
+                &raw mut error,
+            )
+        };
+
+        status(code, error, &mut context.error)
+    }
+
+    fn load_definition(
+        &self,
+        context: &mut CallbackContext<'_, '_>,
+        source: &[u8],
+        package: &str,
+    ) -> io::Result<()> {
+        let options = NativeDefinitionOptions {
+            capture_comments: 1,
+            ..NativeDefinitionOptions::default()
+        };
+
+        let mut error = NativeString::default();
+
+        let code = unsafe {
+            instar_checker_load_definition(
+                self.handle as *mut c_void,
+                NativeSlice::new(source),
+                NativeSlice::new(package.as_bytes()),
+                &raw const options,
+                &raw mut error,
+            )
+        };
+
+        status(code, error, &mut context.error)
+    }
+
+    fn register_roblox_magic(
+        &self,
+        context: &mut CallbackContext<'_, '_>,
+        environment: &Environment,
+    ) -> io::Result<()> {
+        let classes = environment
+            .classes
+            .iter()
+            .map(|value| {
+                let (name, flags) = value
+                    .split_once('\0')
+                    .ok_or_else(|| io::Error::other("invalid Roblox class metadata"))?;
+
+                let flags = flags.as_bytes();
+
+                Ok(NativeRobloxClass {
+                    name: NativeSlice::new(name.as_bytes()),
+                    service: u8::from(
+                        *flags
+                            .first()
+                            .ok_or_else(|| io::Error::other("invalid Roblox class metadata"))?
+                            == b'1',
+                    ),
+                    creatable: u8::from(
+                        *flags
+                            .get(1)
+                            .ok_or_else(|| io::Error::other("invalid Roblox class metadata"))?
+                            == b'1',
+                    ),
+                })
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+
+        let nodes = environment
+            .nodes
+            .iter()
+            .map(|node| NativeRobloxNode {
+                name: NativeSlice::new(node.name.as_bytes()),
+                class_name: NativeSlice::new(node.class_name.as_bytes()),
+            })
+            .collect::<Vec<_>>();
+
+        let mut error = NativeString::default();
+
+        let code = unsafe {
+            instar_checker_register_roblox_magic(
+                self.handle as *mut c_void,
+                classes.as_ptr(),
+                classes.len(),
+                nodes.as_ptr(),
+                nodes.len(),
+                &raw mut error,
+            )
+        };
+
+        status(code, error, &mut context.error)
+    }
+
+    fn freeze(&self, context: &mut CallbackContext<'_, '_>) -> io::Result<()> {
+        self.call(context, instar_checker_freeze)
+    }
+
+    fn parse(&self, context: &mut CallbackContext<'_, '_>, path: &Path) -> io::Result<()> {
+        self.call_named(context, path, instar_checker_parse)
+    }
+
+    fn parse_diagnostics(
+        &self,
+        context: &mut CallbackContext<'_, '_>,
+        path: &Path,
+    ) -> io::Result<()> {
+        self.call_named(context, path, instar_checker_parse_diagnostics)
+    }
+
+    fn syntax_tree(
+        &self,
+        context: &mut CallbackContext<'_, '_>,
+        path: &Path,
+    ) -> io::Result<String> {
+        let name = path
+            .to_str()
+            .ok_or_else(|| io::Error::other("module identity requires UTF-8"))?;
+
+        let mut output = NativeString::default();
+        let mut error = NativeString::default();
+
+        let code = unsafe {
+            instar_checker_ast(
+                self.handle as *mut c_void,
+                NativeSlice::new(name.as_bytes()),
+                &raw mut output,
+                &raw mut error,
+            )
+        };
+
+        status(code, error, &mut context.error)?;
+
+        owned_text(output)
+    }
+
+    fn syntax(&self, context: &mut CallbackContext<'_, '_>, path: &Path) -> io::Result<()> {
+        context.syntax = Some(self.syntax_tree(context, path)?);
 
         Ok(())
-    });
-}
+    }
 
-extern "C" fn report(
-    context: *mut c_void,
-    path: Bytes,
-    message: Bytes,
-    range: Range,
-    is_error: i32,
-) {
-    let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
+    fn globals(&self, context: &mut CallbackContext<'_, '_>) -> io::Result<()> {
+        let mut error = NativeString::default();
 
-    context.call(|context| {
-        let path = unsafe { path.string()? };
+        let code = unsafe {
+            instar_checker_globals(
+                self.handle as *mut c_void,
+                global_callback,
+                ptr::from_mut(context).cast(),
+                &raw mut error,
+            )
+        };
 
-        context.report.diagnostics.push(Diagnostic {
-            path: context.environment.source(Path::new(&path)),
-            line: range.begin.line,
-            column: range.begin.column,
-            end_line: range.end.line,
-            end_column: range.end.column,
-            message: String::from_utf8_lossy(unsafe { message.slice()? }).into_owned(),
-            is_error: is_error != 0,
-            related: Vec::new(),
+        status(code, error, &mut context.error)
+    }
+
+    fn check(&self, context: &mut CallbackContext<'_, '_>, path: &Path) -> io::Result<()> {
+        self.call_named(context, path, instar_checker_check)
+    }
+
+    fn result(&self, context: &mut CallbackContext<'_, '_>, path: &Path) -> io::Result<()> {
+        let name = path
+            .to_str()
+            .ok_or_else(|| io::Error::other("module identity requires UTF-8"))?;
+
+        let mut error = NativeString::default();
+
+        let code = unsafe {
+            instar_checker_result(
+                self.handle as *mut c_void,
+                NativeSlice::new(name.as_bytes()),
+                0,
+                0,
+                &raw mut error,
+            )
+        };
+
+        status(code, error, &mut context.error)
+    }
+
+    fn editor(
+        &self,
+        context: &mut CallbackContext<'_, '_>,
+        path: &Path,
+        line: u32,
+        column: u32,
+        operation: &str,
+    ) -> io::Result<Vec<EditorEntry>> {
+        let name = path
+            .to_str()
+            .ok_or_else(|| io::Error::other("module identity requires UTF-8"))?;
+
+        let mut output = NativeString::default();
+        let mut error = NativeString::default();
+
+        let code = unsafe {
+            instar_checker_editor(
+                self.handle as *mut c_void,
+                NativeSlice::new(name.as_bytes()),
+                line,
+                column,
+                NativeSlice::new(operation.as_bytes()),
+                &raw mut output,
+                &raw mut error,
+            )
+        };
+
+        status(code, error, &mut context.error)?;
+        let value = owned_text(output)?;
+
+        serde_json::from_str(&value).map_err(io::Error::other)
+    }
+
+    fn timeouts(&self, context: &mut CallbackContext<'_, '_>) -> io::Result<()> {
+        let mut error = NativeString::default();
+
+        let code = unsafe {
+            instar_checker_timeouts(
+                self.handle as *mut c_void,
+                timeout_callback,
+                ptr::from_mut(context).cast(),
+                &raw mut error,
+            )
+        };
+
+        status(code, error, &mut context.error)
+    }
+
+    fn modules(&self, context: &mut CallbackContext<'_, '_>) -> io::Result<()> {
+        let mut error = NativeString::default();
+
+        let code = unsafe {
+            instar_checker_modules(
+                self.handle as *mut c_void,
+                module_callback,
+                ptr::from_mut(context).cast(),
+                &raw mut error,
+            )
+        };
+
+        status(code, error, &mut context.error)
+    }
+
+    fn annotation(&self, context: &mut CallbackContext<'_, '_>, path: &Path) -> io::Result<()> {
+        if context.report.has_errors() {
+            let source = context.resolver.load(path)?;
+
+            context.report.annotations.push(Annotation {
+                path: path.to_owned(),
+                bytes: source.bytes().to_vec(),
+            });
+
+            return Ok(());
+        }
+
+        self.call_named(context, path, instar_checker_attach_type_data)?;
+        let syntax_tree = self.syntax_tree(context, path)?;
+        let source = context.resolver.load(path)?;
+
+        context.report.annotations.push(Annotation {
+            path: path.to_owned(),
+            bytes: annotate_source(source.bytes(), &syntax_tree)?,
         });
 
         Ok(())
+    }
+}
+
+fn annotate_source(source: &[u8], syntax_tree: &str) -> io::Result<Vec<u8>> {
+    let tree: Value = serde_json::from_str(syntax_tree).map_err(io::Error::other)?;
+    let source_tree = vermis::parse(source.into());
+    let line_starts = line_starts(source);
+    let mut insertions = BTreeMap::new();
+
+    collect_annotation_insertions(&tree, source, &source_tree, &line_starts, &mut insertions);
+
+    let mut output = source.to_vec();
+
+    for (offset, value) in insertions.into_iter().rev() {
+        output.splice(offset..offset, value.bytes());
+    }
+
+    Ok(output)
+}
+
+fn line_starts(source: &[u8]) -> Vec<usize> {
+    let mut result = vec![0];
+
+    for (index, byte) in source.iter().enumerate() {
+        if *byte == b'\n' {
+            result.push(index + 1);
+        }
+    }
+
+    result
+}
+
+fn source_location(value: &Value) -> Option<((u32, u32), (u32, u32))> {
+    let value = value.as_str()?;
+    let (begin, end) = value.split_once(" - ")?;
+
+    Some((position(begin)?, position(end)?))
+}
+
+fn position(value: &str) -> Option<(u32, u32)> {
+    let (line, column) = value.split_once(',')?;
+
+    Some((line.parse().ok()?, column.parse().ok()?))
+}
+
+fn offset(source: &[u8], line_starts: &[usize], position: (u32, u32)) -> Option<usize> {
+    let line = usize::try_from(position.0).ok()?;
+    let column = usize::try_from(position.1).ok()?;
+    let start = *line_starts.get(line)?;
+    let mut end = line_starts.get(line + 1).copied().unwrap_or(source.len());
+
+    if end > start && source[end - 1] == b'\n' {
+        end -= 1;
+    }
+
+    if end > start && source[end - 1] == b'\r' {
+        end -= 1;
+    }
+
+    start.checked_add(column).filter(|value| *value <= end)
+}
+
+fn collect_annotation_insertions(
+    value: &Value,
+    source: &[u8],
+    source_tree: &vermis::Tree<'_>,
+    line_starts: &[usize],
+    insertions: &mut BTreeMap<usize, String>,
+) {
+    if let Some(object) = value.as_object() {
+        match object.get("type").and_then(Value::as_str) {
+            Some("AstLocal") => {
+                collect_local_annotation(value, source, source_tree, line_starts, insertions)
+            }
+
+            Some("AstStatLocalFunction") => {
+                if let Some(name) = object.get("name") {
+                    collect_function_generics(name, source, source_tree, line_starts, insertions);
+                }
+            }
+
+            Some("AstExprFunction") => {
+                if let Some(return_annotation) = object.get("returnAnnotation") {
+                    collect_function_return(
+                        value,
+                        return_annotation,
+                        source,
+                        source_tree,
+                        line_starts,
+                        insertions,
+                    );
+                }
+            }
+
+            _ => {}
+        }
+
+        for child in object.values() {
+            collect_annotation_insertions(child, source, source_tree, line_starts, insertions);
+        }
+    } else if let Some(values) = value.as_array() {
+        for value in values {
+            collect_annotation_insertions(value, source, source_tree, line_starts, insertions);
+        }
+    }
+}
+
+fn collect_local_annotation(
+    value: &Value,
+    source: &[u8],
+    source_tree: &vermis::Tree<'_>,
+    line_starts: &[usize],
+    insertions: &mut BTreeMap<usize, String>,
+) {
+    let Some(object) = value.as_object() else {
+        return;
+    };
+
+    let Some(annotation) = object.get("luauType").filter(|value| !value.is_null()) else {
+        return;
+    };
+
+    let Some(location) = object.get("location").and_then(source_location) else {
+        return;
+    };
+
+    let Some(start) = offset(source, line_starts, location.0) else {
+        return;
+    };
+
+    let Some(end) = offset(source, line_starts, location.1) else {
+        return;
+    };
+
+    if source_function_name(source_tree, start, end).is_some() {
+        return;
+    }
+
+    let (end, annotated) =
+        source_binding(source_tree, start, end).unwrap_or((end, has_colon(source, end)));
+
+    if annotated {
+        return;
+    }
+
+    let Some(annotation) = type_text(annotation) else {
+        return;
+    };
+
+    insertions
+        .entry(end)
+        .or_insert_with(|| format!(": {annotation}"));
+}
+
+fn collect_function_generics(
+    value: &Value,
+    source: &[u8],
+    source_tree: &vermis::Tree<'_>,
+    line_starts: &[usize],
+    insertions: &mut BTreeMap<usize, String>,
+) {
+    let Some(object) = value.as_object() else {
+        return;
+    };
+
+    let Some(function_type) = object.get("luauType") else {
+        return;
+    };
+
+    let names = generic_names(function_type);
+
+    if names.is_empty() {
+        return;
+    }
+
+    let Some(location) = object.get("location").and_then(source_location) else {
+        return;
+    };
+
+    let Some(start) = offset(source, line_starts, location.0) else {
+        return;
+    };
+
+    let Some(end) = offset(source, line_starts, location.1) else {
+        return;
+    };
+
+    let (end, generics) = source_function_name(source_tree, start, end)
+        .unwrap_or((end, has_generic_list(source, end)));
+
+    if generics {
+        return;
+    }
+
+    insertions
+        .entry(end)
+        .or_insert_with(|| format!("<{}>", names.join(", ")));
+}
+
+fn collect_function_return(
+    value: &Value,
+    return_annotation: &Value,
+    source: &[u8],
+    source_tree: &vermis::Tree<'_>,
+    line_starts: &[usize],
+    insertions: &mut BTreeMap<usize, String>,
+) {
+    let Some(object) = value.as_object() else {
+        return;
+    };
+
+    let Some(location) = object.get("location").and_then(source_location) else {
+        return;
+    };
+
+    let Some(start) = offset(source, line_starts, location.0) else {
+        return;
+    };
+
+    let Some(end) = offset(source, line_starts, location.1) else {
+        return;
+    };
+
+    let Some((close, returns)) = source_function_signature(source_tree, start, end) else {
+        return;
+    };
+
+    if returns {
+        return;
+    }
+
+    let Some(annotation) = type_pack_text(return_annotation, true) else {
+        return;
+    };
+
+    insertions
+        .entry(close)
+        .or_insert_with(|| format!(": {annotation}"));
+}
+
+fn source_binding(tree: &vermis::Tree<'_>, start: usize, end: usize) -> Option<(usize, bool)> {
+    for index in 0..tree.nodes.len() {
+        let Some(view) = tree.view(index) else {
+            continue;
+        };
+
+        if view.kind() != vermis::Kind::Binding {
+            continue;
+        }
+
+        let Some(vermis::Parts::Binding { name, annotation }) = view.parts() else {
+            continue;
+        };
+
+        if name.span().start == start && name.span().end == end {
+            return Some((name.span().end, annotation.is_some()));
+        }
+    }
+
+    None
+}
+
+fn source_function_name(
+    tree: &vermis::Tree<'_>,
+    start: usize,
+    end: usize,
+) -> Option<(usize, bool)> {
+    for index in 0..tree.nodes.len() {
+        let Some(view) = tree.view(index) else {
+            continue;
+        };
+
+        if !matches!(
+            view.kind(),
+            vermis::Kind::Function | vermis::Kind::LocalFunction
+        ) {
+            continue;
+        }
+
+        let Some(vermis::Parts::Function { name, generics, .. }) = view.parts() else {
+            continue;
+        };
+
+        let Some(name) = name else {
+            continue;
+        };
+
+        if name.span().start == start && name.span().end == end {
+            return Some((name.span().end, generics.is_some()));
+        }
+    }
+
+    None
+}
+
+fn source_function_signature(
+    tree: &vermis::Tree<'_>,
+    start: usize,
+    end: usize,
+) -> Option<(usize, bool)> {
+    let mut result = None;
+
+    for index in 0..tree.nodes.len() {
+        let node = &tree.nodes[index];
+
+        if !matches!(
+            node.kind,
+            vermis::Kind::Function | vermis::Kind::LocalFunction
+        ) || node.span.start > start
+            || node.span.end < end
+        {
+            continue;
+        }
+
+        let Some(view) = tree.view(index) else {
+            continue;
+        };
+
+        let Some(vermis::Parts::Function {
+            parameters,
+            returns,
+            ..
+        }) = view.parts()
+        else {
+            continue;
+        };
+
+        if result.is_none_or(|(length, _)| node.span.len() < length) {
+            result = Some((node.span.len(), (parameters.span().end, returns.is_some())));
+        }
+    }
+
+    result.map(|(_, signature)| signature)
+}
+
+fn has_colon(source: &[u8], mut offset: usize) -> bool {
+    while matches!(source.get(offset), Some(b' ' | b'\t')) {
+        offset += 1;
+    }
+
+    source.get(offset) == Some(&b':')
+}
+
+fn has_generic_list(source: &[u8], mut offset: usize) -> bool {
+    while matches!(source.get(offset), Some(b' ' | b'\t')) {
+        offset += 1;
+    }
+
+    source.get(offset) == Some(&b'<')
+}
+
+fn type_text(value: &Value) -> Option<String> {
+    let object = value.as_object()?;
+
+    match object.get("type").and_then(Value::as_str)? {
+        "AstTypeReference" => {
+            let name = object.get("name")?.as_str()?;
+
+            let mut result = object
+                .get("prefix")
+                .and_then(Value::as_str)
+                .map_or_else(String::new, |prefix| format!("{prefix}."));
+
+            result.push_str(name);
+
+            if let Some(parameters) = object.get("parameters").and_then(Value::as_array)
+                && !parameters.is_empty()
+            {
+                result.push('<');
+
+                result.push_str(
+                    &parameters
+                        .iter()
+                        .filter_map(type_or_pack_text)
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                );
+
+                result.push('>');
+            }
+
+            Some(result)
+        }
+
+        "AstTypeTable" => {
+            let mut fields = object
+                .get("props")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|property| {
+                    let property = property.as_object()?;
+                    let name = property_name(property.get("name")?.as_str()?);
+                    let value = type_text(property.get("propType")?)?;
+
+                    Some(format!("{name}: {value}"))
+                })
+                .collect::<Vec<_>>();
+
+            if let Some(indexer) = object.get("indexer").filter(|value| !value.is_null()) {
+                let indexer = indexer.as_object()?;
+
+                fields.push(format!(
+                    "[{}]: {}",
+                    type_text(indexer.get("indexType")?)?,
+                    type_text(indexer.get("resultType")?)?
+                ));
+            }
+
+            Some(format!("{{{}}}", fields.join(", ")))
+        }
+
+        "AstTypeFunction" => {
+            let generics = generic_names(value);
+            let arguments = type_list_text(object.get("argTypes")?, false)?;
+            let returns = type_pack_text(object.get("returnTypes")?, true)?;
+
+            let prefix = if generics.is_empty() {
+                String::new()
+            } else {
+                format!("<{}>", generics.join(", "))
+            };
+
+            Some(format!("{prefix}({arguments}) -> {returns}"))
+        }
+
+        "AstTypeGroup" => Some(format!("({})", type_text(object.get("inner")?)?)),
+
+        "AstTypeSingletonBool" => Some(if object.get("value")?.as_bool()? {
+            "true".into()
+        } else {
+            "false".into()
+        }),
+
+        "AstTypeSingletonString" => serde_json::to_string(object.get("value")?).ok(),
+        "AstTypeTypeof" => Some(format!("typeof({})", expression_text(object.get("expr")?)?)),
+        "AstTypeOptional" => Some("?".into()),
+
+        "AstTypeUnion" => {
+            let values = object.get("types")?.as_array()?;
+            let mut result = Vec::new();
+            let mut optional = false;
+
+            for value in values {
+                let value = type_text(value)?;
+
+                if value == "?" {
+                    optional = true;
+                } else {
+                    result.push(value);
+                }
+            }
+
+            let mut result = result.join(" | ");
+
+            if optional {
+                result.push('?');
+            }
+
+            Some(result)
+        }
+
+        "AstTypeIntersection" => Some(
+            object
+                .get("types")?
+                .as_array()?
+                .iter()
+                .filter_map(type_text)
+                .collect::<Vec<_>>()
+                .join(" & "),
+        ),
+
+        "AstTypeError" => Some("unknown".into()),
+        "AstTypePackExplicit" => type_pack_text(value, false),
+        "AstTypePackVariadic" => Some(format!("...{}", type_text(object.get("variadicType")?)?)),
+        "AstTypePackGeneric" => Some(format!("{}...", object.get("genericName")?.as_str()?)),
+        _ => Some("unknown".into()),
+    }
+}
+
+fn type_or_pack_text(value: &Value) -> Option<String> {
+    let object = value.as_object()?;
+    let kind = object.get("type").and_then(Value::as_str)?;
+
+    if kind.starts_with("AstTypePack") {
+        type_pack_text(value, false)
+    } else {
+        type_text(value)
+    }
+}
+
+fn type_list_text(value: &Value, parenthesized: bool) -> Option<String> {
+    let result = type_list_values(value)?.join(", ");
+
+    if parenthesized {
+        Some(format!("({result})"))
+    } else {
+        Some(result)
+    }
+}
+
+fn type_list_values(value: &Value) -> Option<Vec<String>> {
+    let object = value.as_object()?;
+
+    let mut values = object
+        .get("types")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(type_or_pack_text)
+        .collect::<Vec<_>>();
+
+    if let Some(tail) = object.get("tailType").filter(|value| !value.is_null()) {
+        values.push(type_pack_text(tail, false)?);
+    }
+
+    Some(values)
+}
+
+fn type_pack_text(value: &Value, function_return: bool) -> Option<String> {
+    let object = value.as_object()?;
+
+    match object.get("type").and_then(Value::as_str)? {
+        "AstTypePackExplicit" => {
+            let values = type_list_values(object.get("typeList")?)?;
+
+            if function_return {
+                match values.as_slice() {
+                    [] => Some("()".into()),
+                    [value] => Some(value.clone()),
+                    _ => Some(format!("({})", values.join(", "))),
+                }
+            } else {
+                Some(format!("({})", values.join(", ")))
+            }
+        }
+
+        "AstTypePackVariadic" => Some(format!("...{}", type_text(object.get("variadicType")?)?)),
+        "AstTypePackGeneric" => Some(format!("{}...", object.get("genericName")?.as_str()?)),
+        _ => type_text(value),
+    }
+}
+
+fn generic_names(value: &Value) -> Vec<String> {
+    let Some(object) = value.as_object() else {
+        return Vec::new();
+    };
+
+    let count = object
+        .get("generics")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len)
+        + object
+            .get("genericPacks")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+
+    if count == 0 {
+        return Vec::new();
+    }
+
+    let mut names = Vec::new();
+    collect_generic_references(value, &mut names);
+
+    for key in ["generics", "genericPacks"] {
+        if let Some(values) = object.get(key).and_then(Value::as_array) {
+            for value in values {
+                let Some(name) = value.get("name").and_then(Value::as_str) else {
+                    continue;
+                };
+
+                if !name.is_empty() && !names.iter().any(|value| value == name) {
+                    names.push(name.to_owned());
+                }
+            }
+        }
+    }
+
+    for index in names.len()..count {
+        names.push(generated_generic_name(index));
+    }
+
+    names.truncate(count);
+
+    names
+}
+
+fn collect_generic_references(value: &Value, names: &mut Vec<String>) {
+    let Some(object) = value.as_object() else {
+        if let Some(values) = value.as_array() {
+            for value in values {
+                collect_generic_references(value, names);
+            }
+        }
+
+        return;
+    };
+
+    if object.get("type").and_then(Value::as_str) == Some("AstTypeReference")
+        && let Some(name) = object.get("name").and_then(Value::as_str)
+        && !matches!(
+            name,
+            "any"
+                | "boolean"
+                | "buffer"
+                | "never"
+                | "nil"
+                | "number"
+                | "string"
+                | "thread"
+                | "unknown"
+                | "vector"
+        )
+        && !names.iter().any(|value| value == name)
+    {
+        names.push(name.to_owned());
+    }
+
+    for value in object.values() {
+        collect_generic_references(value, names);
+    }
+}
+
+fn generated_generic_name(index: usize) -> String {
+    const NAMES: [&str; 8] = ["T", "U", "V", "W", "X", "Y", "Z", "A"];
+
+    NAMES
+        .get(index)
+        .map_or_else(|| format!("T{index}"), |name| (*name).into())
+}
+
+fn property_name(value: &str) -> String {
+    if value.bytes().enumerate().all(|(index, byte)| {
+        (index == 0 && (byte == b'_' || byte.is_ascii_alphabetic()))
+            || (index > 0 && (byte == b'_' || byte.is_ascii_alphanumeric()))
+    }) {
+        value.into()
+    } else {
+        serde_json::to_string(value)
+            .map_or_else(|_| "[unknown]".into(), |value| format!("[{value}]"))
+    }
+}
+
+fn expression_text(value: &Value) -> Option<String> {
+    let object = value.as_object()?;
+
+    match object.get("type").and_then(Value::as_str)? {
+        "AstExprGlobal" => object.get("global")?.as_str().map(str::to_owned),
+
+        "AstExprLocal" => object
+            .get("local")?
+            .get("name")?
+            .as_str()
+            .map(str::to_owned),
+
+        "AstExprIndexName" => Some(format!(
+            "{}{}{}",
+            expression_text(object.get("expr")?)?,
+            if object.get("op").and_then(Value::as_str) == Some("Colon") {
+                ":"
+            } else {
+                "."
+            },
+            object.get("index")?.as_str()?
+        )),
+
+        "AstExprIndexExpr" => Some(format!(
+            "{}[{}]",
+            expression_text(object.get("expr")?)?,
+            expression_text(object.get("index")?)?
+        )),
+
+        "AstExprConstantString" => serde_json::to_string(object.get("value")?).ok(),
+        _ => Some("unknown".into()),
+    }
+}
+
+impl Drop for Checker {
+    fn drop(&mut self) {
+        unsafe { instar_checker_destroy(self.handle as *mut c_void) };
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct Session;
+
+impl Session {
+    pub(crate) fn environment(
+        &mut self,
+        resolver: &mut Resolver<'_>,
+        settings: Option<&crate::project::configuration::RobloxConfig>,
+        update: bool,
+    ) -> io::Result<Arc<Environment>> {
+        settings.map_or_else(
+            || Ok(Arc::new(Environment::default())),
+            |settings| Environment::load(resolver, settings, update).map(Arc::new),
+        )
+    }
+
+    pub(crate) fn refresh(&mut self) {}
+
+    pub(crate) fn parse(
+        &mut self,
+        resolver: &mut Resolver<'_>,
+        path: &Path,
+        load_definitions: bool,
+    ) -> io::Result<Report> {
+        let (mut report, syntax, globals, environment, _) =
+            run(resolver, path, &Options::default(), load_definitions, false, None, None)?;
+
+        report.editor = syntax.map(|description| {
+            EditorResult::Entry(Box::new(EditorEntry {
+                description: Some(description),
+                parameters: Some(globals.into_iter().collect()),
+                ..empty_entry()
+            }))
+        });
+
+        if let Some(EditorResult::Entry(entry)) = &report.editor
+            && let Some(description) = &entry.description
+            && let Ok(document) = crate::syntax::decode(
+                &Source::new(path.to_owned(), resolver.load(path)?.bytes().to_vec())
+                    .map_err(io::Error::other)?,
+                description,
+            )
+        {
+            report.links = dependency_entries(resolver, environment.as_deref(), path, &document)?;
+        }
+
+        Ok(report)
+    }
+
+    pub(crate) fn analyze(
+        &mut self,
+        resolver: &mut Resolver<'_>,
+        modules: &[PathBuf],
+        options: &Options,
+    ) -> io::Result<Report> {
+        self.analyze_with_definitions(resolver, modules, options, false)
+    }
+
+    pub(crate) fn analyze_including_definitions(
+        &mut self,
+        resolver: &mut Resolver<'_>,
+        modules: &[PathBuf],
+        options: &Options,
+    ) -> io::Result<Report> {
+        self.analyze_with_definitions(resolver, modules, options, true)
+    }
+
+    fn analyze_with_definitions(
+        &mut self,
+        resolver: &mut Resolver<'_>,
+        modules: &[PathBuf],
+        options: &Options,
+        include_definitions: bool,
+    ) -> io::Result<Report> {
+        let mut report = Report::default();
+
+        for path in modules {
+            if !include_definitions && !resolver.is_open(path)? && resolver.is_definition(path)? {
+                continue;
+            }
+
+            let (mut current, _, _, _, _) = run(resolver, path, options, true, true, None, None)?;
+            report.diagnostics.append(&mut current.diagnostics);
+            report.timeout_hits.append(&mut current.timeout_hits);
+            report.annotations.append(&mut current.annotations);
+            report.documentation.append(&mut current.documentation);
+        }
+
+        normalize_diagnostics(&mut report.diagnostics);
+
+        Ok(report)
+    }
+
+    pub(crate) fn query(
+        &mut self,
+        resolver: &mut Resolver<'_>,
+        modules: &[PathBuf],
+        path: &Path,
+        position: line_index::LineCol,
+        operation: &str,
+        collect_diagnostics: bool,
+    ) -> io::Result<Report> {
+        let mut report = self.analyze(resolver, modules, &Options::default())?;
+
+        if !collect_diagnostics {
+            report.diagnostics.clear();
+        }
+
+        let syntax_operation = matches!(
+            operation,
+            "index" | "symbols" | "calls" | "links" | "colors" | "imports" | "extract" | "folds" | "selection"
+        );
+
+        if syntax_operation {
+            let parsed = self.parse(resolver, path, true)?;
+
+            let syntax = match parsed.editor {
+                Some(EditorResult::Entry(entry)) => entry.description,
+                _ => None,
+            }
+            .ok_or_else(|| io::Error::other("native syntax unavailable"))?;
+
+            let source = resolver.load(path)?;
+            let document = crate::syntax::decode(&source, &syntax).map_err(io::Error::other)?;
+            let links = parsed.links;
+
+            let entries = match operation {
+                "colors" => color_entries(path, &document),
+                "imports" => import_entries(path, &document, links),
+                "extract" => extract_entries(path, &document, position),
+                "folds" => fold_entries(path, &document),
+                "selection" => selection_entries(path, &document, position),
+                _ => index_entries(path, &document, links),
+            };
+
+            report.editor = Some(EditorResult::Entries(match operation {
+                "index" => entries,
+
+                "symbols" => entries
+                    .into_iter()
+                    .filter(|entry| entry.caller.is_none() && entry.kind != Some(3))
+                    .collect(),
+
+                "calls" => entries
+                    .into_iter()
+                    .filter(|entry| entry.caller.is_some())
+                    .collect(),
+
+                "links" => entries
+                    .into_iter()
+                    .filter(|entry| entry.kind == Some(3) && entry.caller.is_none())
+                    .collect(),
+
+                "colors" | "imports" | "extract" | "folds" | "selection" => entries,
+
+                _ => Vec::new(),
+            }));
+        } else {
+            let options = Options {
+                retain_full_type_graphs: true,
+                ..Options::default()
+            };
+
+            let (_, _, _, _, entries) = run(
+                resolver,
+                path,
+                &options,
+                true,
+                true,
+                Some((position.line, position.col, operation)),
+                (operation == "references").then_some(modules),
+            )?;
+
+            report.editor = Some(EditorResult::Entries(entries.unwrap_or_default()));
+        }
+
+        Ok(report)
+    }
+}
+
+fn run(
+    resolver: &mut Resolver<'_>,
+    path: &Path,
+    options: &Options,
+    load_definitions: bool,
+    check: bool,
+    editor: Option<(u32, u32, &str)>,
+    editor_modules: Option<&[PathBuf]>,
+) -> io::Result<(
+    Report,
+    Option<String>,
+    BTreeSet<String>,
+    Option<Arc<Environment>>,
+    Option<Vec<EditorEntry>>,
+)> {
+    let configuration_source = matches!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some(".config.luau" | "config.luau")
+    );
+
+    let environment = if configuration_source {
+        None
+    } else {
+        resolver
+            .discovery
+            .roblox(path)?
+            .as_ref()
+            .map(|settings| Environment::load(resolver, settings, options.update))
+            .transpose()?
+            .map(Arc::new)
+    };
+
+    let definitions = if load_definitions && !configuration_source {
+        resolver
+            .discovery
+            .definitions(path)?
+            .into_iter()
+            .map(|definition| {
+                let source = resolver.load(&definition)?;
+
+                Ok((definition, source))
+            })
+            .collect::<io::Result<Vec<_>>>()?
+    } else {
+        Vec::new()
+    };
+
+    let constants = (load_definitions && !configuration_source)
+        .then(|| resolver.discovery.constants(path))
+        .transpose()?
+        .unwrap_or_default();
+
+    let open_editor_modules = editor_modules
+        .map(|modules| {
+            let mut open = Vec::new();
+
+            for module in modules {
+                if resolver.is_open(module)? {
+                    open.push(module.clone());
+                }
+            }
+
+            Ok::<_, io::Error>(open)
+        })
+        .transpose()?;
+
+    let mut documentation = BTreeMap::new();
+
+    if let Some(environment) = &environment {
+        documentation.extend(
+            environment
+                .documentation
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone())),
+        );
+    }
+
+    if check {
+        for documentation_path in resolver.discovery.documentation(path)? {
+            let source = resolver.load(&documentation_path)?;
+
+            let values: Documentation =
+                serde_json::from_slice(source.bytes()).map_err(|error| {
+                    io::Error::other(format!("{}: {error}", documentation_path.display()))
+                })?;
+
+            documentation.extend(values);
+        }
+    }
+
+    let mut context = CallbackContext {
+        resolver,
+        options,
+        environment: environment.clone(),
+        configurations: BTreeMap::new(),
+        source_buffer: None,
+        output_buffer: Vec::new(),
+        report: Report::default(),
+        syntax: None,
+        globals: BTreeSet::new(),
+        modules: Vec::new(),
+        timeout_hits: BTreeSet::new(),
+        identities: BTreeMap::new(),
+        error: None,
+    };
+
+    if configuration_source {
+        let source = context.resolver.load(path)?;
+        let mut configuration = Configuration::new()?;
+
+        if let Err(error) = configuration.extract_luau(source.bytes()) {
+            let message = error.to_string();
+
+            let message = if message.starts_with("Unknown lint ") {
+                message
+            } else {
+                format!("TypeError: {message}")
+            };
+
+            context.report.diagnostics.push(Diagnostic {
+                path: path.to_owned(),
+                line: 0,
+                column: 0,
+                end_line: 0,
+                end_column: 0,
+                message,
+                is_error: true,
+                related: Vec::new(),
+            });
+        }
+    }
+
+    let checker = Checker::new(&mut context, options)?;
+    checker.register_builtins(&mut context)?;
+
+    if load_definitions && configuration_source {
+        checker.load_definition(
+            &mut context,
+            include_bytes!("project/configuration/configuration.d.luau"),
+            "configuration.d.luau",
+        )?;
+    }
+
+    if load_definitions && let Some(environment) = &environment {
+        let source = context.resolver.load(&environment.definition)?;
+
+        let package = environment
+            .definition
+            .to_str()
+            .ok_or_else(|| io::Error::other("definition path requires UTF-8"))?;
+
+        checker.load_definition(&mut context, source.bytes(), package)?;
+        checker.register_roblox_magic(&mut context, environment)?;
+    }
+
+    for (definition, source) in definitions {
+        checker.load_definition(
+            &mut context,
+            source.bytes(),
+            definition
+                .to_str()
+                .ok_or_else(|| io::Error::other("definition path requires UTF-8"))?,
+        )?;
+    }
+
+    if !constants.is_empty() {
+        checker.load_definition(&mut context, &constants, "build constants")?;
+    }
+
+    checker.freeze(&mut context)?;
+
+    if check {
+        checker.check(&mut context, path)?;
+
+        if let Some(modules) = &open_editor_modules {
+            for module in modules {
+                if module != path {
+                    checker.check(&mut context, module)?;
+                }
+            }
+        }
+
+        checker.timeouts(&mut context)?;
+        checker.result(&mut context, path)?;
+        checker.modules(&mut context)?;
+
+        let modules = std::mem::take(&mut context.modules);
+
+        for module in modules {
+            if module != path {
+                checker.result(&mut context, &module)?;
+                checker.timeouts(&mut context)?;
+            }
+        }
+
+        if options.annotations {
+            checker.annotation(&mut context, path)?;
+        }
+    } else {
+        checker.parse(&mut context, path)?;
+        checker.parse_diagnostics(&mut context, path)?;
+        checker.syntax(&mut context, path)?;
+        checker.globals(&mut context)?;
+    }
+
+    if !documentation.is_empty() {
+        context
+            .report
+            .documentation
+            .insert(path.to_owned(), Arc::new(documentation));
+    }
+
+    let mut editor = editor
+        .map(|(line, column, operation)| checker.editor(&mut context, path, line, column, operation))
+        .transpose()?;
+
+    if let Some(environment) = &environment
+        && let Some(entries) = &mut editor
+    {
+        for entry in entries {
+            if let Some(path) = entry.path.clone() {
+                entry.path = Some(environment.source(&path));
+            }
+        }
+    }
+
+    normalize_diagnostics(&mut context.report.diagnostics);
+    context.report.timeout_hits = context.timeout_hits.into_iter().collect();
+
+    Ok((context.report, context.syntax, context.globals, environment, editor))
+}
+
+fn normalize_diagnostics(diagnostics: &mut Vec<Diagnostic>) {
+    diagnostics.sort_by(|left, right| {
+        (
+            &left.path,
+            left.line,
+            left.column,
+            left.end_line,
+            left.end_column,
+            &left.message,
+            left.is_error,
+        )
+            .cmp(&(
+                &right.path,
+                right.line,
+                right.column,
+                right.end_line,
+                right.end_column,
+                &right.message,
+                right.is_error,
+            ))
+    });
+
+    diagnostics.dedup_by(|left, right| {
+        left.path == right.path
+            && left.line == right.line
+            && left.column == right.column
+            && left.end_line == right.end_line
+            && left.end_column == right.end_column
+            && left.message == right.message
+            && left.is_error == right.is_error
     });
 }
 
@@ -510,1216 +2589,834 @@ fn empty_entry() -> EditorEntry {
     }
 }
 
-extern "C" fn type_result(context: *mut c_void, description: Bytes) {
-    let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
-
-    context.call(|context| {
-        let mut entry = empty_entry();
-
-        entry.description = Some(unsafe { description.string()? });
-
-        context.report.editor = Some(EditorResult::Entry(Box::new(entry)));
-
-        Ok(())
-    });
-}
-
-extern "C" fn syntax_result(
-    context: *mut c_void,
-    description: Bytes,
-    parameters: *const Bytes,
-    count: usize,
-) {
-    let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
-
-    context.call(|context| {
-        if count != 0 && parameters.is_null() {
-            return Err(io::Error::other("native syntax parameters are invalid"));
-        }
-
-        let mut entry = empty_entry();
-
-        entry.description = Some(unsafe { description.string()? });
-
-        entry.parameters = Some(
-            (0..count)
-                .map(|index| unsafe { (*parameters.add(index)).string() })
-                .collect::<io::Result<Vec<_>>>()?,
-        );
-
-        context.report.editor = Some(EditorResult::Entry(Box::new(entry)));
-
-        Ok(())
-    });
-}
-
-extern "C" fn completion_result(
-    context: *mut c_void,
-    label: Bytes,
-    description: Bytes,
-    documentation: Bytes,
-    insert: Bytes,
-    kind: u32,
-    deprecated: i32,
-) {
-    let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
-
-    context.call(|context| {
-        let mut entry = empty_entry();
-
-        entry.label = Some(unsafe { label.string()? });
-
-        entry.description = Some(unsafe { description.string()? });
-
-        entry.documentation = Some(unsafe { documentation.string()? });
-
-        entry.insert = Some(unsafe { insert.string()? });
-
-        entry.kind = Some(kind);
-        entry.deprecated = Some(deprecated != 0);
-
-        match &mut context.report.editor {
-            Some(EditorResult::Entries(entries)) => entries.push(entry),
-            _ => context.report.editor = Some(EditorResult::Entries(vec![entry])),
-        }
-
-        Ok(())
-    });
-}
-
-extern "C" fn signature_result(
-    context: *mut c_void,
-    description: Bytes,
-    parameters: *const Bytes,
-    count: usize,
-    active: u32,
-) {
-    let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
-
-    context.call(|context| {
-        if count != 0 && parameters.is_null() {
-            return Err(io::Error::other("native signature parameters are invalid"));
-        }
-
-        let mut entry = empty_entry();
-
-        entry.description = Some(unsafe { description.string()? });
-
-        entry.parameters = Some(
-            (0..count)
-                .map(|index| unsafe { (*parameters.add(index)).string() })
-                .collect::<io::Result<Vec<_>>>()?,
-        );
-
-        entry.active = Some(active);
-        context.report.editor = Some(EditorResult::Entry(Box::new(entry)));
-
-        Ok(())
-    });
-}
-
-fn range_values(range: Range) -> [u32; 4] {
-    [
-        range.begin.line,
-        range.begin.column,
-        range.end.line,
-        range.end.column,
-    ]
-}
-
-extern "C" fn destination_result(context: *mut c_void, path: Bytes, range: Range, name: Bytes) {
-    let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
-
-    context.call(|context| {
-        let mut entry = empty_entry();
-
-        entry.path = Some(PathBuf::from(unsafe { path.string()? }));
-
-        entry.range = Some(range_values(range));
-
-        entry.name = Some(unsafe { name.string()? });
-
-        entry.declaration = context.declaration.then_some(true);
-
-        match &mut context.report.editor {
-            Some(EditorResult::Entries(entries)) => entries.push(entry),
-            _ => context.report.editor = Some(EditorResult::Entries(vec![entry])),
-        }
-
-        Ok(())
-    });
-}
-
-extern "C" fn extract_result(context: *mut c_void, range: Range, selection: Range) {
-    let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
-
-    context.call(|context| {
-        let mut entry = empty_entry();
-        entry.range = Some(range_values(range));
-        entry.selection = Some(range_values(selection));
-
-        match &mut context.report.editor {
-            Some(EditorResult::Entries(entries)) => entries.push(entry),
-            _ => context.report.editor = Some(EditorResult::Entries(vec![entry])),
-        }
-
-        Ok(())
-    });
-}
-
-extern "C" fn symbol_result(
-    context: *mut c_void,
-    name: Bytes,
-    path: Bytes,
-    range: Range,
-    selection: Range,
-    kind: u32,
-    declaration: i32,
-    modifiers: u32,
-) {
-    let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
-
-    context.call(|context| {
-        let mut entry = empty_entry();
-
-        entry.name = Some(unsafe { name.string()? });
-
-        entry.path = Some(PathBuf::from(unsafe { path.string()? }));
-
-        entry.range = Some(range_values(range));
-        entry.selection = Some(range_values(selection));
-        entry.kind = Some(kind);
-        entry.declaration = Some(declaration != 0);
-        entry.modifiers = Some(modifiers);
-
-        match &mut context.report.editor {
-            Some(EditorResult::Entries(entries)) => entries.push(entry),
-            _ => context.report.editor = Some(EditorResult::Entries(vec![entry])),
-        }
-
-        Ok(())
-    });
-}
-
-extern "C" fn import_result(
-    context: *mut c_void,
-    name: Bytes,
-    label: Bytes,
-    target: Bytes,
-    range: Range,
-) {
-    let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
-
-    context.call(|context| {
-        let mut entry = empty_entry();
-
-        entry.name = Some(unsafe { name.string()? });
-
-        entry.label = Some(unsafe { label.string()? });
-
-        entry.description = Some(unsafe { target.string()? });
-
-        entry.range = Some(range_values(range));
-        entry.imports = Some(true);
-
-        match &mut context.report.editor {
-            Some(EditorResult::Entries(entries)) => entries.push(entry),
-            _ => context.report.editor = Some(EditorResult::Entries(vec![entry])),
-        }
-
-        Ok(())
-    });
-}
-
-extern "C" fn scope_result(
-    context: *mut c_void,
-    name: Bytes,
-    has_name: i32,
-    kind: u32,
-    has_kind: i32,
-) {
-    let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
-
-    context.call(|context| {
-        let mut entry = empty_entry();
-
-        if has_name != 0 {
-            entry.name = Some(unsafe { name.string()? });
-        }
-
-        if has_kind != 0 {
-            entry.kind = Some(kind);
-        }
-
-        context.report.editor = Some(EditorResult::Entry(Box::new(entry)));
-
-        Ok(())
-    });
-}
-
-extern "C" fn call_result(
-    context: *mut c_void,
-    path: Bytes,
-    range: Range,
-    name: Bytes,
-    caller: Range,
-    has_container: i32,
-    container: Range,
-) {
-    let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
-
-    context.call(|context| {
-        let mut entry = empty_entry();
-
-        entry.path = Some(PathBuf::from(unsafe { path.string()? }));
-
-        entry.range = Some(range_values(range));
-
-        entry.name = Some(unsafe { name.string()? });
-
-        entry.caller = Some(range_values(caller));
-        entry.container = (has_container != 0).then(|| range_values(container));
-
-        match &mut context.report.editor {
-            Some(EditorResult::Entries(entries)) => entries.push(entry),
-            _ => context.report.editor = Some(EditorResult::Entries(vec![entry])),
-        }
-
-        Ok(())
-    });
-}
-
-extern "C" fn annotation_result(
-    context: *mut c_void,
-    path: Bytes,
-    position: Position,
-    text: Bytes,
-) {
-    let context = unsafe { &mut *context.cast::<Context<'_, '_>>() };
-
-    context.call(|context| {
-        context.annotations.push(NativeAnnotation {
-            path: unsafe { path.string()? },
-            position,
-            text: unsafe { text.slice()?.to_vec() },
-        });
-
-        Ok(())
-    });
-}
-
-fn module_name(path: &Path) -> io::Result<String> {
-    path.to_str()
-        .map(|path| {
-            #[cfg(windows)]
-            {
-                path.replace('\\', "/")
-            }
-
-            #[cfg(not(windows))]
-            {
-                path.to_owned()
-            }
-        })
-        .ok_or_else(|| {
-            io::Error::other(format!(
-                "{}: module identity requires UTF-8",
-                path.display()
-            ))
-        })
-}
-
-struct OwnedModule {
-    name: Vec<u8>,
-    source: Vec<u8>,
-}
-
-impl OwnedModule {
-    fn ffi(&self) -> Module {
-        Module {
-            name: Bytes::new(&self.name),
-            source: Bytes::new(&self.source),
-        }
-    }
-}
-
-struct OwnedConfiguration {
-    module: Vec<u8>,
-    path: Vec<u8>,
-    source: Vec<u8>,
-}
-
-impl OwnedConfiguration {
-    fn ffi(&self) -> Configuration {
-        Configuration {
-            module: Bytes::new(&self.module),
-            path: Bytes::new(&self.path),
-            source: Bytes::new(&self.source),
-        }
-    }
-}
-
-struct NativeEngine(*mut c_void);
-
-impl Drop for NativeEngine {
-    fn drop(&mut self) {
-        unsafe { instar_engine_destroy(self.0) };
-    }
-}
-
-#[derive(Default)]
-pub(crate) struct Session {
-    changed: Vec<PathBuf>,
-    refresh: bool,
-    query: Option<(PathBuf, line_index::LineCol, String)>,
-
-    environments: BTreeMap<
-        crate::project::configuration::RobloxConfig,
-        std::sync::Arc<crate::project::roblox::Environment>,
-    >,
-}
-
-impl Session {
-    pub(crate) fn query(
-        &mut self,
-        resolver: &mut Resolver<'_>,
-        modules: &[PathBuf],
-        path: &Path,
-        position: line_index::LineCol,
-        operation: &str,
-    ) -> io::Result<Report> {
-        self.query = Some((path.to_owned(), position, operation.to_owned()));
-        let result = self.analyze(resolver, modules, &Options::default());
-        self.query = None;
-
-        result
+fn unwrap_expression(mut value: &Value) -> &Value {
+    while matches!(
+        crate::syntax::kind(value),
+        "AstExprGroup" | "AstExprTypeAssertion" | "AstExprInstantiate"
+    ) {
+        value = &value["expr"];
     }
 
-    pub(crate) fn refresh(&mut self) {
-        self.refresh = true;
-    }
+    value
+}
 
-    pub(crate) fn change(&mut self, path: &Path) {
-        self.changed.push(path.to_owned());
-    }
+fn string_expression(value: &Value) -> Option<&str> {
+    let value = unwrap_expression(value);
 
-    pub(crate) fn analyze(
-        &mut self,
-        resolver: &mut Resolver<'_>,
-        modules: &[PathBuf],
-        options: &Options,
-    ) -> io::Result<Report> {
-        let changed = std::mem::take(&mut self.changed);
-        let refresh = std::mem::take(&mut self.refresh);
+    (crate::syntax::kind(value) == "AstExprConstantString")
+        .then(|| crate::syntax::field(value, "value"))
+}
 
-        if refresh || options.update {
-            self.environments.clear();
-        }
+fn static_strings(document: &Value) -> BTreeMap<String, String> {
+    fn collect<'value>(value: &'value Value, bindings: &mut BTreeMap<String, &'value Value>) {
+        match value {
+            Value::Object(fields) => {
+                if crate::syntax::kind(value) == "AstStatLocal" {
+                    let variables = crate::syntax::array(&value["vars"]);
+                    let values = crate::syntax::array(&value["values"]);
 
-        let mut groups: Vec<AnalysisGroup> = Vec::new();
-
-        for path in modules {
-            let source = resolver.load(path)?;
-            let path = source.path().to_owned();
-
-            let configuration = crate::project::ConfigKind::from_path(&path)
-                == Some(crate::project::ConfigKind::Luau);
-
-            let mut definitions = if configuration {
-                Vec::new()
-            } else {
-                resolver.discovery.definitions(&path)?
-            };
-
-            if path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.ends_with(".d.luau"))
-                && !definitions.contains(&path)
-            {
-                definitions.push(path.clone());
-            }
-
-            let documentation = if configuration {
-                Vec::new()
-            } else {
-                resolver.discovery.documentation(&path)?
-            };
-
-            let constants = if configuration {
-                Vec::new()
-            } else {
-                resolver.discovery.constants(&path)?
-            };
-
-            let environment = if configuration {
-                None
-            } else {
-                let settings = resolver.discovery.roblox(&path)?;
-
-                Some(self.environment(resolver, settings.as_ref(), options.update)?)
-            };
-
-            let group = groups.iter_mut().find(|group| {
-                group.0 == definitions
-                    && group.1 == documentation
-                    && group.2 == constants
-                    && match (&group.3, &environment) {
-                        (None, None) => true,
-                        (Some(left), Some(right)) => std::sync::Arc::ptr_eq(left, right),
-                        _ => false,
+                    for (variable, value) in variables.iter().zip(values) {
+                        if let Some(location) = variable["location"].as_str() {
+                            bindings.insert(location.to_owned(), value);
+                        }
                     }
-            });
+                }
 
-            if let Some(group) = group {
-                group.4.push(path);
-            } else {
-                groups.push((
-                    definitions,
-                    documentation,
-                    constants,
-                    environment,
-                    vec![path],
-                ));
+                for child in fields.values() {
+                    collect(child, bindings);
+                }
             }
-        }
 
-        let mut report = Report::default();
-
-        for (definitions, documentation, constants, environment, modules) in groups {
-            let result = self.analyze_group(
-                resolver,
-                &modules,
-                (&definitions, &documentation, &constants),
-                environment.as_ref(),
-                options,
-                &changed,
-            )?;
-
-            report.diagnostics.extend(result.diagnostics);
-            report.annotations.extend(result.annotations);
-            report.documentation.extend(result.documentation);
-
-            if result.editor.is_some() {
-                report.editor = result.editor;
+            Value::Array(values) => {
+                for child in values {
+                    collect(child, bindings);
+                }
             }
+
+            _ => {}
         }
-
-        let mut seen = std::collections::BTreeSet::new();
-
-        report.diagnostics.retain(|diagnostic| {
-            seen.insert((
-                diagnostic.path.clone(),
-                diagnostic.line,
-                diagnostic.column,
-                diagnostic.message.clone(),
-                diagnostic.is_error,
-            ))
-        });
-
-        Ok(report)
     }
 
-    pub(crate) fn environment(
-        &mut self,
-        resolver: &mut Resolver<'_>,
-        settings: Option<&crate::project::configuration::RobloxConfig>,
-        update: bool,
-    ) -> io::Result<std::sync::Arc<crate::project::roblox::Environment>> {
-        let Some(settings) = settings else {
-            return Ok(std::sync::Arc::default());
+    fn resolve<'value>(
+        value: &'value Value,
+        bindings: &BTreeMap<String, &'value Value>,
+        seen: &mut BTreeSet<String>,
+    ) -> Option<String> {
+        let value = unwrap_expression(value);
+
+        if crate::syntax::kind(value) == "AstExprConstantString" {
+            return Some(crate::syntax::field(value, "value").to_owned());
+        }
+
+        if crate::syntax::kind(value) != "AstExprLocal" {
+            return None;
+        }
+
+        let location = value["local"]["location"].as_str()?.to_owned();
+
+        if !seen.insert(location.clone()) {
+            return None;
+        }
+
+        bindings
+            .get(&location)
+            .and_then(|value| resolve(value, bindings, seen))
+    }
+
+    let mut bindings = BTreeMap::new();
+    collect(&document["root"], &mut bindings);
+
+    bindings
+        .iter()
+        .filter_map(|(location, value)| {
+            resolve(value, &bindings, &mut BTreeSet::from([location.clone()]))
+                .map(|value| (location.clone(), value))
+        })
+        .collect()
+}
+
+fn static_string(value: &Value, bindings: &BTreeMap<String, String>) -> Option<String> {
+    let value = unwrap_expression(value);
+
+    if crate::syntax::kind(value) == "AstExprConstantString" {
+        return Some(crate::syntax::field(value, "value").to_owned());
+    }
+
+    (crate::syntax::kind(value) == "AstExprLocal")
+        .then(|| value["local"]["location"].as_str())
+        .flatten()
+        .and_then(|location| bindings.get(location).cloned())
+}
+
+fn instance_expression(environment: &Environment, from: &Path, value: &Value) -> Option<usize> {
+    let value = unwrap_expression(value);
+
+    match crate::syntax::kind(value) {
+        "AstExprGlobal" => match crate::syntax::field(value, "global") {
+            "game" => (environment.nodes.first()?.class_name == "DataModel").then_some(0),
+            "script" => environment.node(from),
+            _ => None,
+        },
+
+        "AstExprIndexName" => {
+            let parent = instance_expression(environment, from, &value["expr"])?;
+            let name = crate::syntax::field(value, "index");
+
+            if name == "Parent" {
+                return environment.nodes[parent].parent;
+            }
+
+            environment.nodes[parent]
+                .descendants
+                .iter()
+                .find(|child| environment.nodes[**child].name == name)
+                .copied()
+        }
+
+        "AstExprCall" => {
+            let function = unwrap_expression(&value["func"]);
+
+            if crate::syntax::kind(function) != "AstExprIndexName" {
+                return None;
+            }
+
+            let method = crate::syntax::field(function, "index");
+
+            let argument = crate::syntax::array(&value["args"])
+                .first()
+                .and_then(|argument| string_expression(argument))?;
+
+            let parent = instance_expression(environment, from, &function["expr"])?;
+
+            match method {
+                "WaitForChild" | "FindFirstChild" => environment.nodes[parent]
+                    .descendants
+                    .iter()
+                    .find(|child| environment.nodes[**child].name == argument)
+                    .copied(),
+
+                "GetService" if parent == 0 => environment.nodes[parent]
+                    .descendants
+                    .iter()
+                    .find(|child| environment.nodes[**child].class_name == argument)
+                    .copied(),
+
+                _ => None,
+            }
+        }
+
+        _ => None,
+    }
+}
+
+fn location(value: &Value) -> Option<[u32; 4]> {
+    let (start, end) = crate::syntax::field(value, "location").split_once(" - ")?;
+    let (line, column) = start.split_once(',')?;
+    let (end_line, end_column) = end.split_once(',')?;
+
+    Some([
+        line.parse().ok()?,
+        column.parse().ok()?,
+        end_line.parse().ok()?,
+        end_column.parse().ok()?,
+    ])
+}
+
+fn dependency_entries(
+    resolver: &mut Resolver<'_>,
+    environment: Option<&Environment>,
+    path: &Path,
+    document: &Value,
+) -> io::Result<Vec<EditorEntry>> {
+    fn visit<'value>(value: &'value Value, output: &mut Vec<&'value Value>) {
+        match value {
+            Value::Object(fields) => {
+                if crate::syntax::kind(value) == "AstExprCall" {
+                    output.push(value);
+                }
+
+                for child in fields.values() {
+                    visit(child, output);
+                }
+            }
+
+            Value::Array(values) => {
+                for child in values {
+                    visit(child, output);
+                }
+            }
+
+            _ => {}
+        }
+    }
+
+    let mut calls = Vec::new();
+    visit(&document["root"], &mut calls);
+    let bindings = static_strings(document);
+    let mut result = Vec::new();
+
+    for call in calls {
+        let function = unwrap_expression(&call["func"]);
+
+        if crate::syntax::kind(function) != "AstExprGlobal"
+            || crate::syntax::field(function, "global") != "require"
+        {
+            continue;
+        }
+
+        let Some(argument) = crate::syntax::array(&call["args"]).first() else {
+            continue;
         };
 
-        if let Some(environment) = self.environments.get(settings) {
-            return Ok(std::sync::Arc::clone(environment));
-        }
+        let resolved = if let Some(specifier) = static_string(argument, &bindings) {
+            if let Some(environment) = environment {
+                environment.require(resolver, path, &specifier)?
+            } else {
+                resolver.resolve(path, &specifier)?
+            }
+        } else {
+            environment
+                .and_then(|environment| instance_expression(environment, path, argument))
+                .map(|index| environment.expect("environment").identity(index))
+        };
 
-        let environment = std::sync::Arc::new(crate::project::roblox::Environment::load(
-            resolver, settings, update,
-        )?);
+        let Some(resolved) = resolved else {
+            continue;
+        };
 
-        self.environments
-            .insert(settings.clone(), std::sync::Arc::clone(&environment));
+        let resolved = environment.map_or(resolved.clone(), |environment| environment.source(&resolved));
 
-        Ok(environment)
+        result.push(EditorEntry {
+            name: Some(resolved.to_string_lossy().into_owned()),
+            path: Some(path.to_owned()),
+            range: location(argument),
+            require: Some(true),
+            kind: Some(3),
+            ..empty_entry()
+        });
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "Native engine setup remains one FFI transaction"
-    )]
-    fn analyze_group(
-        &mut self,
-        resolver: &mut Resolver<'_>,
-        modules: &[PathBuf],
-        assets: (&[PathBuf], &[PathBuf], &[u8]),
-        environment: Option<&std::sync::Arc<crate::project::roblox::Environment>>,
-        options: &Options,
-        _changed: &[PathBuf],
-    ) -> io::Result<Report> {
-        let (definitions, documentation, constants) = assets;
-        let environment = environment.cloned().unwrap_or_default();
-        let mut module_values = Vec::new();
-        let mut module_names = Vec::new();
+    Ok(result)
+}
 
-        for path in modules {
-            let source = resolver.load(path)?;
-            let name = module_name(source.path())?;
-            module_names.push(name.clone());
-
-            module_values.push(OwnedModule {
-                name: name.into_bytes(),
-                source: source.bytes().to_vec(),
-            });
+fn color_entries(path: &Path, document: &Value) -> Vec<EditorEntry> {
+    fn number(value: &Value) -> Option<f64> {
+        match crate::syntax::kind(value) {
+            "AstExprConstantNumber" | "AstExprConstantInteger" => value["value"].as_f64(),
+            "AstExprUnary" if crate::syntax::field(value, "op") == "Minus" => number(&value["expr"]).map(|value| -value),
+            _ => None,
         }
+    }
 
-        let mut definition_values = Vec::new();
-        let mut loaded_definitions = std::collections::BTreeSet::new();
+    fn color(value: &Value) -> Option<[f32; 4]> {
+        let function = unwrap_expression(&value["func"]);
 
-        for path in definitions {
-            let source = resolver.load(path)?;
-            let name = module_name(source.path())?;
-
-            if loaded_definitions.insert(name.clone()) {
-                definition_values.push(OwnedModule {
-                    name: name.into_bytes(),
-                    source: source.bytes().to_vec(),
-                });
-            }
-        }
-
-        if !constants.is_empty() && loaded_definitions.insert(BUILD_CONSTANT_DEFINITIONS.to_owned())
+        if crate::syntax::kind(function) != "AstExprIndexName"
+            || crate::syntax::kind(&function["expr"]) != "AstExprGlobal"
+            || crate::syntax::field(&function["expr"], "global") != "Color3"
         {
-            definition_values.push(OwnedModule {
-                name: BUILD_CONSTANT_DEFINITIONS.as_bytes().to_vec(),
-                source: constants.to_vec(),
+            return None;
+        }
+
+        let arguments = crate::syntax::array(&value["args"]);
+        let method = crate::syntax::field(function, "index");
+
+        if matches!(method, "new" | "fromRGB") {
+            if arguments.len() != 3 {
+                return None;
+            }
+
+            let divisor = if method == "fromRGB" { 255.0 } else { 1.0 };
+
+            let mut result = [0.0, 0.0, 0.0, 1.0];
+
+            for (index, argument) in arguments.iter().enumerate() {
+                result[index] = (number(unwrap_expression(argument))? / divisor).clamp(0.0, 1.0) as f32;
+            }
+
+            return Some(result);
+        }
+
+        if method != "fromHex" || arguments.len() != 1 {
+            return None;
+        }
+
+        let mut value = string_expression(&arguments[0])?.trim_start_matches('#').to_owned();
+
+        if value.len() == 3 {
+            value = value
+                .chars()
+                .flat_map(|character| [character, character])
+                .collect();
+        }
+
+        if value.len() != 6 {
+            return None;
+        }
+
+        let mut result = [0.0, 0.0, 0.0, 1.0];
+
+        for index in 0..3 {
+            result[index] = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16).ok()? as f32 / 255.0;
+        }
+
+        Some(result)
+    }
+
+    fn visit(path: &Path, value: &Value, entries: &mut Vec<EditorEntry>) {
+        if crate::syntax::kind(value) == "AstExprCall"
+            && let Some(color) = color(value)
+        {
+            entries.push(EditorEntry {
+                path: Some(path.to_owned()),
+                range: location(value),
+                selection: location(value),
+                color: Some(color),
+                ..empty_entry()
             });
         }
 
-        if environment.enabled && loaded_definitions.insert(ROBLOX_DEFINITIONS.to_owned()) {
-            definition_values.push(OwnedModule {
-                name: ROBLOX_DEFINITIONS.as_bytes().to_vec(),
-                source: environment.definitions.as_bytes().to_vec(),
-            });
+        match value {
+            Value::Object(fields) => fields.values().for_each(|child| visit(path, child, entries)),
+            Value::Array(values) => values.iter().for_each(|child| visit(path, child, entries)),
+            _ => {}
         }
+    }
 
-        let mut configuration_values = Vec::new();
+    let mut entries = Vec::new();
+    visit(path, &document["root"], &mut entries);
 
-        for path in modules {
-            for configuration in resolver.discovery.configurations(path)? {
-                let name = module_name(&configuration.path)?;
+    entries
+}
 
-                if configuration_values
-                    .iter()
-                    .all(|value: &OwnedConfiguration| value.path != name.as_bytes())
+fn import_entries(path: &Path, document: &Value, links: Vec<EditorEntry>) -> Vec<EditorEntry> {
+    fn visit(
+        path: &Path,
+        value: &Value,
+        links: &[EditorEntry],
+        entries: &mut Vec<EditorEntry>,
+    ) {
+        if crate::syntax::kind(value) == "AstStatLocal" {
+            let variables = crate::syntax::array(&value["vars"]);
+            let values = crate::syntax::array(&value["values"]);
+
+            for (variable, expression) in variables.iter().zip(values) {
+                let expression = unwrap_expression(expression);
+
+                let Some(call) = expression.as_object().filter(|_| crate::syntax::kind(expression) == "AstExprCall")
+                else {
+                    continue;
+                };
+
+                let _ = call;
+
+                let function = unwrap_expression(&expression["func"]);
+
+                let Some(argument) = crate::syntax::array(&expression["args"]).first() else {
+                    continue;
+                };
+
+                let argument = unwrap_expression(argument);
+                let argument_range = location(argument);
+                let name = crate::syntax::field(variable, "name");
+
+                if crate::syntax::kind(function) == "AstExprGlobal"
+                    && crate::syntax::field(function, "global") == "require"
                 {
-                    configuration_values.push(OwnedConfiguration {
-                        module: Vec::new(),
-                        path: name.into_bytes(),
-                        source: configuration.bytes.clone(),
+                    let Some(link) = links.iter().find(|link| {
+                        link.require == Some(true) && link.range == argument_range
+                    }) else {
+                        continue;
+                    };
+
+                    entries.push(EditorEntry {
+                        name: Some(name.to_owned()),
+                        description: link.name.as_ref().map(|name| name.replace('\\', "/")),
+                        label: Some("module".into()),
+                        path: Some(path.to_owned()),
+                        range: location(variable),
+                        selection: location(variable),
+                        declaration: Some(true),
+                        ..empty_entry()
+                    });
+                } else if crate::syntax::kind(function) == "AstExprIndexName"
+                    && crate::syntax::field(function, "index") == "GetService"
+                    && crate::syntax::kind(&function["expr"]) == "AstExprGlobal"
+                    && crate::syntax::field(&function["expr"], "global") == "game"
+                    && crate::syntax::kind(argument) == "AstExprConstantString"
+                {
+                    entries.push(EditorEntry {
+                        name: Some(name.to_owned()),
+                        description: Some(crate::syntax::field(argument, "value").to_owned()),
+                        label: Some("service".into()),
+                        path: Some(path.to_owned()),
+                        range: location(variable),
+                        selection: location(variable),
+                        declaration: Some(true),
+                        ..empty_entry()
                     });
                 }
             }
         }
 
-        let mut context = Context {
-            resolver,
-            environment,
-            constants: constants.to_vec(),
-            buffer: Vec::new(),
-            report: Report::default(),
-            error: None,
-            annotations: Vec::new(),
-            declaration: false,
-        };
+        match value {
+            Value::Object(fields) => fields
+                .values()
+                .for_each(|child| visit(path, child, links, entries)),
 
-        let native_modules: Vec<_> = module_values.iter().map(OwnedModule::ffi).collect();
-
-        let native_configurations: Vec<_> = configuration_values
-            .iter()
-            .map(OwnedConfiguration::ffi)
-            .collect();
-
-        let context_pointer = ptr::from_mut(&mut context).cast();
-
-        let mode = match options.mode {
-            None => 0,
-            Some(crate::analysis::Mode::Strict) => 1,
-            Some(crate::analysis::Mode::Nonstrict) => 2,
-            Some(crate::analysis::Mode::Nocheck) => 3,
-        };
-
-        let engine = unsafe {
-            instar_engine_create(
-                native_modules.as_ptr(),
-                native_modules.len(),
-                context_pointer,
-                Some(read),
-                Some(resolve),
-                native_configurations.as_ptr(),
-                native_configurations.len(),
-                mode,
-                i32::from(options.old_solver),
-            )
-        };
-
-        if engine.is_null() {
-            return Err(io::Error::other("native engine initialization failed"));
-        }
-
-        let engine = NativeEngine(engine);
-        let native_definitions: Vec<_> = definition_values.iter().map(OwnedModule::ffi).collect();
-
-        let definitions_result = unsafe {
-            instar_engine_load_definitions(
-                engine.0,
-                native_definitions.as_ptr(),
-                native_definitions.len(),
-                ptr::null(),
-                0,
-                1,
-                context_pointer,
-                Some(failure),
-            )
-        };
-
-        if definitions_result == 0 {
-            return Err(context
-                .error
-                .take()
-                .unwrap_or_else(|| io::Error::other("native definitions failed")));
-        }
-
-        let configuration_targets: Vec<_> = module_values
-            .iter()
-            .zip(modules)
-            .filter_map(|(module, path)| {
-                (crate::project::ConfigKind::from_path(path)
-                    == Some(crate::project::ConfigKind::Luau))
-                .then_some(Bytes::new(&module.name))
-            })
-            .collect();
-
-        if !configuration_targets.is_empty() {
-            let configuration_definition = OwnedModule {
-                name: b"configuration.d.luau".to_vec(),
-                source: include_bytes!("project/configuration/configuration.d.luau").to_vec(),
-            };
-
-            let native_configuration_definition = configuration_definition.ffi();
-
-            let result = unsafe {
-                instar_engine_load_definitions(
-                    engine.0,
-                    &raw const native_configuration_definition,
-                    1,
-                    configuration_targets.as_ptr(),
-                    configuration_targets.len(),
-                    0,
-                    context_pointer,
-                    Some(failure),
-                )
-            };
-
-            if result == 0 {
-                return Err(context
-                    .error
-                    .take()
-                    .unwrap_or_else(|| io::Error::other("configuration definitions failed")));
-            }
-        }
-
-        if context.environment.enabled {
-            let enumerations: Vec<_> = context
-                .environment
-                .enumerations
+            Value::Array(values) => values
                 .iter()
-                .map(|value| Bytes::new(value.as_bytes()))
-                .collect();
+                .for_each(|child| visit(path, child, links, entries)),
 
-            let mut classes = Vec::new();
+            _ => {}
+        }
+    }
 
-            for value in &context.environment.classes {
-                let mut fields = value.split('\0');
-                let name = fields.next().unwrap_or_default().as_bytes().to_vec();
-                let flags = fields.next().unwrap_or_default().as_bytes();
+    let mut entries = Vec::new();
+    visit(path, &document["root"], &links, &mut entries);
 
-                classes.push((
-                    name,
-                    flags.first() == Some(&b'1'),
-                    flags.get(1) == Some(&b'1'),
-                ));
-            }
+    entries
+}
 
-            let native_classes: Vec<_> = classes
+fn extract_entries(path: &Path, document: &Value, position: line_index::LineCol) -> Vec<EditorEntry> {
+    fn after(left: [u32; 4], right: [u32; 4]) -> bool {
+        (left[2], left[3]) > (right[2], right[3])
+    }
+
+    fn visit(
+        path: &Path,
+        value: &Value,
+        position: line_index::LineCol,
+        statement: Option<[u32; 4]>,
+        best: &mut Option<([u32; 4], [u32; 4])>,
+    ) {
+        let kind = crate::syntax::kind(value);
+
+        let current_statement = if kind.starts_with("AstStat") && kind != "AstStatBlock" {
+            location(value).or(statement)
+        } else {
+            statement
+        };
+
+        if kind.starts_with("AstExpr")
+            && let Some(range) = location(value)
+            && (range[0], range[1]) == (position.line, position.col)
+            && best.is_none_or(|(current, _)| after(range, current))
+            && let Some(statement) = current_statement
+        {
+            *best = Some((range, statement));
+        }
+
+        match value {
+            Value::Object(fields) => fields.values().for_each(|child| {
+                visit(path, child, position, current_statement, best)
+            }),
+
+            Value::Array(values) => values.iter().for_each(|child| {
+                visit(path, child, position, current_statement, best)
+            }),
+
+            _ => {}
+        }
+    }
+
+    let mut best = None;
+    visit(path, &document["root"], position, None, &mut best);
+
+    best.map(|(range, statement)| EditorEntry {
+        path: Some(path.to_owned()),
+        range: Some(range),
+        selection: Some([statement[0], statement[1], statement[0], statement[1]]),
+        ..empty_entry()
+    })
+    .into_iter()
+    .collect()
+}
+
+fn fold_entries(path: &Path, document: &Value) -> Vec<EditorEntry> {
+    fn visit(path: &Path, value: &Value, entries: &mut Vec<EditorEntry>) {
+        if matches!(
+            crate::syntax::kind(value),
+            "AstStatIf"
+                | "AstStatWhile"
+                | "AstStatRepeat"
+                | "AstStatFor"
+                | "AstStatForIn"
+                | "AstStatFunction"
+                | "AstStatLocalFunction"
+                | "AstStatBlock"
+        ) && let Some(range) = location(value)
+            && range[0] < range[2]
+        {
+            entries.push(EditorEntry {
+                path: Some(path.to_owned()),
+                range: Some(range),
+                selection: Some(range),
+                ..empty_entry()
+            });
+        }
+
+        match value {
+            Value::Object(fields) => fields.values().for_each(|child| visit(path, child, entries)),
+            Value::Array(values) => values.iter().for_each(|child| visit(path, child, entries)),
+            _ => {}
+        }
+    }
+
+    let mut entries = Vec::new();
+    visit(path, &document["root"], &mut entries);
+
+    entries
+}
+
+fn selection_entries(path: &Path, document: &Value, position: line_index::LineCol) -> Vec<EditorEntry> {
+    fn contains(range: [u32; 4], position: line_index::LineCol) -> bool {
+        (range[0], range[1]) <= (position.line, position.col)
+            && (position.line, position.col) <= (range[2], range[3])
+    }
+
+    fn visit(
+        path: &Path,
+        value: &Value,
+        position: line_index::LineCol,
+        entries: &mut Vec<EditorEntry>,
+    ) {
+        if let Some(range) = location(value).filter(|range| contains(*range, position)) {
+            entries.push(EditorEntry {
+                path: Some(path.to_owned()),
+                range: Some(range),
+                selection: Some(range),
+                ..empty_entry()
+            });
+        }
+
+        match value {
+            Value::Object(fields) => fields
+                .values()
+                .for_each(|child| visit(path, child, position, entries)),
+
+            Value::Array(values) => values
                 .iter()
-                .map(|(name, service, creatable)| RobloxClass {
-                    name: Bytes::new(name),
-                    service: i32::from(*service),
-                    creatable: i32::from(*creatable),
-                })
-                .collect();
+                .for_each(|child| visit(path, child, position, entries)),
 
-            let native_nodes: Vec<_> = context
-                .environment
-                .nodes
-                .iter()
-                .map(|node| RobloxNode {
-                    name: Bytes::new(node.name.as_bytes()),
-                    class_name: Bytes::new(node.class_name.as_bytes()),
-                    parent: node.parent.unwrap_or_default(),
-                    has_parent: i32::from(node.parent.is_some()),
-                })
-                .collect();
-
-            let result = unsafe {
-                instar_engine_prepare_roblox(
-                    engine.0,
-                    enumerations.as_ptr(),
-                    enumerations.len(),
-                    native_classes.as_ptr(),
-                    native_classes.len(),
-                    native_nodes.as_ptr(),
-                    native_nodes.len(),
-                    context_pointer,
-                    Some(failure),
-                )
-            };
-
-            if result == 0 {
-                return Err(context
-                    .error
-                    .take()
-                    .unwrap_or_else(|| io::Error::other("Roblox metadata failed")));
-            }
+            _ => {}
         }
+    }
 
-        unsafe {
-            instar_engine_check(engine.0, context_pointer, Some(report), Some(failure));
+    let mut entries = Vec::new();
+    visit(path, &document["root"], position, &mut entries);
+
+    entries.sort_by_key(|entry| {
+        entry
+            .range
+            .map(|range| (range[0], range[1], std::cmp::Reverse((range[2], range[3]))))
+    });
+
+    entries
+}
+
+fn index_entries(path: &Path, document: &Value, links: Vec<EditorEntry>) -> Vec<EditorEntry> {
+    fn expression_name(value: &Value) -> Option<String> {
+        match crate::syntax::kind(value) {
+            "AstExprGlobal" => Some(crate::syntax::field(value, "global").into()),
+            "AstExprIndexName" => Some(crate::syntax::field(value, "index").into()),
+            "AstExprLocal" => Some(crate::syntax::field(&value["local"], "name").into()),
+            "AstLocal" => Some(crate::syntax::field(value, "name").into()),
+            _ => None,
         }
+    }
 
-        if let Some(error) = context.error.take() {
-            return Err(error);
-        }
+    fn visit(
+        path: &Path,
+        value: &Value,
+        container: Option<[u32; 4]>,
+        symbols: &mut Vec<EditorEntry>,
+        calls: &mut Vec<EditorEntry>,
+    ) {
+        let kind = crate::syntax::kind(value);
 
-        if options.annotations {
-            for name in &module_names {
-                unsafe {
-                    instar_engine_annotations(
-                        engine.0,
-                        Bytes::new(name.as_bytes()),
-                        context_pointer,
-                        Some(annotation_result),
-                        Some(failure),
-                    );
+        let current_container = if matches!(kind, "AstStatFunction" | "AstStatLocalFunction") {
+            location(value).or(container)
+        } else {
+            container
+        };
+
+        match kind {
+            "AstStatLocal" => {
+                for local in crate::syntax::array(&value["vars"]) {
+                    symbols.push(EditorEntry {
+                        name: local["name"].as_str().map(str::to_owned),
+                        path: Some(path.to_owned()),
+                        range: location(local),
+                        selection: location(local),
+                        declaration: Some(true),
+                        container: current_container,
+                        kind: Some(13),
+                        ..empty_entry()
+                    });
                 }
             }
 
-            if let Some(error) = context.error.take() {
-                return Err(error);
+            "AstStatFunction" | "AstStatLocalFunction" => {
+                let name = if kind == "AstStatLocalFunction" {
+                    value["name"]
+                        .as_str()
+                        .map(str::to_owned)
+                        .or_else(|| expression_name(&value["name"]))
+                } else {
+                    expression_name(&value["name"])
+                };
+
+                if let Some(name) = name {
+                    symbols.push(EditorEntry {
+                        name: Some(name),
+                        path: Some(path.to_owned()),
+                        range: location(value),
+                        selection: location(&value["name"]),
+                        declaration: Some(true),
+                        container: current_container,
+                        kind: Some(12),
+                        ..empty_entry()
+                    });
+                }
             }
 
-            for module in &module_values {
-                let insertions: Vec<_> = context
-                    .annotations
-                    .iter()
-                    .filter(|annotation| annotation.path.as_bytes() == module.name.as_slice())
-                    .cloned()
-                    .collect();
+            "AstStatType" | "AstStatDeclareType" => {
+                let field = if kind == "AstStatType" {
+                    "name"
+                } else {
+                    "name"
+                };
 
-                if insertions.is_empty() {
-                    continue;
-                }
-
-                let mut bytes = module.source.clone();
-
-                let mut offsets = insertions
-                    .iter()
-                    .map(|annotation| {
-                        line_column_offset(&bytes, annotation.position)
-                            .map(|offset| (offset, annotation.text.clone()))
-                    })
-                    .collect::<io::Result<Vec<_>>>()?;
-
-                offsets.sort_by_key(|left| std::cmp::Reverse(left.0));
-
-                for (offset, text) in offsets {
-                    bytes.splice(offset..offset, text);
-                }
-
-                context.report.annotations.push(Annotation {
-                    path: context.environment.source(Path::new(
-                        std::str::from_utf8(&module.name).map_err(io::Error::other)?,
-                    )),
-                    bytes,
+                symbols.push(EditorEntry {
+                    name: crate::syntax::field(value, field).to_owned().into(),
+                    path: Some(path.to_owned()),
+                    range: location(value),
+                    declaration: Some(true),
+                    container: current_container,
+                    kind: Some(13),
+                    ..empty_entry()
                 });
             }
-        }
 
-        if let Some((path, position, operation)) = self.query.take()
-            && module_names.iter().any(|name| Path::new(name) == path)
-        {
-            query_engine(&engine, &mut context, &path, position, &operation)?;
-        }
-
-        if let Some(error) = context.error.take() {
-            return Err(error);
-        }
-
-        let mut external_documentation = context.environment.documentation.as_ref().clone();
-
-        for path in documentation {
-            let source = context.resolver.load(path)?;
-
-            let values: crate::analysis::Documentation = serde_json::from_slice(source.bytes())
-                .map_err(|error| io::Error::other(format!("{}: {error}", path.display())))?;
-
-            external_documentation.extend(values);
-        }
-
-        if !external_documentation.is_empty() {
-            let documentation = std::sync::Arc::new(external_documentation);
-
-            for name in module_names {
-                context
-                    .report
-                    .documentation
-                    .insert(PathBuf::from(name), std::sync::Arc::clone(&documentation));
+            "AstExprTable" => {
+                for item in crate::syntax::array(&value["items"]) {
+                    if crate::syntax::field(item, "kind") == "record"
+                        && crate::syntax::kind(&item["key"]) == "AstExprConstantString"
+                    {
+                        symbols.push(EditorEntry {
+                            name: Some(crate::syntax::field(&item["key"], "value").to_owned()),
+                            path: Some(path.to_owned()),
+                            range: location(&item["key"]),
+                            selection: location(&item["key"]),
+                            declaration: Some(true),
+                            container: current_container,
+                            kind: Some(if crate::syntax::kind(unwrap_expression(&item["value"])) == "AstExprFunction"
+                                || expression_name(unwrap_expression(&item["value"]))
+                                    .is_some_and(|name| name != crate::syntax::field(&item["key"], "value"))
+                            {
+                                12
+                            } else {
+                                8
+                            }),
+                            ..empty_entry()
+                        });
+                    }
+                }
             }
+
+            "AstExprCall" => {
+                let function = unwrap_expression(&value["func"]);
+
+                if !(crate::syntax::kind(function) == "AstExprGlobal"
+                    && crate::syntax::field(function, "global") == "require")
+                {
+                    calls.push(EditorEntry {
+                        name: expression_name(function),
+                        path: Some(path.to_owned()),
+                        range: location(function),
+                        caller: location(value),
+                        container: current_container,
+                        kind: Some(12),
+                        ..empty_entry()
+                    });
+                }
+            }
+
+            _ => {}
         }
 
-        Ok(context.report)
+        match value {
+            Value::Object(fields) => {
+                for child in fields.values() {
+                    visit(path, child, current_container, symbols, calls);
+                }
+            }
+
+            Value::Array(values) => {
+                for child in values {
+                    visit(path, child, current_container, symbols, calls);
+                }
+            }
+
+            _ => {}
+        }
     }
+
+    let mut symbols = Vec::new();
+    let mut calls = Vec::new();
+    visit(path, &document["root"], None, &mut symbols, &mut calls);
+    symbols.extend(calls);
+    symbols.extend(links);
+
+    symbols
 }
 
-fn line_column_offset(source: &[u8], position: Position) -> io::Result<usize> {
-    let mut offset = 0;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{fs, path::Path};
 
-    for _ in 0..position.line {
-        let Some(relative) = source
-            .get(offset..)
-            .and_then(|value| value.iter().position(|byte| *byte == b'\n'))
-        else {
-            return Err(io::Error::other(
-                "native annotation position is outside the source",
-            ));
+    #[test]
+    fn configuration_mode_translation_accepts_definition() -> io::Result<()> {
+        let configuration = Configuration::new()?;
+        let mut error = NativeString::default();
+
+        let code = unsafe {
+            instar_configuration_set_mode(configuration.handle as *mut c_void, 3, &mut error)
         };
 
-        offset += relative + 1;
+        status(code, error, &mut None)
     }
 
-    let line_end = source
-        .get(offset..)
-        .and_then(|value| value.iter().position(|byte| *byte == b'\n'))
-        .map_or(source.len(), |relative| offset + relative);
-
-    let column = usize::try_from(position.column).map_err(io::Error::other)?;
-
-    if offset + column > line_end {
-        return Err(io::Error::other(
-            "native annotation position is outside the source",
-        ));
+    #[test]
+    fn vm_call_translation_preserves_luau_failure() {
+        assert!(matches("[", "value").is_err());
+        assert!(!matches("^missing$", "value").expect("valid pattern"));
+        assert!(matches("^value$", "value").expect("valid pattern"));
     }
 
-    Ok(offset + column)
-}
+    #[test]
+    fn resolution_translation_preserves_optional_and_absence() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let source_path = directory.path().join("main.luau");
+        let dependency_path = directory.path().join("dependency.luau");
+        fs::write(&dependency_path, "return 1")?;
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "Native query dispatch stays centralized with the FFI declarations"
-)]
-fn query_engine(
-    engine: &NativeEngine,
-    context: &mut Context<'_, '_>,
-    path: &Path,
-    position: line_index::LineCol,
-    operation: &str,
-) -> io::Result<()> {
-    let path = module_name(path)?;
+        let mut sources = crate::source::SourceStore::default();
+        let mut resolver = Resolver::new(&mut sources);
+        let options = Options::default();
 
-    let position = Position {
-        line: position.line,
-        column: position.col,
-    };
+        let mut context = CallbackContext {
+            resolver: &mut resolver,
+            options: &options,
+            environment: None,
+            configurations: BTreeMap::new(),
+            source_buffer: None,
+            output_buffer: Vec::new(),
+            report: Report::default(),
+            syntax: None,
+            globals: BTreeSet::new(),
+            modules: Vec::new(),
+            timeout_hits: BTreeSet::new(),
+            identities: BTreeMap::new(),
+            error: None,
+        };
 
-    let context_pointer = ptr::from_mut(context).cast();
-    let path_bytes = Bytes::new(path.as_bytes());
+        let expression = serde_json::to_vec(&serde_json::json!({
+            "type": "AstExprConstantString",
+            "value": "./dependency"
+        }))?;
 
-    match operation {
-        "syntax" => unsafe {
-            instar_engine_syntax(
-                engine.0,
-                path_bytes,
-                context_pointer,
-                Some(syntax_result),
-                Some(failure),
-            );
-        },
+        let source_name = source_path
+            .to_str()
+            .ok_or_else(|| io::Error::other("source path requires UTF-8"))?;
 
-        "type" => unsafe {
-            instar_engine_type_at(
-                engine.0,
-                path_bytes,
-                position,
-                context_pointer,
-                Some(type_result),
-                Some(failure),
-            );
-        },
+        let mut output = NativeSlice::default();
+        let mut output_optional = 0;
+        let mut present = 0;
 
-        "hover" => unsafe {
-            instar_engine_hover(
-                engine.0,
-                path_bytes,
-                position,
-                context_pointer,
-                Some(type_result),
-                Some(failure),
-            );
-        },
+        let code = resolve_callback(
+            ptr::from_mut(&mut context).cast(),
+            NativeSlice::new(source_name.as_bytes()),
+            1,
+            NativeSlice::new(&expression),
+            NativeTypeCheckLimits::default(),
+            ptr::from_mut(&mut output),
+            ptr::from_mut(&mut output_optional),
+            ptr::from_mut(&mut present),
+        );
 
-        "complete" | "completion" | "completionResolve" => unsafe {
-            instar_engine_complete(
-                engine.0,
-                path_bytes,
-                position,
-                context_pointer,
-                Some(completion_result),
-                Some(failure),
-            );
-        },
+        assert_eq!(code, 1);
+        assert_eq!(present, 1);
+        assert_eq!(output_optional, 1);
+        assert!(Path::new(&native_text(output)?).ends_with("dependency.luau"));
 
-        "signature" => unsafe {
-            instar_engine_signature(
-                engine.0,
-                path_bytes,
-                position,
-                context_pointer,
-                Some(signature_result),
-                Some(failure),
-            );
-        },
+        let expression = serde_json::to_vec(&serde_json::json!({
+            "type": "AstExprConstantString",
+            "value": "./missing"
+        }))?;
 
-        "definition" => unsafe {
-            instar_engine_definition(
-                engine.0,
-                path_bytes,
-                position,
-                context_pointer,
-                Some(destination_result),
-                Some(failure),
-            );
-        },
+        output = NativeSlice::default();
+        output_optional = 0;
+        present = 1;
 
-        "prepare" => {
-            context.declaration = true;
+        let code = resolve_callback(
+            ptr::from_mut(&mut context).cast(),
+            NativeSlice::new(source_name.as_bytes()),
+            1,
+            NativeSlice::new(&expression),
+            NativeTypeCheckLimits::default(),
+            ptr::from_mut(&mut output),
+            ptr::from_mut(&mut output_optional),
+            ptr::from_mut(&mut present),
+        );
 
-            unsafe {
-                instar_engine_definition(
-                    engine.0,
-                    path_bytes,
-                    position,
-                    context_pointer,
-                    Some(destination_result),
-                    Some(failure),
-                );
-            }
-
-            context.declaration = false;
-        }
-
-        "type_definition" | "typeDefinition" => unsafe {
-            instar_engine_type_definition(
-                engine.0,
-                path_bytes,
-                position,
-                context_pointer,
-                Some(destination_result),
-                Some(failure),
-            );
-        },
-
-        "implementation" | "implementations" => unsafe {
-            instar_engine_implementations(
-                engine.0,
-                path_bytes,
-                position,
-                context_pointer,
-                Some(destination_result),
-                Some(failure),
-            );
-        },
-
-        "references" | "localReferences" => unsafe {
-            instar_engine_references(
-                engine.0,
-                path_bytes,
-                position,
-                context_pointer,
-                Some(destination_result),
-                Some(failure),
-            );
-        },
-
-        "scope" => unsafe {
-            instar_engine_scope(
-                engine.0,
-                path_bytes,
-                position,
-                context_pointer,
-                Some(scope_result),
-                Some(failure),
-            );
-        },
-
-        "annotations" => unsafe {
-            instar_engine_annotations(
-                engine.0,
-                path_bytes,
-                context_pointer,
-                Some(annotation_result),
-                Some(failure),
-            );
-        },
-
-        "calls" => unsafe {
-            instar_engine_calls(
-                engine.0,
-                path_bytes,
-                context_pointer,
-                Some(call_result),
-                Some(failure),
-            );
-        },
-
-        "extract" => unsafe {
-            instar_engine_extract(
-                engine.0,
-                path_bytes,
-                position,
-                context_pointer,
-                Some(extract_result),
-                Some(failure),
-            );
-        },
-
-        "tokens" => unsafe {
-            instar_engine_tokens(
-                engine.0,
-                path_bytes,
-                context_pointer,
-                Some(symbol_result),
-                Some(failure),
-            );
-        },
-
-        "index" => unsafe {
-            instar_engine_index(
-                engine.0,
-                path_bytes,
-                context_pointer,
-                Some(symbol_result),
-                Some(call_result),
-                Some(failure),
-            );
-        },
-
-        "imports" => unsafe {
-            instar_engine_imports(
-                engine.0,
-                path_bytes,
-                position,
-                context_pointer,
-                Some(import_result),
-                Some(failure),
-            );
-        },
-
-        _ => {
-            return Err(io::Error::other(format!(
-                "unsupported native query: {operation}"
-            )));
-        }
-    }
-
-    if let Some(error) = context.error.take() {
-        return Err(error);
-    }
-
-    if operation == "annotations" {
-        let entries = context
-            .annotations
-            .drain(..)
-            .map(|annotation| {
-                let mut entry = empty_entry();
-                entry.path = Some(PathBuf::from(annotation.path));
-
-                entry.range = Some([
-                    annotation.position.line,
-                    annotation.position.column,
-                    annotation.position.line,
-                    annotation.position.column,
-                ]);
-
-                entry.description = Some(String::from_utf8_lossy(&annotation.text).into_owned());
-
-                entry
-            })
-            .collect();
-
-        context.report.editor = Some(EditorResult::Entries(entries));
-    }
-
-    Ok(())
-}
-
-#[derive(Default)]
-struct Aliases {
-    values: BTreeMap<String, String>,
-    error: Option<String>,
-}
-
-extern "C" fn alias(context: *mut c_void, name: Bytes, target: Bytes) {
-    let context = unsafe { &mut *context.cast::<Aliases>() };
-
-    let result = catch_unwind(AssertUnwindSafe(|| -> io::Result<()> {
-        context
-            .values
-            .insert(unsafe { name.string()? }, unsafe { target.string()? });
+        assert_eq!(code, 1);
+        assert_eq!(present, 0);
+        assert_eq!(output_optional, 0);
+        assert!(native_bytes(output)?.is_empty());
 
         Ok(())
-    }));
-
-    match result {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => context.error = Some(error.to_string()),
-        Err(_) => context.error = Some("alias callback panicked".into()),
     }
-}
-
-extern "C" fn alias_failure(context: *mut c_void, message: Bytes) {
-    let context = unsafe { &mut *context.cast::<Aliases>() };
-
-    context.error = Some(match unsafe { message.string() } {
-        Ok(message) => message,
-        Err(error) => error.to_string(),
-    });
-}
-
-pub(crate) fn aliases(source: &[u8], executable: bool) -> io::Result<BTreeMap<String, String>> {
-    let mut aliases = Aliases::default();
-
-    unsafe {
-        instar_parse_aliases(
-            Bytes::new(source),
-            i32::from(executable),
-            ptr::from_mut(&mut aliases).cast(),
-            Some(alias),
-            Some(alias_failure),
-        );
-    }
-
-    aliases
-        .error
-        .map_or(Ok(aliases.values), |error| Err(io::Error::other(error)))
 }
