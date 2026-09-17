@@ -95,7 +95,7 @@ fn valid(report: &analysis::Report) {
         report
             .diagnostics
             .iter()
-            .map(|diagnostic| &diagnostic.message)
+            .map(|diagnostic| (&diagnostic.path, &diagnostic.message))
             .collect::<Vec<_>>()
     );
 }
