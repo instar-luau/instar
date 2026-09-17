@@ -22,10 +22,12 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <memory>
 #include <new>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -324,6 +326,7 @@ namespace {
         FileResolver files;
         ConfigurationResolver configurations;
         Luau::Frontend frontend;
+        std::unordered_set<std::string> definition_names;
         std::optional<Luau::CheckResult> check_result;
     };
 
@@ -632,9 +635,12 @@ extern "C" {
                 return failure(error, "invalid definition request");
             }
 
+            const std::string package_name(*package_view);
+            checker->definition_names.insert(package_name);
+
             Luau::LoadDefinitionFileResult result = checker->frontend.loadDefinitionFile(checker->frontend.globals,
-                checker->frontend.globals.globalScope, *source_view, std::string(*package_view),
-                options->capture_comments != 0, options->type_check_for_autocomplete != 0);
+                checker->frontend.globals.globalScope, *source_view, package_name, options->capture_comments != 0,
+                options->type_check_for_autocomplete != 0);
 
             for (const Luau::ParseError &parse_error : result.parseResult.errors) {
                 if (!checker->emit_diagnostic(*package_view, parse_error.getLocation(), native_parse_error, 0, 0, 1,
@@ -649,6 +655,14 @@ extern "C" {
                         return 2;
                     }
                 }
+            }
+
+            if (result.success) {
+                checker->frontend.sourceModules[package_name] =
+                    std::make_shared<Luau::SourceModule>(std::move(result.sourceModule));
+
+                checker->frontend.moduleResolver.setModule(package_name, result.module);
+                checker->frontend.moduleResolverForAutocomplete.setModule(package_name, std::move(result.module));
             }
 
             return 0;
@@ -714,6 +728,10 @@ extern "C" {
 
             if (!checker || !name_view) {
                 return failure(error, "invalid parse request");
+            }
+
+            if (checker->definition_names.find(std::string(*name_view)) != checker->definition_names.end()) {
+                return 0;
             }
 
             checker->frontend.parse(std::string(*name_view));
@@ -819,6 +837,12 @@ extern "C" {
                 return failure(error, "invalid check request");
             }
 
+            if (checker->definition_names.find(std::string(*name_view)) != checker->definition_names.end()) {
+                checker->check_result = Luau::CheckResult{};
+
+                return 0;
+            }
+
             checker->check_result = checker->frontend.check(std::string(*name_view));
 
             return 0;
@@ -839,6 +863,12 @@ extern "C" {
 
             if (!checker || !name_view) {
                 return failure(error, "invalid result request");
+            }
+
+            if (checker->definition_names.find(std::string(*name_view)) != checker->definition_names.end()) {
+                checker->check_result = Luau::CheckResult{};
+
+                return 0;
             }
 
             const std::optional<Luau::CheckResult> result = checker->frontend.getCheckResult(

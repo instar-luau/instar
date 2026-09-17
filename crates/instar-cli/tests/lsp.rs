@@ -213,6 +213,48 @@ fn has_errors(publication: &Value) -> bool {
 }
 
 #[test]
+fn definition_documents_support_editor_queries() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path();
+    let path = root.join("declarations.d.luau");
+
+    fs::write(
+        root.join("instar.toml"),
+        "[analyze]\ndefinitions = ['declarations.d.luau']",
+    )?;
+
+    let source = "export type Settings = {enabled: boolean}\ndeclare extern type Widget with\n    Name: string\nend\n";
+    fs::write(&path, source)?;
+
+    let identifier = Uri::from_file_path(&path).ok_or("URI")?.to_string();
+    let mut client = Client::start()?;
+    client.open(&identifier, source)?;
+
+    let diagnostics = client.diagnostics(&identifier)?;
+    assert!(!has_errors(&diagnostics), "{diagnostics}");
+
+    let alias = client.query(&identifier, "textDocument/hover", 0, 15)?;
+
+    assert!(
+        alias["contents"]["value"]
+            .as_str()
+            .is_some_and(|value| value.contains("type Settings")),
+        "{alias}"
+    );
+
+    let member_type = client.query(&identifier, "textDocument/hover", 2, 12)?;
+
+    assert!(
+        member_type["contents"]["value"]
+            .as_str()
+            .is_some_and(|value| value.contains("string")),
+        "{member_type}"
+    );
+
+    client.shutdown()
+}
+
+#[test]
 fn explicit_type_instantiations_preserve_lint_and_editor_analysis() -> TestResult {
     let directory = tempfile::tempdir()?;
 
