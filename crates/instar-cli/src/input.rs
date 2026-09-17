@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::{self, Read},
     path::{Path, PathBuf},
@@ -41,6 +41,7 @@ impl Input {
 
         let mut store = SourceStore::default();
         let mut paths = Vec::new();
+        let mut loaded = BTreeMap::new();
         let mut directories = BTreeSet::new();
         let mut pending: Vec<_> = self.files.into_iter().map(|path| (path, true)).collect();
         let mut standard_input = None;
@@ -60,6 +61,7 @@ impl Input {
                         .open_bytes(&path, 0, bytes)
                         .map_err(io::Error::other)?;
 
+                    loaded.insert(source.path().to_owned(), Arc::clone(&source));
                     paths.push(source.path().to_owned());
                     standard_input = Some(source.path().to_owned());
                 }
@@ -75,6 +77,7 @@ impl Input {
                 }
 
                 let source = store.read(&path).map_err(io::Error::other)?;
+                loaded.insert(source.path().to_owned(), Arc::clone(&source));
                 paths.push(source.path().to_owned());
             } else if metadata.is_dir() {
                 if !directories.insert(fs::canonicalize(&path)?) {
@@ -96,7 +99,11 @@ impl Input {
         let sources = paths
             .into_iter()
             .filter(|path| seen.insert(path.clone()))
-            .map(|path| store.read(&path).map_err(io::Error::other))
+            .map(|path| {
+                loaded
+                    .remove(&path)
+                    .ok_or_else(|| io::Error::other("input source was not loaded"))
+            })
             .collect::<io::Result<Vec<_>>>()?;
 
         Ok(Loaded {
