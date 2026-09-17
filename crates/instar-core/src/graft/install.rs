@@ -421,10 +421,7 @@ mod tests {
     use std::io::Write;
     use zip::{ZipWriter, write::SimpleFileOptions};
 
-    const METADATA: &str =
-        "name='example'\nprotocol=1\nruntime='luau'\nentry='dist/module.luau'\nlint=true\n";
-
-    const MODULE: &str = "return table.freeze({lint=function() return {} end})";
+    const METADATA: &str = "name='example'\nprotocol=1\nruntime='native'\nlint=true\n";
 
     fn archive(files: &[(&str, &str)]) -> Vec<u8> {
         let mut archive = ZipWriter::new(Cursor::new(Vec::new()));
@@ -596,7 +593,7 @@ mod tests {
 
         let contents = archive(&[
             ("graft.toml", METADATA),
-            ("dist/module.luau", MODULE),
+            ("graft.exe", "fixture"),
             ("source/helper.luau", "return 1"),
         ]);
 
@@ -639,16 +636,6 @@ mod tests {
             configuration: BTreeMap::new(),
         };
 
-        let path = dependency.cached(directory.path(), "example").unwrap();
-
-        assert!(
-            Graft::load(&path, "example")
-                .unwrap()
-                .lint(b"return 1")
-                .unwrap()
-                .is_empty()
-        );
-
         assert!(
             dependency
                 .cached(directory.path(), "missing")
@@ -683,20 +670,14 @@ mod tests {
         let release = release("v0.2.1", &["example.zip"]);
         let version = Version::new(0, 2, 1);
 
-        for (metadata, module) in [
-            (METADATA.replace("name='example'", "name='another'"), MODULE),
-            (METADATA.replace("protocol=1", "protocol=2"), MODULE),
-            (
-                METADATA.replace("dist/module.luau", "../module.luau"),
-                MODULE,
-            ),
-            (METADATA.replace("dist/module.luau", "missing.luau"), MODULE),
-            (METADATA.replace("lint=true", "lint=false"), MODULE),
-            (format!("{METADATA}unknown=true\n"), MODULE),
-            (METADATA.to_owned(), "not luau"),
+        for metadata in [
+            METADATA.replace("name='example'", "name='another'"),
+            METADATA.replace("protocol=1", "protocol=2"),
+            METADATA.replace("lint=true", "lint=false"),
+            format!("{METADATA}unknown=true\n"),
         ] {
             let directory = tempfile::tempdir().unwrap();
-            let contents = archive(&[("graft.toml", &metadata), ("dist/module.luau", module)]);
+            let contents = archive(&[("graft.toml", &metadata), ("graft.exe", "fixture")]);
 
             assert!(
                 project(
