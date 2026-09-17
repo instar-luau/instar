@@ -234,6 +234,16 @@ impl<'store> Resolver<'store> {
         Ok(metadata(path)?.is_some_and(|metadata| metadata.is_file()))
     }
 
+    pub(crate) fn is_open(&self, path: &Path) -> io::Result<bool> {
+        self.sources.is_open(path).map_err(io::Error::other)
+    }
+
+    pub(crate) fn is_definition(&mut self, path: &Path) -> io::Result<bool> {
+        let path = absolute(path).map_err(io::Error::other)?;
+
+        Ok(self.discovery.definitions(&path)?.contains(&path))
+    }
+
     /// # Errors
     /// Returns filesystem, configuration and ambiguous-module failures.
     pub fn resolve(&mut self, from: &Path, specifier: &str) -> io::Result<Option<PathBuf>> {

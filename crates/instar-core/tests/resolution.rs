@@ -45,8 +45,6 @@ fn index_queries_preserve_symbols_calls_and_dependencies() -> TestResult {
                 version,
                 "local dependency = require('./dependency')\nreturn dependency.calculate(2)",
             )?;
-
-            session.change(&main);
         }
 
         let mut expected = Vec::new();

@@ -36,6 +36,9 @@ pub struct Options {
     /// Produce source annotated with inferred types.
     pub annotations: bool,
 
+    /// Retain the native type graph for editor queries without mutating the AST with annotations.
+    pub retain_full_type_graphs: bool,
+
     /// Refresh downloaded Roblox assets for enabled environments.
     pub update: bool,
 }
@@ -176,11 +179,16 @@ pub struct Report {
     /// Errors and warnings produced while checking the requested modules.
     pub diagnostics: Vec<Diagnostic>,
 
+    /// Modules for which native type checking reached a configured time limit.
+    pub timeout_hits: Vec<PathBuf>,
+
     /// Annotated sources when annotation output was requested.
     pub annotations: Vec<Annotation>,
 
     /// Shared documentation indexed by source path.
     pub documentation: BTreeMap<PathBuf, Arc<Documentation>>,
+
+    pub(crate) links: Vec<EditorEntry>,
 
     /// Result of an optional editor query.
     pub editor: Option<EditorResult>,
@@ -196,7 +204,7 @@ impl Report {
     }
 }
 
-/// Reusable native analysis state with explicit source invalidation.
+/// Reusable native analysis state.
 #[derive(Default)]
 pub struct Session {
     native: luau::Session,
@@ -225,16 +233,61 @@ impl Session {
         position: line_index::LineCol,
         operation: &str,
     ) -> io::Result<Report> {
+        self.query_with_diagnostics(sources, modules, path, position, operation, true)
+    }
+
+    pub(crate) fn editor_query(
+        &mut self,
+        sources: &mut SourceStore,
+        modules: &[PathBuf],
+        path: &Path,
+        position: line_index::LineCol,
+        operation: &str,
+    ) -> io::Result<Report> {
+        self.query_with_diagnostics(sources, modules, path, position, operation, false)
+    }
+
+    fn query_with_diagnostics(
+        &mut self,
+        sources: &mut SourceStore,
+        modules: &[PathBuf],
+        path: &Path,
+        position: line_index::LineCol,
+        operation: &str,
+        collect_diagnostics: bool,
+    ) -> io::Result<Report> {
         let mut resolver = Resolver::new(sources);
 
         let Some(position) = resolver.generated_position(path, position)? else {
             return Ok(Report::default());
         };
 
-        let mut report = self
-            .native
-            .query(&mut resolver, modules, path, position, operation)?;
+        let mut report = self.native.query(
+            &mut resolver,
+            modules,
+            path,
+            position,
+            operation,
+            collect_diagnostics,
+        )?;
 
+        map_report(&resolver, path, &mut report)?;
+
+        Ok(report)
+    }
+
+    pub(crate) fn parse(&mut self, sources: &mut SourceStore, path: &Path) -> io::Result<Report> {
+        self.parse_with_definitions(sources, path, false)
+    }
+
+    pub(crate) fn parse_with_definitions(
+        &mut self,
+        sources: &mut SourceStore,
+        path: &Path,
+        load_definitions: bool,
+    ) -> io::Result<Report> {
+        let mut resolver = Resolver::new(sources);
+        let mut report = self.native.parse(&mut resolver, path, load_definitions)?;
         map_report(&resolver, path, &mut report)?;
 
         Ok(report)
@@ -243,11 +296,6 @@ impl Session {
     /// Invalidate cached native state after environment or configuration changes.
     pub fn refresh(&mut self) {
         self.native.refresh();
-    }
-
-    /// Invalidate one source and its dependent native analysis state.
-    pub fn change(&mut self, path: &Path) {
-        self.native.change(path);
     }
 
     /// # Errors
@@ -278,7 +326,7 @@ pub fn analyze(
     modules: &[PathBuf],
     options: &Options,
 ) -> io::Result<Report> {
-    let mut report = luau::Session::default().analyze(resolver, modules, options)?;
+    let mut report = luau::Session.analyze_including_definitions(resolver, modules, options)?;
 
     map_report(
         resolver,
@@ -293,6 +341,11 @@ fn map_report(resolver: &Resolver<'_>, path: &Path, report: &mut Report) -> io::
     let mut diagnostics = Vec::with_capacity(report.diagnostics.len());
 
     for mut diagnostic in std::mem::take(&mut report.diagnostics) {
+        if diagnostic.path.as_os_str().is_empty() {
+            diagnostics.push(diagnostic);
+            continue;
+        }
+
         let Some([line, column, end_line, end_column]) = resolver.original_range(
             &diagnostic.path,
             [
@@ -371,6 +424,17 @@ fn map_report(resolver: &Resolver<'_>, path: &Path, report: &mut Report) -> io::
 
         None => {}
     }
+
+    let mut links = std::mem::take(&mut report.links);
+    let mut mapped_links = Vec::with_capacity(links.len());
+
+    for mut entry in links.drain(..) {
+        if map_entry(&mut entry)? {
+            mapped_links.push(entry);
+        }
+    }
+
+    report.links = mapped_links;
 
     Ok(())
 }

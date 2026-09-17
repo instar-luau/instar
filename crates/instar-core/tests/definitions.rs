@@ -270,7 +270,13 @@ fn definition_environments_do_not_leak_between_entry_projects() -> TestResult {
         !report
             .diagnostics
             .iter()
-            .any(|error| error.path == main && error.is_error)
+            .any(|error| error.path == main && error.is_error),
+        "{:?}",
+        report
+            .diagnostics
+            .iter()
+            .map(|error| (&error.path, &error.message))
+            .collect::<Vec<_>>()
     );
 
     Ok(())
