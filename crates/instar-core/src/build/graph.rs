@@ -77,6 +77,7 @@ pub(super) fn dependencies(
     external: &[String],
 ) -> io::Result<Vec<Dependency>> {
     let mut result = Vec::new();
+    let links = links(module)?;
 
     for value in nodes(&module.document["root"]) {
         if kind(value) != "AstExprCall"
@@ -102,7 +103,7 @@ pub(super) fn dependencies(
             None
         };
 
-        let target = resolved(module, &arguments[0])?;
+        let target = resolved(module, &arguments[0], &links)?;
 
         let (classification, target) = if specifier
             .as_ref()
@@ -136,32 +137,37 @@ pub(super) fn dependencies(
     Ok(result)
 }
 
-fn resolved(module: &Module, argument: &Value) -> io::Result<Option<PathBuf>> {
-    let argument = range(&module.source, argument)?;
+fn links(module: &Module) -> io::Result<BTreeMap<usize, PathBuf>> {
+    array(&module.document["dependencies"])
+        .iter()
+        .map(|dependency| {
+            let coordinates: [u32; 4] =
+                serde_json::from_value(dependency["range"].clone()).map_err(io::Error::other)?;
 
-    for dependency in array(&module.document["dependencies"]) {
-        let coordinates: [u32; 4] =
-            serde_json::from_value(dependency["range"].clone()).map_err(io::Error::other)?;
+            let start = usize::from(
+                module
+                    .source
+                    .offset(
+                        line_index::LineCol {
+                            line: coordinates[0],
+                            col: coordinates[1],
+                        },
+                        PositionEncoding::Utf8,
+                    )
+                    .map_err(io::Error::other)?,
+            );
 
-        let start = usize::from(
-            module
-                .source
-                .offset(
-                    line_index::LineCol {
-                        line: coordinates[0],
-                        col: coordinates[1],
-                    },
-                    PositionEncoding::Utf8,
-                )
-                .map_err(io::Error::other)?,
-        );
+            Ok((start, PathBuf::from(field(dependency, "path"))))
+        })
+        .collect()
+}
 
-        if start == argument.start {
-            return Ok(Some(PathBuf::from(field(dependency, "path"))));
-        }
-    }
-
-    Ok(None)
+fn resolved(
+    module: &Module,
+    argument: &Value,
+    links: &BTreeMap<usize, PathBuf>,
+) -> io::Result<Option<PathBuf>> {
+    Ok(links.get(&range(&module.source, argument)?.start).cloned())
 }
 
 pub(super) fn validate(
@@ -322,9 +328,9 @@ fn validate_runtime(
         ));
     }
 
-    if clone_root(environment, &to).is_some()
-        && clone_root(environment, &to) != clone_root(environment, &from)
-    {
+    let target_clone_root = clone_root(environment, &to);
+
+    if target_clone_root.is_some() && target_clone_root != clone_root(environment, &from) {
         return Err(io::Error::other(
             "require reaches a cloned template rather than the executing player's module",
         ));
@@ -411,8 +417,6 @@ fn roblox_path(
     to: &Path,
     target: Target,
 ) -> io::Result<String> {
-    validate_runtime(environment, from, to, target)?;
-
     let from =
         ancestry(environment, from).ok_or_else(|| io::Error::other("source mapping missing"))?;
 

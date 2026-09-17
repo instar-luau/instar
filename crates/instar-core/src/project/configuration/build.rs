@@ -472,6 +472,7 @@ pub(crate) fn discover(from: &Path, profile: Option<&str>) -> io::Result<Configu
 
     let mut selected = None;
     let mut files = BTreeMap::new();
+    let mut parsed_grafts = BTreeMap::new();
 
     for path in candidates {
         let bytes = match fs::read(&path) {
@@ -483,6 +484,7 @@ pub(crate) fn discover(from: &Path, profile: Option<&str>) -> io::Result<Configu
         let parsed = InstarConfig::parse(std::str::from_utf8(&bytes).map_err(io::Error::other)?)
             .map_err(io::Error::other)?;
 
+        parsed_grafts.insert(path.clone(), parsed.grafts.clone());
         files.insert(path.clone(), bytes);
 
         if let Some(settings) = parsed.build {
@@ -507,15 +509,22 @@ pub(crate) fn discover(from: &Path, profile: Option<&str>) -> io::Result<Configu
         let path = parent.join("instar.toml");
 
         if path.is_file() {
-            let bytes = fs::read(&path)?;
+            let grafts = if let Some(grafts) = parsed_grafts.get(&path) {
+                grafts.clone()
+            } else {
+                let bytes = fs::read(&path)?;
 
-            let parsed =
-                InstarConfig::parse(std::str::from_utf8(&bytes).map_err(io::Error::other)?)
-                    .map_err(io::Error::other)?;
+                let parsed =
+                    InstarConfig::parse(std::str::from_utf8(&bytes).map_err(io::Error::other)?)
+                        .map_err(io::Error::other)?;
 
-            files.insert(path, bytes);
+                files.insert(path.clone(), bytes);
+                parsed_grafts.insert(path.clone(), parsed.grafts.clone());
 
-            for (name, dependency) in parsed.grafts.unwrap_or_default() {
+                parsed.grafts
+            };
+
+            for (name, dependency) in grafts.unwrap_or_default() {
                 manifests.insert(name, (dependency, parent.to_owned()));
             }
         }
@@ -549,10 +558,6 @@ pub(crate) fn discover(from: &Path, profile: Option<&str>) -> io::Result<Configu
     let mut sources = crate::source::SourceStore::default();
     let mut resolver = crate::project::resolution::Resolver::new(&mut sources);
     let roblox = resolver.discovery.roblox(&path)?;
-
-    for path in resolver.discovery.definitions(&path)? {
-        files.insert(path.clone(), fs::read(path)?);
-    }
 
     let (project, sourcemap) = if let Some(roblox) = roblox {
         for path in [&roblox.project, &roblox.sourcemap].into_iter().flatten() {

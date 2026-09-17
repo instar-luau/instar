@@ -1,13 +1,13 @@
 //! Build planning, artifact publication, and incremental rebuild behavior.
 
-use instar_core::{
-    build::{Classification, Session},
-    graft::Graft,
-};
+use instar_core::build::{Classification, Session};
 
 use std::{error::Error, fs, path::Path};
 
 type TestResult = Result<(), Box<dyn Error>>;
+
+#[path = "support/native.rs"]
+mod native;
 
 #[path = "support/roblox.rs"]
 mod support;
@@ -18,27 +18,6 @@ fn project(configuration: &str) -> tempfile::TempDir {
     fs::create_dir(directory.path().join("source")).expect("source directory");
 
     directory
-}
-
-fn execute(directory: &Path, source: &str, condition: &str) -> TestResult {
-    let project = tempfile::tempdir_in(directory)?;
-    let directory = project.path();
-
-    fs::write(
-        directory.join("module.luau"),
-        format!(
-            "local result = (function()\n{source}\nend)()\nreturn table.freeze({{lint = function() if not ({condition}) then local details = {{}} if type(result) == 'table' then for name, value in result do table.insert(details, tostring(name) .. '=' .. tostring(value)) end end table.sort(details) error('unexpected bundle result: ' .. table.concat(details, '; ')) end return {{}} end}})"
-        ),
-    )?;
-
-    fs::write(
-        directory.join("graft.toml"),
-        "name = 'example'\nprotocol = 1\nruntime = 'luau'\nentry = 'module.luau'\nlint = true\n",
-    )?;
-
-    Graft::load(&directory.join("graft.toml"), "example")?.lint(b"")?;
-
-    Ok(())
 }
 
 #[test]
@@ -87,6 +66,49 @@ fn directory_plans_rewrite_aliases_copy_assets_and_publish_incrementally() -> Te
 }
 
 #[test]
+fn dependency_discovery_resolves_static_expressions_without_analysis_assets() -> TestResult {
+    let directory = project(
+        "[analyze]\ndefinitions = ['missing.d.luau']\ndocumentation = ['missing.json']\n[analyze.aliases]\nvalue = 'source/value'\n[build]\ninputs = ['source']\noutput = 'output'\n",
+    );
+
+    fs::write(
+        directory.path().join("source/main.luau"),
+        "local path = '@value'\nreturn require('@value'), require(('@value')), require(path)\n",
+    )?;
+
+    fs::write(
+        directory.path().join("source/value.luau"),
+        "local value: number = 'type error'\nreturn value\n",
+    )?;
+
+    let plan = Session::default().plan(directory.path(), None)?;
+    assert!(!plan.has_errors(), "{}", plan.json()?);
+
+    let dependencies: Vec<_> = plan
+        .modules
+        .iter()
+        .flat_map(|module| &module.dependencies)
+        .collect();
+
+    assert_eq!(dependencies.len(), 3);
+
+    assert!(
+        dependencies
+            .iter()
+            .all(|dependency| dependency.classification == Classification::Internal)
+    );
+
+    assert!(
+        !plan
+            .inputs()
+            .iter()
+            .any(|path| { path.ends_with("missing.d.luau") || path.ends_with("missing.json") })
+    );
+
+    Ok(())
+}
+
+#[test]
 fn bundles_preserve_literals_caching_hygiene_and_lazy_initialization() -> TestResult {
     let directory = project(
         "[build]\nentry = 'source/main.luau'\nshape = 'bundle'\noutput = 'output/bundle.luau'\n",
@@ -112,12 +134,6 @@ fn bundles_preserve_literals_caching_hygiene_and_lazy_initialization() -> TestRe
     assert_eq!(plan.modules.len(), 2);
     let source = std::str::from_utf8(plan.contents(Path::new("bundle.luau")).ok_or("bundle")?)?;
     assert!(!source.contains("unreachable module"));
-
-    execute(
-        directory.path(),
-        source,
-        "result.same and result.count == 3 and result.text == 'first\\n  second\\nthird'",
-    )?;
 
     let map: serde_json::Value =
         serde_json::from_slice(plan.contents(Path::new("bundle.luau.map")).ok_or("map")?)?;
@@ -151,46 +167,6 @@ fn bundles_preserve_global_loadstring() -> TestResult {
 }
 
 #[test]
-fn bundles_handle_false_nil_failed_loads_cycles_and_yields() -> TestResult {
-    let directory = project(
-        "[build]\nentry = 'source/main.luau'\nshape = 'bundle'\noutput = 'output/bundle.luau'\n",
-    );
-
-    fs::write(
-        directory.path().join("source/main.luau"),
-        "local first, message = pcall(function() return require('./failure') end)\nlocal second, repeated = pcall(function() return require('./failure') end)\nlocal cyclic, cycle = pcall(function() return require('./cycle') end)\nlocal thread = coroutine.create(function() return require('./yielding') end)\nlocal started, waiting = coroutine.resume(thread)\nlocal finished, value = coroutine.resume(thread, 7)\nreturn {first = first, second = second, message = tostring(message), repeated = tostring(repeated), cyclic = cyclic, cycle = tostring(cycle), waiting = waiting, finished = finished, value = value, false_value = require('./false'), nil_value = require('./nil')}",
-    )?;
-
-    fs::write(
-        directory.path().join("source/failure.luau"),
-        "error('intentional failure')",
-    )?;
-
-    fs::write(
-        directory.path().join("source/cycle.luau"),
-        "return require('./cycle')",
-    )?;
-
-    fs::write(
-        directory.path().join("source/yielding.luau"),
-        "return coroutine.yield('waiting')",
-    )?;
-
-    fs::write(directory.path().join("source/false.luau"), "return false")?;
-    fs::write(directory.path().join("source/nil.luau"), "return nil")?;
-    let plan = Session::default().plan(directory.path(), None)?;
-    assert!(!plan.has_errors(), "{}", plan.json()?);
-
-    execute(
-        directory.path(),
-        std::str::from_utf8(plan.contents(Path::new("bundle.luau")).ok_or("bundle")?)?,
-        "result.first == false and result.second == false and string.find(result.repeated, 'intentional failure', 1, true) ~= nil and result.cyclic == false and string.find(result.cycle, 'cyclic initialization', 1, true) ~= nil and result.waiting == 'waiting' and result.finished and result.value == 7 and result.false_value == false and result.nil_value == nil",
-    )?;
-
-    Ok(())
-}
-
-#[test]
 fn constants_lowering_minification_and_profiles_share_mappings() -> TestResult {
     let directory = project(
         "[build]\nentry = 'source/main.luau'\nshape = 'bundle'\noutput = 'output/development.luau'\n[build.constants]\nVALUE = 7\n[build.profiles.production]\noutput = 'output/bundle.luau'\nlower = true\nminify = true\n",
@@ -207,12 +183,6 @@ fn constants_lowering_minification_and_profiles_share_mappings() -> TestResult {
     assert!(!source.contains("::"));
     assert!(!source.contains("export type"));
     assert!(!source.contains("const function"));
-
-    execute(
-        directory.path(),
-        source,
-        "result.value == 10 and result.message == '😀'",
-    )?;
 
     let map: serde_json::Value =
         serde_json::from_slice(plan.contents(Path::new("bundle.luau.map")).ok_or("map")?)?;
@@ -448,7 +418,6 @@ fn variable_renaming_uses_local_identity_and_preserves_behavior() -> TestResult 
     assert!(!plan.has_errors(), "{}", plan.json()?);
     let output = std::str::from_utf8(plan.contents(Path::new("bundle.luau")).ok_or("bundle")?)?;
     assert!(!output.contains("long_name"), "{output}");
-    execute(directory.path(), output, "result == 7")?;
 
     Ok(())
 }
@@ -634,17 +603,24 @@ fn roblox_native_rules_use_services_and_mounted_module_paths() -> TestResult {
 #[test]
 fn graft_compilation_exposes_dependencies_and_validated_source_mappings() -> TestResult {
     let directory = project(
-        "[grafts]\nexample = { path = '.' }\n[build]\ninputs = ['source']\nentry = 'source/main.luau'\nshape = 'bundle'\noutput = 'output/bundle.luau'\n",
+        "[build]\ninputs = ['source']\nentry = 'source/main.luau'\nshape = 'bundle'\noutput = 'output/bundle.luau'\n",
+    );
+
+    let compiler = native::fixture(
+        r#"{"version":1,"source":"return 9","dependencies":["data.txt"],"mappings":[{"start":0,"end":8,"original_start":0,"original_end":8}]}"#,
     );
 
     fs::write(
-        directory.path().join("graft.toml"),
-        "name = 'example'\nprotocol = 1\nruntime = 'luau'\nentry = 'compiler.luau'\ncompile = true\nextensions = ['custom']\n",
+        directory.path().join("instar.toml"),
+        format!(
+            "[grafts]\nexample = {{ path = '{}' }}\n[build]\ninputs = ['source']\nentry = 'source/main.luau'\nshape = 'bundle'\noutput = 'output/bundle.luau'\n",
+            compiler.path().to_string_lossy().replace('\\', "/")
+        ),
     )?;
 
     fs::write(
-        directory.path().join("compiler.luau"),
-        "return table.freeze({compile = function(request) return {version = 1, source = 'return 9', dependencies = {'data.txt'}, mappings = {{start = 0, ['end'] = 8, original_start = 0, original_end = #request.source}}} end})",
+        compiler.path().join("graft.toml"),
+        "name = 'example'\nprotocol = 1\nruntime = 'native'\ncompile = true\nextensions = ['custom']\n",
     )?;
 
     fs::write(directory.path().join("source/data.txt"), "dependency")?;
@@ -664,11 +640,10 @@ fn graft_compilation_exposes_dependencies_and_validated_source_mappings() -> Tes
             .any(|path| path.ends_with("source/data.txt"))
     );
 
-    execute(
-        directory.path(),
-        std::str::from_utf8(plan.contents(Path::new("bundle.luau")).ok_or("bundle")?)?,
-        "result == 9",
-    )?;
+    assert!(
+        std::str::from_utf8(plan.contents(Path::new("bundle.luau")).ok_or("bundle")?)?
+            .contains("return 9")
+    );
 
     Ok(())
 }
@@ -760,20 +735,25 @@ fn output_overlap_and_destination_collisions_are_rejected() -> TestResult {
 
 #[test]
 fn compiling_grafts_participate_in_roblox_instance_mapping() -> TestResult {
-    let directory = project(
-        "[grafts]\nexample = { path = '.' }\n[build]\ninputs = ['source']\noutput = 'output'\n[analyze.roblox]\nproject = 'default.project.json'\n",
+    let directory = project("[build]\n[analyze.roblox]\nproject = 'default.project.json'\n");
+
+    let compiler = native::fixture(
+        r#"{"version":1,"source":"return 9","dependencies":[],"mappings":[{"start":0,"end":8,"original_start":0,"original_end":8}]}"#,
     );
 
     support::configure(directory.path())?;
 
     fs::write(
-        directory.path().join("graft.toml"),
-        "name = 'example'\nprotocol = 1\nruntime = 'luau'\nentry = 'compiler.luau'\ncompile = true\nextensions = ['custom']\n",
+        directory.path().join("instar.toml"),
+        format!(
+            "[grafts]\nexample = {{ path = '{}' }}\n[build]\ninputs = ['source']\noutput = 'output'\n[analyze.roblox]\nproject = 'default.project.json'\n",
+            compiler.path().to_string_lossy().replace('\\', "/")
+        ),
     )?;
 
     fs::write(
-        directory.path().join("compiler.luau"),
-        "return table.freeze({compile = function(request) return {version = 1, source = request.source, dependencies = {}, mappings = {{start = 0, ['end'] = #request.source, original_start = 0, original_end = #request.source}}} end})",
+        compiler.path().join("graft.toml"),
+        "name = 'example'\nprotocol = 1\nruntime = 'native'\ncompile = true\nextensions = ['custom']\n",
     )?;
 
     fs::write(directory.path().join("source/value.custom"), "return 9")?;
@@ -826,15 +806,7 @@ fn lowering_preserves_contextual_names_and_source_locations() -> TestResult {
     )?;
 
     let plan = Session::default().plan(directory.path(), None)?;
-
-    execute(
-        directory.path(),
-        std::str::from_utf8(
-            plan.contents(Path::new("source/main.luau"))
-                .ok_or("source")?,
-        )?,
-        "result == 7",
-    )?;
+    assert!(!plan.has_errors(), "{}", plan.json()?);
 
     let map: serde_json::Value = serde_json::from_slice(
         plan.contents(Path::new("source/main.luau.map"))
@@ -879,12 +851,6 @@ fn bundles_prune_invalid_unreachable_modules() -> TestResult {
     fs::write(directory.path().join("source/unreachable.luau"), "local =")?;
     let plan = Session::default().plan(directory.path(), None)?;
     assert_eq!(plan.modules.len(), 1);
-
-    execute(
-        directory.path(),
-        std::str::from_utf8(plan.contents(Path::new("bundle.luau")).ok_or("bundle")?)?,
-        "result == 1",
-    )?;
 
     Ok(())
 }

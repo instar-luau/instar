@@ -486,7 +486,7 @@ impl Session {
                 for name in ["instar.toml", ".luaurc", ".config.luau", "config.luau"] {
                     let path = parent.join(name);
 
-                    if path.is_file() {
+                    if !snapshots.contains_key(&path) && path.is_file() {
                         snapshots.insert(path.clone(), fs::read(path)?);
                     }
                 }
@@ -593,8 +593,6 @@ impl Session {
                 .checked_add(1)
                 .ok_or_else(|| io::Error::other("build snapshot version exhausted"))?;
 
-            self.analysis.change(path);
-
             self.sources
                 .update(&source, self.version, text)
                 .map_err(io::Error::other)
@@ -603,8 +601,6 @@ impl Session {
                 .version
                 .checked_add(1)
                 .ok_or_else(|| io::Error::other("build snapshot version exhausted"))?;
-
-            self.analysis.change(path);
 
             self.sources
                 .open(path, self.version, text)
@@ -619,44 +615,51 @@ impl Session {
         configuration: &Configuration,
         environment: &crate::project::roblox::Environment,
     ) -> io::Result<graph::Module> {
-        transform::validate(&text.text)?;
         let source = self.snapshot(path, &text.text)?;
         let document = syntax::parse(&mut self.analysis, &mut self.sources, path)?;
-        let transformed = transform::constants(text, &source, &document, &configuration.settings)?;
 
-        let document = if transformed.text == text.text {
-            document
+        let transformed = if configuration.settings.constants.is_empty() {
+            text.clone()
         } else {
-            self.snapshot(path, &transformed.text)?;
-
-            syntax::parse(&mut self.analysis, &mut self.sources, path)?
+            transform::constants(text, &source, &document, &configuration.settings)?
         };
 
-        let source = self.snapshot(path, &transformed.text)?;
-
-        let transformed = rules::apply(
-            &transformed,
-            &source,
-            &document,
-            &configuration.settings.rules,
-            rules::Project {
-                path,
-                root: &configuration.root,
-                environment,
-                files: &configuration.files,
-            },
-        )?;
-
-        let document = if transformed.text == source.text().map_err(io::Error::other)? {
-            document
+        let (document, source) = if transformed.text == text.text {
+            (document, source)
         } else {
-            self.snapshot(path, &transformed.text)?;
+            let source = self.snapshot(path, &transformed.text)?;
+            let document = syntax::parse(&mut self.analysis, &mut self.sources, path)?;
 
-            syntax::parse(&mut self.analysis, &mut self.sources, path)?
+            (document, source)
+        };
+
+        let transformed = if configuration.settings.rules == configuration::Rules::default() {
+            transformed
+        } else {
+            rules::apply(
+                &transformed,
+                &source,
+                &document,
+                &configuration.settings.rules,
+                rules::Project {
+                    path,
+                    root: &configuration.root,
+                    environment,
+                    files: &configuration.files,
+                },
+            )?
+        };
+
+        let (document, source) = if transformed.text.as_bytes() == source.bytes() {
+            (document, source)
+        } else {
+            let source = self.snapshot(path, &transformed.text)?;
+            let document = syntax::parse(&mut self.analysis, &mut self.sources, path)?;
+
+            (document, source)
         };
 
         let text = transformed;
-        let source = self.snapshot(path, &text.text)?;
 
         Ok(graph::Module {
             source,
