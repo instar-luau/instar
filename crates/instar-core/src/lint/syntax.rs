@@ -92,6 +92,41 @@ pub(super) struct Node<'value> {
     pub scope: &'value Value,
 }
 
+fn position_range(value: &Value, name: &str) -> Option<((u32, u32), (u32, u32))> {
+    let (start, end) = field(value, name).split_once(" - ")?;
+    let (start_line, start_column) = start.split_once(',')?;
+    let (end_line, end_column) = end.split_once(',')?;
+
+    Some((
+        (start_line.parse().ok()?, start_column.parse().ok()?),
+        (end_line.parse().ok()?, end_column.parse().ok()?),
+    ))
+}
+
+fn type_reference_local<'value>(
+    node: &Node<'value>,
+    nodes: &[Node<'value>],
+) -> Option<&'value str> {
+    let prefix = node.value["prefix"].as_str()?;
+    let reference = position_range(node.value, "prefixLocation")?.0;
+
+    nodes
+        .iter()
+        .filter_map(|candidate| {
+            if kind(candidate.value) != "AstLocal" || field(candidate.value, "name") != prefix {
+                return None;
+            }
+
+            let declaration = position_range(candidate.value, "location")?;
+            let scope = position_range(candidate.scope, "location")?;
+
+            (declaration.0 <= reference && reference < scope.1)
+                .then_some((declaration.0, field(candidate.value, "location")))
+        })
+        .max_by_key(|candidate| candidate.0)
+        .map(|candidate| candidate.1)
+}
+
 fn collect<'value>(
     value: &'value Value,
     parent: &'value Value,
@@ -202,7 +237,9 @@ impl<'value> Context<'value> {
 
         for node in &nodes {
             let binding = if kind(node.value) == "AstTypeReference" {
-                node.value["prefixLocal"]["location"].as_str()
+                node.value["prefixLocal"]["location"]
+                    .as_str()
+                    .or_else(|| type_reference_local(node, &nodes))
             } else {
                 local(node.value)
             };
@@ -441,40 +478,6 @@ impl<'value> Context<'value> {
     }
 }
 
-pub(super) fn decode(text: &str) -> Result<Value, serde_json::Error> {
-    let mut output = String::new();
-    let mut quoted = false;
-    let mut escaped = false;
-    let mut index = 0;
-
-    while index < text.len() {
-        let tail = &text[index..];
-
-        if !quoted
-            && let Some(number) = ["-Infinity", "Infinity", "NaN"]
-                .into_iter()
-                .find(|number| tail.starts_with(number))
-        {
-            output.push('"');
-            output.push_str(number);
-            output.push('"');
-            index += number.len();
-            continue;
-        }
-
-        let character = tail.chars().next().expect("remaining character");
-        output.push(character);
-
-        if escaped {
-            escaped = false;
-        } else if quoted && character == '\\' {
-            escaped = true;
-        } else if character == '"' {
-            quoted = !quoted;
-        }
-
-        index += character.len_utf8();
-    }
-
-    serde_json::from_str(&output)
+pub(super) fn decode(source: &Source, text: &str) -> Result<Value, serde_json::Error> {
+    crate::syntax::decode(source, text)
 }
