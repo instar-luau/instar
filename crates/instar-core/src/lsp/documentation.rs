@@ -35,6 +35,13 @@ pub(super) fn comments(text: &str) -> String {
     let mut fence = None;
 
     for line in text.lines() {
+        let line = line.trim_start();
+
+        let line = line
+            .strip_prefix("---")
+            .or_else(|| line.strip_prefix("--"))
+            .map_or(line, str::trim_start);
+
         let trimmed = line.trim();
 
         if trimmed.starts_with("```") || trimmed.starts_with("~~~") {

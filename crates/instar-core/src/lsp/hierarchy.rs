@@ -20,11 +20,17 @@ fn item(entry: &EditorEntry) -> Option<protocol::CallHierarchyItem> {
     })
 }
 
-fn target(state: &State, location: &protocol::Location) -> Option<protocol::CallHierarchyItem> {
-    state
+fn target(
+    state: &State,
+    location: &protocol::Location,
+    name: Option<&str>,
+) -> Option<protocol::CallHierarchyItem> {
+    let file = state
         .index
         .files
-        .get(&path(&location.uri).ok()?)?
+        .get(&path(&location.uri).ok()?)?;
+
+    let exact = file
         .symbols
         .iter()
         .filter_map(item)
@@ -34,7 +40,24 @@ fn target(state: &State, location: &protocol::Location) -> Option<protocol::Call
                     || item.range == location.range
                     || (item.range.start <= location.range.start
                         && item.range.end == location.range.end))
+        });
+
+    exact.or_else(|| {
+        name.and_then(|name| {
+            file.symbols
+                .iter()
+                .filter_map(item)
+                .find(|item| item.name == name)
+                .or_else(|| {
+                    state
+                        .index
+                        .files
+                        .values()
+                        .flat_map(|file| file.symbols.iter().filter_map(item))
+                        .find(|item| item.name == name)
+                })
         })
+    })
 }
 
 pub(super) fn prepare(
@@ -53,7 +76,7 @@ pub(super) fn prepare(
             entry
                 .location
                 .as_ref()
-                .and_then(|location| target(state, location))
+                .and_then(|location| target(state, location, None))
         })
         .collect())
 }
@@ -83,7 +106,7 @@ pub(super) fn calls(
             let Some(callee) = call
                 .location
                 .as_ref()
-                .and_then(|location| target(state, location))
+                .and_then(|location| target(state, location, call.native.name.as_deref()))
             else {
                 continue;
             };

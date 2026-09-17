@@ -51,7 +51,6 @@ pub(super) fn complete(
         .filter_map(|entry| {
             Some(protocol::CompletionItem {
                 label: entry.native.name?,
-                detail: entry.native.description,
                 insert_text: entry.native.insert,
                 data: Some(serde_json::json!({"position": parameters, "version": version})),
                 documentation: entry.documentation.map(|value| {
@@ -215,9 +214,10 @@ fn modules(
 
     let text = source.text().map_err(internal_error)?;
 
-    if text.starts_with("#!") && insertion.line == 0 {
-        insertion.line = 1;
-    }
+    insertion.line = text
+        .lines()
+        .take_while(|line| line.starts_with("#!") || line.starts_with("--!"))
+        .count() as u32;
 
     let (range, prefix) = word(&source, parameters.position)?;
 

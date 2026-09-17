@@ -36,6 +36,13 @@ pub(super) fn files(roots: &BTreeSet<PathBuf>) -> io::Result<Vec<PathBuf>> {
                     .map(|path| (path, false)),
             );
         } else if metadata.is_file() {
+            if matches!(
+                path.file_name().and_then(|name| name.to_str()),
+                Some("instar.toml" | ".luaurc" | ".config.luau" | "config.luau")
+            ) {
+                continue;
+            }
+
             let selected = if explicit {
                 true
             } else {
