@@ -37,10 +37,9 @@ pub(crate) struct Node {
 #[derive(Default)]
 pub(crate) struct Environment {
     pub enabled: bool,
-    pub definitions: String,
+    pub definition: PathBuf,
     pub documentation: std::sync::Arc<crate::analysis::Documentation>,
     pub nodes: Vec<Node>,
-    pub enumerations: Vec<String>,
     pub classes: Vec<String>,
     origin: PathBuf,
     files: BTreeMap<PathBuf, usize>,
@@ -79,8 +78,6 @@ impl Environment {
                 .ok_or_else(|| io::Error::other("cannot locate the Roblox cache directory"))?
         };
 
-        let bundle = cache::load(&directory, update)?;
-
         let level = match configuration.level.unwrap_or_default() {
             RobloxLevel::None => "none",
             RobloxLevel::LocalUserSecurity => "local",
@@ -88,17 +85,14 @@ impl Environment {
             RobloxLevel::RobloxScriptSecurity => "roblox",
         };
 
-        let source = bundle
-            .definitions
-            .get(level)
-            .ok_or_else(|| invalid("missing Roblox level"))?;
-
-        let (metadata, definitions) = cache::metadata(source)?;
+        let definition = directory.join(format!("{level}.d.luau"));
+        let assets = cache::load(&directory, level, update)?;
+        let (metadata, _) = cache::metadata(&assets.source)?;
 
         let mut environment = Self {
             enabled: true,
-            definitions: definitions.to_owned(),
-            documentation: std::sync::Arc::new(bundle.documentation),
+            definition,
+            documentation: std::sync::Arc::new(assets.documentation),
             classes: metadata
                 .classes
                 .iter()
@@ -111,7 +105,6 @@ impl Environment {
                     )
                 })
                 .collect(),
-            enumerations: metadata.enumerations.clone(),
             ..Self::default()
         };
 

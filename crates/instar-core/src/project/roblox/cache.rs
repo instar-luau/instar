@@ -3,35 +3,26 @@ use crate::analysis::Documentation;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use std::{
-    collections::BTreeMap,
     fs,
-    io::{self, Read},
+    io::{self, Read, Write},
     path::Path,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 const LEVELS: [&str; 4] = ["none", "local", "plugin", "roblox"];
 const INTERVAL: u64 = 24 * 60 * 60;
+const PAGES: &str = "https://instar-luau.github.io/instar";
+const DOCUMENTATION: &str = "https://instar-luau.github.io/instar/documentation.json";
 
-const LATEST: &str =
-    "https://api.github.com/repos/instar-luau/instar/commits?path=generated/bundle.json";
-
-#[derive(Deserialize, Serialize)]
-pub(super) struct Bundle {
-    pub definitions: BTreeMap<String, String>,
+#[derive(Clone)]
+pub(super) struct Assets {
+    pub source: String,
     pub documentation: Documentation,
 }
 
-impl Bundle {
+impl Assets {
     fn validate(&self) -> io::Result<()> {
-        for level in LEVELS {
-            let source = self
-                .definitions
-                .get(level)
-                .ok_or_else(|| invalid(format!("missing Roblox level {level}")))?;
-
-            metadata(source)?;
-        }
+        metadata(&self.source)?;
 
         if self.documentation.is_empty() {
             return Err(invalid("empty Roblox documentation"));
@@ -43,7 +34,6 @@ impl Bundle {
 
 #[derive(Deserialize, Serialize)]
 struct Current {
-    revision: String,
     checked: u64,
 }
 
@@ -74,16 +64,6 @@ pub(super) fn metadata(source: &str) -> io::Result<(Metadata, &str)> {
     Ok((metadata, definitions))
 }
 
-fn revision(value: &str) -> io::Result<&str> {
-    if value.len() != 40 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(invalid(
-            "Roblox revision must be a full 40-character commit hash",
-        ));
-    }
-
-    Ok(value)
-}
-
 fn read<T: DeserializeOwned>(path: &Path) -> io::Result<Option<T>> {
     match fs::read(path) {
         Ok(bytes) => Ok(serde_json::from_slice(&bytes).ok()),
@@ -92,130 +72,111 @@ fn read<T: DeserializeOwned>(path: &Path) -> io::Result<Option<T>> {
     }
 }
 
-fn write(path: &Path, value: &impl Serialize) -> io::Result<()> {
+fn read_source(path: &Path) -> io::Result<Option<String>> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(String::from_utf8(bytes).ok()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn write_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let directory = path
         .parent()
         .ok_or_else(|| invalid("cache path has no parent"))?;
 
     fs::create_dir_all(directory)?;
     let mut file = tempfile::NamedTempFile::new_in(directory)?;
-    serde_json::to_writer(file.as_file_mut(), value)?;
+    file.write_all(bytes)?;
     file.as_file().sync_all()?;
     file.persist(path).map_err(|error| error.error)?;
 
     Ok(())
 }
 
-fn stored(directory: &Path, selected: &str) -> io::Result<Option<Bundle>> {
-    Ok(
-        read::<Bundle>(&directory.join(format!("{}.json", revision(selected)?)))?
-            .filter(|bundle| bundle.validate().is_ok()),
-    )
+fn write<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
+    write_bytes(path, &serde_json::to_vec(value)?)
 }
 
-fn download(
-    selected: &str,
-    fetch: &mut impl FnMut(&str) -> io::Result<String>,
-) -> io::Result<Bundle> {
-    let url = format!(
-        "https://raw.githubusercontent.com/instar-luau/instar/{}/generated/bundle.json",
-        revision(selected)?
-    );
+fn source_path(directory: &Path, level: &str) -> io::Result<std::path::PathBuf> {
+    if !LEVELS.contains(&level) {
+        return Err(invalid(format!("unknown Roblox level {level}")));
+    }
 
-    let bundle: Bundle = serde_json::from_str(&fetch(&url)?)?;
-    bundle.validate()?;
+    Ok(directory.join(format!("{level}.d.luau")))
+}
 
-    Ok(bundle)
+fn stored(directory: &Path, level: &str) -> io::Result<Option<Assets>> {
+    let Some(source) = read_source(&source_path(directory, level)?)? else {
+        return Ok(None);
+    };
+
+    let Some(documentation) = read::<Documentation>(&directory.join("documentation.json"))? else {
+        return Ok(None);
+    };
+
+    let assets = Assets {
+        source,
+        documentation,
+    };
+
+    Ok(assets.validate().is_ok().then_some(assets))
+}
+
+fn download(level: &str, fetch: &mut impl FnMut(&str) -> io::Result<String>) -> io::Result<Assets> {
+    let source = fetch(&format!("{PAGES}/{level}.d.luau"))?;
+    metadata(&source)?;
+
+    let documentation: Documentation = serde_json::from_str(&fetch(DOCUMENTATION)?)?;
+
+    let assets = Assets {
+        source,
+        documentation,
+    };
+
+    assets.validate()?;
+
+    Ok(assets)
 }
 
 fn cached(
     directory: &Path,
+    level: &str,
     force: bool,
     now: u64,
     fetch: &mut impl FnMut(&str) -> io::Result<String>,
-) -> io::Result<Bundle> {
-    let path = directory.join("current.json");
-    let current = read::<Current>(&path)?.filter(|current| revision(&current.revision).is_ok());
-
-    let existing = current
-        .as_ref()
-        .map(|current| stored(directory, &current.revision))
-        .transpose()?
-        .flatten();
+) -> io::Result<Assets> {
+    let current_path = directory.join("current.json");
+    let current = read::<Current>(&current_path)?;
+    let existing = stored(directory, level)?;
 
     if !force
         && current.as_ref().is_some_and(|current| {
             now.checked_sub(current.checked)
                 .is_some_and(|elapsed| elapsed < INTERVAL)
         })
-        && let Some(bundle) = existing
+        && let Some(assets) = existing.as_ref()
     {
-        return Ok(bundle);
+        return Ok(assets.clone());
     }
 
-    let update = (|| {
-        #[derive(Deserialize)]
-        struct Commit {
-            sha: String,
-        }
+    match download(level, fetch) {
+        Ok(assets) => {
+            write_bytes(&source_path(directory, level)?, assets.source.as_bytes())?;
+            write(&directory.join("documentation.json"), &assets.documentation)?;
+            write(&current_path, &Current { checked: now })?;
 
-        let commits: Vec<Commit> = serde_json::from_str(&fetch(LATEST)?)?;
-
-        let selected = &commits
-            .first()
-            .ok_or_else(|| invalid("no published Roblox bundles"))?
-            .sha;
-
-        revision(selected)?;
-
-        let bundle = if !force
-            && current
-                .as_ref()
-                .is_some_and(|current| current.revision == *selected)
-            && existing.is_some()
-        {
-            None
-        } else {
-            Some(download(selected, fetch)?)
-        };
-
-        Ok::<_, io::Error>((selected.clone(), bundle))
-    })();
-
-    match update {
-        Ok((selected, bundle)) => {
-            let bundle = match bundle {
-                Some(bundle) => {
-                    write(&directory.join(format!("{selected}.json")), &bundle)?;
-
-                    bundle
-                }
-
-                None => existing.ok_or_else(|| invalid("missing cached Roblox bundle"))?,
-            };
-
-            write(
-                &path,
-                &Current {
-                    revision: selected,
-                    checked: now,
-                },
-            )?;
-
-            Ok(bundle)
+            Ok(assets)
         }
 
         Err(error) if !force => {
-            if let (Some(mut current), Some(bundle)) = (current, existing) {
+            if let (Some(mut current), Some(assets)) = (current, existing) {
                 current.checked = now;
-                write(&path, &current)?;
+                write(&current_path, &current)?;
 
-                eprintln!(
-                    "roblox: {error}; using cached revision {}",
-                    current.revision
-                );
+                eprintln!("roblox: {error}; using cached definitions");
 
-                Ok(bundle)
+                Ok(assets)
             } else {
                 Err(error)
             }
@@ -225,13 +186,13 @@ fn cached(
     }
 }
 
-pub(super) fn load(directory: &Path, force: bool) -> io::Result<Bundle> {
+pub(super) fn load(directory: &Path, level: &str, force: bool) -> io::Result<Assets> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(io::Error::other)?
         .as_secs();
 
-    cached(directory, force, now, &mut |url| {
+    cached(directory, level, force, now, &mut |url| {
         let agent = ureq::AgentBuilder::new()
             .https_only(true)
             .tls_connector(std::sync::Arc::new(
@@ -263,29 +224,18 @@ pub(super) fn load(directory: &Path, force: bool) -> io::Result<Bundle> {
 mod tests {
     use super::*;
 
-    const FIRST: &str = "1111111111111111111111111111111111111111";
-    const SECOND: &str = "2222222222222222222222222222222222222222";
-
-    fn source() -> String {
-        let definitions: BTreeMap<_, _> = LEVELS
-            .into_iter()
-            .map(|level| {
-                (
-                    level,
-                    "--#METADATA#{\"classes\":[],\"enumerations\":[]}\ndeclare sample: number",
-                )
-            })
-            .collect();
-
-        serde_json::json!({"definitions": definitions, "documentation": {"sample": "description"}})
-            .to_string()
+    fn source(kind: &str) -> String {
+        format!("--#METADATA#{{\"classes\":[],\"enumerations\":[]}}\ndeclare sample: {kind}")
     }
 
     fn fetch(url: &str) -> io::Result<String> {
-        if url == LATEST {
-            Ok(serde_json::json!([{ "sha": FIRST }]).to_string())
-        } else if url.ends_with("/bundle.json") {
-            Ok(source())
+        if url == DOCUMENTATION {
+            Ok(r#"{"sample":"description"}"#.into())
+        } else if LEVELS
+            .into_iter()
+            .any(|level| url == format!("{PAGES}/{level}.d.luau"))
+        {
+            Ok(source("number"))
         } else {
             Err(io::Error::other("unexpected request"))
         }
@@ -299,91 +249,81 @@ mod tests {
     fn downloads_checks_daily_and_forces_refresh() -> io::Result<()> {
         let directory = tempfile::tempdir()?;
         let root = directory.path();
+        let level = "plugin";
+        let source_path = format!("{PAGES}/{level}.d.luau");
         let mut requests = Vec::new();
 
-        cached(root, false, 1, &mut |url| {
+        cached(root, level, false, 1, &mut |url| {
             requests.push(url.to_owned());
 
             fetch(url)
         })?;
 
-        assert_eq!(requests.len(), 2);
-        assert!(requests[1].contains(FIRST));
+        assert_eq!(requests, [source_path.clone(), DOCUMENTATION.to_owned()]);
 
-        cached(root, false, INTERVAL, &mut |_| {
+        cached(root, level, false, INTERVAL, &mut |_| {
             panic!("fresh cache requested the network")
         })?;
 
         requests.clear();
 
-        cached(root, false, INTERVAL + 1, &mut |url| {
+        cached(root, level, false, INTERVAL + 1, &mut |url| {
             requests.push(url.to_owned());
 
             fetch(url)
         })?;
 
-        assert_eq!(requests, [LATEST]);
+        assert_eq!(requests, [source_path.clone(), DOCUMENTATION.to_owned()]);
         requests.clear();
 
-        cached(root, true, INTERVAL + 2, &mut |url| {
+        cached(root, level, true, INTERVAL + 2, &mut |url| {
             requests.push(url.to_owned());
 
             fetch(url)
         })?;
 
-        assert_eq!(requests.len(), 2);
-        assert_eq!(fs::read_dir(root)?.count(), 2);
+        assert_eq!(requests, [source_path.clone(), DOCUMENTATION.to_owned()]);
+        assert_eq!(fs::read_dir(root)?.count(), 3);
 
-        let updated = cached(root, false, INTERVAL * 2 + 2, &mut |url| {
-            if url == LATEST {
-                Ok(serde_json::json!([{ "sha": SECOND }]).to_string())
+        let updated = cached(root, level, false, INTERVAL * 2 + 2, &mut |url| {
+            if url == source_path {
+                Ok(source("string"))
             } else {
-                Ok(source().replace("number", "string"))
+                fetch(url)
             }
         })?;
 
-        assert!(updated.definitions["plugin"].ends_with("declare sample: string"));
+        assert!(updated.source.ends_with("declare sample: string"));
 
         assert_eq!(
             read::<Current>(&root.join("current.json"))?
                 .unwrap()
-                .revision,
-            SECOND
-        );
-
-        assert!(
-            stored(root, FIRST)?.unwrap().definitions["plugin"].ends_with("declare sample: number")
+                .checked,
+            INTERVAL * 2 + 2
         );
 
         Ok(())
     }
 
     #[test]
-    fn failed_updates_keep_the_previous_revision_and_back_off() -> io::Result<()> {
+    fn failed_updates_keep_the_previous_assets_and_back_off() -> io::Result<()> {
         let directory = tempfile::tempdir()?;
         let root = directory.path();
-        assert!(cached(root, false, 1, &mut offline).is_err());
-        cached(root, false, 1, &mut fetch)?;
-        let path = root.join(format!("{FIRST}.json"));
+        let level = "plugin";
+        cached(root, level, false, 1, &mut fetch)?;
+        let path = root.join("plugin.d.luau");
         let original = fs::read(&path)?;
 
-        cached(root, false, INTERVAL + 1, &mut |url| {
-            if url == LATEST {
-                Ok(serde_json::json!([{ "sha": SECOND }]).to_string())
-            } else {
-                Ok("{}".into())
-            }
-        })?;
+        cached(root, level, false, INTERVAL + 1, &mut offline)?;
 
         assert_eq!(fs::read(&path)?, original);
-        assert!(!root.join(format!("{SECOND}.json")).exists());
 
-        cached(root, false, INTERVAL + 2, &mut |_| {
+        cached(root, level, false, INTERVAL + 2, &mut |_| {
             panic!("failed check was immediately retried")
         })?;
 
         let current = fs::read(root.join("current.json"))?;
-        assert!(cached(root, true, INTERVAL + 3, &mut offline).is_err());
+        assert!(cached(root, level, true, INTERVAL + 3, &mut offline).is_err());
         assert_eq!(fs::read(root.join("current.json"))?, current);
 
         Ok(())
@@ -393,20 +333,21 @@ mod tests {
     fn corrupt_cache_and_clock_rollback_require_refresh() -> io::Result<()> {
         let directory = tempfile::tempdir()?;
         let root = directory.path();
-        cached(root, false, 10, &mut fetch)?;
+        let level = "plugin";
+        cached(root, level, false, 10, &mut fetch)?;
         let mut requests = Vec::new();
 
-        cached(root, false, 1, &mut |url| {
+        cached(root, level, false, 1, &mut |url| {
             requests.push(url.to_owned());
 
             fetch(url)
         })?;
 
-        assert_eq!(requests, [LATEST]);
-        fs::write(root.join(format!("{FIRST}.json")), "invalid")?;
+        assert_eq!(requests.len(), 2);
+        fs::write(root.join("plugin.d.luau"), "invalid")?;
         requests.clear();
 
-        cached(root, false, 2, &mut |url| {
+        cached(root, level, false, 2, &mut |url| {
             requests.push(url.to_owned());
 
             fetch(url)
@@ -414,22 +355,32 @@ mod tests {
 
         assert_eq!(requests.len(), 2);
 
-        fs::write(
-            root.join("current.json"),
-            r#"{"revision":"../outside","checked":2}"#,
-        )?;
-
-        cached(root, false, 3, &mut fetch)?;
+        fs::write(root.join("current.json"), r#"{"checked":"invalid"}"#)?;
+        cached(root, level, false, 3, &mut fetch)?;
 
         Ok(())
     }
 
     #[test]
     fn rejects_incomplete_assets_and_invalid_metadata() -> io::Result<()> {
-        let mut bundle: Bundle = serde_json::from_str(&source())?;
-        bundle.validate()?;
-        bundle.definitions.remove("none");
-        assert!(bundle.validate().is_err());
+        let assets = Assets {
+            source: source("number"),
+            documentation: [("sample".to_owned(), serde_json::json!("description"))]
+                .into_iter()
+                .collect(),
+        };
+
+        assets.validate()?;
+
+        assert!(
+            Assets {
+                source: "declare sample: number".into(),
+                ..assets.clone()
+            }
+            .validate()
+            .is_err()
+        );
+
         assert!(metadata("declare sample: number").is_err());
         assert!(metadata("--#METADATA#{}\n").is_err());
         assert!(metadata("--#METADATA#{\"classes\":[],\"enumerations\":[\"sample\\u0000\"]}\ndeclare sample: number").is_err());
