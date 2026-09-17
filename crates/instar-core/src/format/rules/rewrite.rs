@@ -1,6 +1,6 @@
 use super::{Options, sorting};
 use crate::format::scope::Names;
-use crate::project::configuration::format::{Binding, Declaration, Unused};
+use crate::project::configuration::format::{Binding, Declaration, Order, Unused};
 use std::{io, ops::Range};
 use vermis::{Kind, Parts, Tree, View};
 
@@ -10,9 +10,19 @@ pub(in crate::format) fn prepare(
     options: &Options,
     held: &[Range<usize>],
 ) -> io::Result<String> {
+    let original = source;
     let mut original_comments = crate::format::comments(tree, source.as_bytes());
     original_comments.sort_unstable();
     let source = bindings(source, tree, options, held)?;
+
+    if source == original
+        && !options.imports.sort
+        && options.tables.order == Order::Preserve
+        && options.types.tables.order == Order::Preserve
+    {
+        return Ok(source);
+    }
+
     let tree = vermis::parse(source.as_bytes().into());
     let held = crate::format::regions::held(&source, &tree);
     let output = sorting::sort(&source, &tree, options, &held)?;
