@@ -1,3 +1,3 @@
-[submodule "vendor/luau"]
-	path = vendor/luau
+[submodule "luau"]
+	path = crates/instar-bridge/vendor/luau
 	url = https://github.com/luau-lang/luau.git

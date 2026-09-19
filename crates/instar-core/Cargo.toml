@@ -12,8 +12,9 @@ categories.workspace = true
 release = false
 
 [dependencies]
-dirs = "6"
+dirs = "7"
 globset = "0.4"
+instar-bridge = { path = "../instar-bridge" }
 line-index = "0.1.2"
 schemars = "1.2.2"
 semver = "1"
@@ -23,16 +24,13 @@ sha2 = "0.11"
 tempfile = "3.27.0"
 thiserror = "2.0.20"
 tokio = { version = "1", features = ["io-std", "rt", "sync"] }
+toml_edit = { version = "0.25", features = ["serde"] }
 tower-lsp-server = "0.23.0"
+ureq = { version = "3", default-features = false, features = ["native-tls"] }
 url = "2"
-toml_edit = { version = "0.23.5", features = ["serde"] }
-ureq = { version = "2", default-features = false, features = ["native-tls"] }
 vermis = "0.2.0"
-zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 wasmi = { version = "2.0.0-beta.9", default-features = false, features = ["auto-dispatch", "stable", "std", "validate"] }
-
-[build-dependencies]
-cmake = "0.1.58"
+zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [lints]
 workspace = true

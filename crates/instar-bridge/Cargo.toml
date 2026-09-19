@@ -1,0 +1,17 @@
+[package]
+name = "instar-bridge"
+version.workspace = true
+edition.workspace = true
+description = "Native Instar bridge"
+repository.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+links = "instar"
+
+[build-dependencies]
+bindgen = "0.73"
+cmake = "0.1.58"
+
+[lints]
+workspace = true
