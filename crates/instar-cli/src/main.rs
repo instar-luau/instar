@@ -1,12 +1,5 @@
 //! Command-line entry point for the Instar Luau toolchain.
 
-mod analyze;
-mod build;
-mod format;
-mod graft;
-mod input;
-mod lint;
-
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
@@ -22,41 +15,22 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Check Luau source and optionally emit inferred type annotations.
-    Analyze(analyze::Analyze),
+    Analyze,
 
     /// Prepare or publish compiled project outputs.
-    Build(build::Build),
+    Build,
 
     /// Format Luau source using inherited project settings.
-    Format(format::Format),
+    Format,
 
     /// Install graft project dependencies.
-    Graft(graft::Graft),
+    Graft,
 
     /// Report lint findings or apply safe fixes.
-    Lint(lint::Lint),
+    Lint,
 
     /// Run the language server over standard input and output.
     Lsp,
 }
 
-fn main() -> ExitCode {
-    let (name, result) = match Cli::parse().command {
-        Command::Analyze(arguments) => ("analyze", arguments.run()),
-        Command::Build(arguments) => ("build", arguments.run()),
-        Command::Format(arguments) => ("format", arguments.run()),
-        Command::Graft(arguments) => ("graft", arguments.run()),
-        Command::Lint(arguments) => ("lint", arguments.run()),
-        Command::Lsp => ("lsp", instar_core::lsp::run()),
-    };
-
-    match result {
-        Ok(status) => status,
-
-        Err(error) => {
-            eprintln!("{name}: {error}");
-
-            ExitCode::FAILURE
-        }
-    }
-}
+fn main() -> ExitCode {}

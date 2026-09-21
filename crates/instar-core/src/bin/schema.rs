@@ -2,7 +2,8 @@
 
 use std::{env, error::Error, fs, path::PathBuf};
 
-use instar_core::project::configuration::InstarConfig;
+use instar_core::project::Config;
+use schemars::schema_for;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os().skip(1);
@@ -12,7 +13,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err("expected one schema output path".into());
     }
 
-    let schema = serde_json::to_string_pretty(&InstarConfig::schema())?;
+    let schema = serde_json::to_string_pretty(&schema_for!(Config))?;
 
     if let Some(parent) = path
         .parent()
