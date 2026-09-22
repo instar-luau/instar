@@ -20,8 +20,11 @@ pub struct Source<'source> {
 
 /// Resolution request supplied by the native checker.
 pub struct ResolveRequest<'request> {
-    /// Originating module.
+    /// Original source module being traced, independent of intermediate navigation.
     pub from: &'request str,
+
+    /// Result of the preceding navigation step, if Luau resolved it.
+    pub context: Option<&'request str>,
 
     /// Whether resolution failure is allowed.
     pub optional: bool,
@@ -217,6 +220,11 @@ unsafe extern "C" fn resolve_callback(
 
         let request_value = ResolveRequest {
             from,
+            context: if request.has_context != 0 {
+                Some(unsafe { borrow_text(request.context)? })
+            } else {
+                None
+            },
             optional: request.optional != 0,
             location: range(request.expression),
         };

@@ -1,5 +1,6 @@
 //! Project configuration and module graphs for Instar.
 
+pub mod analysis;
 pub mod graph;
 pub mod project;
 pub mod resolve;

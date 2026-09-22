@@ -111,8 +111,12 @@ extern "C" {
 
     /**Source location of a module-resolution expression.*/
     typedef struct ResolveRequest {
-        /**Originating module.*/
+        /**Original source module being traced.*/
         Text from;
+        /**Result of the preceding navigation step, when present.*/
+        Text context;
+        /**Whether an intermediate context is present.*/
+        uint8_t has_context;
         /**Whether failure is allowed.*/
         uint8_t optional;
         /**Expression source range.*/
