@@ -113,6 +113,7 @@ namespace {
         std::optional<std::string> getEnvironmentForModule(const Luau::ModuleName &name) const override;
 
         Checker *checker;
+        std::string origin;
     };
 
     struct ConfigurationResolver final : Luau::ConfigResolver {
@@ -229,6 +230,8 @@ namespace {
     }
 
     std::optional<Luau::SourceCode> FileResolver::readSource(const Luau::ModuleName &name) {
+        // Luau traces each source synchronously after reading it, before loading its dependencies.
+        origin = name;
         SourceResult result{};
 
         if (!checker->callbacks.source(checker->context, text(name), &result)) {
@@ -253,13 +256,15 @@ namespace {
     }
 
     std::optional<Luau::ModuleInfo> FileResolver::resolveModule(const Luau::ModuleInfo *context, Luau::AstExpr *expression, const Luau::TypeCheckLimits &) {
-        if (!context || !expression) {
+        if (!expression || origin.empty()) {
             return std::nullopt;
         }
 
         ResolveRequest request{
-            text(context->name),
-            uint8_t(context->optional),
+            text(origin),
+            context ? text(context->name) : text({}),
+            uint8_t(context != nullptr),
+            uint8_t(context && context->optional),
             {
                 expression->location.begin.line,
                 expression->location.begin.column,
@@ -284,7 +289,7 @@ namespace {
             throw CallbackFailure{};
         }
 
-        return Luau::ModuleInfo{std::string(*path), context->optional};
+        return Luau::ModuleInfo{std::string(*path), context && context->optional};
     }
 
     const Luau::Config &ConfigurationResolver::getConfig(const Luau::ModuleName &name, const Luau::TypeCheckLimits &) const {

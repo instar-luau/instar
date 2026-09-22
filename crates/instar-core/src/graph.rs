@@ -229,8 +229,9 @@ impl Graph {
                 .map_err(|error| Failure::Configuration(error.to_string()))
         };
 
-        let (mut sites, diagnostics) = extract(&source, module.instance.clone(), map);
-        self.nodes[id].diagnostics.extend(diagnostics);
+        let extracted = extract(&source, module.instance.clone(), map);
+        let mut sites = extracted.sites;
+        self.nodes[id].diagnostics.extend(extracted.diagnostics);
 
         for site in &mut sites {
             site.configurations.extend(configurations.iter().cloned());
@@ -279,13 +280,21 @@ struct Extractor<'source> {
     sites: Vec<RequireSite>,
     script: Option<Instance>,
     map: Result<Option<Rc<Sourcemap>>, Failure>,
+    values: HashMap<(usize, usize, std::mem::Discriminant<Kind>), Binding>,
 }
 
-fn extract(
+pub(crate) struct Extraction {
+    pub(crate) sites: Vec<RequireSite>,
+    pub(crate) diagnostics: Vec<Diagnostic>,
+    pub(crate) expressions: HashMap<[usize; 2], Request>,
+    pub(crate) line_starts: Vec<usize>,
+}
+
+pub(crate) fn extract(
     source: &str,
     script: Option<Instance>,
     map: Result<Option<Rc<Sourcemap>>, Failure>,
-) -> (Vec<RequireSite>, Vec<Diagnostic>) {
+) -> Extraction {
     let tree = vermis::parse(source.as_bytes());
 
     let diagnostics = tree
@@ -336,6 +345,7 @@ fn extract(
         sites: Vec::new(),
         script,
         map,
+        values: HashMap::new(),
     };
 
     if let Some(root) = tree.view(tree.root) {
@@ -344,7 +354,26 @@ fn extract(
 
     extractor.sites.sort_by_key(|site| site.range);
 
-    (extractor.sites, diagnostics)
+    let expressions = extractor
+        .values
+        .into_iter()
+        .filter_map(|((start, end, _), value)| {
+            let request = match value {
+                Binding::String(value) => Request::String(value),
+                Binding::Instance(Ok(instance)) => Request::Instance(instance),
+                _ => return None,
+            };
+
+            Some(([start, end], request))
+        })
+        .collect();
+
+    Extraction {
+        sites: extractor.sites,
+        diagnostics,
+        expressions,
+        line_starts: extractor.line_starts,
+    }
 }
 
 impl Extractor<'_> {
@@ -390,7 +419,21 @@ impl Extractor<'_> {
         }
     }
 
-    fn value(&self, node: View<'_, '_>) -> Binding {
+    fn value(&mut self, node: View<'_, '_>) -> Binding {
+        let span = node.span();
+        let key = (span.start, span.end, std::mem::discriminant(&node.kind()));
+
+        if let Some(value) = self.values.get(&key) {
+            return value.clone();
+        }
+
+        let value = self.value_inner(node);
+        self.values.insert(key, value.clone());
+
+        value
+    }
+
+    fn value_inner(&mut self, node: View<'_, '_>) -> Binding {
         match node.kind() {
             Kind::String => {
                 return string_value(node.text()).map_or(Binding::Other, Binding::String);
@@ -441,7 +484,7 @@ impl Extractor<'_> {
         }
     }
 
-    fn field(&self, receiver: View<'_, '_>, name: &[u8]) -> Binding {
+    fn field(&mut self, receiver: View<'_, '_>, name: &[u8]) -> Binding {
         let Binding::Instance(instance) = self.value(receiver) else {
             return Binding::Other;
         };
@@ -464,7 +507,12 @@ impl Extractor<'_> {
         }
     }
 
-    fn method(&self, receiver: View<'_, '_>, method: &[u8], arguments: View<'_, '_>) -> Binding {
+    fn method(
+        &mut self,
+        receiver: View<'_, '_>,
+        method: &[u8],
+        arguments: View<'_, '_>,
+    ) -> Binding {
         if !matches!(method, b"GetService" | b"WaitForChild" | b"FindFirstChild") {
             return Binding::Other;
         }
@@ -646,6 +694,8 @@ impl Extractor<'_> {
         if node.kind() == Kind::TypeFunction {
             return;
         }
+
+        self.value(node);
 
         match node.parts() {
             Some(Parts::Local { bindings, values }) => {
