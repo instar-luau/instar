@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, io};
+use std::{collections::BTreeMap, io, path::PathBuf};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -13,6 +13,21 @@ use crate::{invalid, string_value};
 pub struct Config {
     /// Settings shared by analysis and require resolution.
     pub luau: LuauConfig,
+
+    /// Optional Roblox sourcemap configuration.
+    pub roblox: RobloxConfig,
+}
+
+/// Tool-neutral sourcemap settings.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct RobloxConfig {
+    /// Sourcemap files relative to this manifest; their source paths are relative to each map.
+    /// Omission inherits the parent list, or discovers the nearest ancestor `sourcemap.json`.
+    /// An explicit list replaces it, including `[]` to disable discovery.
+    #[schemars(with = "Option<Vec<String>>")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sourcemaps: Option<Vec<PathBuf>>,
 }
 
 /// Luau settings in Instar's `snake_case` configuration format.

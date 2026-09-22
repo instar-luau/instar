@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use instar_core::{graph::Graph, project::Project};
+use instar_core::{graph::Graph, project::Project, resolve::Module};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let paths = env::args_os()
@@ -17,7 +17,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     if paths.len() == 1 && matches!(paths[0].to_str(), Some("--help" | "-h")) {
         println!(
-            "Usage: inspect <entry.lua[u]>...\nPrints modules, require targets, unresolved reasons, and cycle groups."
+            "Usage: inspect <entry.lua[u]>...\nPrints modules, require targets, unresolved reasons, and cycle groups.\nRoblox defaults to the nearest ancestor sourcemap.json; override with [roblox].sourcemaps in instar.toml ([] disables discovery)."
         );
 
         return Ok(());
@@ -42,6 +42,31 @@ fn display_path<'path>(path: &'path Path, base: &Path) -> &'path Path {
     path.strip_prefix(base).unwrap_or(path)
 }
 
+fn module_key(module: &Module) -> (&Path, Option<(&Path, &str)>) {
+    (
+        &module.source,
+        module
+            .instance
+            .as_ref()
+            .map(|instance| (instance.sourcemap_path(), instance.full_name())),
+    )
+}
+
+fn write_module(output: &mut impl Write, module: &Module, base: &Path) -> io::Result<()> {
+    write!(output, "{}", display_path(&module.source, base).display())?;
+
+    if let Some(instance) = &module.instance {
+        write!(
+            output,
+            " [{}; place: {}]",
+            instance.full_name(),
+            display_path(instance.sourcemap_path(), base).display()
+        )?;
+    }
+
+    Ok(())
+}
+
 fn render(output: &mut impl Write, graph: &Graph, base: &Path) -> io::Result<()> {
     let unresolved = graph
         .nodes
@@ -58,7 +83,7 @@ fn render(output: &mut impl Write, graph: &Graph, base: &Path) -> io::Result<()>
     )?;
 
     let mut modules = graph.nodes.node_indices().collect::<Vec<_>>();
-    modules.sort_by_key(|&id| &graph.nodes[id].module.source);
+    modules.sort_by_key(|&id| module_key(&graph.nodes[id].module));
 
     for id in modules {
         let node = &graph.nodes[id];
@@ -69,11 +94,9 @@ fn render(output: &mut impl Write, graph: &Graph, base: &Path) -> io::Result<()>
             ""
         };
 
-        writeln!(
-            output,
-            "\n{}{marker}",
-            display_path(&node.module.source, base).display()
-        )?;
+        writeln!(output)?;
+        write_module(output, &node.module, base)?;
+        writeln!(output, "{marker}")?;
 
         for diagnostic in &node.diagnostics {
             if let Some(offset) = diagnostic.offset {
@@ -97,11 +120,9 @@ fn render(output: &mut impl Write, graph: &Graph, base: &Path) -> io::Result<()>
             )?;
 
             if let Some(target) = site.target {
-                writeln!(
-                    output,
-                    " -> {}",
-                    display_path(&graph.nodes[target].module.source, base).display()
-                )?;
+                write!(output, " -> ")?;
+                write_module(output, &graph.nodes[target].module, base)?;
+                writeln!(output)?;
             } else if let Some(failure) = &site.failure {
                 writeln!(output, " -> UNRESOLVED: {failure}")?;
             }
@@ -118,22 +139,28 @@ fn render(output: &mut impl Write, graph: &Graph, base: &Path) -> io::Result<()>
             .map(|component| {
                 let mut paths = component
                     .iter()
-                    .map(|&id| &graph.nodes[id].module.source)
+                    .map(|&id| &graph.nodes[id].module)
                     .collect::<Vec<_>>();
 
-                paths.sort();
+                paths.sort_by_key(|module| module_key(module));
 
                 paths
             })
             .collect::<Vec<_>>();
 
-        groups.sort();
+        groups.sort_by(|left, right| {
+            left.iter()
+                .map(|module| module_key(module))
+                .cmp(right.iter().map(|module| module_key(module)))
+        });
 
         for (index, paths) in groups.iter().enumerate() {
             writeln!(output, "  Group {}:", index + 1)?;
 
             for path in paths {
-                writeln!(output, "    {}", display_path(path, base).display())?;
+                write!(output, "    ")?;
+                write_module(output, path, base)?;
+                writeln!(output)?;
             }
         }
     }

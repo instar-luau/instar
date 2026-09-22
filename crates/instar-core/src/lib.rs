@@ -1,8 +1,9 @@
-//! Project configuration and filesystem module graphs for Instar.
+//! Project configuration and module graphs for Instar.
 
 pub mod graph;
 pub mod project;
 pub mod resolve;
+pub mod roblox;
 
 use std::{
     io,

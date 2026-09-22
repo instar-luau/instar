@@ -19,6 +19,7 @@ use crate::{
     invalid,
     project::Project,
     resolve::{Failure, Module, Resolver},
+    roblox::{Instance, Sourcemap},
     string_value,
 };
 
@@ -35,6 +36,17 @@ pub struct Diagnostic {
     pub message: String,
 }
 
+/// A statically identified require argument.
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum Request {
+    /// String navigation from the current module.
+    String(String),
+
+    /// An exact instance in a sourcemap.
+    Instance(Instance),
+}
+
 /// A require call, including unresolved and dynamic expressions.
 #[derive(Debug, Serialize)]
 pub struct RequireSite {
@@ -47,8 +59,8 @@ pub struct RequireSite {
     /// Original argument expression.
     pub expression: String,
 
-    /// Statically known string, if any.
-    pub request: Option<String>,
+    /// Statically known string or instance, if any.
+    pub request: Option<Request>,
 
     /// Resolved node identity.
     pub target: Option<ModuleId>,
@@ -61,6 +73,9 @@ pub struct RequireSite {
 
     /// Configuration files consulted, including absent files.
     pub configurations: BTreeSet<PathBuf>,
+
+    /// Sourcemaps consulted, including failed instance lookups.
+    pub sourcemaps: BTreeSet<PathBuf>,
 }
 
 /// One source module, parsed at most once in this graph snapshot.
@@ -93,7 +108,7 @@ pub struct Graph {
     pub nodes: DiGraph<Node, (), usize>,
 
     #[serde(skip)]
-    identities: HashMap<PathBuf, ModuleId>,
+    identities: HashMap<Module, ModuleId>,
 
     #[serde(skip)]
     resolver: Resolver,
@@ -115,11 +130,15 @@ impl Graph {
     /// Returns an error if an explicitly supplied entry is missing or ambiguous.
     /// Dependency failures are retained on their require sites instead.
     pub fn add_entries(&mut self, project: &mut Project, paths: &[PathBuf]) -> io::Result<()> {
-        let mut entries = paths
-            .iter()
-            .map(|path| self.resolver.entry(path))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| invalid(e.to_string()))?;
+        let mut entries = Vec::new();
+
+        for path in paths {
+            entries.extend(
+                self.resolver
+                    .entries(project, path)
+                    .map_err(|e| invalid(e.to_string()))?,
+            );
+        }
 
         entries.sort_by(|a, b| a.path.cmp(&b.path));
 
@@ -156,7 +175,7 @@ impl Graph {
     }
 
     fn intern(&mut self, module: Module) -> ModuleId {
-        if let Some(&id) = self.identities.get(&module.path) {
+        if let Some(&id) = self.identities.get(&module) {
             return id;
         }
 
@@ -168,17 +187,20 @@ impl Graph {
             source: None,
         });
 
-        self.identities
-            .insert(self.nodes[id].module.path.clone(), id);
+        self.identities.insert(self.nodes[id].module.clone(), id);
 
         id
     }
 
     fn discover(&mut self, project: &mut Project, id: ModuleId) {
         let module = self.nodes[id].module.clone();
+        let mut configurations = Vec::new();
 
         match project.configuration(&module.source) {
-            Ok(config) => self.nodes[id].configuration = Some(config.json.clone()),
+            Ok(config) => {
+                self.nodes[id].configuration = Some(config.json.clone());
+                configurations.clone_from(&config.inputs);
+            }
 
             Err(error) => self.nodes[id].diagnostics.push(Diagnostic {
                 offset: None,
@@ -199,14 +221,29 @@ impl Graph {
             }
         };
 
-        let (mut sites, diagnostics) = extract(&source);
+        let map = if let Some(instance) = &module.instance {
+            Ok(Some(Rc::clone(&instance.map)))
+        } else {
+            project
+                .sourcemap(&module.source)
+                .map_err(|error| Failure::Configuration(error.to_string()))
+        };
+
+        let (mut sites, diagnostics) = extract(&source, module.instance.clone(), map);
         self.nodes[id].diagnostics.extend(diagnostics);
 
         for site in &mut sites {
+            site.configurations.extend(configurations.iter().cloned());
+
             if let Some(request) = &site.request {
-                let resolution = self.resolver.resolve(project, &module, request);
-                site.candidates = resolution.candidates;
-                site.configurations = resolution.configurations;
+                let resolution = match request {
+                    Request::String(request) => self.resolver.resolve(project, &module, request),
+                    Request::Instance(instance) => Resolver::resolve_instance(instance),
+                };
+
+                site.candidates.extend(resolution.candidates);
+                site.configurations.extend(resolution.configurations);
+                site.sourcemaps.extend(resolution.sourcemaps);
 
                 match resolution.result {
                     Ok(module) => {
@@ -229,6 +266,8 @@ impl Graph {
 enum Binding {
     Require,
     String(String),
+    Boolean(bool),
+    Instance(Result<Instance, Failure>),
     Other,
 }
 
@@ -238,9 +277,15 @@ struct Extractor<'source> {
     scopes: Vec<HashMap<String, Binding>>,
     assigned: HashSet<String>,
     sites: Vec<RequireSite>,
+    script: Option<Instance>,
+    map: Result<Option<Rc<Sourcemap>>, Failure>,
 }
 
-fn extract(source: &str) -> (Vec<RequireSite>, Vec<Diagnostic>) {
+fn extract(
+    source: &str,
+    script: Option<Instance>,
+    map: Result<Option<Rc<Sourcemap>>, Failure>,
+) -> (Vec<RequireSite>, Vec<Diagnostic>) {
     let tree = vermis::parse(source.as_bytes());
 
     let diagnostics = tree
@@ -267,10 +312,10 @@ fn extract(source: &str) -> (Vec<RequireSite>, Vec<Diagnostic>) {
         if let Some(Parts::Function {
             name: Some(name), ..
         }) = tree.view(index).and_then(View::parts)
-            && name.text() == b"require"
+            && matches!(name.text(), b"require" | b"game" | b"script" | b"workspace")
             && tree.nodes[index].kind != Kind::LocalFunction
         {
-            assigned.insert("require".to_owned());
+            assigned.insert(String::from_utf8_lossy(name.text()).into_owned());
         }
     }
 
@@ -289,6 +334,8 @@ fn extract(source: &str) -> (Vec<RequireSite>, Vec<Diagnostic>) {
         scopes: vec![HashMap::new()],
         assigned,
         sites: Vec::new(),
+        script,
+        map,
     };
 
     if let Some(root) = tree.view(tree.root) {
@@ -310,10 +357,36 @@ impl Extractor<'_> {
             }
         }
 
-        if name == "require" {
-            Binding::Require
-        } else {
-            Binding::Other
+        if name != "require" && self.assigned.contains(name.as_ref()) {
+            return Binding::Other;
+        }
+
+        match name.as_ref() {
+            "require" => Binding::Require,
+
+            "script" => Binding::Instance(self.script.clone().ok_or_else(|| {
+                Failure::Roblox("source is not mapped to a script instance".into())
+            })),
+
+            "game" | "workspace" => {
+                let game = self
+                    .map
+                    .as_ref()
+                    .map_err(Clone::clone)
+                    .and_then(|map| {
+                        map.as_ref()
+                            .ok_or_else(|| Failure::Roblox("no sourcemap configured".into()))
+                    })
+                    .and_then(Sourcemap::game);
+
+                Binding::Instance(if name == "workspace" {
+                    game.and_then(|game| game.service("Workspace"))
+                } else {
+                    game
+                })
+            }
+
+            _ => Binding::Other,
         }
     }
 
@@ -323,6 +396,7 @@ impl Extractor<'_> {
                 return string_value(node.text()).map_or(Binding::Other, Binding::String);
             }
 
+            Kind::Boolean => return Binding::Boolean(node.text() == b"true"),
             Kind::Name => return self.binding(node.text()),
             _ => {}
         }
@@ -346,8 +420,98 @@ impl Extractor<'_> {
                 }
             }
 
+            Some(Parts::Field { receiver, name }) => self.field(receiver, name.text()),
+
+            Some(Parts::Index { receiver, key }) => {
+                if let Binding::String(name) = self.value(key) {
+                    self.field(receiver, name.as_bytes())
+                } else {
+                    Binding::Other
+                }
+            }
+
+            Some(Parts::MethodCall {
+                receiver,
+                method,
+                arguments,
+                ..
+            }) => self.method(receiver, method.text(), arguments),
+
             _ => Binding::Other,
         }
+    }
+
+    fn field(&self, receiver: View<'_, '_>, name: &[u8]) -> Binding {
+        let Binding::Instance(instance) = self.value(receiver) else {
+            return Binding::Other;
+        };
+
+        let instance = match instance {
+            Ok(instance) => instance,
+            Err(error) => return Binding::Instance(Err(error)),
+        };
+
+        match name {
+            b"Parent" => Binding::Instance(instance.parent()),
+            b"Name" => Binding::String(instance.name().to_owned()),
+            b"ClassName" => Binding::String(instance.class_name().to_owned()),
+            b"GetService" | b"WaitForChild" | b"FindFirstChild" => Binding::Other,
+
+            _ => match std::str::from_utf8(name) {
+                Ok(name) => Binding::Instance(instance.child(name)),
+                Err(_) => Binding::Other,
+            },
+        }
+    }
+
+    fn method(&self, receiver: View<'_, '_>, method: &[u8], arguments: View<'_, '_>) -> Binding {
+        if !matches!(method, b"GetService" | b"WaitForChild" | b"FindFirstChild") {
+            return Binding::Other;
+        }
+
+        let Binding::Instance(instance) = self.value(receiver) else {
+            return Binding::Other;
+        };
+
+        let instance = match instance {
+            Ok(instance) => instance,
+            Err(error) => return Binding::Instance(Err(error)),
+        };
+
+        let mut arguments = arguments.children();
+
+        let Some(first) = arguments.next() else {
+            return Binding::Other;
+        };
+
+        let Binding::String(name) = self.value(first) else {
+            return Binding::Other;
+        };
+
+        let second = arguments.next();
+
+        if arguments.next().is_some() {
+            return Binding::Other;
+        }
+
+        let result = match method {
+            b"GetService" if second.is_none() => instance.service(&name),
+            b"WaitForChild" => instance.child(&name),
+
+            b"FindFirstChild" => {
+                let recursive = match second.map(|value| self.value(value)) {
+                    None | Some(Binding::Boolean(false)) => false,
+                    Some(Binding::Boolean(true)) => true,
+                    _ => return Binding::Other,
+                };
+
+                instance.find_child(&name, recursive)
+            }
+
+            _ => return Binding::Other,
+        };
+
+        Binding::Instance(result)
     }
 
     fn bind(&mut self, node: View<'_, '_>, value: Binding) {
@@ -422,23 +586,36 @@ impl Extractor<'_> {
             let single = argument.is_some() && values.next().is_none();
             let span = argument.map_or(arguments.span(), View::span);
 
-            let request = if single && !self.assigned.contains("require") {
-                argument.and_then(|arg| match self.value(arg) {
-                    Binding::String(value) => Some(value),
-                    _ => None,
-                })
+            let value = if single && !self.assigned.contains("require") {
+                argument.map_or(Binding::Other, |arg| self.value(arg))
             } else {
-                None
+                Binding::Other
             };
 
-            let failure = if !single {
-                Some(Failure::Invalid("require expects one argument".into()))
-            } else if request.is_none() {
-                Some(Failure::Dynamic(
-                    "require target is not a statically known string".into(),
-                ))
+            let (request, failure) = if single {
+                match value {
+                    Binding::String(value) => (Some(Request::String(value)), None),
+                    Binding::Instance(Ok(instance)) => (Some(Request::Instance(instance)), None),
+                    Binding::Instance(Err(error)) => (None, Some(error)),
+
+                    _ => (
+                        None,
+                        Some(Failure::Dynamic(
+                            "require target is not a statically known string or instance".into(),
+                        )),
+                    ),
+                }
             } else {
-                None
+                (
+                    None,
+                    Some(Failure::Invalid("require expects one argument".into())),
+                )
+            };
+
+            let sourcemaps = if let Ok(Some(map)) = &self.map {
+                [map.path.clone()].into()
+            } else {
+                BTreeSet::new()
             };
 
             let line = self
@@ -454,6 +631,7 @@ impl Extractor<'_> {
                 failure,
                 candidates: BTreeSet::new(),
                 configurations: BTreeSet::new(),
+                sourcemaps,
             });
         }
 

@@ -2,7 +2,7 @@
 
 mod config;
 
-pub use config::{Config, LuauConfig, Mode};
+pub use config::{Config, LuauConfig, Mode, RobloxConfig};
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -11,7 +11,10 @@ use std::{
     rc::Rc,
 };
 
-use crate::{absolute, invalid};
+use crate::{
+    absolute, invalid,
+    roblox::{Sourcemap, SourcemapLocation},
+};
 
 /// An alias with the configuration file that defines its lookup scope.
 #[derive(Clone, Debug)]
@@ -37,6 +40,9 @@ pub struct EffectiveConfig {
     /// Configuration lookup dependencies, including files that did not exist.
     pub inputs: Vec<PathBuf>,
 
+    /// Effective sourcemaps, retaining their explicit or automatically discovered origin.
+    pub sourcemaps: Vec<SourcemapLocation>,
+
     native: instar_bridge::Configuration,
 }
 
@@ -55,6 +61,7 @@ struct Layers {
     legacy_aliases: BTreeMap<String, Alias>,
     instar_aliases: BTreeMap<String, Alias>,
     inputs: Vec<PathBuf>,
+    sourcemaps: Option<Vec<SourcemapLocation>>,
 }
 
 /// Cached project snapshot. Entry files may belong to unrelated filesystem roots.
@@ -64,6 +71,7 @@ pub struct Project {
     layers: HashMap<PathBuf, Layers>,
     configurations: HashMap<PathBuf, Rc<EffectiveConfig>>,
     sources: HashMap<PathBuf, Rc<str>>,
+    sourcemaps: HashMap<PathBuf, Result<Rc<Sourcemap>, String>>,
 }
 
 impl Project {
@@ -88,6 +96,46 @@ impl Project {
         self.sources.insert(path, Rc::clone(&source));
 
         Ok(source)
+    }
+
+    pub(crate) fn sourcemaps_for(&mut self, source: &Path) -> io::Result<Vec<Rc<Sourcemap>>> {
+        let config = self.configuration(source)?;
+        let mut maps = Vec::new();
+
+        for location in &config.sourcemaps {
+            let result = self
+                .sourcemaps
+                .entry(location.path.clone())
+                .or_insert_with(|| {
+                    Sourcemap::load(location.path.clone())
+                        .map_err(|error| format!("{}: {error}", location.path.display()))
+                });
+
+            match result {
+                Ok(map) => {
+                    if !maps.iter().any(|existing| Rc::ptr_eq(existing, map)) {
+                        maps.push(Rc::clone(map));
+                    }
+                }
+
+                Err(error) => return Err(invalid(error.clone())),
+            }
+        }
+
+        Ok(maps)
+    }
+
+    pub(crate) fn sourcemap(&mut self, source: &Path) -> io::Result<Option<Rc<Sourcemap>>> {
+        let mut maps = self.sourcemaps_for(source)?;
+
+        if maps.len() > 1 {
+            return Err(invalid(format!(
+                "{} has no unique place context; it is not mapped and multiple sourcemaps are configured",
+                source.display()
+            )));
+        }
+
+        Ok(maps.pop())
     }
 
     /// Loads effective configuration for a source file's physical directory.
@@ -116,7 +164,48 @@ impl Project {
             return Ok(Rc::clone(config));
         }
 
-        let layers = self.load_layers(&directory)?;
+        let mut layers = self.load_layers(&directory)?;
+
+        let sourcemaps = if let Some(sourcemaps) = layers.sourcemaps {
+            sourcemaps
+        } else {
+            let mut discovered = Vec::new();
+
+            for ancestor in directory.ancestors() {
+                let path = ancestor.join("sourcemap.json");
+                layers.inputs.push(path.clone());
+
+                match fs::metadata(&path) {
+                    Ok(metadata) if metadata.is_file() => {
+                        discovered.push(SourcemapLocation {
+                            defined_in: path.clone(),
+                            path,
+                        });
+
+                        break;
+                    }
+
+                    Ok(_) => {
+                        return Err(invalid(format!(
+                            "{}: expected a sourcemap file",
+                            path.display()
+                        )));
+                    }
+
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+
+                    Err(error) => {
+                        return Err(io::Error::new(
+                            error.kind(),
+                            format!("{}: {error}", path.display()),
+                        ));
+                    }
+                }
+            }
+
+            discovered
+        };
+
         let mut settings = layers.legacy;
         settings.merge(&layers.instar);
         let mut aliases = layers.legacy_aliases;
@@ -129,6 +218,7 @@ impl Project {
             aliases,
             json,
             inputs: layers.inputs,
+            sourcemaps,
             native,
         });
 
@@ -169,8 +259,35 @@ impl Project {
                 ".config.luau" => config::parse_luau(&source),
 
                 _ => toml::from_str::<Config>(&source)
-                    .map(|config| config.luau)
-                    .map_err(|e| invalid(e.to_string())),
+                    .map_err(|e| invalid(e.to_string()))
+                    .and_then(|config| {
+                        if let Some(sourcemaps) = config.roblox.sourcemaps {
+                            let mut locations = Vec::new();
+
+                            for sourcemap in sourcemaps {
+                                if sourcemap.as_os_str().is_empty()
+                                    || sourcemap.as_os_str().as_encoded_bytes().contains(&0)
+                                {
+                                    return Err(invalid(
+                                        "sourcemap path must be nonempty and contain no NUL",
+                                    ));
+                                }
+
+                                let location = SourcemapLocation {
+                                    path: absolute(&directory.join(sourcemap))?,
+                                    defined_in: path.clone(),
+                                };
+
+                                if !locations.contains(&location) {
+                                    locations.push(location);
+                                }
+                            }
+
+                            layers.sourcemaps = Some(locations);
+                        }
+
+                        Ok(config.luau)
+                    }),
             };
 
             let mut config = parsed.map_err(|e| invalid(format!("{}: {e}", path.display())))?;
