@@ -4,18 +4,20 @@
 #include "Luau/BuiltinDefinitions.h"
 #include "Luau/ConstraintSolver.h"
 #include "Luau/Error.h"
+#include "Luau/Frontend.h"
 #include "Luau/LValue.h"
 #include "Luau/Scope.h"
 #include "Luau/Type.h"
-#include "Luau/TypeInfer.h"
 #include "Luau/TypePack.h"
 #include "Luau/TypeUtils.h"
 
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -34,18 +36,13 @@ namespace instar {
         };
 
         struct ClassInfo {
+            Luau::TypeId type;
             bool service;
             bool creatable;
         };
 
-        struct NodeInfo {
-            std::string name;
-            std::string class_name;
-        };
-
         struct Metadata {
             std::unordered_map<std::string, ClassInfo> classes;
-            std::vector<NodeInfo> nodes;
         };
 
         std::optional<std::string> argument(const Luau::AstExprCall &call) {
@@ -58,27 +55,15 @@ namespace instar {
             return value ? std::optional<std::string>(std::string(value->value.data, value->value.size)) : std::nullopt;
         }
 
-        std::optional<Luau::TypeId> class_type(const Luau::Scope &scope, const Metadata &metadata, std::string_view name, MagicKind kind) {
-            const auto found = metadata.classes.find(std::string(name));
+        std::optional<Luau::TypeId> class_type(const Metadata &metadata, const std::string &name, MagicKind kind = MagicKind::IsA) {
+            const auto found = metadata.classes.find(name);
 
             if (found == metadata.classes.end() || (kind == MagicKind::Constructor && !found->second.creatable) ||
                 (kind == MagicKind::Service && !found->second.service)) {
                 return std::nullopt;
             }
 
-            const std::optional<Luau::TypeFun> type = scope.lookupType(std::string(name));
-
-            return type ? std::optional<Luau::TypeId>(type->type) : std::nullopt;
-        }
-
-        std::optional<Luau::TypeId> class_type(const Luau::Scope &scope, const Metadata &metadata, std::string_view name) {
-            if (metadata.classes.find(std::string(name)) == metadata.classes.end()) {
-                return std::nullopt;
-            }
-
-            const std::optional<Luau::TypeFun> type = scope.lookupType(std::string(name));
-
-            return type ? std::optional<Luau::TypeId>(type->type) : std::nullopt;
+            return found->second.type;
         }
 
         std::string invalid_message(MagicKind kind, std::string_view name) {
@@ -97,9 +82,7 @@ namespace instar {
             }
         }
 
-        void report_old(Luau::TypeChecker &checker, const Luau::AstExpr &expression, std::string message) {
-            checker.reportError(Luau::TypeError{expression.location, Luau::GenericError{std::move(message)}});
-        }
+        bool derives_from(Luau::TypeId type, Luau::TypeId base);
 
         void report_new(const Luau::MagicFunctionCallContext &context, const Luau::AstExpr &expression, std::string message) {
             if (FFlag::LuauCyclicRequireTypeInference) {
@@ -113,52 +96,16 @@ namespace instar {
           public:
             MagicFunction(MagicKind kind, std::shared_ptr<const Metadata> metadata) : kind(kind), metadata(std::move(metadata)) {}
 
-            std::optional<Luau::WithPredicate<Luau::TypePackId>> handleOldSolver(
-                Luau::TypeChecker &checker, const Luau::ScopePtr &scope, const Luau::AstExprCall &call, Luau::WithPredicate<Luau::TypePackId> predicate
-            ) override {
-
-                if (kind == MagicKind::IsA) {
-                    return old_is_a(checker, scope, call, std::move(predicate));
-                }
-
-                if (call.args.size == 0 || call.args.size > maximum_arguments()) {
-                    return std::nullopt;
-                }
-
-                const std::optional<std::string> name = argument(call);
-                const std::optional<Luau::TypeId> type = name ? class_type(*scope, *metadata, *name, kind) : std::nullopt;
-
-                if (!type) {
-                    if (name) {
-                        report_old(checker, *call.args.data[0], invalid_message(kind, *name));
-                    }
-
-                    return std::nullopt;
-                }
-
-                const auto [parameters, tail] = Luau::flatten(predicate.type);
-                const size_t offset = call.self ? 1 : 0;
-
-                if (tail || parameters.size() < offset + call.args.size) {
-                    return std::nullopt;
-                }
-
-                checker.unify(parameters[offset], checker.stringType, scope, call.args.data[0]->location);
-
-                Luau::TypeId result = *type;
-
-                if (returns_optional()) {
-                    result = checker.currentModule->internalTypes->addType(Luau::UnionType{{checker.builtinTypes->nilType, result}});
-                }
-
-                return Luau::WithPredicate<Luau::TypePackId>{checker.currentModule->internalTypes->addTypePack({result})};
+            std::optional<Luau::WithPredicate<Luau::TypePackId>>
+            handleOldSolver(Luau::TypeChecker &, const Luau::ScopePtr &, const Luau::AstExprCall &, Luau::WithPredicate<Luau::TypePackId>) override {
+                throw std::logic_error("old solver is not supported");
             }
 
             bool infer(const Luau::MagicFunctionCallContext &context) override {
                 if (kind == MagicKind::IsA && context.callSite->args.size == 1) {
                     const std::optional<std::string> name = argument(*context.callSite);
 
-                    if (name && !class_type(*context.constraint->scope, *metadata, *name)) {
+                    if (name && !class_type(*metadata, *name)) {
                         report_new(context, *context.callSite->args.data[0], invalid_message(kind, *name));
                         set_error(context);
 
@@ -173,7 +120,7 @@ namespace instar {
                 }
 
                 const std::optional<std::string> name = argument(*context.callSite);
-                const std::optional<Luau::TypeId> type = name ? class_type(*context.constraint->scope, *metadata, *name, kind) : std::nullopt;
+                const std::optional<Luau::TypeId> type = name ? class_type(*metadata, *name, kind) : std::nullopt;
 
                 if (!type) {
                     if (name) {
@@ -185,6 +132,28 @@ namespace instar {
                 }
 
                 Luau::TypeId result = *type;
+
+                if (kind == MagicKind::Service && context.callSite->self) {
+                    if (const auto receiver = Luau::first(context.arguments)) {
+                        if (const auto *instance = Luau::get<Luau::ExternType>(Luau::follow(*receiver))) {
+                            Luau::TypeId service = nullptr;
+
+                            for (const auto &[name, property] : instance->props) {
+                                if (name != "Parent" && property.readTy && derives_from(*property.readTy, *type)) {
+                                    if (!service) {
+                                        service = *property.readTy;
+                                    } else if (service != *property.readTy) {
+                                        service = context.solver->arena->addType(Luau::UnionType{{service, *property.readTy}});
+                                    }
+                                }
+                            }
+
+                            if (service) {
+                                result = service;
+                            }
+                        }
+                    }
+                }
 
                 if (returns_optional()) {
                     result = context.solver->arena->addType(Luau::UnionType{{context.solver->builtinTypes->nilType, result}});
@@ -207,7 +176,7 @@ namespace instar {
                     return;
                 }
 
-                const std::optional<Luau::TypeId> type = class_type(*context.scope, *metadata, *name);
+                const std::optional<Luau::TypeId> type = class_type(*metadata, *name);
                 const std::optional<Luau::LValue> lvalue = Luau::tryGetLValue(*index->expr);
                 const std::optional<Luau::TypeId> discriminant = context.discriminantTypes[0];
 
@@ -227,37 +196,6 @@ namespace instar {
 
             void set_error(const Luau::MagicFunctionCallContext &context) const {
                 Luau::asMutable(context.result)->ty.emplace<Luau::BoundTypePack>(context.solver->builtinTypes->errorTypePack);
-            }
-
-            std::optional<Luau::WithPredicate<Luau::TypePackId>>
-            old_is_a(Luau::TypeChecker &checker, const Luau::ScopePtr &scope, const Luau::AstExprCall &call, Luau::WithPredicate<Luau::TypePackId> predicate) const {
-
-                if (call.args.size != 1) {
-                    return std::nullopt;
-                }
-
-                const auto *index = call.func->as<Luau::AstExprIndexName>();
-                const std::optional<std::string> name = argument(call);
-                const std::optional<Luau::TypeId> type = name ? class_type(*scope, *metadata, *name) : std::nullopt;
-
-                if (!index || !name || !type) {
-                    return std::nullopt;
-                }
-
-                const std::optional<Luau::LValue> lvalue = Luau::tryGetLValue(*index->expr);
-                const auto [parameters, tail] = Luau::flatten(predicate.type);
-                const size_t offset = call.self ? 1 : 0;
-
-                if (!lvalue || tail || parameters.size() < offset + 1) {
-                    return std::nullopt;
-                }
-
-                checker.unify(parameters[offset], checker.stringType, scope, call.args.data[0]->location);
-
-                return Luau::WithPredicate<Luau::TypePackId>{
-                    checker.currentModule->internalTypes->addTypePack({checker.booleanType}),
-                    {Luau::IsAPredicate{std::move(*lvalue), call.location, *type}},
-                };
             }
 
             MagicKind kind;
@@ -367,40 +305,6 @@ namespace instar {
             }
         }
 
-        void add_instance_children(Luau::GlobalTypes &globals, const Metadata &metadata) {
-            const std::optional<Luau::TypeFun> instance = globals.globalScope->lookupType("Instance");
-
-            if (!instance) {
-                return;
-            }
-
-            auto *instance_type = Luau::getMutable<Luau::ExternType>(Luau::follow(instance->type));
-
-            if (!instance_type) {
-                return;
-            }
-
-            for (const NodeInfo &node : metadata.nodes) {
-                if (instance_type->props.find(node.name) != instance_type->props.end()) {
-                    continue;
-                }
-
-                const std::optional<Luau::TypeId> type = class_type(*globals.globalScope, metadata, node.class_name);
-
-                if (type) {
-                    instance_type->props.emplace(node.name, Luau::Property::readonly(*type));
-                }
-            }
-
-            if (!metadata.nodes.empty()) {
-                const auto parent = instance_type->props.find("Parent");
-
-                if (parent != instance_type->props.end()) {
-                    parent->second.setType(instance->type);
-                }
-            }
-        }
-
         void add_instance_is_a(Luau::GlobalTypes &globals) {
             const std::optional<Luau::TypeFun> instance = globals.globalScope->lookupType("Instance");
 
@@ -432,25 +336,28 @@ namespace instar {
         }
     } // namespace
 
-    void register_roblox_magic(Luau::GlobalTypes &globals, const RobloxClass *classes, size_t class_count, const RobloxNode *nodes, size_t node_count) {
+    void register_roblox_magic(Luau::GlobalTypes &globals, const RobloxClass *classes, size_t class_count) {
         auto metadata = std::make_shared<Metadata>();
         metadata->classes.reserve(class_count);
-        metadata->nodes.reserve(node_count);
 
         for (size_t index = 0; index < class_count; ++index) {
-            const auto name = std::string_view(reinterpret_cast<const char *>(classes[index].name.data), classes[index].name.length);
-            metadata->classes.emplace(std::string(name), ClassInfo{classes[index].service != 0, classes[index].creatable != 0});
-        }
+            if (!classes[index].name.data || classes[index].name.length == 0) {
+                throw std::invalid_argument("empty Roblox class name");
+            }
 
-        for (size_t index = 0; index < node_count; ++index) {
-            NodeInfo node;
-            node.name.assign(reinterpret_cast<const char *>(nodes[index].name.data), nodes[index].name.length);
-            node.class_name.assign(reinterpret_cast<const char *>(nodes[index].class_name.data), nodes[index].class_name.length);
-            metadata->nodes.push_back(std::move(node));
+            const std::string name(reinterpret_cast<const char *>(classes[index].name.data), classes[index].name.length);
+            const auto type = globals.globalScope->lookupType(name);
+
+            if (!type || !Luau::get<Luau::ExternType>(Luau::follow(type->type))) {
+                throw std::invalid_argument("Roblox class has no definition: " + name);
+            }
+
+            if (!metadata->classes.emplace(name, ClassInfo{Luau::follow(type->type), classes[index].service != 0, classes[index].creatable != 0}).second) {
+                throw std::invalid_argument("duplicate Roblox class: " + name);
+            }
         }
 
         add_enum_type_aliases(globals);
-        add_instance_children(globals, *metadata);
         share_metatable(globals, "Instance");
         share_metatable(globals, "Enum");
         share_metatable(globals, "EnumItem");
@@ -463,5 +370,174 @@ namespace instar {
         register_magic(globals, metadata, MagicKind::ChildType, "Instance", "FindFirstChildWhichIsA", false);
         register_magic(globals, metadata, MagicKind::AncestorClass, "Instance", "FindFirstAncestorOfClass", false);
         register_magic(globals, metadata, MagicKind::AncestorType, "Instance", "FindFirstAncestorWhichIsA", false);
+    }
+
+    std::unordered_set<std::string> register_roblox_tree(Luau::Frontend &frontend, const RobloxNode *nodes, size_t node_count) {
+        auto &globals = frontend.globals;
+        const auto instance = globals.globalScope->lookupType("Instance");
+
+        if (!instance || !Luau::get<Luau::ExternType>(Luau::follow(instance->type)) || node_count == 0) {
+            throw std::invalid_argument("Roblox hierarchy requires Instance definitions and at least one node");
+        }
+
+        auto view = [](Text value) -> std::string_view {
+            if (!value.data && value.length != 0) {
+                throw std::invalid_argument("invalid Roblox hierarchy text");
+            }
+
+            return {value.data ? reinterpret_cast<const char *>(value.data) : "", value.length};
+        };
+
+        std::vector<Luau::TypeId> bases;
+        bases.reserve(node_count);
+        std::unordered_set<std::string> modules;
+        size_t game = SIZE_MAX;
+        size_t workspace = SIZE_MAX;
+
+        for (size_t index = 0; index < node_count; ++index) {
+            const auto &node = nodes[index];
+            view(node.name);
+            const std::string class_name(view(node.class_name));
+            const auto base = globals.globalScope->lookupType(class_name);
+
+            if (!base || !Luau::get<Luau::ExternType>(Luau::follow(base->type)) || !derives_from(base->type, instance->type)) {
+                throw std::invalid_argument("unknown Roblox instance class: " + class_name);
+            }
+
+            bases.push_back(Luau::follow(base->type));
+
+            if (node.parent != SIZE_MAX && node.parent >= node_count) {
+                throw std::invalid_argument("Roblox parent index is out of range");
+            }
+
+            if (node.has_module) {
+                const std::string module(view(node.module));
+
+                if (module.empty() || !modules.insert(module).second) {
+                    throw std::invalid_argument("empty or duplicate Roblox source module");
+                }
+            }
+
+            if (class_name == "DataModel") {
+                if (game != SIZE_MAX || node.parent != SIZE_MAX) {
+                    throw std::invalid_argument("Roblox hierarchy must have at most one root DataModel");
+                }
+
+                game = index;
+            }
+        }
+
+        std::vector<uint8_t> visited(node_count, 0);
+
+        for (size_t index = 0; index < node_count; ++index) {
+            size_t current = index;
+
+            while (current != SIZE_MAX && visited[current] == 0) {
+                visited[current] = 1;
+                current = nodes[current].parent;
+            }
+
+            if (current != SIZE_MAX && visited[current] == 1) {
+                throw std::invalid_argument("cycle in Roblox hierarchy");
+            }
+
+            current = index;
+
+            while (current != SIZE_MAX && visited[current] == 1) {
+                visited[current] = 2;
+                current = nodes[current].parent;
+            }
+
+            if (game != SIZE_MAX && nodes[index].parent == game && view(nodes[index].class_name) == "Workspace") {
+                if (workspace != SIZE_MAX) {
+                    throw std::invalid_argument("duplicate Workspace in Roblox hierarchy");
+                }
+
+                workspace = index;
+            }
+        }
+
+        std::vector<Luau::TypeId> types;
+        types.reserve(node_count);
+
+        for (Luau::TypeId base : bases) {
+            const auto *klass = Luau::get<Luau::ExternType>(base);
+
+            types.push_back(globals.globalTypes.addType(
+                Luau::ExternType{
+                    klass->name,
+                    {},
+                    base,
+                    klass->metatable,
+                    klass->tags,
+                    klass->userData,
+                    klass->definitionModuleName,
+                    klass->definitionLocation,
+                    klass->indexer,
+                }
+            ));
+        }
+
+        for (size_t index = 0; index < node_count; ++index) {
+            const auto &node = nodes[index];
+            auto *type = Luau::getMutable<Luau::ExternType>(types[index]);
+            type->props.emplace("Parent", Luau::Property::readonly(node.parent == SIZE_MAX ? globals.builtinTypes->nilType : types[node.parent]));
+        }
+
+        for (size_t index = 0; index < node_count; ++index) {
+            const auto &node = nodes[index];
+
+            if (node.parent == SIZE_MAX) {
+                continue;
+            }
+
+            const std::string name(view(node.name));
+
+            if (name == "Parent") {
+                continue;
+            }
+
+            const auto *parent_class = Luau::get<Luau::ExternType>(bases[node.parent]);
+
+            if (const auto *member = Luau::lookupExternTypeProp(parent_class, name)) {
+                if (!member->readTy || !derives_from(types[index], *member->readTy)) {
+                    continue; // Roblox API members take precedence over equally named children.
+                }
+            }
+
+            auto &properties = Luau::getMutable<Luau::ExternType>(types[node.parent])->props;
+            const auto found = properties.find(name);
+
+            if (found == properties.end()) {
+                properties.emplace(name, Luau::Property::readonly(types[index]));
+            } else {
+                found->second = Luau::Property::readonly(globals.globalTypes.addType(Luau::UnionType{{*found->second.readTy, types[index]}}));
+            }
+        }
+
+        auto bind_global = [&](const char *name, size_t index) {
+            if (index != SIZE_MAX) {
+                if (auto binding = Luau::tryGetGlobalBinding(globals, name)) {
+                    binding->typeId = types[index];
+                    Luau::addGlobalBinding(globals, name, *binding);
+                } else {
+                    Luau::addGlobalBinding(globals, name, types[index], "Roblox");
+                }
+            }
+        };
+
+        bind_global("game", game);
+        bind_global("workspace", workspace);
+
+        for (size_t index = 0; index < node_count; ++index) {
+            Luau::persist(types[index]);
+
+            if (nodes[index].has_module) {
+                const auto scope = frontend.addEnvironment(std::string(view(nodes[index].module)));
+                Luau::addGlobalBinding(globals, scope, "script", types[index], "Roblox");
+            }
+        }
+
+        return modules;
     }
 } // namespace instar

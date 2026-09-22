@@ -5,7 +5,6 @@
 #include "Luau/FileResolver.h"
 #include "Luau/Frontend.h"
 #include "Luau/Linter.h"
-#include "Luau/LuauConfig.h"
 #include "Luau/Module.h"
 #include "Luau/TypeAttach.h"
 #include "bridge.hpp"
@@ -24,13 +23,11 @@
 #include <string_view>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 LUAU_FASTINT(LuauTarjanChildLimit)
 
 namespace {
-    constexpr uint32_t source_none = 0;
-    constexpr uint32_t source_script = 1;
-    constexpr uint32_t source_module = 2;
 
     struct CallbackFailure final : std::exception {
         const char *what() const noexcept override { return "native callback failed"; }
@@ -105,27 +102,6 @@ namespace {
         Luau::Config value;
     };
 
-    std::optional<Luau::ConfigOptions::AliasOptions> aliases(const ConfigurationOptions &options) {
-        if (!options.has_alias_options) {
-            return std::nullopt;
-        }
-
-        Luau::ConfigOptions::AliasOptions result;
-        result.overwriteAliases = options.overwrite_aliases != 0;
-
-        if (options.has_config_location) {
-            const std::optional<std::string_view> location = view(options.config_location);
-
-            if (!location) {
-                throw CallbackFailure{};
-            }
-
-            result.configLocation = std::string(*location);
-        }
-
-        return result;
-    }
-
     struct Checker;
 
     struct FileResolver final : Luau::FileResolver {
@@ -134,6 +110,7 @@ namespace {
         std::optional<Luau::SourceCode> readSource(const Luau::ModuleName &name) override;
         std::optional<Luau::ModuleInfo> resolveModule(const Luau::ModuleInfo *context, Luau::AstExpr *expression, const Luau::TypeCheckLimits &) override;
         std::string getHumanReadableModuleName(const Luau::ModuleName &name) const override { return name; }
+        std::optional<std::string> getEnvironmentForModule(const Luau::ModuleName &name) const override;
 
         Checker *checker;
     };
@@ -148,15 +125,14 @@ namespace {
 
     struct Checker {
         Checker(const BridgeCallbacks &callbacks, void *context, const FrontendOptions &options)
-            : callbacks(callbacks), context(context), files(this), configurations(this),
-              frontend(
-                  options.old_solver != 0 ? Luau::SolverMode::Old : Luau::SolverMode::New, &files, &configurations,
-                  Luau::FrontendOptions{
-                      options.retain_full_type_graphs != 0,
-                      options.for_autocomplete != 0,
-                      options.run_lint_checks != 0,
-                  }
-              ) {
+            : callbacks(callbacks), context(context), files(this), configurations(this), frontend(
+                                                                                             Luau::SolverMode::New, &files, &configurations,
+                                                                                             Luau::FrontendOptions{
+                                                                                                 options.retain_full_type_graphs != 0,
+                                                                                                 options.for_autocomplete != 0,
+                                                                                                 options.run_lint_checks != 0,
+                                                                                             }
+                                                                                         ) {
             Luau::registerBuiltinGlobals(frontend, frontend.globals, options.for_autocomplete != 0);
         }
 
@@ -226,14 +202,31 @@ namespace {
             return true;
         }
 
+        static int32_t timeouts(const Luau::CheckResult &result, ItemCallback callback, void *context) {
+            for (const Luau::ModuleName &name : result.timeoutHits) {
+                if (!callback(context, text(name))) {
+                    return StatusCallbackFailure;
+                }
+            }
+
+            return StatusSuccess;
+        }
+
         BridgeCallbacks callbacks;
         void *context;
         FileResolver files;
         ConfigurationResolver configurations;
         Luau::Frontend frontend;
         std::unordered_set<std::string> definition_names;
-        std::optional<Luau::CheckResult> check_result;
+        std::unordered_set<std::string> script_modules;
+        bool roblox_classes_registered = false;
+        bool roblox_tree_registered = false;
+        bool globals_frozen = false;
     };
+
+    std::optional<std::string> FileResolver::getEnvironmentForModule(const Luau::ModuleName &name) const {
+        return checker->script_modules.count(name) ? std::optional<std::string>(name) : std::nullopt;
+    }
 
     std::optional<Luau::SourceCode> FileResolver::readSource(const Luau::ModuleName &name) {
         SourceResult result{};
@@ -328,13 +321,29 @@ extern "C" {
         std::free(value.data);
     }
 
-    void *configuration_create(String *error) {
+    void *configuration_create(Text source, String *error) {
         try {
             if (error) {
                 *error = {};
             }
 
-            return new Configuration;
+            const std::optional<std::string_view> value = view(source);
+
+            if (!value) {
+                failure(error, "invalid configuration source");
+
+                return nullptr;
+            }
+
+            Luau::Config configuration;
+
+            if (const std::optional<std::string> message = Luau::parseConfig(std::string(*value), configuration)) {
+                failure(error, *message);
+
+                return nullptr;
+            }
+
+            return new Configuration{std::move(configuration)};
         } catch (...) {
             exception_failure(error);
 
@@ -344,142 +353,6 @@ extern "C" {
 
     void configuration_destroy(void *configuration) {
         delete static_cast<Configuration *>(configuration);
-    }
-
-    int32_t configuration_parse_json(void *handle, Text source, const ConfigurationOptions *options, String *error) {
-        try {
-            if (error) {
-                *error = {};
-            }
-
-            auto *configuration = static_cast<Configuration *>(handle);
-            const std::optional<std::string_view> value = view(source);
-
-            if (!configuration || !options || !value) {
-                return failure(error, "invalid configuration request");
-            }
-
-            Luau::ConfigOptions parse_options;
-            parse_options.compat = options->compat != 0;
-            parse_options.aliasOptions = aliases(*options);
-
-            if (const std::optional<std::string> message = Luau::parseConfig(std::string(*value), configuration->value, parse_options)) {
-                return failure(error, *message);
-            }
-
-            return StatusSuccess;
-        } catch (...) {
-            return exception_failure(error);
-        }
-    }
-
-    int32_t configuration_extract_luau(void *handle, Text source, const ConfigurationOptions *options, String *error) {
-        try {
-            if (error) {
-                *error = {};
-            }
-
-            auto *configuration = static_cast<Configuration *>(handle);
-            const std::optional<std::string_view> value = view(source);
-
-            if (!configuration || !options || !value) {
-                return failure(error, "invalid configuration request");
-            }
-
-            if (const std::optional<std::string> message = Luau::extractLuauConfig(std::string(*value), configuration->value, aliases(*options), {})) {
-                return failure(error, *message);
-            }
-
-            return StatusSuccess;
-        } catch (...) {
-            return exception_failure(error);
-        }
-    }
-
-    int32_t configuration_set_capture_comments(void *handle, uint8_t capture_comments, String *error) {
-        try {
-            if (error) {
-                *error = {};
-            }
-
-            auto *configuration = static_cast<Configuration *>(handle);
-
-            if (!configuration) {
-                return failure(error, "invalid configuration");
-            }
-
-            configuration->value.parseOptions.captureComments = capture_comments != 0;
-
-            return StatusSuccess;
-        } catch (...) {
-            return exception_failure(error);
-        }
-    }
-
-    int32_t configuration_set_mode(void *handle, ConfigurationMode mode, String *error) {
-        try {
-            if (error) {
-                *error = {};
-            }
-
-            auto *configuration = static_cast<Configuration *>(handle);
-
-            if (!configuration || mode > ConfigurationDefinition) {
-                return failure(error, "invalid configuration mode");
-            }
-
-            configuration->value.mode = static_cast<Luau::Mode>(static_cast<uint32_t>(mode));
-
-            return StatusSuccess;
-        } catch (...) {
-            return exception_failure(error);
-        }
-    }
-
-    ConfigurationMode configuration_mode(const void *handle) {
-        const auto &mode = static_cast<const Configuration *>(handle)->value.mode;
-
-        switch (mode) {
-        case Luau::Mode::NoCheck:
-            return ConfigurationNoCheck;
-
-        case Luau::Mode::Strict:
-            return ConfigurationStrict;
-
-        case Luau::Mode::Nonstrict:
-            return ConfigurationNonstrict;
-
-        case Luau::Mode::Definition:
-            return ConfigurationDefinition;
-        }
-
-        return ConfigurationNonstrict;
-    }
-
-    int32_t configuration_aliases(const void *handle, AliasCallback callback, void *context, String *error) {
-        try {
-            if (error) {
-                *error = {};
-            }
-
-            const auto *configuration = static_cast<const Configuration *>(handle);
-
-            if (!configuration || !callback) {
-                return failure(error, "invalid alias request");
-            }
-
-            for (const auto &[name, alias] : configuration->value.aliases) {
-                const Alias value{text(name), text(alias.originalCase), text(alias.value)};
-
-                if (!callback(context, &value)) {
-                    return StatusCallbackFailure;
-                }
-            }
-
-            return StatusSuccess;
-        } catch (...) {
-            return exception_failure(error);
-        }
     }
 
     void *checker_create(const BridgeCallbacks *callbacks, void *context, const FrontendOptions *options, String *error) {
@@ -494,6 +367,7 @@ extern "C" {
                 return nullptr;
             }
 
+            // Modern Roblox definitions exceed Luau's default 10,000-child limit.
             FInt::LuauTarjanChildLimit.value = 12'500;
 
             return new Checker(*callbacks, context, *options);
@@ -541,6 +415,10 @@ extern "C" {
                 return failure(error, "invalid dirty module request");
             }
 
+            if (checker->definition_names.count(std::string(*value))) {
+                return failure(error, "definition changes require a new checker");
+            }
+
             checker->frontend.markDirty(std::string(*value));
 
             return StatusSuccess;
@@ -549,7 +427,7 @@ extern "C" {
         }
     }
 
-    int32_t checker_clear(void *handle, String *error) {
+    int32_t checker_clear_sources(void *handle, String *error) {
         try {
             if (error) {
                 *error = {};
@@ -561,8 +439,16 @@ extern "C" {
                 return failure(error, "null checker");
             }
 
-            checker->frontend.clear();
-            checker->check_result.reset();
+            std::vector<Luau::ModuleName> names;
+            names.reserve(checker->frontend.sourceNodes.size());
+
+            for (const auto &[name, _] : checker->frontend.sourceNodes) {
+                if (!checker->definition_names.count(name)) {
+                    names.push_back(name);
+                }
+            }
+
+            checker->frontend.clearModules(names);
 
             return StatusSuccess;
         } catch (...) {
@@ -570,7 +456,7 @@ extern "C" {
         }
     }
 
-    int32_t checker_register_roblox(void *handle, const RobloxClass *classes, size_t class_count, const RobloxNode *nodes, size_t node_count, String *error) {
+    int32_t checker_register_roblox_classes(void *handle, const RobloxClass *classes, size_t class_count, String *error) {
         try {
             if (error) {
                 *error = {};
@@ -578,11 +464,45 @@ extern "C" {
 
             auto *checker = static_cast<Checker *>(handle);
 
-            if (!checker || (class_count != 0 && !classes) || (node_count != 0 && !nodes)) {
+            if (!checker || (class_count != 0 && !classes)) {
                 return failure(error, "invalid Roblox registration request");
             }
 
-            instar::register_roblox_magic(checker->frontend.globals, classes, class_count, nodes, node_count);
+            if (checker->globals_frozen || checker->roblox_classes_registered || !checker->frontend.sourceNodes.empty()) {
+                return failure(error, "global changes require a new checker");
+            }
+
+            instar::register_roblox_magic(checker->frontend.globals, classes, class_count);
+            checker->roblox_classes_registered = true;
+
+            return StatusSuccess;
+        } catch (...) {
+            return exception_failure(error);
+        }
+    }
+
+    int32_t checker_register_roblox_tree(void *handle, const RobloxNode *nodes, size_t node_count, String *error) {
+        try {
+            if (error) {
+                *error = {};
+            }
+
+            auto *checker = static_cast<Checker *>(handle);
+
+            if (!checker || !nodes || node_count == 0) {
+                return failure(error, "invalid Roblox hierarchy request");
+            }
+
+            if (!checker->roblox_classes_registered) {
+                return failure(error, "register Roblox classes before the hierarchy");
+            }
+
+            if (checker->globals_frozen || checker->roblox_tree_registered || !checker->frontend.sourceNodes.empty()) {
+                return failure(error, "hierarchy changes require a new checker");
+            }
+
+            checker->script_modules = instar::register_roblox_tree(checker->frontend, nodes, node_count);
+            checker->roblox_tree_registered = true;
 
             return StatusSuccess;
         } catch (...) {
@@ -603,6 +523,7 @@ extern "C" {
             }
 
             Luau::freeze(checker->frontend.globals.globalTypes);
+            checker->globals_frozen = true;
 
             return StatusSuccess;
         } catch (...) {
@@ -625,7 +546,10 @@ extern "C" {
             }
 
             const std::string name(*package_view);
-            checker->definition_names.insert(name);
+
+            if (checker->globals_frozen || checker->roblox_classes_registered || !checker->frontend.sourceNodes.empty() || checker->frontend.sourceModules.count(name)) {
+                return failure(error, "definition changes require a new checker");
+            }
 
             Luau::LoadDefinitionFileResult result = checker->frontend.loadDefinitionFile(
                 checker->frontend.globals,
@@ -650,11 +574,14 @@ extern "C" {
                 }
             }
 
-            if (result.success) {
-                checker->frontend.sourceModules[name] = std::make_shared<Luau::SourceModule>(std::move(result.sourceModule));
-                checker->frontend.moduleResolver.setModule(name, result.module);
-                checker->frontend.moduleResolverForAutocomplete.setModule(name, std::move(result.module));
+            if (!result.success) {
+                return failure(error, "definition loading failed");
             }
+
+            checker->frontend.sourceModules[name] = std::make_shared<Luau::SourceModule>(std::move(result.sourceModule));
+            checker->frontend.moduleResolver.setModule(name, result.module);
+            checker->frontend.moduleResolverForAutocomplete.setModule(name, std::move(result.module));
+            checker->definition_names.insert(name);
 
             return StatusSuccess;
         } catch (...) {
@@ -716,7 +643,7 @@ extern "C" {
         }
     }
 
-    int32_t checker_check(void *handle, Text name, String *error) {
+    int32_t checker_check(void *handle, Text name, ItemCallback timeout_callback, void *timeout_context, String *error) {
         try {
             if (error) {
                 *error = {};
@@ -725,20 +652,25 @@ extern "C" {
             auto *checker = static_cast<Checker *>(handle);
             const std::optional<std::string_view> value = view(name);
 
-            if (!checker || !value) {
+            if (!checker || !value || !timeout_callback) {
                 return failure(error, "invalid check request");
             }
 
-            checker->check_result = checker->definition_names.find(std::string(*value)) != checker->definition_names.end() ? Luau::CheckResult{}
-                                                                                                                           : checker->frontend.check(std::string(*value));
+            if (checker->definition_names.count(std::string(*value))) {
+                return StatusSuccess;
+            }
 
-            return StatusSuccess;
+            const auto result = checker->frontend.check(std::string(*value));
+
+            return Checker::timeouts(result, timeout_callback, timeout_context);
         } catch (...) {
             return exception_failure(error);
         }
     }
 
-    int32_t checker_result(void *handle, Text name, uint8_t accumulate_nested, uint8_t for_autocomplete, String *error) {
+    int32_t
+    checker_result(void *handle, Text name, uint8_t accumulate_nested, uint8_t for_autocomplete, ItemCallback timeout_callback, void *timeout_context, String *error) {
+
         try {
             if (error) {
                 *error = {};
@@ -747,25 +679,25 @@ extern "C" {
             auto *checker = static_cast<Checker *>(handle);
             const std::optional<std::string_view> value = view(name);
 
-            if (!checker || !value) {
+            if (!checker || !value || !timeout_callback) {
                 return failure(error, "invalid result request");
             }
 
             if (checker->definition_names.find(std::string(*value)) != checker->definition_names.end()) {
-                checker->check_result = Luau::CheckResult{};
-
                 return StatusSuccess;
             }
 
-            const std::optional<Luau::CheckResult> result = checker->frontend.getCheckResult(std::string(*value), accumulate_nested != 0, for_autocomplete != 0);
+            auto result = checker->frontend.getCheckResult(std::string(*value), accumulate_nested != 0, for_autocomplete != 0);
 
             if (!result) {
                 return failure(error, "check result unavailable");
             }
 
-            checker->check_result = *result;
+            if (!checker->emit(*result, *value)) {
+                return StatusCallbackFailure;
+            }
 
-            return checker->emit(*result, *value) ? StatusSuccess : StatusCallbackFailure;
+            return Checker::timeouts(*result, timeout_callback, timeout_context);
         } catch (...) {
             return exception_failure(error);
         }
@@ -785,30 +717,6 @@ extern "C" {
 
             for (const auto &[name, _] : checker->frontend.globals.globalScope->bindings) {
                 if (!callback(context, text(name.c_str()))) {
-                    return StatusCallbackFailure;
-                }
-            }
-
-            return StatusSuccess;
-        } catch (...) {
-            return exception_failure(error);
-        }
-    }
-
-    int32_t checker_timeouts(void *handle, ItemCallback callback, void *context, String *error) {
-        try {
-            if (error) {
-                *error = {};
-            }
-
-            auto *checker = static_cast<Checker *>(handle);
-
-            if (!checker || !callback || !checker->check_result) {
-                return failure(error, "invalid timeout request");
-            }
-
-            for (const Luau::ModuleName &name : checker->check_result->timeoutHits) {
-                if (!callback(context, text(name))) {
                     return StatusCallbackFailure;
                 }
             }
@@ -879,10 +787,6 @@ extern "C" {
         return call_editor(handle, error, instar::editor_completion, name, line, column, callback, context);
     }
 
-    int32_t editor_completion_resolve(void *handle, Text name, Text item, uint32_t line, uint32_t column, CompletionCallback callback, void *context, String *error) {
-        return call_editor(handle, error, instar::editor_completion_resolve, name, item, line, column, callback, context);
-    }
-
     int32_t editor_signature_help(void *handle, Text name, uint32_t line, uint32_t column, SignatureCallback callback, void *context, String *error) {
         return call_editor(handle, error, instar::editor_signature_help, name, line, column, callback, context);
     }
@@ -917,9 +821,5 @@ extern "C" {
 
     int32_t editor_local_references(void *handle, Text name, uint32_t line, uint32_t column, SymbolCallback callback, void *context, String *error) {
         return call_editor(handle, error, instar::editor_local_references, name, line, column, callback, context);
-    }
-
-    int32_t editor_scope(void *handle, Text name, uint32_t line, uint32_t column, SymbolCallback callback, void *context, String *error) {
-        return call_editor(handle, error, instar::editor_scope, name, line, column, callback, context);
     }
 }
