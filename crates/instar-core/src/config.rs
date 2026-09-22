@@ -20,16 +20,59 @@ pub struct Config {
     pub roblox: RobloxConfig,
 }
 
-/// Tool-neutral sourcemap settings.
+/// Roblox platform detection, API assets, and sourcemap settings.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct RobloxConfig {
+    /// Omission inherits or auto-detects Roblox from the effective sourcemaps.
+    pub enabled: Option<bool>,
+
+    /// API security level; defaults to normal game-script permissions (`none`).
+    pub security: Option<Security>,
+
+    /// Ordered declaration paths or HTTPS URLs, appended to inherited files.
+    /// Relative paths use this manifest's directory; `[]` adds nothing.
+    pub definitions: Option<Vec<String>>,
+
+    /// Ordered documentation paths or HTTPS URLs, appended to inherited files.
+    /// Later files override matching documentation keys; `[]` adds nothing.
+    pub documentation: Option<Vec<String>>,
+
     /// Sourcemap files relative to this manifest; their source paths are relative to each map.
     /// Omission inherits the parent list, or discovers the nearest ancestor `sourcemap.json`.
     /// An explicit list replaces it, including `[]` to disable discovery.
     #[schemars(with = "Option<Vec<String>>")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sourcemaps: Option<Vec<PathBuf>>,
+}
+
+/// Security level of the published Roblox declarations.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum Security {
+    /// Normal game scripts.
+    #[default]
+    None,
+
+    /// Local-user privileged APIs.
+    Local,
+
+    /// Studio plugin APIs.
+    Plugin,
+
+    /// Roblox-internal APIs.
+    Roblox,
+}
+
+impl Security {
+    pub(crate) fn file(self) -> &'static str {
+        match self {
+            Self::None => "none.d.luau",
+            Self::Local => "local.d.luau",
+            Self::Plugin => "plugin.d.luau",
+            Self::Roblox => "roblox.d.luau",
+        }
+    }
 }
 
 /// Luau settings in Instar's `snake_case` configuration format.

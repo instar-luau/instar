@@ -290,16 +290,16 @@ namespace instar {
         }
 
         void add_enum_type_aliases(Luau::GlobalTypes &globals) {
+            const auto enum_item = globals.globalScope->lookupType("EnumItem");
+
+            if (!enum_item) {
+                return;
+            }
+
             auto &aliases = globals.globalScope->importedTypeBindings["Enum"];
 
             for (const auto &[name, type_function] : globals.globalScope->exportedTypeBindings) {
-                if (name.size() <= 3 || name.rfind("Enum", 0) != 0 || name == "EnumItem") {
-                    continue;
-                }
-
-                const std::string alias = "Enumeration" + name.substr(4);
-
-                if (globals.globalScope->exportedTypeBindings.find(alias) == globals.globalScope->exportedTypeBindings.end()) {
+                if (name.size() > 4 && name.rfind("Enum", 0) == 0 && name != "EnumItem" && derives_from(type_function.type, enum_item->type)) {
                     aliases.insert_or_assign(name.substr(4), type_function);
                 }
             }
@@ -339,6 +339,25 @@ namespace instar {
     void register_roblox_magic(Luau::GlobalTypes &globals, const RobloxClass *classes, size_t class_count) {
         auto metadata = std::make_shared<Metadata>();
         metadata->classes.reserve(class_count);
+        auto base = globals.globalScope->lookupType("Object");
+
+        if (!base) {
+            base = globals.globalScope->lookupType("Instance");
+        }
+
+        if (!base || !Luau::get<Luau::ExternType>(Luau::follow(base->type))) {
+            throw std::invalid_argument("Roblox class magic requires Object or Instance declarations");
+        }
+
+        for (const auto &[name, type_function] : globals.globalScope->exportedTypeBindings) {
+            const auto type = Luau::follow(type_function.type);
+
+            if (Luau::get<Luau::ExternType>(type) && derives_from(type, base->type)) {
+                metadata->classes.emplace(name, ClassInfo{type, false, false});
+            }
+        }
+
+        std::unordered_set<std::string> tagged;
 
         for (size_t index = 0; index < class_count; ++index) {
             if (!classes[index].name.data || classes[index].name.length == 0) {
@@ -346,15 +365,18 @@ namespace instar {
             }
 
             const std::string name(reinterpret_cast<const char *>(classes[index].name.data), classes[index].name.length);
-            const auto type = globals.globalScope->lookupType(name);
+            const auto type = metadata->classes.find(name);
 
-            if (!type || !Luau::get<Luau::ExternType>(Luau::follow(type->type))) {
-                throw std::invalid_argument("Roblox class has no definition: " + name);
+            if (type == metadata->classes.end()) {
+                throw std::invalid_argument("Roblox class has no declaration: " + name);
             }
 
-            if (!metadata->classes.emplace(name, ClassInfo{Luau::follow(type->type), classes[index].service != 0, classes[index].creatable != 0}).second) {
-                throw std::invalid_argument("duplicate Roblox class: " + name);
+            if (!tagged.insert(name).second) {
+                throw std::invalid_argument("duplicate Roblox class flags: " + name);
             }
+
+            type->second.service = classes[index].service != 0;
+            type->second.creatable = classes[index].creatable != 0;
         }
 
         add_enum_type_aliases(globals);

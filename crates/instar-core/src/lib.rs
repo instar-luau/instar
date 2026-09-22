@@ -1,5 +1,7 @@
 //! Project configuration and module graphs for Instar.
 
+mod assets;
+
 pub mod analysis;
 pub mod config;
 pub mod graph;

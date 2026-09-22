@@ -12,7 +12,12 @@
     "roblox": {
       "description": "Optional Roblox sourcemap configuration.",
       "$ref": "#/$defs/RobloxConfig",
-      "default": {}
+      "default": {
+        "definitions": null,
+        "documentation": null,
+        "enabled": null,
+        "security": null
+      }
     }
   },
   "additionalProperties": false,
@@ -94,9 +99,51 @@
       ]
     },
     "RobloxConfig": {
-      "description": "Tool-neutral sourcemap settings.",
+      "description": "Roblox platform detection, API assets, and sourcemap settings.",
       "type": "object",
       "properties": {
+        "definitions": {
+          "description": "Ordered declaration paths or HTTPS URLs, appended to inherited files.\nRelative paths use this manifest's directory; `[]` adds nothing.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "type": "string"
+          }
+        },
+        "documentation": {
+          "description": "Ordered documentation paths or HTTPS URLs, appended to inherited files.\nLater files override matching documentation keys; `[]` adds nothing.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "type": "string"
+          }
+        },
+        "enabled": {
+          "description": "Omission inherits or auto-detects Roblox from the effective sourcemaps.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "security": {
+          "description": "API security level; defaults to normal game-script permissions (`none`).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Security"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "sourcemaps": {
           "description": "Sourcemap files relative to this manifest; their source paths are relative to each map.\nOmission inherits the parent list, or discovers the nearest ancestor `sourcemap.json`.\nAn explicit list replaces it, including `[]` to disable discovery.",
           "type": [
@@ -109,6 +156,31 @@
         }
       },
       "additionalProperties": false
+    },
+    "Security": {
+      "description": "Security level of the published Roblox declarations.",
+      "oneOf": [
+        {
+          "description": "Normal game scripts.",
+          "type": "string",
+          "const": "none"
+        },
+        {
+          "description": "Local-user privileged APIs.",
+          "type": "string",
+          "const": "local"
+        },
+        {
+          "description": "Studio plugin APIs.",
+          "type": "string",
+          "const": "plugin"
+        },
+        {
+          "description": "Roblox-internal APIs.",
+          "type": "string",
+          "const": "roblox"
+        }
+      ]
     }
   }
 }

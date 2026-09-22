@@ -529,15 +529,19 @@ def main []: nothing -> nothing {
         RobloxScriptSecurity
     ]
 
-    let class_metadata = $classes | each {|class|
-        let tags = $class.Tags? | default []
+    let metadata = {
+        services: (
+            $classes
+            | where ('Service' in ($it.Tags? | default []))
+            | get Name
+        )
 
-        {
-            name: $class.Name
-            service: ('Service' in $tags)
-            creatable: ('NotCreatable' not-in $tags and 'Service' not-in $tags)
-        }
-    }
+        creatable_instances: (
+            $classes
+            | where ('NotCreatable' not-in ($it.Tags? | default []) and 'Service' not-in ($it.Tags? | default []))
+            | get Name
+        )
+    } | to json --raw
 
     mut definitions = {}
 
@@ -555,11 +559,6 @@ def main []: nothing -> nothing {
             labels: $labels
             members: $members
         }
-
-        let metadata = {
-            classes: $class_metadata
-            enumerations: ($dump.Enums | get Name)
-        } | to json --raw
 
         let body = [
             ...$stubs

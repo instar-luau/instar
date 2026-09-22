@@ -15,8 +15,9 @@ use instar_bridge::{
 use crate::{
     graph::{self, Request},
     invalid,
-    project::{EffectiveConfig, Project},
+    project::{EffectiveConfig, Project, RobloxSettings},
     resolve::{Failure, Module, Resolver},
+    roblox::Sourcemap,
 };
 
 /// Source context and zero-based line/byte-column range of a diagnostic.
@@ -234,6 +235,13 @@ impl Callbacks for Host<'_> {
     }
 
     fn diagnostic(&mut self, diagnostic: instar_bridge::Diagnostic<'_>) -> io::Result<()> {
+        if diagnostic.path == "roblox" {
+            return Err(invalid(format!(
+                "Roblox declarations: {}",
+                diagnostic.message
+            )));
+        }
+
         let related = diagnostic
             .related
             .map(|related| {
@@ -253,12 +261,97 @@ impl Callbacks for Host<'_> {
     }
 }
 
+struct Environment {
+    settings: RobloxSettings,
+    map: Option<Rc<Sourcemap>>,
+    entries: Vec<Module>,
+}
+
 /// Checks entries and their dependencies without constructing an Instar dependency graph.
-/// Each call owns a fresh native checker; the supplied project remains an immutable snapshot.
+/// Each place and API/security selection has its own native checker and global environment.
 ///
 /// # Errors
-/// Returns entry, source, configuration, or native callback failures.
+/// Returns entry, source, configuration, asset, or native callback failures.
 pub fn check(project: &mut Project, paths: &[PathBuf]) -> io::Result<Vec<Diagnostic>> {
+    let mut resolver = Resolver::new();
+    let mut environments = HashMap::<_, Environment>::new();
+
+    for path in paths {
+        for module in resolver
+            .entries(project, path)
+            .map_err(|error| invalid(error.to_string()))?
+        {
+            let settings = project.configuration(&module.source)?.roblox.clone();
+
+            let map = if let Some(instance) = &module.instance {
+                Some(Rc::clone(&instance.map))
+            } else {
+                let maps = project.sourcemaps_for(&module.source)?;
+
+                if maps.len() == 1 {
+                    maps.into_iter().next()
+                } else {
+                    None
+                }
+            };
+
+            let key = (
+                settings.enabled,
+                settings.security,
+                settings.definitions.clone(),
+                map.as_ref().map(|map| map.path.clone()),
+            );
+
+            environments
+                .entry(key)
+                .or_insert_with(|| Environment {
+                    settings,
+                    map,
+                    entries: Vec::new(),
+                })
+                .entries
+                .push(module);
+        }
+    }
+
+    let mut diagnostics = Vec::new();
+
+    for environment in environments.into_values() {
+        diagnostics.extend(check_environment(project, environment)?);
+    }
+
+    diagnostics.sort_by(|a, b| {
+        a.location
+            .module
+            .source
+            .cmp(&b.location.module.source)
+            .then_with(|| {
+                a.location
+                    .module
+                    .instance
+                    .as_ref()
+                    .map(|instance| (instance.sourcemap_path(), instance.full_name()))
+                    .cmp(
+                        &b.location
+                            .module
+                            .instance
+                            .as_ref()
+                            .map(|instance| (instance.sourcemap_path(), instance.full_name())),
+                    )
+            })
+            .then(a.location.range.cmp(&b.location.range))
+            .then_with(|| a.message.cmp(&b.message))
+    });
+
+    Ok(diagnostics)
+}
+
+fn check_environment(
+    project: &mut Project,
+    environment: Environment,
+) -> io::Result<Vec<Diagnostic>> {
+    let definitions = project.definitions(&environment.settings)?;
+
     let mut host = Host {
         project,
         resolver: Resolver::new(),
@@ -269,20 +362,24 @@ pub fn check(project: &mut Project, paths: &[PathBuf]) -> io::Result<Vec<Diagnos
 
     let mut entries = BTreeSet::new();
 
-    for path in paths {
-        for module in host
-            .resolver
-            .entries(host.project, path)
-            .map_err(|error| invalid(error.to_string()))?
-        {
-            entries.insert(host.intern(module)?);
-        }
+    for module in environment.entries {
+        entries.insert(host.intern(module)?);
     }
 
     let mut checker = Checker::new(&CheckerOptions {
         run_lint_checks: 1,
         ..CheckerOptions::default()
     })?;
+
+    if let Some(definitions) = definitions {
+        checker.load_definition(&mut host, definitions.source.as_bytes(), "roblox")?;
+
+        if definitions.register(&mut checker)?
+            && let Some(map) = environment.map
+        {
+            map.register(&mut checker, |module| host.intern(module))?;
+        }
+    }
 
     checker.freeze()?;
     let mut timeouts = BTreeSet::new();

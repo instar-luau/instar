@@ -25,10 +25,6 @@ def main [
     }
 
     mkdir $destination
-
-    for source in [schemas/instar.schema.json generated/bundle.json] {
-        cp ($ROOT | path join $source) $destination
-    }
-
+    cp ($ROOT | path join schemas instar.schema.json) $destination
     open ($ROOT | path join generated bundle.json) | materialize $destination
 }
