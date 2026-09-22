@@ -12,6 +12,7 @@ categories.workspace = true
 release = false
 
 [dependencies]
+glob = { version = "0.3", default-features = false }
 instar-bridge = { path = "../instar-bridge" }
 jsonc-parser = { version = "0.33", default-features = false, features = ["serde"] }
 petgraph = { version = "0.8", default-features = false, features = ["std", "serde-1"] }

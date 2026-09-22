@@ -1,6 +1,7 @@
 //! Project configuration discovery and source snapshots.
 
 use std::{
+    cell::OnceCell,
     collections::{BTreeMap, HashMap},
     fs, io,
     path::{Path, PathBuf},
@@ -11,6 +12,7 @@ use crate::{
     absolute,
     assets::{self, Assets, Definitions},
     config::{self, Config, LuauConfig, RobloxConfig, Security},
+    filter::{Filters, Service},
     invalid,
     roblox::{Sourcemap, SourcemapLocation},
 };
@@ -46,6 +48,8 @@ pub struct EffectiveConfig {
     pub roblox: RobloxSettings,
 
     native: instar_bridge::Configuration,
+    without_lints: OnceCell<instar_bridge::Configuration>,
+    filters: Filters,
 }
 
 impl EffectiveConfig {
@@ -53,6 +57,32 @@ impl EffectiveConfig {
     #[must_use]
     pub const fn native(&self) -> &instar_bridge::Configuration {
         &self.native
+    }
+
+    pub(crate) fn analysis_native(
+        &self,
+        source: &Path,
+    ) -> io::Result<&instar_bridge::Configuration> {
+        if self.filters.includes(source, Service::Analyze)
+            && self.filters.includes(source, Service::Lint)
+        {
+            return Ok(self.native());
+        }
+
+        if self.without_lints.get().is_none() {
+            let mut settings = self.settings.clone();
+            settings.lint = BTreeMap::from([("*".to_owned(), false)]);
+
+            let configuration =
+                instar_bridge::Configuration::new(settings.native_json()?.as_bytes())?;
+
+            drop(self.without_lints.set(configuration));
+        }
+
+        Ok(self
+            .without_lints
+            .get()
+            .expect("lint-free configuration initialized"))
     }
 }
 
@@ -81,6 +111,7 @@ struct Layers {
     inputs: Vec<PathBuf>,
     sourcemaps: Option<Vec<SourcemapLocation>>,
     roblox: RobloxConfig,
+    filters: Filters,
 }
 
 /// Cached project snapshot. Entry files may belong to unrelated filesystem roots.
@@ -99,6 +130,20 @@ impl Project {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Tests global and service selection for a source file, using its inherited configuration.
+    /// Excluded files may still be loaded as dependencies.
+    ///
+    /// # Errors
+    /// Returns filesystem, configuration, or invalid-glob errors.
+    pub fn includes(&mut self, source: &Path, service: Service) -> io::Result<bool> {
+        let source = absolute(source)?;
+
+        Ok(self
+            .configuration(&source)?
+            .filters
+            .includes(&source, service))
     }
 
     /// Reads a UTF-8 source once for this snapshot.
@@ -290,6 +335,8 @@ impl Project {
             sourcemaps,
             roblox,
             native,
+            without_lints: OnceCell::new(),
+            filters: layers.filters,
         });
 
         self.configurations.insert(directory, Rc::clone(&config));
@@ -331,6 +378,8 @@ impl Project {
                 _ => toml::from_str::<Config>(&source)
                     .map_err(|e| invalid(e.to_string()))
                     .and_then(|config| {
+                        layers.filters.append(directory, &config)?;
+
                         if let Some(enabled) = config.roblox.enabled {
                             layers.roblox.enabled = Some(enabled);
                         }

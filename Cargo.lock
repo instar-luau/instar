@@ -628,6 +628,7 @@ dependencies = [
 name = "instar-core"
 version = "0.4.3"
 dependencies = [
+ "glob",
  "instar-bridge",
  "jsonc-parser",
  "petgraph",

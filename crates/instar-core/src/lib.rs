@@ -4,6 +4,7 @@ mod assets;
 
 pub mod analysis;
 pub mod config;
+pub mod filter;
 pub mod graph;
 pub mod project;
 pub mod resolve;

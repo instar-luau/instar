@@ -13,11 +13,48 @@ use crate::{invalid, string_value};
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
+    /// Global include globs, relative to this manifest; inherited lists append.
+    /// An empty effective list allows every path.
+    pub include: Vec<String>,
+
+    /// Global exclude globs; exclusions always win.
+    pub exclude: Vec<String>,
+
+    /// Additional file selection for analysis.
+    pub analyze: FileFilter,
+
+    /// Additional file selection for builds.
+    pub build: FileFilter,
+
+    /// Additional file selection for formatting.
+    pub format: FileFilter,
+
+    /// Additional file selection for dependency installation.
+    pub graft: FileFilter,
+
+    /// Additional file selection for linting.
+    pub lint: FileFilter,
+
+    /// Additional file selection for the language server.
+    pub lsp: FileFilter,
+
     /// Settings shared by analysis and require resolution.
     pub luau: LuauConfig,
 
     /// Optional Roblox sourcemap configuration.
     pub roblox: RobloxConfig,
+}
+
+/// Service-specific globs, intersected with global selection.
+/// Lists append through inheritance; `[]` adds nothing.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct FileFilter {
+    /// Include globs relative to their manifest; an empty effective list allows every path.
+    pub include: Vec<String>,
+
+    /// Exclude globs relative to their manifest; exclusions always win.
+    pub exclude: Vec<String>,
 }
 
 /// Roblox platform detection, API assets, and sourcemap settings.
