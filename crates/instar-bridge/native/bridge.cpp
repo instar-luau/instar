@@ -802,10 +802,6 @@ extern "C" {
         return call_editor(handle, error, instar::editor_type_hints, name, callback, context);
     }
 
-    int32_t editor_semantic_tokens(void *handle, Text name, TokenCallback callback, void *context, String *error) {
-        return call_editor(handle, error, instar::editor_semantic_tokens, name, callback, context);
-    }
-
     int32_t editor_definition(void *handle, Text name, uint32_t line, uint32_t column, NavigationCallback callback, void *context, String *error) {
         return call_editor(handle, error, instar::editor_definition, name, line, column, callback, context);
     }
@@ -822,11 +818,11 @@ extern "C" {
         return call_editor(handle, error, instar::editor_references, name, line, column, callback, context);
     }
 
-    int32_t editor_prepare(void *handle, Text name, uint32_t line, uint32_t column, SymbolCallback callback, void *context, String *error) {
-        return call_editor(handle, error, instar::editor_prepare, name, line, column, callback, context);
+    int32_t editor_rename_target(void *handle, Text name, uint32_t line, uint32_t column, RenameTargetCallback callback, void *context, String *error) {
+        return call_editor(handle, error, instar::editor_rename_target, name, line, column, callback, context);
     }
 
-    int32_t editor_local_references(void *handle, Text name, uint32_t line, uint32_t column, SymbolCallback callback, void *context, String *error) {
-        return call_editor(handle, error, instar::editor_local_references, name, line, column, callback, context);
+    int32_t editor_rename(void *handle, Text name, uint32_t line, uint32_t column, Text new_name, ReferenceCallback callback, void *context, String *error) {
+        return call_editor(handle, error, instar::editor_rename, name, line, column, new_name, callback, context);
     }
 }
