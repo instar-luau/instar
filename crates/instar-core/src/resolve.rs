@@ -1,4 +1,4 @@
-//! Abstract module navigation and cached filesystem require resolution.
+//! Cached filesystem and sourcemap-backed require resolution.
 
 use std::{
     collections::{BTreeSet, HashMap},
@@ -8,16 +8,19 @@ use std::{
 
 use serde::Serialize;
 
-use crate::{absolute, project::Project};
+use crate::{absolute, project::Project, roblox::Instance};
 
 /// A module's navigation identity and its separate backing source file.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct Module {
-    /// Absolute abstract module path, without a source suffix or `init` filename.
+    /// Filesystem module path; mapped modules navigate through their instance instead.
     pub path: PathBuf,
 
     /// Absolute source path, preserving symlink spelling.
     pub source: PathBuf,
+
+    /// Sourcemap identity, distinct from the backing file.
+    pub instance: Option<Instance>,
 }
 
 /// An observable reason a require could not resolve.
@@ -31,6 +34,10 @@ pub enum Failure {
     /// The require argument cannot be determined statically.
     #[error("{0}")]
     Dynamic(String),
+
+    /// A sourcemap navigation, mapping, or class constraint failed.
+    #[error("Roblox: {0}")]
+    Roblox(String),
 
     /// A navigation component did not exist.
     #[error("module path not found: {0:?}")]
@@ -77,6 +84,9 @@ pub struct Resolution {
 
     /// Configuration probes, including absent configuration files.
     pub configurations: BTreeSet<PathBuf>,
+
+    /// Sourcemaps consulted to resolve this request.
+    pub sourcemaps: BTreeSet<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -90,11 +100,16 @@ struct Lookup {
     candidates: Vec<PathBuf>,
 }
 
+enum Navigation {
+    File(PathBuf),
+    Instance(Instance),
+}
+
 /// Filesystem navigation cache for one immutable project snapshot.
 #[derive(Default)]
 pub struct Resolver {
     entries: HashMap<PathBuf, Lookup>,
-    resolutions: HashMap<(PathBuf, String), Resolution>,
+    resolutions: HashMap<(Module, String), Resolution>,
 }
 
 impl Resolver {
@@ -104,11 +119,15 @@ impl Resolver {
         Self::default()
     }
 
-    /// Maps an explicitly supplied source file to its abstract module identity.
+    /// Maps an entry file to every instance context, or to one filesystem module if unmapped.
     ///
     /// # Errors
-    /// Rejects missing, unsupported, or ambiguous source files.
-    pub fn entry(&mut self, source: &Path) -> Result<Module, Failure> {
+    /// Rejects missing, unsupported, ambiguous, or invalidly configured entry files.
+    pub fn entries(
+        &mut self,
+        project: &mut Project,
+        source: &Path,
+    ) -> Result<Vec<Module>, Failure> {
         let source = absolute(source).map_err(|e| Failure::Io(e.to_string()))?;
 
         if !matches!(
@@ -121,19 +140,39 @@ impl Resolver {
             )));
         }
 
+        let mut modules = Vec::new();
+
+        for map in project
+            .sourcemaps_for(&source)
+            .map_err(|e| Failure::Configuration(e.to_string()))?
+        {
+            for instance in map.instances_for_source(&source) {
+                modules.push(instance.module(false)?);
+            }
+        }
+
+        if !modules.is_empty() {
+            return Ok(modules);
+        }
+
         let path = module_path(&source);
         let lookup = self.lookup(&path);
         let entry = lookup.result?;
 
         match entry.source {
-            Some(found) if found == source => Ok(Module { path, source }),
+            Some(found) if found == source => Ok(vec![Module {
+                path,
+                source,
+                instance: None,
+            }]),
+
             _ => Err(Failure::Missing(source)),
         }
     }
 
     /// Resolves a string require from an abstract module, caching success and failure.
     pub fn resolve(&mut self, project: &mut Project, from: &Module, request: &str) -> Resolution {
-        let key = (from.path.clone(), request.to_owned());
+        let key = (from.clone(), request.to_owned());
 
         if let Some(result) = self.resolutions.get(&key) {
             return result.clone();
@@ -143,12 +182,31 @@ impl Resolver {
             result: Err(Failure::Invalid(String::new())),
             candidates: BTreeSet::new(),
             configurations: BTreeSet::new(),
+            sourcemaps: BTreeSet::new(),
         };
 
         trace.result = self.resolve_inner(project, from, request, &mut trace);
         self.resolutions.insert(key, trace.clone());
 
         trace
+    }
+
+    pub(crate) fn resolve_instance(instance: &Instance) -> Resolution {
+        let result = instance.module(true);
+
+        let candidates = result
+            .as_ref()
+            .ok()
+            .map(|module| module.source.clone())
+            .into_iter()
+            .collect();
+
+        Resolution {
+            result,
+            candidates,
+            configurations: BTreeSet::new(),
+            sourcemaps: [instance.map.path.clone()].into(),
+        }
     }
 
     fn resolve_inner(
@@ -162,45 +220,139 @@ impl Resolver {
             return Err(Failure::Invalid("require path contains NUL".into()));
         }
 
+        if let Some(instance) = &from.instance {
+            trace.sourcemaps.insert(instance.map.path.clone());
+        }
+
         let request = request.replace('\\', "/");
 
-        let path = if let Some(aliased) = request.strip_prefix('@') {
+        let target = if let Some(aliased) = request.strip_prefix('@') {
             let (alias, rest) = aliased.split_once('/').unwrap_or((aliased, ""));
-            let alias = alias.to_ascii_lowercase();
 
-            let start = if alias == "self" {
-                from.path.clone()
+            let origin = if from.instance.is_some() {
+                &from.source
             } else {
-                let scope = from
-                    .path
-                    .parent()
-                    .ok_or_else(|| Failure::Invalid("module has no parent".into()))?;
-
-                self.alias(project, scope, &alias, from, &mut Vec::new(), trace)?
+                &from.path
             };
 
-            self.walk(start, rest, trace)?
-        } else if request.starts_with("./") || request.starts_with("../") {
-            let start = from
-                .path
+            let scope = origin
                 .parent()
-                .ok_or_else(|| Failure::Invalid("module has no parent".into()))?
-                .to_owned();
+                .ok_or_else(|| Failure::Invalid("module has no parent".into()))?;
 
-            self.walk(start, &request, trace)?
+            let start = self.alias(
+                project,
+                scope,
+                &alias.to_ascii_lowercase(),
+                from,
+                &mut Vec::new(),
+                trace,
+            )?;
+
+            self.navigate(start, rest, trace)?
+        } else if request.starts_with("./") || request.starts_with("../") {
+            let start = if let Some(instance) = &from.instance {
+                Navigation::Instance(instance.parent()?)
+            } else {
+                Navigation::File(
+                    from.path
+                        .parent()
+                        .ok_or_else(|| Failure::Invalid("module has no parent".into()))?
+                        .to_owned(),
+                )
+            };
+
+            self.navigate(start, &request, trace)?
         } else {
             return Err(Failure::Invalid(
                 "require path must start with ./, ../, or @".into(),
             ));
         };
 
-        let entry = self.probe(&path, trace)?;
+        match target {
+            Navigation::Instance(instance) => {
+                let module = instance.module(true)?;
+                trace.candidates.insert(module.source.clone());
 
-        let source = entry
+                Ok(module)
+            }
+
+            Navigation::File(path) => self.file_target(project, from, path, trace),
+        }
+    }
+
+    fn navigate(
+        &mut self,
+        start: Navigation,
+        rest: &str,
+        trace: &mut Resolution,
+    ) -> Result<Navigation, Failure> {
+        match start {
+            Navigation::File(path) => self.walk(path, rest, trace).map(Navigation::File),
+
+            Navigation::Instance(instance) => {
+                trace.sourcemaps.insert(instance.map.path.clone());
+
+                instance.walk(rest).map(Navigation::Instance)
+            }
+        }
+    }
+
+    fn file_target(
+        &mut self,
+        project: &mut Project,
+        from: &Module,
+        path: PathBuf,
+        trace: &mut Resolution,
+    ) -> Result<Module, Failure> {
+        let source = self
+            .probe(&path, trace)?
             .source
             .ok_or_else(|| Failure::Directory(path.clone()))?;
 
-        Ok(Module { path, source })
+        if let Some(instance) = &from.instance {
+            trace.sourcemaps.insert(instance.map.path.clone());
+
+            return instance
+                .map
+                .find_source(&source)?
+                .ok_or_else(|| {
+                    Failure::Roblox(format!(
+                        "{} is not mapped into the caller's sourcemap",
+                        source.display()
+                    ))
+                })?
+                .module(true);
+        }
+
+        let mut mapped = None;
+
+        for map in project
+            .sourcemaps_for(&source)
+            .map_err(|e| Failure::Configuration(e.to_string()))?
+        {
+            trace.sourcemaps.insert(map.path.clone());
+
+            if let Some(instance) = map.find_source(&source)? {
+                if mapped.is_some() {
+                    return Err(Failure::Roblox(format!(
+                        "{} maps to multiple places; the caller has no place context",
+                        source.display()
+                    )));
+                }
+
+                mapped = Some(instance);
+            }
+        }
+
+        if let Some(instance) = mapped {
+            return instance.module(true);
+        }
+
+        Ok(Module {
+            path,
+            source,
+            instance: None,
+        })
     }
 
     fn alias(
@@ -211,9 +363,28 @@ impl Resolver {
         from: &Module,
         stack: &mut Vec<(PathBuf, String)>,
         trace: &mut Resolution,
-    ) -> Result<PathBuf, Failure> {
+    ) -> Result<Navigation, Failure> {
         if name == "self" {
-            return Ok(from.path.clone());
+            return Ok(from.instance.as_ref().map_or_else(
+                || Navigation::File(from.path.clone()),
+                |instance| Navigation::Instance(instance.clone()),
+            ));
+        }
+
+        if name == "game" {
+            let map = if let Some(instance) = &from.instance {
+                Some(std::rc::Rc::clone(&instance.map))
+            } else {
+                project
+                    .sourcemap(&from.source)
+                    .map_err(|e| Failure::Configuration(e.to_string()))?
+            };
+
+            if let Some(map) = map {
+                trace.sourcemaps.insert(map.path.clone());
+
+                return map.game().map(Navigation::Instance);
+            }
         }
 
         let config = project
@@ -261,15 +432,16 @@ impl Resolver {
                 trace,
             )?;
 
-            self.walk(start, rest, trace)
+            self.navigate(start, rest, trace)
         } else if value.starts_with("./") || value.starts_with("../") {
             self.walk(directory.to_owned(), &value, trace)
+                .map(Navigation::File)
         } else if Path::new(&value).is_absolute() {
             let path = absolute(Path::new(&value)).map_err(|e| Failure::Io(e.to_string()))?;
             let path = module_path(&path);
             self.probe(&path, trace)?;
 
-            Ok(path)
+            Ok(Navigation::File(path))
         } else {
             Err(Failure::Invalid(format!(
                 "alias @{name} target must start with ./, ../, @, or be absolute"
@@ -402,7 +574,7 @@ fn lookup_files(path: &Path, candidates: &[PathBuf]) -> Result<Entry, Failure> {
     Err(Failure::Missing(path.to_owned()))
 }
 
-fn module_path(source: &Path) -> PathBuf {
+pub(crate) fn module_path(source: &Path) -> PathBuf {
     if matches!(
         source.file_name().and_then(|s| s.to_str()),
         Some("init.lua" | "init.luau")

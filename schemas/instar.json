@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Config",
+  "description": "Instar project configuration. Luau settings live in `[luau]`.",
+  "type": "object",
+  "properties": {
+    "luau": {
+      "description": "Settings shared by analysis and require resolution.",
+      "$ref": "#/$defs/LuauConfig",
+      "default": {}
+    },
+    "roblox": {
+      "description": "Optional Roblox sourcemap configuration.",
+      "$ref": "#/$defs/RobloxConfig",
+      "default": {}
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "LuauConfig": {
+      "description": "Luau settings in Instar's `snake_case` configuration format.",
+      "type": "object",
+      "properties": {
+        "aliases": {
+          "description": "Case-insensitive aliases; relative targets retain their defining directory.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "globals": {
+          "description": "Additional globals. An explicit list replaces the inherited list.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "language_mode": {
+          "description": "Typechecking mode.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Mode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lint": {
+          "description": "Warning overrides, including the `*` wildcard.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "boolean"
+          }
+        },
+        "lint_errors": {
+          "description": "Whether lint warnings are errors.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "type_errors": {
+          "description": "Whether type errors are reported.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Mode": {
+      "description": "Luau typechecking mode.",
+      "oneOf": [
+        {
+          "description": "Skip typechecking.",
+          "type": "string",
+          "const": "nocheck"
+        },
+        {
+          "description": "Infer types permissively.",
+          "type": "string",
+          "const": "nonstrict"
+        },
+        {
+          "description": "Require strict type correctness.",
+          "type": "string",
+          "const": "strict"
+        }
+      ]
+    },
+    "RobloxConfig": {
+      "description": "Tool-neutral sourcemap settings.",
+      "type": "object",
+      "properties": {
+        "sourcemaps": {
+          "description": "Sourcemap files relative to this manifest; their source paths are relative to each map.\nOmission inherits the parent list, or discovers the nearest ancestor `sourcemap.json`.\nAn explicit list replaces it, including `[]` to disable discovery.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
