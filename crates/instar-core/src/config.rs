@@ -1,3 +1,5 @@
+//! Project configuration formats and Luau settings.
+
 use std::{collections::BTreeMap, io, path::PathBuf};
 
 use schemars::JsonSchema;

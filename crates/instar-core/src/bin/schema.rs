@@ -2,7 +2,7 @@
 
 use std::{env, error::Error, fs, path::PathBuf};
 
-use instar_core::project::Config;
+use instar_core::config::Config;
 use schemars::schema_for;
 
 fn main() -> Result<(), Box<dyn Error>> {

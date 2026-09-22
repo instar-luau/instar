@@ -1,9 +1,5 @@
 //! Project configuration discovery and source snapshots.
 
-mod config;
-
-pub use config::{Config, LuauConfig, Mode, RobloxConfig};
-
 use std::{
     collections::{BTreeMap, HashMap},
     fs, io,
@@ -12,7 +8,9 @@ use std::{
 };
 
 use crate::{
-    absolute, invalid,
+    absolute,
+    config::{self, Config, LuauConfig},
+    invalid,
     roblox::{Sourcemap, SourcemapLocation},
 };
 
