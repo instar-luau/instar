@@ -156,7 +156,7 @@ impl Resolver {
         }
 
         let path = module_path(&source);
-        let lookup = self.lookup(&path);
+        let lookup = self.lookup(project, &path);
         let entry = lookup.result?;
 
         match entry.source {
@@ -216,6 +216,27 @@ impl Resolver {
         request: &str,
         trace: &mut Resolution,
     ) -> Result<Module, Failure> {
+        let target = self.request_navigation(project, from, request, trace)?;
+
+        match target {
+            Navigation::Instance(instance) => {
+                let module = instance.module(true)?;
+                trace.candidates.insert(module.source.clone());
+
+                Ok(module)
+            }
+
+            Navigation::File(path) => self.file_target(project, from, path, trace),
+        }
+    }
+
+    fn request_navigation(
+        &mut self,
+        project: &mut Project,
+        from: &Module,
+        request: &str,
+        trace: &mut Resolution,
+    ) -> Result<Navigation, Failure> {
         if request.contains('\0') {
             return Err(Failure::Invalid("require path contains NUL".into()));
         }
@@ -248,7 +269,7 @@ impl Resolver {
                 trace,
             )?;
 
-            self.navigate(start, rest, trace)?
+            self.navigate(project, start, rest, trace)?
         } else if request.starts_with("./") || request.starts_with("../") {
             let start = if let Some(instance) = &from.instance {
                 Navigation::Instance(instance.parent()?)
@@ -261,33 +282,152 @@ impl Resolver {
                 )
             };
 
-            self.navigate(start, &request, trace)?
+            self.navigate(project, start, &request, trace)?
         } else {
             return Err(Failure::Invalid(
                 "require path must start with ./, ../, or @".into(),
             ));
         };
 
-        match target {
-            Navigation::Instance(instance) => {
-                let module = instance.module(true)?;
-                trace.candidates.insert(module.source.clone());
+        Ok(target)
+    }
 
-                Ok(module)
+    pub(crate) fn completions(
+        &mut self,
+        project: &mut Project,
+        from: &Module,
+        prefix: &str,
+    ) -> Result<Vec<String>, Failure> {
+        let prefix = if prefix.contains('\\') {
+            std::borrow::Cow::Owned(prefix.replace('\\', "/"))
+        } else {
+            std::borrow::Cow::Borrowed(prefix)
+        };
+
+        let mut trace = Resolution {
+            result: Err(Failure::Invalid(String::new())),
+            candidates: BTreeSet::new(),
+            configurations: BTreeSet::new(),
+            sourcemaps: BTreeSet::new(),
+        };
+
+        let mut results = BTreeSet::new();
+
+        if !prefix.contains('/') {
+            let partial = prefix.to_ascii_lowercase();
+
+            for start in ["./", "../", "@self/", "@game/"] {
+                if start.starts_with(&partial)
+                    && self
+                        .request_navigation(project, from, start, &mut trace)
+                        .is_ok()
+                {
+                    results.insert(start.to_owned());
+                }
             }
 
-            Navigation::File(path) => self.file_target(project, from, path, trace),
+            let config = project
+                .configuration(&from.source)
+                .map_err(|e| Failure::Configuration(e.to_string()))?;
+
+            for alias in config.aliases.keys() {
+                let candidate = format!("@{alias}/");
+
+                if candidate.starts_with(&partial)
+                    && self
+                        .request_navigation(project, from, &candidate, &mut trace)
+                        .is_ok()
+                {
+                    results.insert(candidate);
+                }
+            }
+
+            return Ok(results.into_iter().collect());
         }
+
+        let (directory, partial) = prefix.rsplit_once('/').expect("prefix contains slash");
+        let directory = format!("{directory}/");
+
+        let names = match self.request_navigation(project, from, &directory, &mut trace)? {
+            Navigation::Instance(instance) => instance
+                .child_names()
+                .filter(|name| name.starts_with(partial))
+                .map(|name| (name.to_owned(), true))
+                .collect::<BTreeSet<_>>(),
+
+            Navigation::File(path) => {
+                let mut paths = project.overlay_children(&path).collect::<BTreeSet<_>>();
+
+                match fs::read_dir(&path) {
+                    Ok(entries) => {
+                        for entry in entries {
+                            paths.insert(entry.map_err(|e| Failure::Io(e.to_string()))?.path());
+                        }
+                    }
+
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(Failure::Io(error.to_string())),
+                }
+
+                paths
+                    .into_iter()
+                    .filter_map(|path| {
+                        let directory = path.is_dir() || project.overlay_directory(&path);
+
+                        if !directory
+                            && !matches!(
+                                path.extension().and_then(|ext| ext.to_str()),
+                                Some("lua" | "luau")
+                            )
+                        {
+                            return None;
+                        }
+
+                        let name = if directory {
+                            path.file_name()
+                        } else {
+                            path.file_stem()
+                        }?
+                        .to_str()?;
+
+                        if !name.starts_with(partial) || matches!(name, "init" | ".config") {
+                            return None;
+                        }
+
+                        Some((name.to_owned(), directory))
+                    })
+                    .collect()
+            }
+        };
+
+        for (name, is_directory) in names {
+            let candidate = format!("{directory}{name}");
+
+            if self.resolve(project, from, &candidate).result.is_ok() {
+                results.insert(candidate.clone());
+            }
+
+            if is_directory
+                && self
+                    .request_navigation(project, from, &candidate, &mut trace)
+                    .is_ok()
+            {
+                results.insert(format!("{candidate}/"));
+            }
+        }
+
+        Ok(results.into_iter().collect())
     }
 
     fn navigate(
         &mut self,
+        project: &Project,
         start: Navigation,
         rest: &str,
         trace: &mut Resolution,
     ) -> Result<Navigation, Failure> {
         match start {
-            Navigation::File(path) => self.walk(path, rest, trace).map(Navigation::File),
+            Navigation::File(path) => self.walk(project, path, rest, trace).map(Navigation::File),
 
             Navigation::Instance(instance) => {
                 trace.sourcemaps.insert(instance.map.path.clone());
@@ -305,7 +445,7 @@ impl Resolver {
         trace: &mut Resolution,
     ) -> Result<Module, Failure> {
         let source = self
-            .probe(&path, trace)?
+            .probe(project, &path, trace)?
             .source
             .ok_or_else(|| Failure::Directory(path.clone()))?;
 
@@ -432,14 +572,14 @@ impl Resolver {
                 trace,
             )?;
 
-            self.navigate(start, rest, trace)
+            self.navigate(project, start, rest, trace)
         } else if value.starts_with("./") || value.starts_with("../") {
-            self.walk(directory.to_owned(), &value, trace)
+            self.walk(project, directory.to_owned(), &value, trace)
                 .map(Navigation::File)
         } else if Path::new(&value).is_absolute() {
             let path = absolute(Path::new(&value)).map_err(|e| Failure::Io(e.to_string()))?;
             let path = module_path(&path);
-            self.probe(&path, trace)?;
+            self.probe(project, &path, trace)?;
 
             Ok(Navigation::File(path))
         } else {
@@ -455,6 +595,7 @@ impl Resolver {
 
     fn walk(
         &mut self,
+        project: &Project,
         mut path: PathBuf,
         request: &str,
         trace: &mut Resolution,
@@ -469,7 +610,7 @@ impl Resolver {
                     }
 
                     // Like Luau, upward navigation is not ambiguous; ambiguity matters on entry.
-                    if let Err(error) = self.probe(&path, trace)
+                    if let Err(error) = self.probe(project, &path, trace)
                         && !matches!(error, Failure::Ambiguous { .. })
                     {
                         return Err(error);
@@ -488,7 +629,7 @@ impl Resolver {
                     }
 
                     path.push(name);
-                    self.probe(&path, trace)?;
+                    self.probe(project, &path, trace)?;
                 }
             }
         }
@@ -496,14 +637,19 @@ impl Resolver {
         Ok(path)
     }
 
-    fn probe(&mut self, path: &Path, trace: &mut Resolution) -> Result<Entry, Failure> {
-        let lookup = self.lookup(path);
+    fn probe(
+        &mut self,
+        project: &Project,
+        path: &Path,
+        trace: &mut Resolution,
+    ) -> Result<Entry, Failure> {
+        let lookup = self.lookup(project, path);
         trace.candidates.extend(lookup.candidates);
 
         lookup.result
     }
 
-    fn lookup(&mut self, path: &Path) -> Lookup {
+    fn lookup(&mut self, project: &Project, path: &Path) -> Lookup {
         if let Some(entry) = self.entries.get(path) {
             return entry.clone();
         }
@@ -520,7 +666,7 @@ impl Resolver {
 
         candidates.push(path.join("init.luau"));
         candidates.push(path.join("init.lua"));
-        let result = lookup_files(path, &candidates);
+        let result = lookup_files(project, path, &candidates);
         let lookup = Lookup { result, candidates };
         self.entries.insert(path.to_owned(), lookup.clone());
 
@@ -528,13 +674,18 @@ impl Resolver {
     }
 }
 
-fn lookup_files(path: &Path, candidates: &[PathBuf]) -> Result<Entry, Failure> {
+fn lookup_files(project: &Project, path: &Path, candidates: &[PathBuf]) -> Result<Entry, Failure> {
     let mut files = Vec::new();
-    let mut directory = false;
+    let mut directory = project.overlay_directory(path);
 
     for candidate in candidates {
+        if candidate != path && project.overlay_file(candidate) {
+            files.push(candidate.clone());
+            continue;
+        }
+
         match fs::metadata(candidate) {
-            Ok(metadata) if candidate == path => directory = metadata.is_dir(),
+            Ok(metadata) if candidate == path => directory |= metadata.is_dir(),
             Ok(metadata) if metadata.is_file() => files.push(candidate.clone()),
             Ok(_) => {}
 

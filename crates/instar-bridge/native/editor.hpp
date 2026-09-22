@@ -88,83 +88,17 @@ extern "C" {
         CompletionTypeParameter = 24,
     } EditorCompletionKind;
 
-    /**Document symbol kind.*/
-    typedef enum EditorSymbolKind {
-        /**File symbol.*/
-        SymbolFile = 0,
-        /**Module symbol.*/
-        SymbolModule = 1,
-        /**Namespace symbol.*/
-        SymbolNamespace = 2,
-        /**Package symbol.*/
-        SymbolPackage = 3,
-        /**Class symbol.*/
-        SymbolClass = 4,
-        /**Method symbol.*/
-        SymbolMethod = 5,
-        /**Property symbol.*/
-        SymbolProperty = 6,
-        /**Field symbol.*/
-        SymbolField = 7,
-        /**Constructor symbol.*/
-        SymbolConstructor = 8,
-        /**Enum symbol.*/
-        SymbolEnum = 9,
-        /**Interface symbol.*/
-        SymbolInterface = 10,
-        /**Function symbol.*/
-        SymbolFunction = 11,
-        /**Variable symbol.*/
-        SymbolVariable = 12,
-        /**Constant symbol.*/
-        SymbolConstant = 13,
-        /**String symbol.*/
-        SymbolString = 14,
-        /**Number symbol.*/
-        SymbolNumber = 15,
-        /**Boolean symbol.*/
-        SymbolBoolean = 16,
-        /**Array symbol.*/
-        SymbolArray = 17,
-        /**Object symbol.*/
-        SymbolObject = 18,
-        /**Key symbol.*/
-        SymbolKey = 19,
-        /**Null symbol.*/
-        SymbolNull = 20,
-        /**Enum-member symbol.*/
-        SymbolEnumMember = 21,
-        /**Struct symbol.*/
-        SymbolStruct = 22,
-        /**Event symbol.*/
-        SymbolEvent = 23,
-        /**Operator symbol.*/
-        SymbolOperator = 24,
-        /**Type-parameter symbol.*/
-        SymbolTypeParameter = 25,
-    } EditorSymbolKind;
-
-    /**Semantic token kind.*/
-    typedef enum EditorSemanticTokenKind {
-        /**Variable token.*/
-        SemanticTokenVariable = 0,
-        /**Function token.*/
-        SemanticTokenFunction = 1,
-        /**Property token.*/
-        SemanticTokenProperty = 2,
-        /**Type token.*/
-        SemanticTokenType = 3,
-        /**Namespace token.*/
-        SemanticTokenNamespace = 4,
-        /**Parameter token.*/
-        SemanticTokenParameter = 5,
-        /**Method token.*/
-        SemanticTokenMethod = 6,
-        /**Type-parameter token.*/
-        SemanticTokenTypeParameter = 7,
-        /**Class token.*/
-        SemanticTokenClass = 8,
-    } EditorSemanticTokenKind;
+    /**Identity used to resolve a rename.*/
+    typedef enum EditorRenameKind {
+        /**Lexically scoped variable.*/
+        RenameLocal = 0,
+        /**Source-defined global variable.*/
+        RenameGlobal = 1,
+        /**Table or class property.*/
+        RenameProperty = 2,
+        /**Type alias.*/
+        RenameType = 3,
+    } EditorRenameKind;
 
     /**One completion item.*/
     typedef struct EditorCompletionItem {
@@ -222,35 +156,19 @@ extern "C" {
         uint8_t declaration;
     } EditorReference;
 
-    /**One document or scope symbol.*/
-    typedef struct EditorSymbol {
-        /**Symbol name.*/
+    /**Resolved, source-editable rename target.*/
+    typedef struct EditorRenameTarget {
+        /**Current name.*/
         Text name;
-        /**Symbol source path.*/
+        /**Declaration module.*/
         Text path;
-        /**Full symbol range.*/
-        Location range;
-        /**Name-selection range.*/
+        /**Declaration name range.*/
+        Location definition;
+        /**Selected occurrence range.*/
         Location selection;
-        /**Symbol kind.*/
-        EditorSymbolKind kind;
-        /**Symbol modifier bits.*/
-        uint32_t modifiers;
-        /**Whether the symbol is a declaration.*/
-        uint8_t declaration;
-    } EditorSymbol;
-
-    /**One semantic token.*/
-    typedef struct EditorSemanticToken {
-        /**Token range.*/
-        Location range;
-        /**Token kind.*/
-        EditorSemanticTokenKind kind;
-        /**Token modifier bits.*/
-        uint32_t modifiers;
-        /**Whether the token is a declaration.*/
-        uint8_t declaration;
-    } EditorSemanticToken;
+        /**Target identity category.*/
+        EditorRenameKind kind;
+    } EditorRenameTarget;
 
     /**Inferred type for one source range.*/
     typedef struct EditorTypeHint {
@@ -270,10 +188,8 @@ extern "C" {
     typedef uint8_t (*NavigationCallback)(void *context, const EditorNavigation *navigation);
     /**Receives one reference occurrence.*/
     typedef uint8_t (*ReferenceCallback)(void *context, const EditorReference *reference);
-    /**Receives one symbol.*/
-    typedef uint8_t (*SymbolCallback)(void *context, const EditorSymbol *symbol);
-    /**Receives one semantic token.*/
-    typedef uint8_t (*TokenCallback)(void *context, const EditorSemanticToken *token);
+    /**Receives a resolved rename target.*/
+    typedef uint8_t (*RenameTargetCallback)(void *context, const EditorRenameTarget *target);
     /**Receives one type hint.*/
     typedef uint8_t (*HintCallback)(void *context, const EditorTypeHint *hint);
 
@@ -285,8 +201,6 @@ extern "C" {
     int32_t editor_signature_help(void *checker, Text name, uint32_t line, uint32_t column, SignatureCallback callback, void *context, String *error);
     /**Returns inferred type hints for a module.*/
     int32_t editor_type_hints(void *checker, Text name, HintCallback callback, void *context, String *error);
-    /**Returns semantic tokens for a module.*/
-    int32_t editor_semantic_tokens(void *checker, Text name, TokenCallback callback, void *context, String *error);
     /**Finds the definition at a source position.*/
     int32_t editor_definition(void *checker, Text name, uint32_t line, uint32_t column, NavigationCallback callback, void *context, String *error);
     /**Finds the declaration at a source position.*/
@@ -295,10 +209,10 @@ extern "C" {
     int32_t editor_type_definition(void *checker, Text name, uint32_t line, uint32_t column, NavigationCallback callback, void *context, String *error);
     /**Finds references at a source position.*/
     int32_t editor_references(void *checker, Text name, uint32_t line, uint32_t column, ReferenceCallback callback, void *context, String *error);
-    /**Prepares the symbol at a source position.*/
-    int32_t editor_prepare(void *checker, Text name, uint32_t line, uint32_t column, SymbolCallback callback, void *context, String *error);
-    /**Finds local references at a source position.*/
-    int32_t editor_local_references(void *checker, Text name, uint32_t line, uint32_t column, SymbolCallback callback, void *context, String *error);
+    /**Resolves a source-editable rename target.*/
+    int32_t editor_rename_target(void *checker, Text name, uint32_t line, uint32_t column, RenameTargetCallback callback, void *context, String *error);
+    /**Validates a rename and returns every affected occurrence.*/
+    int32_t editor_rename(void *checker, Text name, uint32_t line, uint32_t column, Text new_name, ReferenceCallback callback, void *context, String *error);
 #ifdef __cplusplus
 }
 
@@ -307,13 +221,12 @@ namespace instar {
     int32_t editor_completion(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, CompletionCallback callback, void *context);
     int32_t editor_signature_help(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, SignatureCallback callback, void *context);
     int32_t editor_type_hints(Luau::Frontend &frontend, Text name, HintCallback callback, void *context);
-    int32_t editor_semantic_tokens(Luau::Frontend &frontend, Text name, TokenCallback callback, void *context);
     int32_t editor_definition(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, NavigationCallback callback, void *context);
     int32_t editor_declaration(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, NavigationCallback callback, void *context);
     int32_t editor_type_definition(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, NavigationCallback callback, void *context);
     int32_t editor_references(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, ReferenceCallback callback, void *context);
-    int32_t editor_prepare(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, SymbolCallback callback, void *context);
-    int32_t editor_local_references(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, SymbolCallback callback, void *context);
+    int32_t editor_rename_target(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, RenameTargetCallback callback, void *context);
+    int32_t editor_rename(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, Text new_name, ReferenceCallback callback, void *context);
 } // namespace instar
 #endif
 

@@ -62,8 +62,11 @@ impl EffectiveConfig {
     pub(crate) fn analysis_native(
         &self,
         source: &Path,
+        service: Service,
+        lint: bool,
     ) -> io::Result<&instar_bridge::Configuration> {
-        if self.filters.includes(source, Service::Analyze)
+        if lint
+            && self.filters.includes(source, service)
             && self.filters.includes(source, Service::Lint)
         {
             return Ok(self.native());
@@ -115,12 +118,14 @@ struct Layers {
 }
 
 /// Cached project snapshot. Entry files may belong to unrelated filesystem roots.
-/// Create a new snapshot after source, configuration, or filesystem changes.
+/// Overlay updates require invalidating resolver/checker caches; `analysis::Editor` owns that lifecycle.
+/// Create a new snapshot for external filesystem or configuration changes.
 #[derive(Default)]
 pub struct Project {
     layers: HashMap<PathBuf, Layers>,
     configurations: HashMap<PathBuf, Rc<EffectiveConfig>>,
     sources: HashMap<PathBuf, Rc<str>>,
+    overlays: HashMap<PathBuf, Rc<str>>,
     sourcemaps: HashMap<PathBuf, Result<Rc<Sourcemap>, String>>,
     assets: Assets,
 }
@@ -130,6 +135,129 @@ impl Project {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Replaces an unsaved source, or returns it to disk ownership.
+    ///
+    /// # Errors
+    /// Returns an error if the path cannot be normalized.
+    pub fn set_source(&mut self, path: &Path, text: Option<&str>) -> io::Result<()> {
+        let path = absolute(path)?;
+        self.sources.remove(&path);
+
+        if let Some(text) = text {
+            self.overlays.insert(path, Rc::from(text));
+        } else {
+            self.overlays.remove(&path);
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn overlay_file(&self, path: &Path) -> bool {
+        self.overlays.contains_key(path)
+    }
+
+    pub(crate) fn overlay_directory(&self, path: &Path) -> bool {
+        self.overlays
+            .keys()
+            .any(|source| source != path && source.starts_with(path))
+    }
+
+    pub(crate) fn overlay_children<'a>(
+        &'a self,
+        directory: &'a Path,
+    ) -> impl Iterator<Item = PathBuf> + 'a {
+        self.overlays.keys().filter_map(move |path| {
+            path.strip_prefix(directory)
+                .ok()?
+                .components()
+                .next()
+                .map(|part| directory.join(part.as_os_str()))
+        })
+    }
+
+    /// Resolves require expressions without loading declarations or running type analysis.
+    ///
+    /// # Errors
+    /// Returns source or configuration errors.
+    pub fn links(&mut self, path: &Path) -> io::Result<Vec<([usize; 2], PathBuf)>> {
+        use crate::{
+            graph::{self, Request},
+            resolve::{Failure, Resolver},
+        };
+
+        let source = self.source(path)?;
+        let mut resolver = Resolver::new();
+        let mut links = Vec::new();
+
+        for module in resolver
+            .entries(self, path)
+            .map_err(|e| invalid(e.to_string()))?
+        {
+            let map = module
+                .instance
+                .as_ref()
+                .map(|instance| Rc::clone(&instance.map))
+                .map_or_else(|| self.sourcemap(path), |map| Ok(Some(map)))
+                .map_err(|e| Failure::Configuration(e.to_string()));
+
+            for site in graph::extract(&source, module.instance.clone(), map).sites {
+                let result = match site.request {
+                    Some(Request::String(value)) => resolver.resolve(self, &module, &value).result,
+
+                    Some(Request::Instance(instance)) => {
+                        Resolver::resolve_instance(&instance).result
+                    }
+
+                    None => continue,
+                };
+
+                if let Ok(target) = result {
+                    links.push((site.range, target.source));
+                }
+            }
+        }
+
+        links.sort();
+        links.dedup();
+
+        Ok(links)
+    }
+
+    /// Completes a decoded require-string prefix using the regular resolver's navigation rules.
+    ///
+    /// # Errors
+    /// Returns source, configuration, or filesystem errors.
+    pub fn complete_import(&mut self, path: &Path, prefix: &str) -> io::Result<Vec<String>> {
+        use crate::resolve::{Failure, Resolver};
+        let mut resolver = Resolver::new();
+        let mut results = std::collections::BTreeSet::new();
+
+        for module in resolver
+            .entries(self, path)
+            .map_err(|e| invalid(e.to_string()))?
+        {
+            match resolver.completions(self, &module, prefix) {
+                Ok(candidates) => results.extend(candidates),
+
+                Err(Failure::Configuration(error) | Failure::Io(error)) => {
+                    return Err(invalid(error));
+                }
+
+                Err(_) => {}
+            }
+        }
+
+        Ok(results.into_iter().collect())
+    }
+
+    pub(crate) fn refresh(&mut self) {
+        self.layers.clear();
+        self.configurations.clear();
+        self.sources.clear();
+        self.sourcemaps.clear();
+        self.assets.invalidate();
     }
 
     /// Tests global and service selection for a source file, using its inherited configuration.
@@ -152,6 +280,10 @@ impl Project {
     /// Returns filesystem errors or invalid source encoding.
     pub fn source(&mut self, path: &Path) -> io::Result<Rc<str>> {
         let path = absolute(path)?;
+
+        if let Some(source) = self.overlays.get(&path) {
+            return Ok(Rc::clone(source));
+        }
 
         if let Some(source) = self.sources.get(&path) {
             return Ok(Rc::clone(source));

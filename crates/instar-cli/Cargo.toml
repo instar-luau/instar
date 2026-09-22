@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4", default-features = false, features = ["derive", "help", "std", "usage"] }
 instar-core = { path = "../instar-core" }
+instar-server = { path = "../instar-server" }
 
 [lints]
 workspace = true

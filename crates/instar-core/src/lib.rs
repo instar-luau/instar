@@ -39,7 +39,11 @@ fn absolute(path: &Path) -> io::Result<PathBuf> {
     Ok(result)
 }
 
-fn string_value(bytes: &[u8]) -> io::Result<String> {
+/// Decodes a quoted or long-bracket Luau string literal.
+///
+/// # Errors
+/// Returns invalid literal or escape errors.
+pub fn string_value(bytes: &[u8]) -> io::Result<String> {
     if bytes.first() == Some(&b'[') {
         return long_string(bytes);
     }

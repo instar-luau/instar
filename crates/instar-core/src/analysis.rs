@@ -61,9 +61,18 @@ struct Host<'project> {
     identities: HashMap<Module, String>,
     modules: HashMap<String, LoadedModule>,
     diagnostics: Vec<Diagnostic>,
+    open: Option<&'project BTreeSet<PathBuf>>,
 }
 
 impl Host<'_> {
+    fn service(&self) -> Service {
+        if self.open.is_some() {
+            Service::Lsp
+        } else {
+            Service::Analyze
+        }
+    }
+
     fn intern(&mut self, module: Module) -> io::Result<String> {
         if let Some(name) = self.identities.get(&module) {
             return Ok(name.clone());
@@ -151,7 +160,12 @@ impl Callbacks for Host<'_> {
             .get(name)
             .ok_or_else(|| invalid(format!("unknown analysis module {name}")))?;
 
-        state.configuration.analysis_native(&state.module.source)
+        state.configuration.analysis_native(
+            &state.module.source,
+            self.service(),
+            self.open
+                .is_none_or(|open| open.contains(&state.module.source)),
+        )
     }
 
     fn resolve(&mut self, request: &ResolveRequest<'_>) -> io::Result<Option<String>> {
@@ -245,9 +259,16 @@ impl Callbacks for Host<'_> {
 
         let location = self.location(diagnostic.path, diagnostic.location)?;
 
+        if self
+            .open
+            .is_some_and(|open| !open.contains(&location.module.source))
+        {
+            return Ok(());
+        }
+
         if !self
             .project
-            .includes(&location.module.source, Service::Analyze)?
+            .includes(&location.module.source, self.service())?
         {
             return Ok(());
         }
@@ -277,18 +298,16 @@ struct Environment {
     entries: Vec<Module>,
 }
 
-/// Checks entries and their dependencies without constructing an Instar dependency graph.
-/// Each place and API/security selection has its own native checker and global environment.
-/// Global and `[analyze]` filters select entries and diagnostic output, not dependencies.
-///
-/// # Errors
-/// Returns entry, source, configuration, asset, or native callback failures.
-pub fn check(project: &mut Project, paths: &[PathBuf]) -> io::Result<Vec<Diagnostic>> {
+fn environments(
+    project: &mut Project,
+    paths: &[PathBuf],
+    service: Service,
+) -> io::Result<Vec<Environment>> {
     let mut resolver = Resolver::new();
     let mut environments = HashMap::<_, Environment>::new();
 
     for path in paths {
-        if !project.includes(path, Service::Analyze)? {
+        if !project.includes(path, service)? {
             continue;
         }
 
@@ -329,9 +348,19 @@ pub fn check(project: &mut Project, paths: &[PathBuf]) -> io::Result<Vec<Diagnos
         }
     }
 
+    Ok(environments.into_values().collect())
+}
+
+/// Checks CLI entries and dependencies with all eligible lint passes.
+///
+/// # Errors
+/// Returns source, configuration, asset, or native callback failures.
+pub fn check(project: &mut Project, paths: &[PathBuf]) -> io::Result<Vec<Diagnostic>> {
+    let environments = environments(project, paths, Service::Analyze)?;
+
     let mut diagnostics = Vec::new();
 
-    for environment in environments.into_values() {
+    for environment in environments {
         diagnostics.extend(check_environment(project, environment)?);
     }
 
@@ -373,6 +402,7 @@ fn check_environment(
         identities: HashMap::new(),
         modules: HashMap::new(),
         diagnostics: Vec::new(),
+        open: None,
     };
 
     let mut entries = BTreeSet::new();
@@ -435,4 +465,310 @@ fn check_environment(
     }
 
     Ok(host.diagnostics)
+}
+
+/// Persistent editor analysis. Keep this value on its owning worker thread.
+#[derive(Default)]
+pub struct Editor {
+    project: Project,
+    open: BTreeSet<PathBuf>,
+    sessions: Vec<EditorSession>,
+}
+
+struct EditorSession {
+    settings: RobloxSettings,
+    map: Option<Rc<Sourcemap>>,
+    checker: Checker,
+    resolver: Resolver,
+    identities: HashMap<Module, String>,
+    modules: HashMap<String, LoadedModule>,
+}
+
+impl EditorSession {
+    fn with_host<T>(
+        &mut self,
+        project: &mut Project,
+        open: &BTreeSet<PathBuf>,
+        operation: impl FnOnce(&mut Checker, &mut Host<'_>) -> io::Result<T>,
+    ) -> io::Result<T> {
+        let mut host = Host {
+            project,
+            resolver: std::mem::take(&mut self.resolver),
+            identities: std::mem::take(&mut self.identities),
+            modules: std::mem::take(&mut self.modules),
+            diagnostics: Vec::new(),
+            open: Some(open),
+        };
+
+        let result = operation(&mut self.checker, &mut host);
+        self.resolver = host.resolver;
+        self.identities = host.identities;
+        self.modules = host.modules;
+
+        result
+    }
+}
+
+impl Editor {
+    /// Updates or closes an unsaved document and invalidates its dependents.
+    ///
+    /// # Errors
+    /// Returns invalid-path or native invalidation errors.
+    pub fn set_source(&mut self, path: &Path, text: Option<&str>) -> io::Result<()> {
+        let path = crate::absolute(path)?;
+        self.project.set_source(&path, text)?;
+
+        if text.is_some() {
+            self.open.insert(path.clone());
+        } else {
+            self.open.remove(&path);
+        }
+
+        for session in &mut self.sessions {
+            session.resolver = Resolver::new();
+
+            for (name, state) in &mut session.modules {
+                if state.module.source == path {
+                    session.checker.mark_dirty(Path::new(name))?;
+                    state.source = None;
+                    state.expressions = None;
+                    state.line_starts.clear();
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Reloads disk/configuration state while preserving unsaved buffers.
+    pub fn refresh(&mut self) {
+        self.sessions.clear();
+        self.project.refresh();
+    }
+
+    /// Checks open files incrementally. Closed dependencies supply types, not lint diagnostics.
+    ///
+    /// # Errors
+    /// Returns source, configuration, or analysis errors.
+    pub fn check(&mut self) -> io::Result<Vec<Diagnostic>> {
+        self.check_roots(&[])
+    }
+
+    /// Checks additional workspace roots for navigation without enabling their lint passes.
+    ///
+    /// # Errors
+    /// Returns source, configuration, or analysis errors.
+    pub fn index(&mut self, paths: &[PathBuf]) -> io::Result<()> {
+        self.check_roots(paths).map(drop)
+    }
+
+    fn check_roots(&mut self, additional: &[PathBuf]) -> io::Result<Vec<Diagnostic>> {
+        let paths = self
+            .open
+            .iter()
+            .cloned()
+            .chain(additional.iter().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+
+        let mut environments = environments(&mut self.project, &paths, Service::Lsp)?;
+
+        environments.sort_by(|a, b| {
+            a.map
+                .as_ref()
+                .map(|map| &map.path)
+                .cmp(&b.map.as_ref().map(|map| &map.path))
+        });
+
+        let mut diagnostics = Vec::new();
+
+        for environment in environments {
+            let index = self.sessions.iter().position(|session| {
+                session.settings == environment.settings
+                    && session.map.as_ref().map(|map| &map.path)
+                        == environment.map.as_ref().map(|map| &map.path)
+            });
+
+            let index = if let Some(index) = index {
+                index
+            } else {
+                let definitions = self.project.definitions(&environment.settings)?;
+
+                let mut session = EditorSession {
+                    settings: environment.settings,
+                    map: environment.map,
+                    checker: Checker::new(&CheckerOptions {
+                        retain_full_type_graphs: 1,
+                        run_lint_checks: 1,
+                        ..CheckerOptions::default()
+                    })?,
+                    resolver: Resolver::new(),
+                    identities: HashMap::new(),
+                    modules: HashMap::new(),
+                };
+
+                let map = session.map.clone();
+
+                session.with_host(&mut self.project, &self.open, |checker, host| {
+                    if let Some(definitions) = definitions {
+                        checker.load_definition(host, definitions.source.as_bytes(), "roblox")?;
+
+                        if definitions.register(checker)?
+                            && let Some(map) = map
+                        {
+                            map.register(checker, |module| host.intern(module))?;
+                        }
+                    }
+
+                    checker.freeze()
+                })?;
+
+                self.sessions.push(session);
+
+                self.sessions.len() - 1
+            };
+
+            let found = self.sessions[index].with_host(
+                &mut self.project,
+                &self.open,
+                |checker, host| {
+                    let mut timeouts = BTreeSet::new();
+
+                    let entries = environment
+                        .entries
+                        .into_iter()
+                        .map(|module| host.intern(module))
+                        .collect::<io::Result<Vec<_>>>()?;
+
+                    for name in &entries {
+                        timeouts.extend(checker.check(host, Path::new(name))?);
+                    }
+
+                    for name in &entries {
+                        timeouts.extend(checker.result(host, Path::new(name))?);
+                    }
+
+                    for name in timeouts {
+                        let location = host.location(&name, [0; 4])?;
+
+                        if host
+                            .open
+                            .is_some_and(|open| open.contains(&location.module.source))
+                        {
+                            host.diagnostics.push(Diagnostic {
+                                location,
+                                error: true,
+                                message: "Luau analysis timed out".into(),
+                                related: None,
+                            });
+                        }
+                    }
+
+                    Ok(std::mem::take(&mut host.diagnostics))
+                },
+            )?;
+
+            diagnostics.extend(found);
+        }
+
+        Ok(diagnostics)
+    }
+
+    /// Runs an editor query against a checked module in its first place context.
+    ///
+    /// # Errors
+    /// Returns an error for unavailable modules or failed native queries.
+    pub fn query<T>(
+        &mut self,
+        path: &Path,
+        operation: impl FnOnce(&mut Checker, &mut dyn Callbacks, &str) -> io::Result<T>,
+    ) -> io::Result<T> {
+        let path = crate::absolute(path)?;
+
+        for session in &mut self.sessions {
+            let name = session
+                .identities
+                .iter()
+                .filter(|(module, _)| module.source == path)
+                .map(|(_, name)| name)
+                .min()
+                .cloned();
+
+            if let Some(name) = name {
+                return session.with_host(&mut self.project, &self.open, |checker, host| {
+                    operation(checker, host, &name)
+                });
+            }
+        }
+
+        Err(invalid(format!("{} has no checked module", path.display())))
+    }
+
+    /// Runs a query in every checked place and instance context of a source.
+    ///
+    /// # Errors
+    /// Returns an error for unavailable modules or failed native queries.
+    pub fn query_all<T>(
+        &mut self,
+        path: &Path,
+        mut operation: impl FnMut(&mut Checker, &mut dyn Callbacks, &str) -> io::Result<T>,
+    ) -> io::Result<Vec<T>> {
+        let path = crate::absolute(path)?;
+        let mut results = Vec::new();
+
+        for session in &mut self.sessions {
+            let mut names: Vec<_> = session
+                .identities
+                .iter()
+                .filter(|(module, _)| module.source == path)
+                .map(|(_, name)| name.clone())
+                .collect();
+
+            names.sort_unstable();
+            names.dedup();
+
+            for name in names {
+                results.push(session.with_host(
+                    &mut self.project,
+                    &self.open,
+                    |checker, host| operation(checker, host, &name),
+                )?);
+            }
+        }
+
+        if results.is_empty() {
+            return Err(invalid(format!("{} has no checked module", path.display())));
+        }
+
+        Ok(results)
+    }
+
+    /// Resolves a native identity to its physical source file.
+    ///
+    /// # Errors
+    /// Returns an error for non-source identities such as built-in declarations.
+    pub fn source_path(&self, name: &str) -> io::Result<PathBuf> {
+        self.sessions
+            .iter()
+            .find_map(|session| session.modules.get(name))
+            .map(|state| state.module.source.clone())
+            .ok_or_else(|| invalid(format!("unknown source identity {name}")))
+    }
+
+    /// Reads the current overlay or disk source.
+    ///
+    /// # Errors
+    /// Returns source-loading errors.
+    pub fn source(&mut self, path: &Path) -> io::Result<Rc<str>> {
+        self.project.source(path)
+    }
+
+    /// Loads merged documentation for a source's platform configuration.
+    ///
+    /// # Errors
+    /// Returns documentation-loading errors.
+    pub fn documentation(&mut self, path: &Path) -> io::Result<Option<Rc<serde_json::Value>>> {
+        self.project.documentation(path)
+    }
 }

@@ -233,6 +233,15 @@ pub(crate) struct Assets {
 }
 
 impl Assets {
+    pub(crate) fn invalidate(&mut self) {
+        self.loaded.clear();
+        self.definitions.clear();
+        self.documentation.clear();
+        self.pending.clear();
+        self.previous.clear();
+        self.warnings.clear();
+    }
+
     pub(crate) fn definitions(&mut self, locations: &[String]) -> io::Result<Rc<Definitions>> {
         if let Some(definitions) = self.definitions.get(locations) {
             return Ok(Rc::clone(definitions));

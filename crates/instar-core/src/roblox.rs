@@ -301,6 +301,13 @@ impl Instance {
         self.unique(matches.iter().copied(), &format!("child {name:?}"))
     }
 
+    pub(crate) fn child_names(&self) -> impl Iterator<Item = &str> {
+        self.map.nodes[self.node]
+            .children
+            .keys()
+            .map(String::as_str)
+    }
+
     pub(crate) fn find_child(&self, name: &str, recursive: bool) -> Result<Self, Failure> {
         if !recursive {
             return self.child(name);

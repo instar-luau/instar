@@ -772,35 +772,6 @@ impl Checker {
         })
     }
 
-    /// Returns semantic tokens for a module.
-    ///
-    /// # Errors
-    /// Returns an error when the native operation fails.
-    pub fn semantic_tokens(
-        &mut self,
-        callbacks: &mut dyn Callbacks,
-        path: &str,
-    ) -> io::Result<Vec<SemanticToken>> {
-        self.with_callbacks(callbacks, |checker| {
-            let mut result = ManyResults::default();
-
-            Self::editor_call(
-                |context, error| unsafe {
-                    native::editor_semantic_tokens(
-                        checker.handle,
-                        text(path),
-                        Some(token_callback),
-                        context,
-                        error,
-                    )
-                },
-                &mut result,
-            )?;
-
-            Ok(result.values)
-        })
-    }
-
     /// Returns definition targets at a source position.
     ///
     /// # Errors
@@ -920,28 +891,28 @@ impl Checker {
         })
     }
 
-    /// Returns the prepared symbol at a source position.
+    /// Resolves the source-editable target shared by prepare and rename.
     ///
     /// # Errors
     /// Returns an error when the native operation fails.
-    pub fn prepare(
+    pub fn rename_target(
         &mut self,
         callbacks: &mut dyn Callbacks,
         path: &str,
         line: u32,
         column: u32,
-    ) -> io::Result<Option<Symbol>> {
+    ) -> io::Result<Option<RenameTarget>> {
         self.with_callbacks(callbacks, |checker| {
             let mut result = OneResult::default();
 
             Self::editor_call(
                 |context, error| unsafe {
-                    native::editor_prepare(
+                    native::editor_rename_target(
                         checker.handle,
                         text(path),
                         line,
                         column,
-                        Some(prepared_symbol_callback),
+                        Some(rename_target_callback),
                         context,
                         error,
                     )
@@ -953,28 +924,30 @@ impl Checker {
         })
     }
 
-    /// Returns local symbol occurrences at a source position.
+    /// Validates a rename and returns every affected reference.
     ///
     /// # Errors
-    /// Returns an error when the native operation fails.
-    pub fn local_references(
+    /// Returns an error for invalid names, conflicts, or incomplete native analysis.
+    pub fn rename(
         &mut self,
         callbacks: &mut dyn Callbacks,
         path: &str,
         line: u32,
         column: u32,
-    ) -> io::Result<Vec<Symbol>> {
+        new_name: &str,
+    ) -> io::Result<Vec<Reference>> {
         self.with_callbacks(callbacks, |checker| {
             let mut result = ManyResults::default();
 
             Self::editor_call(
                 |context, error| unsafe {
-                    native::editor_local_references(
+                    native::editor_rename(
                         checker.handle,
                         text(path),
                         line,
                         column,
-                        Some(symbol_callback),
+                        text(new_name),
+                        Some(reference_callback),
                         context,
                         error,
                     )
@@ -1159,21 +1132,6 @@ pub struct TypeHint {
     pub type_: String,
 }
 
-/// Semantic token returned for a source range.
-pub struct SemanticToken {
-    /// Token range.
-    pub range: [u32; 4],
-
-    /// Token kind.
-    pub kind: native::EditorSemanticTokenKind,
-
-    /// Token modifier bits.
-    pub modifiers: u32,
-
-    /// Whether the token is a declaration.
-    pub declaration: bool,
-}
-
 /// Navigation target and selection range.
 pub struct Navigation {
     /// Target source path.
@@ -1198,28 +1156,22 @@ pub struct Reference {
     pub declaration: bool,
 }
 
-/// Document or local symbol.
-pub struct Symbol {
+/// Source-editable semantic rename target.
+pub struct RenameTarget {
     /// Symbol name.
     pub name: String,
 
-    /// Symbol source path.
+    /// Declaration module.
     pub path: String,
 
-    /// Full symbol range.
-    pub range: [u32; 4],
+    /// Declaration name range.
+    pub definition: [u32; 4],
 
     /// Name-selection range.
     pub selection: [u32; 4],
 
-    /// Symbol kind.
-    pub kind: native::EditorSymbolKind,
-
-    /// Symbol modifier bits.
-    pub modifiers: u32,
-
-    /// Whether the symbol is a declaration.
-    pub declaration: bool,
+    /// Target identity category.
+    pub kind: native::EditorRenameKind,
 }
 
 struct ManyResults<T> {
@@ -1450,83 +1402,35 @@ unsafe extern "C" fn reference_callback(
     callback_result::<ManyResults<Reference>>(context, result)
 }
 
-unsafe extern "C" fn symbol_callback(
+unsafe extern "C" fn rename_target_callback(
     context: *mut c_void,
-    value: *const native::EditorSymbol,
+    value: *const native::EditorRenameTarget,
 ) -> u8 {
     let result = (|| {
-        let value = unsafe { value.as_ref() }.ok_or_else(|| io::Error::other("null symbol"))?;
+        let value =
+            unsafe { value.as_ref() }.ok_or_else(|| io::Error::other("null rename target"))?;
 
-        let context = unsafe { context.cast::<ManyResults<Symbol>>().as_mut() }
-            .ok_or_else(|| io::Error::other("null symbol callback context"))?;
-
-        context.values.push(Symbol {
-            name: read_text(value.name)?,
-            path: read_text(value.path)?,
-            range: range(value.range),
-            selection: range(value.selection),
-            kind: value.kind,
-            modifiers: value.modifiers,
-            declaration: value.declaration != 0,
-        });
-
-        Ok(())
-    })();
-
-    callback_result::<ManyResults<Symbol>>(context, result)
-}
-
-unsafe extern "C" fn prepared_symbol_callback(
-    context: *mut c_void,
-    value: *const native::EditorSymbol,
-) -> u8 {
-    let result = (|| {
-        let value = unsafe { value.as_ref() }.ok_or_else(|| io::Error::other("null symbol"))?;
-
-        let context = unsafe { context.cast::<OneResult<Symbol>>().as_mut() }
-            .ok_or_else(|| io::Error::other("null symbol callback context"))?;
+        let context = unsafe { context.cast::<OneResult<RenameTarget>>().as_mut() }
+            .ok_or_else(|| io::Error::other("null rename target callback context"))?;
 
         if context.value.is_some() {
-            return Err(io::Error::other("native prepare returned multiple symbols"));
+            return Err(io::Error::other(
+                "native resolution returned multiple rename targets",
+            ));
         }
 
-        context.value = Some(Symbol {
+        context.value = Some(RenameTarget {
             name: read_text(value.name)?,
             path: read_text(value.path)?,
-            range: range(value.range),
+            definition: range(value.definition),
             selection: range(value.selection),
             kind: value.kind,
-            modifiers: value.modifiers,
-            declaration: value.declaration != 0,
         });
 
         Ok(())
     })();
 
-    callback_result::<OneResult<Symbol>>(context, result)
-}
-
-unsafe extern "C" fn token_callback(
-    context: *mut c_void,
-    value: *const native::EditorSemanticToken,
-) -> u8 {
-    let result = (|| {
-        let value = unsafe { value.as_ref() }.ok_or_else(|| io::Error::other("null token"))?;
-
-        let context = unsafe { context.cast::<ManyResults<SemanticToken>>().as_mut() }
-            .ok_or_else(|| io::Error::other("null token callback context"))?;
-
-        context.values.push(SemanticToken {
-            range: range(value.range),
-            kind: value.kind,
-            modifiers: value.modifiers,
-            declaration: value.declaration != 0,
-        });
-
-        Ok(())
-    })();
-
-    callback_result::<ManyResults<SemanticToken>>(context, result)
+    callback_result::<OneResult<RenameTarget>>(context, result)
 }
 
 unsafe extern "C" fn hint_callback(
