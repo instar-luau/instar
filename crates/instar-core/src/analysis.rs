@@ -250,10 +250,10 @@ impl Callbacks for Host<'_> {
     }
 
     fn diagnostic(&mut self, diagnostic: instar_bridge::Diagnostic<'_>) -> io::Result<()> {
-        if diagnostic.path == "roblox" {
+        if diagnostic.path.starts_with('@') {
             return Err(invalid(format!(
-                "Roblox declarations: {}",
-                diagnostic.message
+                "{} declarations: {}",
+                diagnostic.path, diagnostic.message
             )));
         }
 
@@ -294,6 +294,7 @@ impl Callbacks for Host<'_> {
 
 struct Environment {
     settings: RobloxSettings,
+    definitions: Vec<(String, String)>,
     map: Option<Rc<Sourcemap>>,
     entries: Vec<Module>,
 }
@@ -315,7 +316,24 @@ fn environments(
             .entries(project, path)
             .map_err(|error| invalid(error.to_string()))?
         {
-            let settings = project.configuration(&module.source)?.roblox.clone();
+            let config = project.configuration(&module.source)?;
+
+            if config
+                .settings
+                .definitions
+                .values()
+                .any(|path| Path::new(path) == module.source)
+            {
+                continue;
+            }
+
+            let settings = config.roblox.clone();
+
+            let definitions: Vec<_> = config
+                .definition_order
+                .iter()
+                .map(|name| (name.clone(), config.settings.definitions[name].clone()))
+                .collect();
 
             let map = if let Some(instance) = &module.instance {
                 Some(Rc::clone(&instance.map))
@@ -332,7 +350,7 @@ fn environments(
             let key = (
                 settings.enabled,
                 settings.security,
-                settings.definitions.clone(),
+                definitions.clone(),
                 map.as_ref().map(|map| map.path.clone()),
             );
 
@@ -340,6 +358,7 @@ fn environments(
                 .entry(key)
                 .or_insert_with(|| Environment {
                     settings,
+                    definitions,
                     map,
                     entries: Vec::new(),
                 })
@@ -394,7 +413,7 @@ fn check_environment(
     project: &mut Project,
     environment: Environment,
 ) -> io::Result<Vec<Diagnostic>> {
-    let definitions = project.definitions(&environment.settings)?;
+    let declarations = project.declarations(&environment.definitions)?;
 
     let mut host = Host {
         project,
@@ -416,17 +435,22 @@ fn check_environment(
         ..CheckerOptions::default()
     })?;
 
-    if let Some(definitions) = definitions {
-        checker.load_definition(&mut host, definitions.source.as_bytes(), "roblox")?;
+    let mut registered = false;
 
-        if definitions.register(&mut checker)?
-            && let Some(map) = environment.map
-        {
-            map.register(&mut checker, |module| host.intern(module))?;
-        }
+    for (package, definition) in &declarations {
+        checker.load_definition(&mut host, definition.source.as_bytes(), package)?;
+    }
+
+    for (_, definition) in declarations {
+        registered |= environment.settings.enabled && definition.register(&mut checker)?;
+    }
+
+    if registered && let Some(map) = environment.map {
+        map.register(&mut checker, |module| host.intern(module))?;
     }
 
     checker.freeze()?;
+    host.project.commit_declarations(&environment.definitions);
     let mut timeouts = BTreeSet::new();
 
     for name in entries {
@@ -477,6 +501,7 @@ pub struct Editor {
 
 struct EditorSession {
     settings: RobloxSettings,
+    definitions: Vec<(String, String)>,
     map: Option<Rc<Sourcemap>>,
     checker: Checker,
     resolver: Resolver,
@@ -586,6 +611,7 @@ impl Editor {
         for environment in environments {
             let index = self.sessions.iter().position(|session| {
                 session.settings == environment.settings
+                    && session.definitions == environment.definitions
                     && session.map.as_ref().map(|map| &map.path)
                         == environment.map.as_ref().map(|map| &map.path)
             });
@@ -593,10 +619,11 @@ impl Editor {
             let index = if let Some(index) = index {
                 index
             } else {
-                let definitions = self.project.definitions(&environment.settings)?;
+                let declarations = self.project.declarations(&environment.definitions)?;
 
                 let mut session = EditorSession {
                     settings: environment.settings,
+                    definitions: environment.definitions,
                     map: environment.map,
                     checker: Checker::new(&CheckerOptions {
                         retain_full_type_graphs: 1,
@@ -609,20 +636,27 @@ impl Editor {
                 };
 
                 let map = session.map.clone();
+                let roblox = session.settings.enabled;
 
                 session.with_host(&mut self.project, &self.open, |checker, host| {
-                    if let Some(definitions) = definitions {
-                        checker.load_definition(host, definitions.source.as_bytes(), "roblox")?;
+                    let mut registered = false;
 
-                        if definitions.register(checker)?
-                            && let Some(map) = map
-                        {
-                            map.register(checker, |module| host.intern(module))?;
-                        }
+                    for (package, definition) in &declarations {
+                        checker.load_definition(host, definition.source.as_bytes(), package)?;
+                    }
+
+                    for (_, definition) in declarations {
+                        registered |= roblox && definition.register(checker)?;
+                    }
+
+                    if registered && let Some(map) = map {
+                        map.register(checker, |module| host.intern(module))?;
                     }
 
                     checker.freeze()
                 })?;
+
+                self.project.commit_declarations(&session.definitions);
 
                 self.sessions.push(session);
 
@@ -768,7 +802,11 @@ impl Editor {
     ///
     /// # Errors
     /// Returns documentation-loading errors.
-    pub fn documentation(&mut self, path: &Path) -> io::Result<Option<Rc<serde_json::Value>>> {
-        self.project.documentation(path)
+    pub fn documentation(
+        &mut self,
+        path: &Path,
+        symbol: &str,
+    ) -> io::Result<Option<Rc<serde_json::Value>>> {
+        self.project.documentation(path, symbol)
     }
 }

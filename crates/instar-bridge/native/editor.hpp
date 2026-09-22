@@ -22,6 +22,8 @@ extern "C" {
         uint8_t has_range;
         /**Hover range when present.*/
         Location range;
+        /**Whether the selected symbol is a named type alias.*/
+        uint8_t is_type;
     } EditorHover;
 
     /**Completion source mode.*/

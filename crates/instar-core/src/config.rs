@@ -67,14 +67,6 @@ pub struct RobloxConfig {
     /// API security level; defaults to normal game-script permissions (`none`).
     pub security: Option<Security>,
 
-    /// Ordered declaration paths or HTTPS URLs, appended to inherited files.
-    /// Relative paths use this manifest's directory; `[]` adds nothing.
-    pub definitions: Option<Vec<String>>,
-
-    /// Ordered documentation paths or HTTPS URLs, appended to inherited files.
-    /// Later files override matching documentation keys; `[]` adds nothing.
-    pub documentation: Option<Vec<String>>,
-
     /// Sourcemap files relative to this manifest; their source paths are relative to each map.
     /// Omission inherits the parent list, or discovers the nearest ancestor `sourcemap.json`.
     /// An explicit list replaces it, including `[]` to disable discovery.
@@ -139,6 +131,16 @@ pub struct LuauConfig {
     /// Case-insensitive aliases; relative targets retain their defining directory.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub aliases: BTreeMap<String, String>,
+
+    /// Declaration files keyed by documentation namespace (for example `@test`).
+    /// Paths are relative to their manifest; child keys override inherited keys.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub definitions: BTreeMap<String, String>,
+
+    /// JSON documentation paths or HTTPS URLs. Lists append through inheritance.
+    /// Later files override matching keys; paths are relative to their manifest.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub documentation: Vec<String>,
 }
 
 /// Luau typechecking mode.
@@ -179,9 +181,28 @@ impl LuauConfig {
 
         self.lint.extend(layer.lint.clone());
         self.aliases.extend(layer.aliases.clone());
+        self.definitions.extend(layer.definitions.clone());
+
+        self.documentation
+            .extend(layer.documentation.iter().cloned());
     }
 
     pub(super) fn validate(&mut self) -> io::Result<()> {
+        for (package, path) in &self.definitions {
+            if !package.strip_prefix('@').is_some_and(|name| {
+                !name.is_empty()
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+            }) {
+                return Err(invalid(format!("invalid definition namespace {package:?}")));
+            }
+
+            if path.is_empty() || path.contains('\0') {
+                return Err(invalid(format!("invalid declaration path for {package:?}")));
+            }
+        }
+
         let mut aliases = BTreeMap::new();
 
         for (key, value) in std::mem::take(&mut self.aliases) {
@@ -221,6 +242,9 @@ impl LuauConfig {
         let mut value = serde_json::to_value(self)?;
 
         if let Value::Object(object) = &mut value {
+            object.remove("definitions");
+            object.remove("documentation");
+
             for (from, to) in [
                 ("language_mode", "languageMode"),
                 ("lint_errors", "lintErrors"),

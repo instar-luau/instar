@@ -1082,6 +1082,9 @@ pub struct Hover {
 
     /// Hover range when present.
     pub range: Option<[u32; 4]>,
+
+    /// Whether the selected symbol is a named type alias.
+    pub is_type: bool,
 }
 
 /// Completion item returned for a source position.
@@ -1286,6 +1289,7 @@ unsafe extern "C" fn hover_callback(context: *mut c_void, value: *const native::
             type_: read_text(value.type_)?,
             documentation_symbol: read_text(value.documentation)?,
             range: (value.has_range != 0).then(|| range(value.range)),
+            is_type: value.is_type != 0,
         });
 
         Ok(())
