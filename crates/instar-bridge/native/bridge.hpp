@@ -55,22 +55,8 @@ extern "C" {
         SourceScript = 2,
     } SourceKind;
 
-    /**Type-checking mode applied to a configuration.*/
-    typedef enum ConfigurationMode {
-        /**Disable type checking.*/
-        ConfigurationNoCheck = 0,
-        /**Use non-strict type checking.*/
-        ConfigurationNonstrict = 1,
-        /**Use strict type checking.*/
-        ConfigurationStrict = 2,
-        /**Load definition declarations.*/
-        ConfigurationDefinition = 3,
-    } ConfigurationMode;
-
     /**Options used when constructing a checker.*/
     typedef struct FrontendOptions {
-        /**Select the legacy type solver.*/
-        uint8_t old_solver;
         /**Retain complete type graphs.*/
         uint8_t retain_full_type_graphs;
         /**Configure the checker for autocomplete.*/
@@ -78,20 +64,6 @@ extern "C" {
         /**Run lint checks.*/
         uint8_t run_lint_checks;
     } FrontendOptions;
-
-    /**Options used when loading a configuration source.*/
-    typedef struct ConfigurationOptions {
-        /**Enable compatibility behavior.*/
-        uint8_t compat;
-        /**Whether alias options are present.*/
-        uint8_t has_alias_options;
-        /**Replace existing aliases.*/
-        uint8_t overwrite_aliases;
-        /**Whether a configuration location is present.*/
-        uint8_t has_config_location;
-        /**Configuration source location.*/
-        Text config_location;
-    } ConfigurationOptions;
 
     /**Options used when loading a definition source.*/
     typedef struct DefinitionOptions {
@@ -163,16 +135,6 @@ extern "C" {
         SourceKind kind;
     } SourceResult;
 
-    /**One configuration alias.*/
-    typedef struct Alias {
-        /**Alias name.*/
-        Text name;
-        /**Original spelling of the alias.*/
-        Text original_case;
-        /**Alias target.*/
-        Text value;
-    } Alias;
-
     /**Supplies source bytes and kind for a module name.*/
     typedef uint8_t (*SourceCallback)(void *context, Text name, SourceResult *result);
     /**Supplies a configuration handle for a module name.*/
@@ -181,8 +143,6 @@ extern "C" {
     typedef uint8_t (*ResolveCallback)(void *context, const ResolveRequest *request, ResolveResult *result);
     /**Receives one diagnostic from the checker.*/
     typedef uint8_t (*DiagnosticCallback)(void *context, const Diagnostic *diagnostic);
-    /**Receives one configuration alias.*/
-    typedef uint8_t (*AliasCallback)(void *context, const Alias *alias);
     /**Receives one text item from an enumeration operation.*/
     typedef uint8_t (*ItemCallback)(void *context, Text item);
 
@@ -201,22 +161,10 @@ extern "C" {
     /**Releases an owned string returned by the native ABI.*/
     void string_destroy(String value);
 
-    /**Creates a configuration handle.*/
-    void *configuration_create(String *error);
+    /**Creates a configuration handle from JSON source.*/
+    void *configuration_create(Text source, String *error);
     /**Destroys a configuration handle.*/
     void configuration_destroy(void *configuration);
-    /**Loads JSON configuration data.*/
-    int32_t configuration_parse_json(void *configuration, Text source, const ConfigurationOptions *options, String *error);
-    /**Loads executable Luau configuration data.*/
-    int32_t configuration_extract_luau(void *configuration, Text source, const ConfigurationOptions *options, String *error);
-    /**Enables or disables comment capture for a configuration.*/
-    int32_t configuration_set_capture_comments(void *configuration, uint8_t capture_comments, String *error);
-    /**Sets the type-checking mode for a configuration.*/
-    int32_t configuration_set_mode(void *configuration, ConfigurationMode mode, String *error);
-    /**Returns the type-checking mode of a configuration.*/
-    ConfigurationMode configuration_mode(const void *configuration);
-    /**Enumerates aliases defined by a configuration.*/
-    int32_t configuration_aliases(const void *configuration, AliasCallback callback, void *context, String *error);
 
     /**Creates a checker handle.*/
     void *checker_create(const BridgeCallbacks *callbacks, void *context, const FrontendOptions *options, String *error);
@@ -226,9 +174,9 @@ extern "C" {
     int32_t checker_set_context(void *checker, void *context, String *error);
     /**Marks a module and its dependents dirty.*/
     int32_t checker_mark_dirty(void *checker, Text name, String *error);
-    /**Clears all parsed and checked source modules.*/
-    int32_t checker_clear(void *checker, String *error);
-    /**Freezes checker configuration before parsing or checking.*/
+    /**Clears ordinary source caches; rebuild the checker to change definitions or globals.*/
+    int32_t checker_clear_sources(void *checker, String *error);
+    /**Freezes the global type arena before parsing or checking.*/
     int32_t checker_freeze(void *checker, String *error);
     /**Loads one definition source into the checker.*/
     int32_t checker_load_definition(void *checker, Text source, Text package_name, const DefinitionOptions *options, String *error);
@@ -236,14 +184,15 @@ extern "C" {
     int32_t checker_parse(void *checker, Text name, String *error);
     /**Emits parse diagnostics for one module.*/
     int32_t checker_parse_diagnostics(void *checker, Text name, String *error);
-    /**Type-checks one module.*/
-    int32_t checker_check(void *checker, Text name, String *error);
-    /**Emits diagnostics and stores type data for one module.*/
-    int32_t checker_result(void *checker, Text name, uint8_t accumulate_nested, uint8_t for_autocomplete, String *error);
+    /**Checks one module and emits its timeout module names.*/
+    int32_t checker_check(void *checker, Text name, ItemCallback timeout_callback, void *timeout_context, String *error);
+
+    /**Emits cached diagnostics and their timeout module names.*/
+    int32_t
+    checker_result(void *checker, Text name, uint8_t accumulate_nested, uint8_t for_autocomplete, ItemCallback timeout_callback, void *timeout_context, String *error);
+
     /**Enumerates global names known to the checker.*/
     int32_t checker_globals(void *checker, ItemCallback callback, void *context, String *error);
-    /**Enumerates modules that reached the type-check timeout.*/
-    int32_t checker_timeouts(void *checker, ItemCallback callback, void *context, String *error);
     /**Enumerates modules required by the checker.*/
     int32_t checker_modules(void *checker, ItemCallback callback, void *context, String *error);
     /**Attaches inferred type data to one module.*/

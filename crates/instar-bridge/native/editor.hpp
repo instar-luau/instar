@@ -16,7 +16,7 @@ extern "C" {
         Text name;
         /**Displayed type.*/
         Text type;
-        /**Documentation text.*/
+        /**Documentation symbol identifier.*/
         Text documentation;
         /**Whether a range is present.*/
         uint8_t has_range;
@@ -172,7 +172,7 @@ extern "C" {
         Text name;
         /**Completion detail.*/
         Text detail;
-        /**Completion documentation.*/
+        /**Documentation symbol identifier.*/
         Text documentation;
         /**Completion insertion text.*/
         Text insert;
@@ -281,8 +281,6 @@ extern "C" {
     int32_t editor_hover(void *checker, Text name, uint32_t line, uint32_t column, HoverCallback callback, void *context, String *error);
     /**Returns completion items at a source position.*/
     int32_t editor_completion(void *checker, Text name, uint32_t line, uint32_t column, CompletionCallback callback, void *context, String *error);
-    /**Resolves one selected completion item.*/
-    int32_t editor_completion_resolve(void *checker, Text name, Text item, uint32_t line, uint32_t column, CompletionCallback callback, void *context, String *error);
     /**Returns signature help at a source position.*/
     int32_t editor_signature_help(void *checker, Text name, uint32_t line, uint32_t column, SignatureCallback callback, void *context, String *error);
     /**Returns inferred type hints for a module.*/
@@ -301,15 +299,12 @@ extern "C" {
     int32_t editor_prepare(void *checker, Text name, uint32_t line, uint32_t column, SymbolCallback callback, void *context, String *error);
     /**Finds local references at a source position.*/
     int32_t editor_local_references(void *checker, Text name, uint32_t line, uint32_t column, SymbolCallback callback, void *context, String *error);
-    /**Returns symbols in scope at a source position.*/
-    int32_t editor_scope(void *checker, Text name, uint32_t line, uint32_t column, SymbolCallback callback, void *context, String *error);
 #ifdef __cplusplus
 }
 
 namespace instar {
     int32_t editor_hover(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, HoverCallback callback, void *context);
     int32_t editor_completion(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, CompletionCallback callback, void *context);
-    int32_t editor_completion_resolve(Luau::Frontend &frontend, Text name, Text item, uint32_t line, uint32_t column, CompletionCallback callback, void *context);
     int32_t editor_signature_help(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, SignatureCallback callback, void *context);
     int32_t editor_type_hints(Luau::Frontend &frontend, Text name, HintCallback callback, void *context);
     int32_t editor_semantic_tokens(Luau::Frontend &frontend, Text name, TokenCallback callback, void *context);
@@ -319,7 +314,6 @@ namespace instar {
     int32_t editor_references(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, ReferenceCallback callback, void *context);
     int32_t editor_prepare(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, SymbolCallback callback, void *context);
     int32_t editor_local_references(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, SymbolCallback callback, void *context);
-    int32_t editor_scope(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, SymbolCallback callback, void *context);
 } // namespace instar
 #endif
 

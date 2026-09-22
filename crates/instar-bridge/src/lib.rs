@@ -1,12 +1,8 @@
 //! Native Luau analysis bridge.
 
-#![expect(
-    unsafe_code,
-    unsafe_op_in_unsafe_fn,
-    reason = "the bridge owns the C ABI marshalling boundary"
-)]
+#![expect(unsafe_code, reason = "the bridge owns the C ABI marshalling boundary")]
 
-use std::{collections::BTreeMap, ffi::c_void, io, path::Path, ptr, slice, str};
+use std::{ffi::c_void, io, path::Path, ptr, slice, str};
 
 /// Raw C ABI declarations generated from the native bridge headers.
 pub mod native {
@@ -76,9 +72,7 @@ pub trait Callbacks {
     ///
     /// # Errors
     /// Returns an error when configuration lookup fails.
-    fn configuration(&mut self, _: &str) -> io::Result<Option<&Configuration>> {
-        Ok(None)
-    }
+    fn configuration(&mut self, name: &str) -> io::Result<&Configuration>;
 
     /// Resolves a module or instance request.
     ///
@@ -93,55 +87,20 @@ pub trait Callbacks {
     fn diagnostic(&mut self, diagnostic: Diagnostic<'_>) -> io::Result<()>;
 }
 
-/// Alias parsing options for a configuration source.
-pub struct AliasOptions<'value> {
-    /// Replaces existing aliases.
-    pub overwrite: bool,
-
-    /// Configuration location used to resolve aliases.
-    pub location: Option<&'value str>,
-}
-
-/// Options used when parsing a configuration source.
-#[derive(Default)]
-pub struct ConfigurationOptions<'value> {
-    /// Enables compatibility behavior.
-    pub compatibility: bool,
-
-    /// Alias parsing options.
-    pub aliases: Option<AliasOptions<'value>>,
-}
-
-impl ConfigurationOptions<'_> {
-    fn native(&self) -> native::ConfigurationOptions {
-        let aliases = self.aliases.as_ref();
-
-        native::ConfigurationOptions {
-            compat: u8::from(self.compatibility),
-            has_alias_options: u8::from(aliases.is_some()),
-            overwrite_aliases: u8::from(aliases.is_some_and(|value| value.overwrite)),
-            has_config_location: u8::from(aliases.is_some_and(|value| value.location.is_some())),
-            config_location: aliases
-                .and_then(|value| value.location)
-                .map_or_else(|| text(""), text),
-        }
-    }
-}
-
 /// Native configuration handle.
 pub struct Configuration {
     handle: *mut c_void,
 }
 
 impl Configuration {
-    /// Creates an empty configuration.
+    /// Creates a native configuration from merged Luau JSON.
     ///
     /// # Errors
-    /// Returns an error when native configuration creation fails.
-    pub fn new() -> io::Result<Self> {
+    /// Returns an error when the JSON cannot be parsed.
+    pub fn new(source: &[u8]) -> io::Result<Self> {
         let mut error = native::String::default();
 
-        let handle = unsafe { native::configuration_create(&raw mut error) };
+        let handle = unsafe { native::configuration_create(text_bytes(source), &raw mut error) };
 
         if handle.is_null() {
             Err(io::Error::other(take_string(error)?))
@@ -150,155 +109,8 @@ impl Configuration {
         }
     }
 
-    /// Loads JSON configuration data.
-    ///
-    /// # Errors
-    /// Returns an error when native configuration parsing fails.
-    pub fn load_json(&mut self, source: &[u8]) -> io::Result<()> {
-        self.load_json_with_options(source, &ConfigurationOptions::default())
-    }
-
-    /// Loads JSON configuration data with explicit options.
-    ///
-    /// # Errors
-    /// Returns an error when native configuration parsing fails.
-    pub fn load_json_with_options(
-        &mut self,
-        source: &[u8],
-        options: &ConfigurationOptions<'_>,
-    ) -> io::Result<()> {
-        let options = options.native();
-        let handle = self.handle;
-
-        Self::call(|error| unsafe {
-            native::configuration_parse_json(handle, text_bytes(source), &raw const options, error)
-        })
-    }
-
-    /// Loads executable Luau configuration data.
-    ///
-    /// # Errors
-    /// Returns an error when native configuration extraction fails.
-    pub fn load_luau(&mut self, source: &[u8]) -> io::Result<()> {
-        self.load_luau_with_options(source, &ConfigurationOptions::default())
-    }
-
-    /// Loads executable Luau configuration data with explicit options.
-    ///
-    /// # Errors
-    /// Returns an error when native configuration extraction fails.
-    pub fn load_luau_with_options(
-        &mut self,
-        source: &[u8],
-        options: &ConfigurationOptions<'_>,
-    ) -> io::Result<()> {
-        let options = options.native();
-        let handle = self.handle;
-
-        Self::call(|error| unsafe {
-            native::configuration_extract_luau(
-                handle,
-                text_bytes(source),
-                &raw const options,
-                error,
-            )
-        })
-    }
-
-    /// Sets the type-checking mode.
-    ///
-    /// # Errors
-    /// Returns an error when native configuration updates fail.
-    pub fn set_mode(&mut self, mode: native::ConfigurationMode) -> io::Result<()> {
-        let handle = self.handle;
-
-        Self::call(|error| unsafe { native::configuration_set_mode(handle, mode, error) })
-    }
-
-    /// Returns the type-checking mode.
-    #[must_use]
-    pub fn mode(&self) -> native::ConfigurationMode {
-        unsafe { native::configuration_mode(self.pointer()) }
-    }
-
-    /// Enables comment capture.
-    ///
-    /// # Errors
-    /// Returns an error when native configuration updates fail.
-    pub fn capture_comments(&mut self) -> io::Result<()> {
-        let handle = self.handle;
-
-        Self::call(|error| unsafe { native::configuration_set_capture_comments(handle, 1, error) })
-    }
-
-    /// Parses and enumerates aliases in configuration data.
-    ///
-    /// # Errors
-    /// Returns an error when parsing or alias enumeration fails.
-    pub fn aliases(source: &[u8], executable: bool) -> io::Result<BTreeMap<String, String>> {
-        let mut configuration = Self::new()?;
-
-        let options = ConfigurationOptions {
-            aliases: Some(AliasOptions {
-                overwrite: false,
-                location: None,
-            }),
-            ..ConfigurationOptions::default()
-        };
-
-        if executable {
-            configuration.load_luau_with_options(source, &options)?;
-        } else {
-            configuration.load_json_with_options(source, &options)?;
-        }
-
-        let mut context = AliasContext {
-            values: BTreeMap::new(),
-            error: None,
-        };
-
-        let mut error = native::String::default();
-
-        let status = unsafe {
-            native::configuration_aliases(
-                configuration.handle,
-                Some(alias_callback),
-                ptr::from_mut(&mut context).cast(),
-                &raw mut error,
-            )
-        };
-
-        let message = take_string(error)?;
-
-        if let Some(error) = context.error {
-            return Err(error);
-        }
-
-        if status == native::Status::StatusSuccess as i32 {
-            Ok(context.values)
-        } else if message.is_empty() {
-            Err(io::Error::other("native alias enumeration failed"))
-        } else {
-            Err(io::Error::other(message))
-        }
-    }
-
     fn pointer(&self) -> *const c_void {
         self.handle.cast_const()
-    }
-
-    fn call(operation: impl FnOnce(*mut native::String) -> i32) -> io::Result<()> {
-        let mut error = native::String::default();
-        let status = operation(&raw mut error);
-        let message = take_string(error)?;
-
-        if status == native::Status::StatusSuccess as i32 {
-            Ok(())
-        } else if message.is_empty() {
-            Err(io::Error::other("native configuration operation failed"))
-        } else {
-            Err(io::Error::other(message))
-        }
     }
 }
 
@@ -308,32 +120,10 @@ impl Drop for Configuration {
     }
 }
 
-struct AliasContext {
-    values: BTreeMap<String, String>,
-    error: Option<io::Error>,
-}
-
-unsafe extern "C" fn alias_callback(context: *mut c_void, value: *const native::Alias) -> u8 {
-    let result = (|| {
-        let value = unsafe { value.as_ref() }.ok_or_else(|| io::Error::other("null alias"))?;
-
-        let name = read_text(value.name)?;
-        let target = read_text(value.value)?;
-
-        let context = unsafe { context.cast::<AliasContext>().as_mut() }
-            .ok_or_else(|| io::Error::other("null alias callback context"))?;
-
-        context.values.insert(name, target);
-
-        Ok(())
-    })();
-
-    callback_status(context, result, set_alias_error)
-}
-
 struct CallbackContext<'callbacks> {
     callbacks: &'callbacks mut dyn Callbacks,
     source: Option<Source<'callbacks>>,
+    resolved: Option<String>,
     error: Option<io::Error>,
 }
 
@@ -342,10 +132,6 @@ fn callback_context<'callbacks>(
 ) -> io::Result<&'callbacks mut CallbackContext<'callbacks>> {
     unsafe { context.cast::<CallbackContext<'callbacks>>().as_mut() }
         .ok_or_else(|| io::Error::other("null native callback context"))
-}
-
-fn set_alias_error(context: &mut AliasContext, error: io::Error) {
-    context.error = Some(error);
 }
 
 fn set_callback_error(context: &mut CallbackContext<'_>, error: io::Error) {
@@ -376,9 +162,10 @@ unsafe extern "C" fn source_callback(
     result: *mut native::SourceResult,
 ) -> u8 {
     let result = (|| {
-        let name = read_text(name)?;
+        let name = unsafe { borrow_text(name)? };
+
         let context = callback_context(context)?;
-        let source = context.callbacks.source(&name)?;
+        let source = context.callbacks.source(name)?;
         context.source = Some(source);
 
         let source = context
@@ -405,10 +192,11 @@ unsafe extern "C" fn configuration_callback(
     result: *mut *const c_void,
 ) -> u8 {
     let result_value = (|| {
-        let name = read_text(name)?;
-        let configuration = callback_context(context)?.callbacks.configuration(&name)?;
+        let name = unsafe { borrow_text(name)? };
 
-        unsafe { *result = configuration.map_or(ptr::null(), Configuration::pointer) };
+        let configuration = callback_context(context)?.callbacks.configuration(name)?;
+
+        unsafe { *result = configuration.pointer() };
 
         Ok(())
     })();
@@ -425,17 +213,18 @@ unsafe extern "C" fn resolve_callback(
         let request =
             unsafe { request.as_ref() }.ok_or_else(|| io::Error::other("null resolve request"))?;
 
-        let from = read_text(request.from)?;
+        let from = unsafe { borrow_text(request.from)? };
 
         let request_value = ResolveRequest {
-            from: &from,
+            from,
             optional: request.optional != 0,
             location: range(request.expression),
         };
 
-        let path = callback_context(context)?
-            .callbacks
-            .resolve(&request_value)?;
+        let context = callback_context(context)?;
+        context.resolved = context.callbacks.resolve(&request_value)?;
+        // Native code copies this path after the callback returns.
+        let path = &context.resolved;
 
         unsafe {
             *result = native::ResolveResult {
@@ -457,20 +246,23 @@ unsafe extern "C" fn diagnostic_callback(
     let result = (|| {
         let value = unsafe { value.as_ref() }.ok_or_else(|| io::Error::other("null diagnostic"))?;
 
-        let path = read_text(value.path)?;
-        let message = read_text(value.message)?;
-        let related_path = read_text(value.related.path)?;
-        let related_message = read_text(value.related.message)?;
+        let path = unsafe { borrow_text(value.path)? };
+
+        let message = unsafe { borrow_text(value.message)? };
+
+        let related_path = unsafe { borrow_text(value.related.path)? };
+
+        let related_message = unsafe { borrow_text(value.related.message)? };
 
         let diagnostic = Diagnostic {
-            path: &path,
+            path,
             location: range(value.location),
             severity: value.severity,
-            message: &message,
+            message,
             related: (value.has_related != 0).then_some(RelatedDiagnostic {
-                path: &related_path,
+                path: related_path,
                 location: range(value.related.location),
-                message: &related_message,
+                message: related_message,
             }),
         };
 
@@ -490,9 +282,6 @@ const CALLBACKS: native::BridgeCallbacks = native::BridgeCallbacks {
 /// Options used when creating a native checker.
 #[derive(Default)]
 pub struct CheckerOptions {
-    /// Selects the legacy type solver.
-    pub old_solver: u8,
-
     /// Retains complete type graphs or annotation data.
     pub retain_full_type_graphs: u8,
 
@@ -525,247 +314,22 @@ pub struct RobloxClass<'name> {
     pub creatable: bool,
 }
 
-/// Roblox instance metadata supplied to the checker.
+/// One instance in a hierarchy; its slice index is its identity.
 pub struct RobloxNode<'name> {
     /// Instance name.
     pub name: &'name str,
 
     /// Class name.
     pub class_name: &'name str,
+
+    /// Parent node index, or `None` for a root.
+    pub parent: Option<usize>,
+
+    /// Source module whose `script` global refers to this node.
+    pub module: Option<&'name str>,
 }
 
-/// Native checker handle with safe callback dispatch.
-pub struct Checker<'callbacks> {
-    handle: *mut c_void,
-    context: Box<CallbackContext<'callbacks>>,
-}
-
-impl<'callbacks> Checker<'callbacks> {
-    /// Creates a checker using project callbacks.
-    ///
-    /// # Errors
-    /// Returns an error when native checker creation fails.
-    pub fn new(
-        callbacks: &'callbacks mut dyn Callbacks,
-        options: &CheckerOptions,
-    ) -> io::Result<Self> {
-        let mut context = Box::new(CallbackContext {
-            callbacks,
-            source: None,
-            error: None,
-        });
-
-        let native_options = native::FrontendOptions {
-            old_solver: options.old_solver,
-            retain_full_type_graphs: options.retain_full_type_graphs,
-            for_autocomplete: options.for_autocomplete,
-            run_lint_checks: options.run_lint_checks,
-        };
-
-        let mut error = native::String::default();
-
-        let handle = unsafe {
-            native::checker_create(
-                &CALLBACKS,
-                ptr::from_mut(context.as_mut()).cast(),
-                &raw const native_options,
-                &raw mut error,
-            )
-        };
-
-        if handle.is_null() {
-            let callback_error = context.error.take();
-            let message = take_string(error)?;
-
-            if let Some(error) = callback_error {
-                Err(error)
-            } else {
-                Err(io::Error::other(if message.is_empty() {
-                    "cannot create native checker"
-                } else {
-                    &message
-                }))
-            }
-        } else {
-            Ok(Self { handle, context })
-        }
-    }
-
-    fn call_checker(&self, operation: impl FnOnce(*mut native::String) -> i32) -> io::Result<()> {
-        let mut error = native::String::default();
-        let status = operation(&raw mut error);
-        let message = take_string(error)?;
-
-        if let Some(error) = self.context.error.as_ref() {
-            return Err(io::Error::new(error.kind(), error.to_string()));
-        }
-
-        if status == native::Status::StatusSuccess as i32 {
-            Ok(())
-        } else if message.is_empty() {
-            Err(io::Error::other("native checker operation failed"))
-        } else {
-            Err(io::Error::other(message))
-        }
-    }
-
-    /// Freezes checker configuration.
-    ///
-    /// # Errors
-    /// Returns an error when native checker freezing fails.
-    pub fn freeze(&self) -> io::Result<()> {
-        self.call_checker(|error| unsafe { native::checker_freeze(self.handle, error) })
-    }
-
-    /// Loads a definition source.
-    ///
-    /// # Errors
-    /// Returns an error when the definition cannot be loaded.
-    pub fn load_definition(&self, source: &[u8], package: &str) -> io::Result<()> {
-        let options = native::DefinitionOptions {
-            capture_comments: 0,
-            type_check_for_autocomplete: 0,
-        };
-
-        self.call_checker(|error| unsafe {
-            native::checker_load_definition(
-                self.handle,
-                text_bytes(source),
-                text(package),
-                &raw const options,
-                error,
-            )
-        })
-    }
-
-    fn call_name(
-        &self,
-        path: &Path,
-        operation: impl FnOnce(native::Text, *mut native::String) -> i32,
-    ) -> io::Result<()> {
-        let name = path
-            .to_str()
-            .ok_or_else(|| io::Error::other("module identity requires UTF-8"))?;
-
-        self.call_checker(|error| operation(text(name), error))
-    }
-
-    /// Parses one module.
-    ///
-    /// # Errors
-    /// Returns an error when native parsing fails.
-    pub fn parse(&self, path: &Path) -> io::Result<()> {
-        self.call_name(path, |name, error| unsafe {
-            native::checker_parse(self.handle, name, error)
-        })
-    }
-
-    /// Emits parse diagnostics for one module.
-    ///
-    /// # Errors
-    /// Returns an error when native diagnostic emission fails.
-    pub fn parse_diagnostics(&self, path: &Path) -> io::Result<()> {
-        self.call_name(path, |name, error| unsafe {
-            native::checker_parse_diagnostics(self.handle, name, error)
-        })
-    }
-
-    /// Checks one module.
-    ///
-    /// # Errors
-    /// Returns an error when native checking fails.
-    pub fn check(&self, path: &Path) -> io::Result<()> {
-        self.call_name(path, |name, error| unsafe {
-            native::checker_check(self.handle, name, error)
-        })
-    }
-
-    /// Emits checker results for one module.
-    ///
-    /// # Errors
-    /// Returns an error when native result emission fails.
-    pub fn result(&self, path: &Path) -> io::Result<()> {
-        self.result_with_options(path, &ResultOptions::default())
-    }
-
-    /// Emits checker results for one module with explicit options.
-    ///
-    /// # Errors
-    /// Returns an error when native result emission fails.
-    pub fn result_with_options(&self, path: &Path, options: &ResultOptions) -> io::Result<()> {
-        self.call_name(path, |name, error| unsafe {
-            native::checker_result(
-                self.handle,
-                name,
-                u8::from(options.accumulate_nested),
-                u8::from(options.for_autocomplete),
-                error,
-            )
-        })
-    }
-
-    /// Attaches inferred type data to one module.
-    ///
-    /// # Errors
-    /// Returns an error when native type-data attachment fails.
-    pub fn attach_type_data(&self, path: &Path) -> io::Result<()> {
-        self.call_name(path, |name, error| unsafe {
-            native::checker_attach_type_data(self.handle, name, error)
-        })
-    }
-
-    /// Registers Roblox classes and instances.
-    ///
-    /// # Errors
-    /// Returns an error when native Roblox registration fails.
-    pub fn register_roblox(
-        &self,
-        classes: &[RobloxClass<'_>],
-        nodes: &[RobloxNode<'_>],
-    ) -> io::Result<()> {
-        let classes = classes
-            .iter()
-            .map(|value| native::RobloxClass {
-                name: text(value.name),
-                service: u8::from(value.service),
-                creatable: u8::from(value.creatable),
-            })
-            .collect::<Vec<_>>();
-
-        let nodes = nodes
-            .iter()
-            .map(|value| native::RobloxNode {
-                name: text(value.name),
-                class_name: text(value.class_name),
-            })
-            .collect::<Vec<_>>();
-
-        self.call_checker(|error| unsafe {
-            native::checker_register_roblox(
-                self.handle,
-                classes.as_ptr(),
-                classes.len(),
-                nodes.as_ptr(),
-                nodes.len(),
-                error,
-            )
-        })
-    }
-
-    /// Runs one typed editor operation.
-    ///
-    /// # Errors
-    /// Returns an error when the native operation or result conversion fails.
-    pub fn editor(
-        &self,
-        path: &str,
-        line: u32,
-        column: u32,
-        operation: EditorOperation<'_>,
-    ) -> io::Result<Vec<EditorItem>> {
-        unsafe { editor(self.handle, path, line, column, operation) }
-    }
-
+impl Checker {
     fn items(
         operation: impl FnOnce(native::ItemCallback, *mut c_void, *mut native::String) -> i32,
         callback: &mut impl FnMut(&str) -> io::Result<()>,
@@ -797,60 +361,20 @@ impl<'callbacks> Checker<'callbacks> {
             Err(io::Error::other(message))
         }
     }
-
-    /// Enumerates checker globals.
-    ///
-    /// # Errors
-    /// Returns an error when enumeration or callback processing fails.
-    pub fn globals(&self, callback: &mut impl FnMut(&str) -> io::Result<()>) -> io::Result<()> {
-        Self::items(
-            |item, context, error| unsafe {
-                native::checker_globals(self.handle, item, context, error)
-            },
-            callback,
-        )
-    }
-
-    /// Enumerates checker timeout modules.
-    ///
-    /// # Errors
-    /// Returns an error when enumeration or callback processing fails.
-    pub fn timeouts(&self, callback: &mut impl FnMut(&str) -> io::Result<()>) -> io::Result<()> {
-        Self::items(
-            |item, context, error| unsafe {
-                native::checker_timeouts(self.handle, item, context, error)
-            },
-            callback,
-        )
-    }
-
-    /// Enumerates modules known to the checker.
-    ///
-    /// # Errors
-    /// Returns an error when enumeration or callback processing fails.
-    pub fn modules(&self, callback: &mut impl FnMut(&str) -> io::Result<()>) -> io::Result<()> {
-        Self::items(
-            |item, context, error| unsafe {
-                native::checker_modules(self.handle, item, context, error)
-            },
-            callback,
-        )
-    }
 }
 
-/// Reusable native checker session.
-pub struct NativeSession {
+/// Owns native Luau analysis state; the host controls its lifetime.
+pub struct Checker {
     handle: *mut c_void,
 }
 
-impl NativeSession {
-    /// Creates an empty reusable checker session.
+impl Checker {
+    /// Creates a checker without binding host callbacks.
     ///
     /// # Errors
     /// Returns an error when native checker creation fails.
     pub fn new(options: &CheckerOptions) -> io::Result<Self> {
         let native_options = native::FrontendOptions {
-            old_solver: options.old_solver,
             retain_full_type_graphs: options.retain_full_type_graphs,
             for_autocomplete: options.for_autocomplete,
             run_lint_checks: options.run_lint_checks,
@@ -889,18 +413,19 @@ impl NativeSession {
     }
 
     fn with_callbacks<T>(
-        &self,
+        &mut self,
         callbacks: &mut dyn Callbacks,
         operation: impl FnOnce(&Self) -> io::Result<T>,
     ) -> io::Result<T> {
-        let mut context = Box::new(CallbackContext {
+        let mut context = CallbackContext {
             callbacks,
             source: None,
+            resolved: None,
             error: None,
-        });
+        };
 
         Self::call(|error| unsafe {
-            native::checker_set_context(self.handle, ptr::from_mut(context.as_mut()).cast(), error)
+            native::checker_set_context(self.handle, ptr::from_mut(&mut context).cast(), error)
         })?;
 
         let result = operation(self);
@@ -923,7 +448,7 @@ impl NativeSession {
     /// # Errors
     /// Returns an error when loading fails.
     pub fn load_definition(
-        &self,
+        &mut self,
         callbacks: &mut dyn Callbacks,
         source: &[u8],
         package: &str,
@@ -946,52 +471,68 @@ impl NativeSession {
         })
     }
 
-    /// Registers Roblox classes and instances.
+    /// Registers Roblox class magic after loading definitions.
     ///
     /// # Errors
-    /// Returns an error when registration fails.
-    pub fn register_roblox(
-        &self,
-        callbacks: &mut dyn Callbacks,
-        classes: &[RobloxClass<'_>],
-        nodes: &[RobloxNode<'_>],
-    ) -> io::Result<()> {
-        self.with_callbacks(callbacks, |session| {
-            let classes = classes
-                .iter()
-                .map(|value| native::RobloxClass {
-                    name: text(value.name),
-                    service: u8::from(value.service),
-                    creatable: u8::from(value.creatable),
-                })
-                .collect::<Vec<_>>();
-
-            let nodes = nodes
-                .iter()
-                .map(|value| native::RobloxNode {
-                    name: text(value.name),
-                    class_name: text(value.class_name),
-                })
-                .collect::<Vec<_>>();
-
-            Self::call(|error| unsafe {
-                native::checker_register_roblox(
-                    session.handle,
-                    classes.as_ptr(),
-                    classes.len(),
-                    nodes.as_ptr(),
-                    nodes.len(),
-                    error,
-                )
+    /// Returns an error for invalid class metadata or changes after registration.
+    pub fn register_roblox_classes(&mut self, classes: &[RobloxClass<'_>]) -> io::Result<()> {
+        let classes = classes
+            .iter()
+            .map(|value| native::RobloxClass {
+                name: text(value.name),
+                service: u8::from(value.service),
+                creatable: u8::from(value.creatable),
             })
+            .collect::<Vec<_>>();
+
+        Self::call(|error| unsafe {
+            native::checker_register_roblox_classes(
+                self.handle,
+                classes.as_ptr(),
+                classes.len(),
+                error,
+            )
         })
     }
 
-    /// Freezes checker configuration.
+    /// Installs node-specific types and per-module `script` bindings.
+    /// A root `DataModel` binds `game`; its `Workspace` child binds `workspace`.
+    /// Register classes first. Recreate the checker when the hierarchy changes.
+    ///
+    /// # Errors
+    /// Rejects invalid classes, parent indices, cycles, duplicate modules, or late registration.
+    pub fn register_roblox_tree(&mut self, nodes: &[RobloxNode<'_>]) -> io::Result<()> {
+        if nodes
+            .iter()
+            .any(|node| node.parent.is_some_and(|parent| parent >= nodes.len()))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Roblox parent index is out of range",
+            ));
+        }
+
+        let nodes = nodes
+            .iter()
+            .map(|value| native::RobloxNode {
+                name: text(value.name),
+                class_name: text(value.class_name),
+                parent: value.parent.unwrap_or(usize::MAX),
+                has_module: u8::from(value.module.is_some()),
+                module: text(value.module.unwrap_or("")),
+            })
+            .collect::<Vec<_>>();
+
+        Self::call(|error| unsafe {
+            native::checker_register_roblox_tree(self.handle, nodes.as_ptr(), nodes.len(), error)
+        })
+    }
+
+    /// Freezes the native global type arena.
     ///
     /// # Errors
     /// Returns an error when freezing fails.
-    pub fn freeze(&self) -> io::Result<()> {
+    pub fn freeze(&mut self) -> io::Result<()> {
         Self::call(|error| unsafe { native::checker_freeze(self.handle, error) })
     }
 
@@ -999,7 +540,7 @@ impl NativeSession {
     ///
     /// # Errors
     /// Returns an error when invalidation fails.
-    pub fn mark_dirty(&self, path: &Path) -> io::Result<()> {
+    pub fn mark_dirty(&mut self, path: &Path) -> io::Result<()> {
         let name = path
             .to_str()
             .ok_or_else(|| io::Error::other("module identity requires UTF-8"))?;
@@ -1007,63 +548,495 @@ impl NativeSession {
         Self::call(|error| unsafe { native::checker_mark_dirty(self.handle, text(name), error) })
     }
 
-    /// Clears parsed and checked source modules.
+    /// Clears ordinary source caches without changing definitions or globals.
+    /// Create a new checker to rebuild the global environment.
     ///
     /// # Errors
     /// Returns an error when clearing fails.
-    pub fn clear(&self) -> io::Result<()> {
-        Self::call(|error| unsafe { native::checker_clear(self.handle, error) })
+    pub fn clear_sources(&mut self) -> io::Result<()> {
+        Self::call(|error| unsafe { native::checker_clear_sources(self.handle, error) })
     }
 
-    /// Checks a module.
+    /// Checks a module and returns the names of modules that timed out.
     ///
     /// # Errors
     /// Returns an error when checking fails.
-    pub fn check(&self, callbacks: &mut dyn Callbacks, path: &Path) -> io::Result<()> {
-        self.with_callbacks(callbacks, |session| {
-            Self::call_name(path, |name, error| unsafe {
-                native::checker_check(session.handle, name, error)
-            })
+    pub fn check(&mut self, callbacks: &mut dyn Callbacks, path: &Path) -> io::Result<Vec<String>> {
+        let name = path
+            .to_str()
+            .ok_or_else(|| io::Error::other("module identity requires UTF-8"))?;
+
+        self.with_callbacks(callbacks, |checker| {
+            let mut timeouts = Vec::new();
+
+            Self::items(
+                |item, context, error| unsafe {
+                    native::checker_check(checker.handle, text(name), item, context, error)
+                },
+                &mut |name| {
+                    timeouts.push(name.to_owned());
+
+                    Ok(())
+                },
+            )?;
+
+            Ok(timeouts)
         })
     }
 
-    /// Emits diagnostics for a checked module.
+    /// Emits cached diagnostics and returns their timeout module names.
     ///
     /// # Errors
     /// Returns an error when result emission fails.
-    pub fn result(&self, callbacks: &mut dyn Callbacks, path: &Path) -> io::Result<()> {
-        self.with_callbacks(callbacks, |session| {
-            Self::call_name(path, |name, error| unsafe {
-                native::checker_result(session.handle, name, 0, 0, error)
-            })
+    pub fn result(
+        &mut self,
+        callbacks: &mut dyn Callbacks,
+        path: &Path,
+    ) -> io::Result<Vec<String>> {
+        self.result_with_options(callbacks, path, &ResultOptions::default())
+    }
+
+    /// Emits diagnostics with explicit options and returns their timeout module names.
+    ///
+    /// # Errors
+    /// Returns an error when result emission fails.
+    pub fn result_with_options(
+        &mut self,
+        callbacks: &mut dyn Callbacks,
+        path: &Path,
+        options: &ResultOptions,
+    ) -> io::Result<Vec<String>> {
+        let name = path
+            .to_str()
+            .ok_or_else(|| io::Error::other("module identity requires UTF-8"))?;
+
+        self.with_callbacks(callbacks, |checker| {
+            let mut timeouts = Vec::new();
+
+            Self::items(
+                |item, context, error| unsafe {
+                    native::checker_result(
+                        checker.handle,
+                        text(name),
+                        u8::from(options.accumulate_nested),
+                        u8::from(options.for_autocomplete),
+                        item,
+                        context,
+                        error,
+                    )
+                },
+                &mut |name| {
+                    timeouts.push(name.to_owned());
+
+                    Ok(())
+                },
+            )?;
+
+            Ok(timeouts)
         })
     }
 
-    /// Runs one editor operation against the persistent checker.
+    /// Returns hover information at a source position.
     ///
     /// # Errors
-    /// Returns an error when the native editor operation fails.
-    pub fn editor(
-        &self,
+    /// Returns an error when the native operation fails.
+    pub fn hover(
+        &mut self,
         callbacks: &mut dyn Callbacks,
         path: &str,
         line: u32,
         column: u32,
-        operation: EditorOperation<'_>,
-    ) -> io::Result<Vec<EditorItem>> {
-        self.with_callbacks(callbacks, |session| unsafe {
-            editor(session.handle, path, line, column, operation)
+    ) -> io::Result<Option<Hover>> {
+        self.with_callbacks(callbacks, |checker| {
+            let mut result = OneResult::default();
+
+            Self::editor_call(
+                |context, error| unsafe {
+                    native::editor_hover(
+                        checker.handle,
+                        text(path),
+                        line,
+                        column,
+                        Some(hover_callback),
+                        context,
+                        error,
+                    )
+                },
+                &mut result,
+            )?;
+
+            Ok(result.value)
         })
     }
 
-    /// Enumerates timeout modules.
+    /// Returns completion items at a source position.
+    ///
+    /// # Errors
+    /// Returns an error when the native operation fails.
+    pub fn completion(
+        &mut self,
+        callbacks: &mut dyn Callbacks,
+        path: &str,
+        line: u32,
+        column: u32,
+    ) -> io::Result<Vec<Completion>> {
+        self.with_callbacks(callbacks, |checker| {
+            let mut result = ManyResults::default();
+
+            Self::editor_call(
+                |context, error| unsafe {
+                    native::editor_completion(
+                        checker.handle,
+                        text(path),
+                        line,
+                        column,
+                        Some(completion_callback),
+                        context,
+                        error,
+                    )
+                },
+                &mut result,
+            )?;
+
+            Ok(result.values)
+        })
+    }
+
+    /// Returns signature help at a source position.
+    ///
+    /// # Errors
+    /// Returns an error when the native operation fails.
+    pub fn signature_help(
+        &mut self,
+        callbacks: &mut dyn Callbacks,
+        path: &str,
+        line: u32,
+        column: u32,
+    ) -> io::Result<Option<SignatureHelp>> {
+        self.with_callbacks(callbacks, |checker| {
+            let mut result = OneResult::default();
+
+            Self::editor_call(
+                |context, error| unsafe {
+                    native::editor_signature_help(
+                        checker.handle,
+                        text(path),
+                        line,
+                        column,
+                        Some(signature_callback),
+                        context,
+                        error,
+                    )
+                },
+                &mut result,
+            )?;
+
+            Ok(result.value)
+        })
+    }
+
+    /// Returns inferred type hints for a module.
+    ///
+    /// # Errors
+    /// Returns an error when the native operation fails.
+    pub fn type_hints(
+        &mut self,
+        callbacks: &mut dyn Callbacks,
+        path: &str,
+    ) -> io::Result<Vec<TypeHint>> {
+        self.with_callbacks(callbacks, |checker| {
+            let mut result = ManyResults::default();
+
+            Self::editor_call(
+                |context, error| unsafe {
+                    native::editor_type_hints(
+                        checker.handle,
+                        text(path),
+                        Some(hint_callback),
+                        context,
+                        error,
+                    )
+                },
+                &mut result,
+            )?;
+
+            Ok(result.values)
+        })
+    }
+
+    /// Returns semantic tokens for a module.
+    ///
+    /// # Errors
+    /// Returns an error when the native operation fails.
+    pub fn semantic_tokens(
+        &mut self,
+        callbacks: &mut dyn Callbacks,
+        path: &str,
+    ) -> io::Result<Vec<SemanticToken>> {
+        self.with_callbacks(callbacks, |checker| {
+            let mut result = ManyResults::default();
+
+            Self::editor_call(
+                |context, error| unsafe {
+                    native::editor_semantic_tokens(
+                        checker.handle,
+                        text(path),
+                        Some(token_callback),
+                        context,
+                        error,
+                    )
+                },
+                &mut result,
+            )?;
+
+            Ok(result.values)
+        })
+    }
+
+    /// Returns definition targets at a source position.
+    ///
+    /// # Errors
+    /// Returns an error when the native operation fails.
+    pub fn definition(
+        &mut self,
+        callbacks: &mut dyn Callbacks,
+        path: &str,
+        line: u32,
+        column: u32,
+    ) -> io::Result<Vec<Navigation>> {
+        self.navigation(callbacks, path, line, column, native::editor_definition)
+    }
+
+    /// Returns declaration targets at a source position.
+    ///
+    /// # Errors
+    /// Returns an error when the native operation fails.
+    pub fn declaration(
+        &mut self,
+        callbacks: &mut dyn Callbacks,
+        path: &str,
+        line: u32,
+        column: u32,
+    ) -> io::Result<Vec<Navigation>> {
+        self.navigation(callbacks, path, line, column, native::editor_declaration)
+    }
+
+    /// Returns type-definition targets at a source position.
+    ///
+    /// # Errors
+    /// Returns an error when the native operation fails.
+    pub fn type_definition(
+        &mut self,
+        callbacks: &mut dyn Callbacks,
+        path: &str,
+        line: u32,
+        column: u32,
+    ) -> io::Result<Vec<Navigation>> {
+        self.navigation(
+            callbacks,
+            path,
+            line,
+            column,
+            native::editor_type_definition,
+        )
+    }
+
+    fn navigation(
+        &mut self,
+        callbacks: &mut dyn Callbacks,
+        path: &str,
+        line: u32,
+        column: u32,
+        operation: unsafe extern "C" fn(
+            *mut c_void,
+            native::Text,
+            u32,
+            u32,
+            native::NavigationCallback,
+            *mut c_void,
+            *mut native::String,
+        ) -> i32,
+    ) -> io::Result<Vec<Navigation>> {
+        self.with_callbacks(callbacks, |checker| {
+            let mut result = ManyResults::default();
+
+            Self::editor_call(
+                |context, error| unsafe {
+                    operation(
+                        checker.handle,
+                        text(path),
+                        line,
+                        column,
+                        Some(navigation_callback),
+                        context,
+                        error,
+                    )
+                },
+                &mut result,
+            )?;
+
+            Ok(result.values)
+        })
+    }
+
+    /// Returns reference occurrences at a source position.
+    ///
+    /// # Errors
+    /// Returns an error when the native operation fails.
+    pub fn references(
+        &mut self,
+        callbacks: &mut dyn Callbacks,
+        path: &str,
+        line: u32,
+        column: u32,
+    ) -> io::Result<Vec<Reference>> {
+        self.with_callbacks(callbacks, |checker| {
+            let mut result = ManyResults::default();
+
+            Self::editor_call(
+                |context, error| unsafe {
+                    native::editor_references(
+                        checker.handle,
+                        text(path),
+                        line,
+                        column,
+                        Some(reference_callback),
+                        context,
+                        error,
+                    )
+                },
+                &mut result,
+            )?;
+
+            Ok(result.values)
+        })
+    }
+
+    /// Returns the prepared symbol at a source position.
+    ///
+    /// # Errors
+    /// Returns an error when the native operation fails.
+    pub fn prepare(
+        &mut self,
+        callbacks: &mut dyn Callbacks,
+        path: &str,
+        line: u32,
+        column: u32,
+    ) -> io::Result<Option<Symbol>> {
+        self.with_callbacks(callbacks, |checker| {
+            let mut result = OneResult::default();
+
+            Self::editor_call(
+                |context, error| unsafe {
+                    native::editor_prepare(
+                        checker.handle,
+                        text(path),
+                        line,
+                        column,
+                        Some(prepared_symbol_callback),
+                        context,
+                        error,
+                    )
+                },
+                &mut result,
+            )?;
+
+            Ok(result.value)
+        })
+    }
+
+    /// Returns local symbol occurrences at a source position.
+    ///
+    /// # Errors
+    /// Returns an error when the native operation fails.
+    pub fn local_references(
+        &mut self,
+        callbacks: &mut dyn Callbacks,
+        path: &str,
+        line: u32,
+        column: u32,
+    ) -> io::Result<Vec<Symbol>> {
+        self.with_callbacks(callbacks, |checker| {
+            let mut result = ManyResults::default();
+
+            Self::editor_call(
+                |context, error| unsafe {
+                    native::editor_local_references(
+                        checker.handle,
+                        text(path),
+                        line,
+                        column,
+                        Some(symbol_callback),
+                        context,
+                        error,
+                    )
+                },
+                &mut result,
+            )?;
+
+            Ok(result.values)
+        })
+    }
+
+    /// Parses a module without type checking it.
+    ///
+    /// # Errors
+    /// Returns an error when native parsing fails.
+    pub fn parse(&mut self, callbacks: &mut dyn Callbacks, path: &Path) -> io::Result<()> {
+        self.with_callbacks(callbacks, |checker| {
+            Self::call_name(path, |name, error| unsafe {
+                native::checker_parse(checker.handle, name, error)
+            })
+        })
+    }
+
+    /// Emits syntax diagnostics for a parsed module.
+    ///
+    /// # Errors
+    /// Returns an error when diagnostic emission fails.
+    pub fn parse_diagnostics(
+        &mut self,
+        callbacks: &mut dyn Callbacks,
+        path: &Path,
+    ) -> io::Result<()> {
+        self.with_callbacks(callbacks, |checker| {
+            Self::call_name(path, |name, error| unsafe {
+                native::checker_parse_diagnostics(checker.handle, name, error)
+            })
+        })
+    }
+
+    /// Attaches inferred type data to a checked module.
+    ///
+    /// # Errors
+    /// Returns an error when the checked module is unavailable.
+    pub fn attach_type_data(&mut self, path: &Path) -> io::Result<()> {
+        Self::call_name(path, |name, error| unsafe {
+            native::checker_attach_type_data(self.handle, name, error)
+        })
+    }
+
+    /// Enumerates names in the global scope.
     ///
     /// # Errors
     /// Returns an error when enumeration fails.
-    pub fn timeouts(&self, callback: &mut impl FnMut(&str) -> io::Result<()>) -> io::Result<()> {
-        Checker::items(
+    pub fn globals(&self, callback: &mut impl FnMut(&str) -> io::Result<()>) -> io::Result<()> {
+        Self::items(
             |item, context, error| unsafe {
-                native::checker_timeouts(self.handle, item, context, error)
+                native::checker_globals(self.handle, item, context, error)
+            },
+            callback,
+        )
+    }
+
+    /// Enumerates modules known to the checker.
+    ///
+    /// # Errors
+    /// Returns an error when enumeration fails.
+    pub fn modules(&self, callback: &mut impl FnMut(&str) -> io::Result<()>) -> io::Result<()> {
+        Self::items(
+            |item, context, error| unsafe {
+                native::checker_modules(self.handle, item, context, error)
             },
             callback,
         )
@@ -1081,7 +1054,7 @@ impl NativeSession {
     }
 }
 
-impl Drop for NativeSession {
+impl Drop for Checker {
     fn drop(&mut self) {
         unsafe { native::checker_destroy(self.handle) };
     }
@@ -1094,12 +1067,12 @@ struct ItemContext<'callback> {
 
 unsafe extern "C" fn item_callback(context: *mut c_void, value: native::Text) -> u8 {
     let result = (|| {
-        let value = read_text(value)?;
+        let value = unsafe { borrow_text(value)? };
 
         let context = unsafe { context.cast::<ItemContext<'_>>().as_mut() }
             .ok_or_else(|| io::Error::other("null item callback context"))?;
 
-        (context.callback)(&value)
+        (context.callback)(value)
     })();
 
     match result {
@@ -1115,106 +1088,174 @@ unsafe extern "C" fn item_callback(context: *mut c_void, value: native::Text) ->
     }
 }
 
-impl Drop for Checker<'_> {
-    fn drop(&mut self) {
-        let _ = &self.context;
+/// Hover information returned for a source position.
+pub struct Hover {
+    /// Symbol name.
+    pub name: String,
 
-        unsafe { native::checker_destroy(self.handle) };
+    /// Displayed type.
+    pub type_: String,
+
+    /// Documentation symbol identifier.
+    pub documentation_symbol: String,
+
+    /// Hover range when present.
+    pub range: Option<[u32; 4]>,
+}
+
+/// Completion item returned for a source position.
+pub struct Completion {
+    /// Completion label.
+    pub name: String,
+
+    /// Completion detail.
+    pub detail: String,
+
+    /// Documentation symbol identifier.
+    pub documentation_symbol: String,
+
+    /// Completion insertion text.
+    pub insert: String,
+
+    /// Completion range when present.
+    pub range: Option<[u32; 4]>,
+
+    /// Completion source mode.
+    pub mode: native::EditorCompletionMode,
+
+    /// Completion item kind.
+    pub kind: native::EditorCompletionKind,
+
+    /// Whether the item is deprecated.
+    pub deprecated: bool,
+}
+
+/// Signature help returned for a call site.
+pub struct SignatureHelp {
+    /// Signature label.
+    pub label: String,
+
+    /// Signature parameter labels.
+    pub parameters: Vec<String>,
+
+    /// Active parameter index when present.
+    pub active_parameter: Option<u32>,
+}
+
+/// Inferred type for a source range.
+pub struct TypeHint {
+    /// Type-hint range.
+    pub range: [u32; 4],
+
+    /// Inferred type text.
+    pub type_: String,
+}
+
+/// Semantic token returned for a source range.
+pub struct SemanticToken {
+    /// Token range.
+    pub range: [u32; 4],
+
+    /// Token kind.
+    pub kind: native::EditorSemanticTokenKind,
+
+    /// Token modifier bits.
+    pub modifiers: u32,
+
+    /// Whether the token is a declaration.
+    pub declaration: bool,
+}
+
+/// Navigation target and selection range.
+pub struct Navigation {
+    /// Target source path.
+    pub path: String,
+
+    /// Full target range.
+    pub range: [u32; 4],
+
+    /// Name-selection range.
+    pub selection: [u32; 4],
+}
+
+/// Reference occurrence.
+pub struct Reference {
+    /// Reference source path.
+    pub path: String,
+
+    /// Reference range.
+    pub range: [u32; 4],
+
+    /// Whether the reference is a declaration.
+    pub declaration: bool,
+}
+
+/// Document or local symbol.
+pub struct Symbol {
+    /// Symbol name.
+    pub name: String,
+
+    /// Symbol source path.
+    pub path: String,
+
+    /// Full symbol range.
+    pub range: [u32; 4],
+
+    /// Name-selection range.
+    pub selection: [u32; 4],
+
+    /// Symbol kind.
+    pub kind: native::EditorSymbolKind,
+
+    /// Symbol modifier bits.
+    pub modifiers: u32,
+
+    /// Whether the symbol is a declaration.
+    pub declaration: bool,
+}
+
+struct ManyResults<T> {
+    values: Vec<T>,
+    error: Option<io::Error>,
+}
+
+impl<T> Default for ManyResults<T> {
+    fn default() -> Self {
+        Self {
+            values: Vec::new(),
+            error: None,
+        }
     }
 }
 
-/// Editor operation supported by the native bridge.
-#[derive(Clone, Copy)]
-pub enum EditorOperation<'value> {
-    /// Hover information at a source position.
-    Hover,
-
-    /// Completion items at a source position.
-    Completion,
-
-    /// Resolve one completion item.
-    CompletionResolve(&'value str),
-
-    /// Signature help at a source position.
-    Signature,
-
-    /// Inferred type hints for a source.
-    TypeHints,
-
-    /// Semantic tokens for a source.
-    SemanticTokens,
-
-    /// Symbol definition at a source position.
-    Definition,
-
-    /// Symbol declaration at a source position.
-    Declaration,
-
-    /// Type definition at a source position.
-    TypeDefinition,
-
-    /// References at a source position.
-    References,
-
-    /// Symbol preparation at a source position.
-    Prepare,
-
-    /// Local references at a source position.
-    LocalReferences,
-
-    /// Symbols in scope at a source position.
-    Scope,
-}
-
-/// Owned result item returned by a native editor operation.
-#[derive(Default)]
-pub struct EditorItem {
-    /// Symbol or completion name.
-    pub name: Option<String>,
-
-    /// Type or detail text.
-    pub description: Option<String>,
-
-    /// Documentation identifier.
-    pub documentation: Option<String>,
-
-    /// Documentation text.
-    pub documentation_text: Option<String>,
-
-    /// Source path.
-    pub path: Option<String>,
-
-    /// Full source range.
-    pub range: Option<[u32; 4]>,
-
-    /// Symbol or token kind.
-    pub kind: Option<u32>,
-
-    /// Modifier bits.
-    pub modifiers: Option<u32>,
-
-    /// Name-selection range.
-    pub selection: Option<[u32; 4]>,
-
-    /// Whether the item declares a symbol.
-    pub declaration: Option<bool>,
-
-    /// Completion insertion text.
-    pub insert: Option<String>,
-
-    /// Whether the item is deprecated.
-    pub deprecated: Option<bool>,
-
-    /// Active signature parameter.
-    pub active: Option<u32>,
-
-    /// Signature parameter labels.
-    pub parameters: Option<Vec<String>>,
-}
-
-struct EditorContext {
-    items: Vec<EditorItem>,
+struct OneResult<T> {
+    value: Option<T>,
     error: Option<io::Error>,
+}
+
+impl<T> Default for OneResult<T> {
+    fn default() -> Self {
+        Self {
+            value: None,
+            error: None,
+        }
+    }
+}
+
+trait ResultContext {
+    fn error(&mut self) -> &mut Option<io::Error>;
+}
+
+impl<T> ResultContext for ManyResults<T> {
+    fn error(&mut self) -> &mut Option<io::Error> {
+        &mut self.error
+    }
+}
+
+impl<T> ResultContext for OneResult<T> {
+    fn error(&mut self) -> &mut Option<io::Error> {
+        &mut self.error
+    }
 }
 
 fn text(value: &str) -> native::Text {
@@ -1228,18 +1269,22 @@ fn text_bytes(value: &[u8]) -> native::Text {
     }
 }
 
-fn read_text(value: native::Text) -> io::Result<String> {
+// The caller must keep the native bytes alive and immutable for the returned borrow.
+unsafe fn borrow_text<'text>(value: native::Text) -> io::Result<&'text str> {
     if value.data.is_null() {
         return if value.length == 0 {
-            Ok(String::new())
+            Ok("")
         } else {
             Err(io::Error::other("invalid native text"))
         };
     }
 
     str::from_utf8(unsafe { slice::from_raw_parts(value.data, value.length) })
-        .map(str::to_owned)
         .map_err(io::Error::other)
+}
+
+fn read_text(value: native::Text) -> io::Result<String> {
+    unsafe { borrow_text(value) }.map(str::to_owned)
 }
 
 fn range(value: native::Location) -> [u32; 4] {
@@ -1251,13 +1296,13 @@ fn range(value: native::Location) -> [u32; 4] {
     ]
 }
 
-fn callback_result(context: *mut c_void, result: io::Result<()>) -> u8 {
+fn callback_result<T: ResultContext>(context: *mut c_void, result: io::Result<()>) -> u8 {
     match result {
         Ok(()) => 1,
 
         Err(error) => {
-            if !context.is_null() {
-                unsafe { (*context.cast::<EditorContext>()).error = Some(error) };
+            if let Some(context) = unsafe { context.cast::<T>().as_mut() } {
+                *context.error() = Some(error);
             }
 
             0
@@ -1269,20 +1314,24 @@ unsafe extern "C" fn hover_callback(context: *mut c_void, value: *const native::
     let result = (|| {
         let value = unsafe { value.as_ref() }.ok_or_else(|| io::Error::other("null hover"))?;
 
-        unsafe {
-            (*context.cast::<EditorContext>()).items.push(EditorItem {
-                name: Some(read_text(value.name)?),
-                description: Some(read_text(value.type_)?),
-                documentation_text: Some(read_text(value.documentation)?),
-                range: Some(range(value.range)),
-                ..EditorItem::default()
-            });
-        };
+        let context = unsafe { context.cast::<OneResult<Hover>>().as_mut() }
+            .ok_or_else(|| io::Error::other("null hover callback context"))?;
+
+        if context.value.is_some() {
+            return Err(io::Error::other("native hover returned multiple results"));
+        }
+
+        context.value = Some(Hover {
+            name: read_text(value.name)?,
+            type_: read_text(value.type_)?,
+            documentation_symbol: read_text(value.documentation)?,
+            range: (value.has_range != 0).then(|| range(value.range)),
+        });
 
         Ok(())
     })();
 
-    callback_result(context, result)
+    callback_result::<OneResult<Hover>>(context, result)
 }
 
 unsafe extern "C" fn completion_callback(
@@ -1292,23 +1341,24 @@ unsafe extern "C" fn completion_callback(
     let result = (|| {
         let value = unsafe { value.as_ref() }.ok_or_else(|| io::Error::other("null completion"))?;
 
-        unsafe {
-            (*context.cast::<EditorContext>()).items.push(EditorItem {
-                name: Some(read_text(value.name)?),
-                description: Some(read_text(value.detail)?),
-                documentation_text: Some(read_text(value.documentation)?),
-                insert: Some(read_text(value.insert)?),
-                range: Some(range(value.range)),
-                kind: Some(u32::try_from(value.kind as i32).unwrap_or_default()),
-                deprecated: Some(value.deprecated != 0),
-                ..EditorItem::default()
-            });
-        };
+        let context = unsafe { context.cast::<ManyResults<Completion>>().as_mut() }
+            .ok_or_else(|| io::Error::other("null completion callback context"))?;
+
+        context.values.push(Completion {
+            name: read_text(value.name)?,
+            detail: read_text(value.detail)?,
+            documentation_symbol: read_text(value.documentation)?,
+            insert: read_text(value.insert)?,
+            range: (value.has_range != 0).then(|| range(value.range)),
+            mode: value.mode,
+            kind: value.kind,
+            deprecated: value.deprecated != 0,
+        });
 
         Ok(())
     })();
 
-    callback_result(context, result)
+    callback_result::<ManyResults<Completion>>(context, result)
 }
 
 unsafe extern "C" fn signature_callback(
@@ -1317,6 +1367,15 @@ unsafe extern "C" fn signature_callback(
 ) -> u8 {
     let result = (|| {
         let value = unsafe { value.as_ref() }.ok_or_else(|| io::Error::other("null signature"))?;
+
+        let context = unsafe { context.cast::<OneResult<SignatureHelp>>().as_mut() }
+            .ok_or_else(|| io::Error::other("null signature callback context"))?;
+
+        if context.value.is_some() {
+            return Err(io::Error::other(
+                "native signature help returned multiple results",
+            ));
+        }
 
         let parameters = if value.parameters.is_null() {
             Vec::new()
@@ -1327,19 +1386,16 @@ unsafe extern "C" fn signature_callback(
                 .collect::<io::Result<Vec<_>>>()?
         };
 
-        unsafe {
-            (*context.cast::<EditorContext>()).items.push(EditorItem {
-                description: Some(read_text(value.label)?),
-                parameters: Some(parameters),
-                active: (value.has_active_parameter != 0).then_some(value.active_parameter),
-                ..EditorItem::default()
-            });
-        };
+        context.value = Some(SignatureHelp {
+            label: read_text(value.label)?,
+            parameters,
+            active_parameter: (value.has_active_parameter != 0).then_some(value.active_parameter),
+        });
 
         Ok(())
     })();
 
-    callback_result(context, result)
+    callback_result::<OneResult<SignatureHelp>>(context, result)
 }
 
 unsafe extern "C" fn navigation_callback(
@@ -1349,19 +1405,19 @@ unsafe extern "C" fn navigation_callback(
     let result = (|| {
         let value = unsafe { value.as_ref() }.ok_or_else(|| io::Error::other("null navigation"))?;
 
-        unsafe {
-            (*context.cast::<EditorContext>()).items.push(EditorItem {
-                path: Some(read_text(value.path)?),
-                range: Some(range(value.range)),
-                selection: Some(range(value.selection)),
-                ..EditorItem::default()
-            });
-        };
+        let context = unsafe { context.cast::<ManyResults<Navigation>>().as_mut() }
+            .ok_or_else(|| io::Error::other("null navigation callback context"))?;
+
+        context.values.push(Navigation {
+            path: read_text(value.path)?,
+            range: range(value.range),
+            selection: range(value.selection),
+        });
 
         Ok(())
     })();
 
-    callback_result(context, result)
+    callback_result::<ManyResults<Navigation>>(context, result)
 }
 
 unsafe extern "C" fn reference_callback(
@@ -1371,19 +1427,19 @@ unsafe extern "C" fn reference_callback(
     let result = (|| {
         let value = unsafe { value.as_ref() }.ok_or_else(|| io::Error::other("null reference"))?;
 
-        unsafe {
-            (*context.cast::<EditorContext>()).items.push(EditorItem {
-                path: Some(read_text(value.path)?),
-                range: Some(range(value.range)),
-                declaration: Some(value.declaration != 0),
-                ..EditorItem::default()
-            });
-        };
+        let context = unsafe { context.cast::<ManyResults<Reference>>().as_mut() }
+            .ok_or_else(|| io::Error::other("null reference callback context"))?;
+
+        context.values.push(Reference {
+            path: read_text(value.path)?,
+            range: range(value.range),
+            declaration: value.declaration != 0,
+        });
 
         Ok(())
     })();
 
-    callback_result(context, result)
+    callback_result::<ManyResults<Reference>>(context, result)
 }
 
 unsafe extern "C" fn symbol_callback(
@@ -1393,23 +1449,53 @@ unsafe extern "C" fn symbol_callback(
     let result = (|| {
         let value = unsafe { value.as_ref() }.ok_or_else(|| io::Error::other("null symbol"))?;
 
-        unsafe {
-            (*context.cast::<EditorContext>()).items.push(EditorItem {
-                name: Some(read_text(value.name)?),
-                path: Some(read_text(value.path)?),
-                range: Some(range(value.range)),
-                selection: Some(range(value.selection)),
-                kind: Some(u32::try_from(value.kind as i32).unwrap_or_default()),
-                modifiers: Some(value.modifiers),
-                declaration: Some(value.declaration != 0),
-                ..EditorItem::default()
-            });
-        };
+        let context = unsafe { context.cast::<ManyResults<Symbol>>().as_mut() }
+            .ok_or_else(|| io::Error::other("null symbol callback context"))?;
+
+        context.values.push(Symbol {
+            name: read_text(value.name)?,
+            path: read_text(value.path)?,
+            range: range(value.range),
+            selection: range(value.selection),
+            kind: value.kind,
+            modifiers: value.modifiers,
+            declaration: value.declaration != 0,
+        });
 
         Ok(())
     })();
 
-    callback_result(context, result)
+    callback_result::<ManyResults<Symbol>>(context, result)
+}
+
+unsafe extern "C" fn prepared_symbol_callback(
+    context: *mut c_void,
+    value: *const native::EditorSymbol,
+) -> u8 {
+    let result = (|| {
+        let value = unsafe { value.as_ref() }.ok_or_else(|| io::Error::other("null symbol"))?;
+
+        let context = unsafe { context.cast::<OneResult<Symbol>>().as_mut() }
+            .ok_or_else(|| io::Error::other("null symbol callback context"))?;
+
+        if context.value.is_some() {
+            return Err(io::Error::other("native prepare returned multiple symbols"));
+        }
+
+        context.value = Some(Symbol {
+            name: read_text(value.name)?,
+            path: read_text(value.path)?,
+            range: range(value.range),
+            selection: range(value.selection),
+            kind: value.kind,
+            modifiers: value.modifiers,
+            declaration: value.declaration != 0,
+        });
+
+        Ok(())
+    })();
+
+    callback_result::<OneResult<Symbol>>(context, result)
 }
 
 unsafe extern "C" fn token_callback(
@@ -1419,20 +1505,20 @@ unsafe extern "C" fn token_callback(
     let result = (|| {
         let value = unsafe { value.as_ref() }.ok_or_else(|| io::Error::other("null token"))?;
 
-        unsafe {
-            (*context.cast::<EditorContext>()).items.push(EditorItem {
-                range: Some(range(value.range)),
-                kind: Some(u32::try_from(value.kind as i32).unwrap_or_default()),
-                modifiers: Some(value.modifiers),
-                declaration: Some(value.declaration != 0),
-                ..EditorItem::default()
-            });
-        };
+        let context = unsafe { context.cast::<ManyResults<SemanticToken>>().as_mut() }
+            .ok_or_else(|| io::Error::other("null token callback context"))?;
+
+        context.values.push(SemanticToken {
+            range: range(value.range),
+            kind: value.kind,
+            modifiers: value.modifiers,
+            declaration: value.declaration != 0,
+        });
 
         Ok(())
     })();
 
-    callback_result(context, result)
+    callback_result::<ManyResults<SemanticToken>>(context, result)
 }
 
 unsafe extern "C" fn hint_callback(
@@ -1442,187 +1528,42 @@ unsafe extern "C" fn hint_callback(
     let result = (|| {
         let value = unsafe { value.as_ref() }.ok_or_else(|| io::Error::other("null hint"))?;
 
-        unsafe {
-            (*context.cast::<EditorContext>()).items.push(EditorItem {
-                description: Some(read_text(value.type_)?),
-                range: Some(range(value.range)),
-                ..EditorItem::default()
-            });
-        };
+        let context = unsafe { context.cast::<ManyResults<TypeHint>>().as_mut() }
+            .ok_or_else(|| io::Error::other("null hint callback context"))?;
+
+        context.values.push(TypeHint {
+            range: range(value.range),
+            type_: read_text(value.type_)?,
+        });
 
         Ok(())
     })();
 
-    callback_result(context, result)
+    callback_result::<ManyResults<TypeHint>>(context, result)
 }
 
-/// Runs one typed native editor operation and owns all returned text.
-///
-/// # Errors
-/// Returns an error when the native operation fails or returns invalid UTF-8.
-///
-/// # Safety
-/// `checker` must be a live checker handle created by `checker_create`.
-#[expect(
-    clippy::too_many_lines,
-    reason = "the typed operation dispatch stays beside the ABI calls"
-)]
-pub unsafe fn editor(
-    checker: *mut c_void,
-    name: &str,
-    line: u32,
-    column: u32,
-    operation: EditorOperation<'_>,
-) -> io::Result<Vec<EditorItem>> {
-    let mut context = EditorContext {
-        items: Vec::new(),
-        error: None,
-    };
+impl Checker {
+    fn editor_call<T: ResultContext>(
+        operation: impl FnOnce(*mut c_void, *mut native::String) -> i32,
+        context: &mut T,
+    ) -> io::Result<()> {
+        let context_pointer = ptr::from_mut(context).cast();
+        let mut error = native::String::default();
+        let status = operation(context_pointer, &raw mut error);
+        let message = take_string(error)?;
 
-    let mut error = native::String::default();
-    let name = text(name);
-    let context_pointer = ptr::from_mut(&mut context).cast();
+        if let Some(error) = context.error().take() {
+            return Err(error);
+        }
 
-    let status = match operation {
-        EditorOperation::Hover => native::editor_hover(
-            checker,
-            name,
-            line,
-            column,
-            Some(hover_callback),
-            context_pointer,
-            &raw mut error,
-        ),
-
-        EditorOperation::Completion => native::editor_completion(
-            checker,
-            name,
-            line,
-            column,
-            Some(completion_callback),
-            context_pointer,
-            &raw mut error,
-        ),
-
-        EditorOperation::CompletionResolve(item) => native::editor_completion_resolve(
-            checker,
-            name,
-            text(item),
-            line,
-            column,
-            Some(completion_callback),
-            context_pointer,
-            &raw mut error,
-        ),
-
-        EditorOperation::Signature => native::editor_signature_help(
-            checker,
-            name,
-            line,
-            column,
-            Some(signature_callback),
-            context_pointer,
-            &raw mut error,
-        ),
-
-        EditorOperation::TypeHints => native::editor_type_hints(
-            checker,
-            name,
-            Some(hint_callback),
-            context_pointer,
-            &raw mut error,
-        ),
-
-        EditorOperation::SemanticTokens => native::editor_semantic_tokens(
-            checker,
-            name,
-            Some(token_callback),
-            context_pointer,
-            &raw mut error,
-        ),
-
-        EditorOperation::Definition => native::editor_definition(
-            checker,
-            name,
-            line,
-            column,
-            Some(navigation_callback),
-            context_pointer,
-            &raw mut error,
-        ),
-
-        EditorOperation::Declaration => native::editor_declaration(
-            checker,
-            name,
-            line,
-            column,
-            Some(navigation_callback),
-            context_pointer,
-            &raw mut error,
-        ),
-
-        EditorOperation::TypeDefinition => native::editor_type_definition(
-            checker,
-            name,
-            line,
-            column,
-            Some(navigation_callback),
-            context_pointer,
-            &raw mut error,
-        ),
-
-        EditorOperation::References => native::editor_references(
-            checker,
-            name,
-            line,
-            column,
-            Some(reference_callback),
-            context_pointer,
-            &raw mut error,
-        ),
-
-        EditorOperation::Prepare => native::editor_prepare(
-            checker,
-            name,
-            line,
-            column,
-            Some(symbol_callback),
-            context_pointer,
-            &raw mut error,
-        ),
-
-        EditorOperation::LocalReferences => native::editor_local_references(
-            checker,
-            name,
-            line,
-            column,
-            Some(symbol_callback),
-            context_pointer,
-            &raw mut error,
-        ),
-
-        EditorOperation::Scope => native::editor_scope(
-            checker,
-            name,
-            line,
-            column,
-            Some(symbol_callback),
-            context_pointer,
-            &raw mut error,
-        ),
-    };
-
-    let message = take_string(error)?;
-
-    if status != native::Status::StatusSuccess as i32 {
-        return Err(io::Error::other(if message.is_empty() {
-            "native editor operation failed".to_owned()
+        if status == native::Status::StatusSuccess as i32 {
+            Ok(())
+        } else if message.is_empty() {
+            Err(io::Error::other("native editor operation failed"))
         } else {
-            message
-        }));
+            Err(io::Error::other(message))
+        }
     }
-
-    context.error.map_or(Ok(context.items), Err)
 }
 
 fn take_string(value: native::String) -> io::Result<String> {
