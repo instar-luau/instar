@@ -336,8 +336,10 @@ extern "C" {
             }
 
             Luau::Config configuration;
+            Luau::ConfigOptions options;
+            options.aliasOptions = Luau::ConfigOptions::AliasOptions{std::nullopt, true};
 
-            if (const std::optional<std::string> message = Luau::parseConfig(std::string(*value), configuration)) {
+            if (const std::optional<std::string> message = Luau::parseConfig(std::string(*value), configuration, options)) {
                 failure(error, *message);
 
                 return nullptr;
