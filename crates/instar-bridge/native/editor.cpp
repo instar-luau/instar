@@ -81,8 +81,25 @@ namespace instar {
 
         std::optional<Luau::TypeId> type_at(const Luau::Module &module, const Luau::SourceModule &source, Luau::Position position) {
             if (const std::optional<Luau::AstType *> type = type_node_at(source, position)) {
+                if (const auto *reference = (*type)->as<Luau::AstTypeReference>();
+                    reference && reference->prefixLocal && reference->prefixLocation && reference->prefixLocation->contains(position)) {
+                    const Luau::ScopePtr scope = Luau::findScopeAtPosition(module, position);
+                    const auto binding = scope ? scope->lookupEx(Luau::Symbol(reference->prefixLocal)) : std::nullopt;
+
+                    return binding ? std::optional(binding->first->typeId) : std::nullopt;
+                }
+
                 if (const Luau::TypeId *resolved = module.astResolvedTypes.find(*type)) {
                     return *resolved;
+                }
+            }
+
+            if (Luau::AstNode *node = Luau::findNodeAtPosition(source, position)) {
+                if (const auto *alias = node->as<Luau::AstStatTypeAlias>(); alias && alias->nameLocation.contains(position)) {
+                    const Luau::ScopePtr scope = Luau::findScopeAtPosition(module, position);
+                    const auto binding = scope ? scope->lookupType(alias->name.value) : std::nullopt;
+
+                    return binding ? std::optional(binding->type) : std::nullopt;
                 }
             }
 
@@ -387,60 +404,6 @@ namespace instar {
             bool declaration;
         };
 
-        struct IdentityReferenceVisitor final : Luau::AstVisitor {
-            IdentityReferenceVisitor(const ModuleContext &context, const std::optional<BindingIdentity> &binding, const std::optional<PropertyIdentity> &property)
-                : context(context), binding(binding), property(property) {}
-
-            bool visit(Luau::AstExprGlobal *expression) override {
-                if (binding) {
-                    const std::optional<BindingIdentity> occurrence = binding_identity(context, expression);
-
-                    if (occurrence && same_identity(*binding, *occurrence)) {
-                        references.push_back({expression->location, false});
-                    }
-                }
-
-                return true;
-            }
-
-            bool visit(Luau::AstExprIndexName *expression) override {
-                if (property) {
-                    const Luau::TypeId *base = context.module->astTypes.find(expression->expr);
-                    const std::optional<PropertyIdentity> occurrence = base ? property_identity(*context.module, *base, expression->index.value) : std::nullopt;
-
-                    bool declaration = false;
-
-                    for (const Luau::AstExprIndexName *candidate : declaration_properties) {
-                        declaration = candidate == expression;
-
-                        if (declaration) {
-                            break;
-                        }
-                    }
-
-                    if (occurrence && same_identity(*property, *occurrence)) {
-                        references.push_back({expression->indexLocation, declaration});
-                    }
-                }
-
-                return true;
-            }
-
-            bool visit(Luau::AstStatFunction *statement) override {
-                if (const auto *index = statement->name->as<Luau::AstExprIndexName>()) {
-                    declaration_properties.push_back(index);
-                }
-
-                return true;
-            }
-
-            const ModuleContext &context;
-            const std::optional<BindingIdentity> &binding;
-            const std::optional<PropertyIdentity> &property;
-            std::vector<const Luau::AstExprIndexName *> declaration_properties;
-            std::vector<LocalOccurrence> references;
-        };
-
         std::optional<Luau::AstLocal *> target_local(const Luau::SourceModule &source, Luau::Position position) {
             Luau::ExprOrLocal target = Luau::findExprOrLocalAtPosition(source, position);
 
@@ -740,11 +703,7 @@ namespace instar {
             Luau::Location definition;
         };
 
-        std::optional<RenameTarget> rename_target(Luau::Frontend &frontend, const ModuleContext &context, Luau::Position position) {
-            if (!context.source->parseErrors.empty() || context.module->timeout || context.module->cancelled) {
-                return std::nullopt;
-            }
-
+        std::optional<RenameSite> symbol_at(Luau::Frontend &frontend, const ModuleContext &context, Luau::Position position) {
             std::optional<RenameSite> selected;
             bool ambiguous = false;
 
@@ -760,7 +719,17 @@ namespace instar {
 
             context.source->root->visit(&visitor);
 
-            if (!selected || ambiguous) {
+            return ambiguous ? std::nullopt : selected;
+        }
+
+        std::optional<RenameTarget> rename_target(Luau::Frontend &frontend, const ModuleContext &context, Luau::Position position) {
+            if (!context.source->parseErrors.empty() || context.module->timeout || context.module->cancelled) {
+                return std::nullopt;
+            }
+
+            const std::optional<RenameSite> selected = symbol_at(frontend, context, position);
+
+            if (!selected) {
                 return std::nullopt;
             }
 
@@ -1048,14 +1017,43 @@ namespace instar {
         }
 
         Luau::ExprOrLocal target = Luau::findExprOrLocalAtPosition(*context_value->source, position);
-        const std::optional<std::string> name_value = target_name(target);
-        const std::optional<Luau::Location> range = target_location(target);
-        const std::string type_value = type_text(*type);
-        const std::optional<std::string> documentation = Luau::getDocumentationSymbolAtPosition(*context_value->source, *context_value->module, position);
+        std::optional<std::string> name_value = target_name(target);
+        std::optional<Luau::Location> range = target_location(target);
+        bool is_type = false;
+        std::optional<std::string> documentation = Luau::getDocumentationSymbolAtPosition(*context_value->source, *context_value->module, position);
+
+        if (const auto annotation = type_node_at(*context_value->source, position)) {
+            name_value.reset();
+            range = (*annotation)->location;
+            documentation = Luau::follow(*type)->documentationSymbol;
+
+            if (const auto *reference = (*annotation)->as<Luau::AstTypeReference>()) {
+                if (reference->prefix && reference->prefixLocation && reference->prefixLocation->contains(position)) {
+                    name_value = reference->prefix->value;
+                    range = reference->prefixLocation;
+                } else {
+                    range = reference->nameLocation;
+
+                    if (type_alias_definition(frontend, *context_value, reference)) {
+                        name_value = reference->prefix ? std::string(reference->prefix->value) + "." + reference->name.value : reference->name.value;
+                        is_type = true;
+                    }
+                }
+            }
+        } else if (Luau::AstNode *node = Luau::findNodeAtPosition(*context_value->source, position)) {
+            if (const auto *alias = node->as<Luau::AstStatTypeAlias>(); alias && alias->nameLocation.contains(position)) {
+                name_value = alias->name.value;
+                range = alias->nameLocation;
+                is_type = true;
+                documentation = Luau::follow(*type)->documentationSymbol;
+            }
+        }
+
+        const std::string type_value = Luau::toString(*type, Luau::ToStringOptions{is_type});
         const Text name_text = name_value ? text(*name_value) : Text{};
         const Text type_output = text(type_value);
         const Text documentation_text = documentation ? text(*documentation) : Text{};
-        const EditorHover result{name_text, type_output, documentation_text, uint8_t(range.has_value()), range ? location(*range) : Location{}};
+        const EditorHover result{name_text, type_output, documentation_text, uint8_t(range.has_value()), range ? location(*range) : Location{}, uint8_t(is_type)};
 
         return callback(context, &result) ? StatusSuccess : StatusCallbackFailure;
     }
@@ -1454,42 +1452,17 @@ namespace instar {
             return StatusSuccess;
         }
 
-        const std::optional<Luau::AstLocal *> target = target_local(*context_value->source, Luau::Position(line, column));
+        const std::optional<RenameSite> target = symbol_at(frontend, *context_value, {line, column});
 
-        if (target) {
-            LocalVisitor visitor(*target);
-            context_value->source->root->visit(&visitor);
-
-            for (const LocalOccurrence &occurrence : visitor.occurrences) {
-                const EditorReference result{text(context_value->source->name), location(occurrence.range), uint8_t(occurrence.declaration)};
-
-                if (!callback(context, &result)) {
-                    return StatusCallbackFailure;
-                }
-            }
-
-            return StatusSuccess;
-        }
-
-        Luau::ExprOrLocal expression = Luau::findExprOrLocalAtPosition(*context_value->source, Luau::Position(line, column));
-        std::optional<BindingIdentity> binding;
-        std::optional<PropertyIdentity> property;
-
-        if (Luau::AstExpr *target_expression = expression.getExpr()) {
-            if (const auto *global = target_expression->as<Luau::AstExprGlobal>()) {
-                binding = binding_identity(*context_value, global);
-            } else if (const auto *index = target_expression->as<Luau::AstExprIndexName>(); index && index->indexLocation.contains(Luau::Position(line, column))) {
-                if (const Luau::TypeId *base = context_value->module->astTypes.find(index->expr)) {
-                    property = property_identity(*context_value->module, *base, index->index.value);
-                }
-            }
-        }
-
-        if (!binding && !property) {
+        if (!target) {
             return StatusSuccess;
         }
 
         for (const auto &[module_name, source] : frontend.sourceModules) {
+            if (target->local && module_name != context_value->source->name) {
+                continue;
+            }
+
             if (!source || !source->root) {
                 continue;
             }
@@ -1501,15 +1474,19 @@ namespace instar {
             }
 
             const ModuleContext occurrence_context{source.get(), module};
-            IdentityReferenceVisitor visitor(occurrence_context, binding, property);
+            bool failed = false;
+
+            RenameVisitor visitor(frontend, occurrence_context, [&](const RenameSite &site) {
+                if (!failed && same_identity(site, *target)) {
+                    const EditorReference result{text(occurrence_context.source->name), location(site.range), uint8_t(site.declaration)};
+                    failed = !callback(context, &result);
+                }
+            });
+
             source->root->visit(&visitor);
 
-            for (const LocalOccurrence &occurrence : visitor.references) {
-                const EditorReference result{text(module_name), location(occurrence.range), uint8_t(occurrence.declaration)};
-
-                if (!callback(context, &result)) {
-                    return StatusCallbackFailure;
-                }
+            if (failed) {
+                return StatusCallbackFailure;
             }
         }
 

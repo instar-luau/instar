@@ -47,6 +47,8 @@ pub struct EffectiveConfig {
     /// Effective platform detection and asset locations.
     pub roblox: RobloxSettings,
 
+    pub(crate) definition_order: Vec<String>,
+
     native: instar_bridge::Configuration,
     without_lints: OnceCell<instar_bridge::Configuration>,
     filters: Filters,
@@ -97,12 +99,6 @@ pub struct RobloxSettings {
 
     /// Selected API security level.
     pub security: Security,
-
-    /// Ordered absolute local paths or HTTPS URLs of the declarations.
-    pub definitions: Vec<String>,
-
-    /// Ordered documentation locations; later files override matching keys.
-    pub documentation: Vec<String>,
 }
 
 #[derive(Clone, Default)]
@@ -295,20 +291,19 @@ impl Project {
         Ok(source)
     }
 
-    /// Loads Roblox documentation lazily, without downloading it for ordinary type checks.
+    /// Loads JSON documentation for an exact native symbol, with custom entries taking precedence.
     ///
     /// # Errors
     /// Returns configuration, asset-loading, or documentation-validation errors.
-    pub fn documentation(&mut self, source: &Path) -> io::Result<Option<Rc<serde_json::Value>>> {
+    pub fn documentation(
+        &mut self,
+        source: &Path,
+        symbol: &str,
+    ) -> io::Result<Option<Rc<serde_json::Value>>> {
         let config = self.configuration(source)?;
+        let docs = self.assets.documentation(&config.settings.documentation)?;
 
-        if !config.roblox.enabled {
-            return Ok(None);
-        }
-
-        self.assets
-            .documentation(&config.roblox.documentation)
-            .map(Some)
+        Ok(docs.get(symbol).is_some().then_some(docs))
     }
 
     /// Drains asset refresh and cache warnings accumulated by this project session.
@@ -316,15 +311,24 @@ impl Project {
         self.assets.take_warnings()
     }
 
-    pub(crate) fn definitions(
+    pub(crate) fn declarations(
         &mut self,
-        settings: &RobloxSettings,
-    ) -> io::Result<Option<Rc<Definitions>>> {
-        if !settings.enabled {
-            return Ok(None);
-        }
+        locations: &[(String, String)],
+    ) -> io::Result<Vec<(String, Rc<Definitions>)>> {
+        locations
+            .iter()
+            .map(|(package, path)| {
+                self.assets
+                    .declaration(path)
+                    .map(|source| (package.clone(), source))
+            })
+            .collect()
+    }
 
-        self.assets.definitions(&settings.definitions).map(Some)
+    pub(crate) fn commit_declarations(&mut self, locations: &[(String, String)]) {
+        for (_, path) in locations {
+            self.assets.commit_declaration(path);
+        }
     }
 
     pub(crate) fn sourcemaps_for(&mut self, source: &Path) -> io::Result<Vec<Rc<Sourcemap>>> {
@@ -442,18 +446,32 @@ impl Project {
         let roblox = RobloxSettings {
             enabled: layers.roblox.enabled.unwrap_or(!sourcemaps.is_empty()),
             security,
-            definitions: layers
-                .roblox
-                .definitions
-                .unwrap_or_else(|| vec![format!("{}{}", assets::BASE, security.file())]),
-            documentation: layers
-                .roblox
-                .documentation
-                .unwrap_or_else(|| vec![format!("{}documentation.json", assets::BASE)]),
         };
 
         let mut settings = layers.legacy;
         settings.merge(&layers.instar);
+
+        if roblox.enabled {
+            settings
+                .definitions
+                .entry("@roblox".to_owned())
+                .or_insert_with(|| format!("{}{}", assets::BASE, security.file()));
+
+            if settings.documentation.is_empty() {
+                settings
+                    .documentation
+                    .push(format!("{}documentation.json", assets::BASE));
+            }
+        }
+
+        let mut definition_order: Vec<_> = settings.definitions.keys().cloned().collect();
+
+        if roblox.enabled
+            && let Some(index) = definition_order.iter().position(|name| name == "@roblox")
+        {
+            definition_order[..=index].rotate_right(1);
+        }
+
         let mut aliases = layers.legacy_aliases;
         aliases.extend(layers.instar_aliases);
         let json = settings.native_json()?;
@@ -466,6 +484,7 @@ impl Project {
             inputs: layers.inputs,
             sourcemaps,
             roblox,
+            definition_order,
             native,
             without_lints: OnceCell::new(),
             filters: layers.filters,
@@ -520,25 +539,6 @@ impl Project {
                             layers.roblox.security = Some(security);
                         }
 
-                        for (inherited, configured) in [
-                            (&mut layers.roblox.definitions, config.roblox.definitions),
-                            (
-                                &mut layers.roblox.documentation,
-                                config.roblox.documentation,
-                            ),
-                        ] {
-                            if let Some(locations) =
-                                configured.filter(|locations| !locations.is_empty())
-                            {
-                                let inherited = inherited.get_or_insert_default();
-
-                                for location in locations {
-                                    let location = assets::location(&location, directory)?;
-                                    inherited.push(location);
-                                }
-                            }
-                        }
-
                         if let Some(sourcemaps) = config.roblox.sourcemaps {
                             let mut locations = Vec::new();
 
@@ -573,6 +573,15 @@ impl Project {
             config
                 .validate()
                 .map_err(|e| invalid(format!("{}: {e}", path.display())))?;
+
+            for location in config
+                .definitions
+                .values_mut()
+                .chain(config.documentation.iter_mut())
+            {
+                *location = assets::location(location, directory)
+                    .map_err(|error| invalid(format!("{}: {error}", path.display())))?;
+            }
 
             let (settings, aliases) = if name == "instar.toml" {
                 (&mut layers.instar, &mut layers.instar_aliases)

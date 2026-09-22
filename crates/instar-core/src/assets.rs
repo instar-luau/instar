@@ -9,9 +9,7 @@ use std::{
     time::Duration,
 };
 
-use instar_bridge::{
-    Callbacks, Checker, CheckerOptions, Configuration, ResolveRequest, RobloxClass, Source,
-};
+use instar_bridge::{Checker, RobloxClass};
 
 use reqwest::{
     StatusCode, Url,
@@ -40,30 +38,6 @@ pub(crate) struct Definitions {
 }
 
 impl Definitions {
-    fn combine(sources: &[Rc<str>]) -> io::Result<Self> {
-        let mut source = String::with_capacity(sources.iter().map(|source| source.len() + 1).sum());
-        let mut combined: Option<Metadata> = None;
-
-        for text in sources {
-            if let Some(metadata) = parse_metadata(text)? {
-                let combined = combined.get_or_insert_default();
-                combined.services.extend(metadata.services);
-
-                combined
-                    .creatable_instances
-                    .extend(metadata.creatable_instances);
-            }
-
-            source.push_str(text);
-            source.push('\n');
-        }
-
-        Ok(Self {
-            source: source.into(),
-            metadata: combined,
-        })
-    }
-
     pub(crate) fn register(&self, checker: &mut Checker) -> io::Result<bool> {
         let Some(metadata) = &self.metadata else {
             return Ok(false);
@@ -129,55 +103,11 @@ fn validate_definition_file(source: &str) -> io::Result<()> {
     parse_metadata(source).map(|_| ())
 }
 
-struct DefinitionHost {
-    configuration: Configuration,
-    errors: Vec<String>,
-}
-
-impl Callbacks for DefinitionHost {
-    fn source<'source>(&'source mut self, name: &str) -> io::Result<Source<'source>> {
-        Err(invalid(format!("declarations requested source {name}")))
-    }
-
-    fn configuration(&mut self, _name: &str) -> io::Result<&Configuration> {
-        Ok(&self.configuration)
-    }
-
-    fn resolve(&mut self, _request: &ResolveRequest<'_>) -> io::Result<Option<String>> {
-        Err(invalid("declarations cannot import source modules"))
-    }
-
-    fn diagnostic(&mut self, diagnostic: instar_bridge::Diagnostic<'_>) -> io::Result<()> {
-        self.errors.push(diagnostic.message.to_owned());
-
-        Ok(())
-    }
-}
-
-fn validate_definitions(definitions: &Definitions) -> io::Result<()> {
-    let mut checker = Checker::new(&CheckerOptions::default())?;
-
-    let mut host = DefinitionHost {
-        configuration: Configuration::new(b"{}")?,
-        errors: Vec::new(),
-    };
-
-    checker
-        .load_definition(&mut host, definitions.source.as_bytes(), "roblox")
-        .map_err(|error| invalid(format!("{error}: {}", host.errors.join("; "))))?;
-
-    if !host.errors.is_empty() {
-        return Err(invalid(host.errors.join("; ")));
-    }
-
-    definitions.register(&mut checker).map(|_| ())
-}
-
 fn validate_documentation(source: &str) -> io::Result<()> {
     let value: serde_json::Value = serde_json::from_str(source)?;
 
     if !value.is_object() {
-        return Err(invalid("Roblox documentation must be a JSON object"));
+        return Err(invalid("documentation must be a JSON object"));
     }
 
     Ok(())
@@ -225,10 +155,9 @@ struct Cached {
 pub(crate) struct Assets {
     client: Option<Client>,
     loaded: HashMap<String, Result<Rc<str>, String>>,
-    definitions: HashMap<Vec<String>, Rc<Definitions>>,
+    definitions: HashMap<String, Rc<Definitions>>,
     documentation: HashMap<Vec<String>, Rc<serde_json::Value>>,
     pending: HashMap<String, Cached>,
-    previous: HashMap<String, Rc<str>>,
     warnings: Vec<String>,
 }
 
@@ -238,82 +167,7 @@ impl Assets {
         self.definitions.clear();
         self.documentation.clear();
         self.pending.clear();
-        self.previous.clear();
         self.warnings.clear();
-    }
-
-    pub(crate) fn definitions(&mut self, locations: &[String]) -> io::Result<Rc<Definitions>> {
-        if let Some(definitions) = self.definitions.get(locations) {
-            return Ok(Rc::clone(definitions));
-        }
-
-        let mut sources = Vec::new();
-        let mut unique = Vec::new();
-
-        for location in locations {
-            if unique.contains(&location) {
-                continue;
-            }
-
-            sources.push(self.load(location, validate_definition_file, false)?);
-            unique.push(location);
-        }
-
-        let mut definitions = Definitions::combine(&sources)?;
-
-        if let Err(error) = validate_definitions(&definitions) {
-            let mut restored = false;
-
-            for (location, source) in unique.iter().zip(&mut sources) {
-                if self.pending.contains_key(*location) {
-                    let Some(previous) = self.previous.get(*location) else {
-                        return Err(error);
-                    };
-
-                    *source = Rc::clone(previous);
-                    restored = true;
-                }
-            }
-
-            if !restored {
-                return Err(error);
-            }
-
-            let fallback = Definitions::combine(&sources)?;
-
-            validate_definitions(&fallback)
-                .map_err(|_| error.to_string())
-                .map_err(invalid)?;
-
-            for (location, source) in unique.iter().zip(&sources) {
-                if self.pending.remove(*location).is_some() {
-                    self.warnings.push(format!(
-                        "Using cached {location}; declaration update failed: {error}"
-                    ));
-
-                    self.loaded
-                        .insert((*location).clone(), Ok(Rc::clone(source)));
-                }
-            }
-
-            definitions = fallback;
-        }
-
-        for location in unique {
-            if let Some(cached) = self.pending.remove(location)
-                && let Err(error) = cache_path(location).and_then(|path| save_cache(&path, &cached))
-            {
-                self.warnings
-                    .push(format!("Could not cache {location}: {error}"));
-            }
-        }
-
-        let definitions = Rc::new(definitions);
-
-        self.definitions
-            .insert(locations.to_vec(), Rc::clone(&definitions));
-
-        Ok(definitions)
     }
 
     pub(crate) fn documentation(
@@ -342,6 +196,33 @@ impl Assets {
 
     pub(crate) fn take_warnings(&mut self) -> Vec<String> {
         std::mem::take(&mut self.warnings)
+    }
+
+    pub(crate) fn declaration(&mut self, location: &str) -> io::Result<Rc<Definitions>> {
+        if let Some(definition) = self.definitions.get(location) {
+            return Ok(Rc::clone(definition));
+        }
+
+        let source = self.load(location, validate_definition_file, false)?;
+
+        let definition = Rc::new(Definitions {
+            metadata: parse_metadata(&source)?,
+            source,
+        });
+
+        self.definitions
+            .insert(location.to_owned(), Rc::clone(&definition));
+
+        Ok(definition)
+    }
+
+    pub(crate) fn commit_declaration(&mut self, location: &str) {
+        if let Some(cached) = self.pending.remove(location)
+            && let Err(error) = cache_path(location).and_then(|path| save_cache(&path, &cached))
+        {
+            self.warnings
+                .push(format!("Could not cache {location}: {error}"));
+        }
     }
 
     fn load(
@@ -402,18 +283,13 @@ impl Assets {
 
             Err(error) => {
                 self.warnings.push(format!(
-                    "Ignoring unusable Roblox cache {}: {error}",
+                    "Ignoring unusable asset cache {}: {error}",
                     path.display()
                 ));
 
                 None
             }
         };
-
-        if !persist && let Some(cached) = &cached {
-            self.previous
-                .insert(location.to_owned(), Rc::from(cached.body.as_str()));
-        }
 
         match self.download(location, cached.as_ref()) {
             Ok(None) => Ok(cached

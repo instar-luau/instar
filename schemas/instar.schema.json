@@ -77,8 +77,6 @@
       "description": "Optional Roblox sourcemap configuration.",
       "$ref": "#/$defs/RobloxConfig",
       "default": {
-        "definitions": null,
-        "documentation": null,
         "enabled": null,
         "security": null
       }
@@ -117,6 +115,20 @@
           "description": "Case-insensitive aliases; relative targets retain their defining directory.",
           "type": "object",
           "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "definitions": {
+          "description": "Declaration files keyed by documentation namespace (for example `@test`).\nPaths are relative to their manifest; child keys override inherited keys.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "documentation": {
+          "description": "JSON documentation paths or HTTPS URLs. Lists append through inheritance.\nLater files override matching keys; paths are relative to their manifest.",
+          "type": "array",
+          "items": {
             "type": "string"
           }
         },
@@ -189,28 +201,6 @@
       "description": "Roblox platform detection, API assets, and sourcemap settings.",
       "type": "object",
       "properties": {
-        "definitions": {
-          "description": "Ordered declaration paths or HTTPS URLs, appended to inherited files.\nRelative paths use this manifest's directory; `[]` adds nothing.",
-          "type": [
-            "array",
-            "null"
-          ],
-          "default": null,
-          "items": {
-            "type": "string"
-          }
-        },
-        "documentation": {
-          "description": "Ordered documentation paths or HTTPS URLs, appended to inherited files.\nLater files override matching documentation keys; `[]` adds nothing.",
-          "type": [
-            "array",
-            "null"
-          ],
-          "default": null,
-          "items": {
-            "type": "string"
-          }
-        },
         "enabled": {
           "description": "Omission inherits or auto-detects Roblox from the effective sourcemaps.",
           "type": [

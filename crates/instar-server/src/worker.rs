@@ -331,19 +331,69 @@ impl Worker {
         Ok(json!({"documentChanges": changes}))
     }
 
-    fn documentation(&mut self, path: &Path, symbol: &str) -> Option<Value> {
+    fn documentation(&mut self, path: &Path, symbol: &str) -> io::Result<Option<String>> {
         if symbol.is_empty() {
-            return None;
+            return Ok(None);
         }
 
-        let docs = self.editor.documentation(path).ok().flatten()?;
-        let value = docs.get(symbol)?;
+        let Some(docs) = self.editor.documentation(path, symbol)? else {
+            return Ok(None);
+        };
 
-        let text = value
+        let Some(value) = docs.get(symbol) else {
+            return Ok(None);
+        };
+
+        let mut text = value
             .as_str()
-            .or_else(|| value.get("documentation").and_then(Value::as_str))?;
+            .or_else(|| value.get("documentation").and_then(Value::as_str))
+            .unwrap_or_default()
+            .to_owned();
 
-        Some(json!({"kind": "markdown", "value": text}))
+        if text.trim().is_empty() {
+            text.clear();
+        }
+
+        if let Some(sample) = value
+            .get("code_sample")
+            .and_then(Value::as_str)
+            .filter(|sample| !sample.trim().is_empty())
+        {
+            if !text.is_empty() {
+                text.push_str("\n\n---\n\n");
+            }
+
+            let fence = sample
+                .split(|c| c != '`')
+                .map(str::len)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1)
+                .max(3);
+
+            text.extend(std::iter::repeat_n('`', fence));
+            text.push_str("luau\n");
+            text.push_str(sample);
+            text.push('\n');
+            text.extend(std::iter::repeat_n('`', fence));
+        }
+
+        if let Some(link) = value
+            .get("learn_more_link")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|link| !link.is_empty())
+        {
+            if !text.is_empty() {
+                text.push_str("\n\n---\n\n");
+            }
+
+            text.push_str("[Learn more](");
+            text.push_str(link);
+            text.push(')');
+        }
+
+        Ok((!text.is_empty()).then_some(text))
     }
 
     pub(crate) fn query(&mut self, path: &Path, query: &Query) -> io::Result<Value> {
@@ -391,13 +441,13 @@ impl Worker {
             }
 
             Query::References(line, column, include_declaration) => {
-                let results = self.editor.query(path, |checker, host, name| {
+                let results = self.editor.query_all(path, |checker, host, name| {
                     checker.references(host, name, line, column)
                 })?;
 
                 let mut targets = Vec::new();
 
-                for result in results {
+                for result in results.into_iter().flatten() {
                     if (include_declaration || !result.declaration)
                         && let Ok(target) = self.target(&result.path, result.range)
                     {
@@ -454,13 +504,19 @@ impl Worker {
             return Ok(Value::Null);
         };
 
-        let mut text = format!("```luau\n{}: {}\n```", result.name, result.type_);
+        let label = if result.name.is_empty() {
+            result.type_
+        } else if result.is_type {
+            format!("type {} = {}", result.name, result.type_)
+        } else {
+            format!("{}: {}", result.name, result.type_)
+        };
 
-        if let Some(docs) = self.documentation(path, &result.documentation_symbol)
-            && let Some(docs) = docs["value"].as_str()
-        {
-            text.push_str("\n\n");
-            text.push_str(docs);
+        let mut text = format!("```luau\n{label}\n```");
+
+        if let Some(docs) = self.documentation(path, &result.documentation_symbol)? {
+            text.push_str("\n\n---\n\n");
+            text.push_str(&docs);
         }
 
         let mut hover = json!({"contents": {"kind": "markdown", "value": text}});
