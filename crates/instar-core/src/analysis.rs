@@ -13,6 +13,7 @@ use instar_bridge::{
 };
 
 use crate::{
+    filter::Service,
     graph::{self, Request},
     invalid,
     project::{EffectiveConfig, Project, RobloxSettings},
@@ -145,12 +146,12 @@ impl Callbacks for Host<'_> {
     }
 
     fn configuration(&mut self, name: &str) -> io::Result<&Configuration> {
-        Ok(self
+        let state = self
             .modules
             .get(name)
-            .ok_or_else(|| invalid(format!("unknown analysis module {name}")))?
-            .configuration
-            .native())
+            .ok_or_else(|| invalid(format!("unknown analysis module {name}")))?;
+
+        state.configuration.analysis_native(&state.module.source)
     }
 
     fn resolve(&mut self, request: &ResolveRequest<'_>) -> io::Result<Option<String>> {
@@ -242,6 +243,15 @@ impl Callbacks for Host<'_> {
             )));
         }
 
+        let location = self.location(diagnostic.path, diagnostic.location)?;
+
+        if !self
+            .project
+            .includes(&location.module.source, Service::Analyze)?
+        {
+            return Ok(());
+        }
+
         let related = diagnostic
             .related
             .map(|related| {
@@ -251,7 +261,7 @@ impl Callbacks for Host<'_> {
             .transpose()?;
 
         self.diagnostics.push(Diagnostic {
-            location: self.location(diagnostic.path, diagnostic.location)?,
+            location,
             error: diagnostic.severity == DiagnosticSeverity::DiagnosticError,
             message: diagnostic.message.to_owned(),
             related,
@@ -269,6 +279,7 @@ struct Environment {
 
 /// Checks entries and their dependencies without constructing an Instar dependency graph.
 /// Each place and API/security selection has its own native checker and global environment.
+/// Global and `[analyze]` filters select entries and diagnostic output, not dependencies.
 ///
 /// # Errors
 /// Returns entry, source, configuration, asset, or native callback failures.
@@ -277,6 +288,10 @@ pub fn check(project: &mut Project, paths: &[PathBuf]) -> io::Result<Vec<Diagnos
     let mut environments = HashMap::<_, Environment>::new();
 
     for path in paths {
+        if !project.includes(path, Service::Analyze)? {
+            continue;
+        }
+
         for module in resolver
             .entries(project, path)
             .map_err(|error| invalid(error.to_string()))?
@@ -402,8 +417,17 @@ fn check_environment(
     }
 
     for name in timeouts {
+        let location = host.location(&name, [0; 4])?;
+
+        if !host
+            .project
+            .includes(&location.module.source, Service::Analyze)?
+        {
+            continue;
+        }
+
         host.diagnostics.push(Diagnostic {
-            location: host.location(&name, [0; 4])?,
+            location,
             error: true,
             message: "Luau analysis timed out".into(),
             related: None,

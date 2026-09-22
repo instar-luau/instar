@@ -4,6 +4,70 @@
   "description": "Instar project configuration. Luau settings live in `[luau]`.",
   "type": "object",
   "properties": {
+    "analyze": {
+      "description": "Additional file selection for analysis.",
+      "$ref": "#/$defs/FileFilter",
+      "default": {
+        "exclude": [],
+        "include": []
+      }
+    },
+    "build": {
+      "description": "Additional file selection for builds.",
+      "$ref": "#/$defs/FileFilter",
+      "default": {
+        "exclude": [],
+        "include": []
+      }
+    },
+    "exclude": {
+      "description": "Global exclude globs; exclusions always win.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "format": {
+      "description": "Additional file selection for formatting.",
+      "$ref": "#/$defs/FileFilter",
+      "default": {
+        "exclude": [],
+        "include": []
+      }
+    },
+    "graft": {
+      "description": "Additional file selection for dependency installation.",
+      "$ref": "#/$defs/FileFilter",
+      "default": {
+        "exclude": [],
+        "include": []
+      }
+    },
+    "include": {
+      "description": "Global include globs, relative to this manifest; inherited lists append.\nAn empty effective list allows every path.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "lint": {
+      "description": "Additional file selection for linting.",
+      "$ref": "#/$defs/FileFilter",
+      "default": {
+        "exclude": [],
+        "include": []
+      }
+    },
+    "lsp": {
+      "description": "Additional file selection for the language server.",
+      "$ref": "#/$defs/FileFilter",
+      "default": {
+        "exclude": [],
+        "include": []
+      }
+    },
     "luau": {
       "description": "Settings shared by analysis and require resolution.",
       "$ref": "#/$defs/LuauConfig",
@@ -22,6 +86,29 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "FileFilter": {
+      "description": "Service-specific globs, intersected with global selection.\nLists append through inheritance; `[]` adds nothing.",
+      "type": "object",
+      "properties": {
+        "exclude": {
+          "description": "Exclude globs relative to their manifest; exclusions always win.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "include": {
+          "description": "Include globs relative to their manifest; an empty effective list allows every path.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "LuauConfig": {
       "description": "Luau settings in Instar's `snake_case` configuration format.",
       "type": "object",
