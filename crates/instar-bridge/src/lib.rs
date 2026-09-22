@@ -479,7 +479,7 @@ impl Checker {
         })
     }
 
-    /// Registers Roblox class magic after loading definitions.
+    /// Discovers classes from loaded declarations and applies service/creatable flags.
     ///
     /// # Errors
     /// Returns an error for invalid class metadata or changes after registration.

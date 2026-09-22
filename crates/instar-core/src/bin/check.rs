@@ -58,7 +58,14 @@ fn run() -> io::Result<ExitCode> {
         ));
     }
 
-    let diagnostics = analysis::check(&mut Project::new(), &paths)?;
+    let mut project = Project::new();
+    let result = analysis::check(&mut project, &paths);
+
+    for warning in project.take_asset_warnings() {
+        eprintln!("warning: {warning}");
+    }
+
+    let diagnostics = result?;
     let base = env::current_dir()?;
     let mut output = io::BufWriter::new(io::stdout().lock());
 

@@ -143,6 +143,44 @@ impl Sourcemap {
         }))
     }
 
+    pub(crate) fn register(
+        self: &Rc<Self>,
+        checker: &mut instar_bridge::Checker,
+        mut module_name: impl FnMut(Module) -> io::Result<String>,
+    ) -> io::Result<()> {
+        let names = self
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(index, node)| {
+                if node.sources.is_empty() {
+                    return Ok(None);
+                }
+
+                let module = self
+                    .instance(index)
+                    .module(false)
+                    .map_err(|error| invalid(error.to_string()))?;
+
+                module_name(module).map(Some)
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+
+        let nodes = self
+            .nodes
+            .iter()
+            .zip(&names)
+            .map(|(node, module)| instar_bridge::RobloxNode {
+                name: &node.name,
+                class_name: &node.class_name,
+                parent: node.parent,
+                module: module.as_deref(),
+            })
+            .collect::<Vec<_>>();
+
+        checker.register_roblox_tree(&nodes)
+    }
+
     pub(crate) fn instances_for_source(
         self: &Rc<Self>,
         path: &Path,

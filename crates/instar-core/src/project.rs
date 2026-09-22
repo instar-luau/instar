@@ -9,7 +9,8 @@ use std::{
 
 use crate::{
     absolute,
-    config::{self, Config, LuauConfig},
+    assets::{self, Assets, Definitions},
+    config::{self, Config, LuauConfig, RobloxConfig, Security},
     invalid,
     roblox::{Sourcemap, SourcemapLocation},
 };
@@ -41,6 +42,9 @@ pub struct EffectiveConfig {
     /// Effective sourcemaps, retaining their explicit or automatically discovered origin.
     pub sourcemaps: Vec<SourcemapLocation>,
 
+    /// Effective platform detection and asset locations.
+    pub roblox: RobloxSettings,
+
     native: instar_bridge::Configuration,
 }
 
@@ -52,6 +56,22 @@ impl EffectiveConfig {
     }
 }
 
+/// Resolved Roblox settings for a source directory.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RobloxSettings {
+    /// Whether Roblox API types apply.
+    pub enabled: bool,
+
+    /// Selected API security level.
+    pub security: Security,
+
+    /// Ordered absolute local paths or HTTPS URLs of the declarations.
+    pub definitions: Vec<String>,
+
+    /// Ordered documentation locations; later files override matching keys.
+    pub documentation: Vec<String>,
+}
+
 #[derive(Clone, Default)]
 struct Layers {
     legacy: LuauConfig,
@@ -60,6 +80,7 @@ struct Layers {
     instar_aliases: BTreeMap<String, Alias>,
     inputs: Vec<PathBuf>,
     sourcemaps: Option<Vec<SourcemapLocation>>,
+    roblox: RobloxConfig,
 }
 
 /// Cached project snapshot. Entry files may belong to unrelated filesystem roots.
@@ -70,6 +91,7 @@ pub struct Project {
     configurations: HashMap<PathBuf, Rc<EffectiveConfig>>,
     sources: HashMap<PathBuf, Rc<str>>,
     sourcemaps: HashMap<PathBuf, Result<Rc<Sourcemap>, String>>,
+    assets: Assets,
 }
 
 impl Project {
@@ -94,6 +116,38 @@ impl Project {
         self.sources.insert(path, Rc::clone(&source));
 
         Ok(source)
+    }
+
+    /// Loads Roblox documentation lazily, without downloading it for ordinary type checks.
+    ///
+    /// # Errors
+    /// Returns configuration, asset-loading, or documentation-validation errors.
+    pub fn documentation(&mut self, source: &Path) -> io::Result<Option<Rc<serde_json::Value>>> {
+        let config = self.configuration(source)?;
+
+        if !config.roblox.enabled {
+            return Ok(None);
+        }
+
+        self.assets
+            .documentation(&config.roblox.documentation)
+            .map(Some)
+    }
+
+    /// Drains asset refresh and cache warnings accumulated by this project session.
+    pub fn take_asset_warnings(&mut self) -> Vec<String> {
+        self.assets.take_warnings()
+    }
+
+    pub(crate) fn definitions(
+        &mut self,
+        settings: &RobloxSettings,
+    ) -> io::Result<Option<Rc<Definitions>>> {
+        if !settings.enabled {
+            return Ok(None);
+        }
+
+        self.assets.definitions(&settings.definitions).map(Some)
     }
 
     pub(crate) fn sourcemaps_for(&mut self, source: &Path) -> io::Result<Vec<Rc<Sourcemap>>> {
@@ -164,7 +218,9 @@ impl Project {
 
         let mut layers = self.load_layers(&directory)?;
 
-        let sourcemaps = if let Some(sourcemaps) = layers.sourcemaps {
+        let sourcemaps = if layers.roblox.enabled == Some(false) {
+            Vec::new()
+        } else if let Some(sourcemaps) = layers.sourcemaps {
             sourcemaps
         } else {
             let mut discovered = Vec::new();
@@ -204,6 +260,21 @@ impl Project {
             discovered
         };
 
+        let security = layers.roblox.security.unwrap_or_default();
+
+        let roblox = RobloxSettings {
+            enabled: layers.roblox.enabled.unwrap_or(!sourcemaps.is_empty()),
+            security,
+            definitions: layers
+                .roblox
+                .definitions
+                .unwrap_or_else(|| vec![format!("{}{}", assets::BASE, security.file())]),
+            documentation: layers
+                .roblox
+                .documentation
+                .unwrap_or_else(|| vec![format!("{}documentation.json", assets::BASE)]),
+        };
+
         let mut settings = layers.legacy;
         settings.merge(&layers.instar);
         let mut aliases = layers.legacy_aliases;
@@ -217,6 +288,7 @@ impl Project {
             json,
             inputs: layers.inputs,
             sourcemaps,
+            roblox,
             native,
         });
 
@@ -259,6 +331,33 @@ impl Project {
                 _ => toml::from_str::<Config>(&source)
                     .map_err(|e| invalid(e.to_string()))
                     .and_then(|config| {
+                        if let Some(enabled) = config.roblox.enabled {
+                            layers.roblox.enabled = Some(enabled);
+                        }
+
+                        if let Some(security) = config.roblox.security {
+                            layers.roblox.security = Some(security);
+                        }
+
+                        for (inherited, configured) in [
+                            (&mut layers.roblox.definitions, config.roblox.definitions),
+                            (
+                                &mut layers.roblox.documentation,
+                                config.roblox.documentation,
+                            ),
+                        ] {
+                            if let Some(locations) =
+                                configured.filter(|locations| !locations.is_empty())
+                            {
+                                let inherited = inherited.get_or_insert_default();
+
+                                for location in locations {
+                                    let location = assets::location(&location, directory)?;
+                                    inherited.push(location);
+                                }
+                            }
+                        }
+
                         if let Some(sourcemaps) = config.roblox.sourcemaps {
                             let mut locations = Vec::new();
 

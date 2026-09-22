@@ -1,1 +1,1 @@
-allowed-duplicate-crates = ["syn", "bitflags", "hashbrown", "thiserror", "thiserror-impl", "winnow", "getrandom"]
+allowed-duplicate-crates = ["syn", "bitflags", "hashbrown", "thiserror", "thiserror-impl", "winnow", "getrandom", "base64", "windows-sys"]
