@@ -1,4 +1,3 @@
-#include "bridge.hpp"
 #include "Luau/BuiltinDefinitions.h"
 #include "Luau/Common.h"
 #include "Luau/Config.h"
@@ -8,6 +7,7 @@
 #include "Luau/Linter.h"
 #include "Luau/Module.h"
 #include "Luau/TypeAttach.h"
+#include "bridge.hpp"
 #include "editor.hpp"
 #include "roblox.hpp"
 
@@ -138,8 +138,8 @@ namespace {
         }
 
         bool diagnostic(
-            std::string_view path, const Luau::Location &location, DiagnosticSeverity severity, std::string_view message, std::string_view related_path = {},
-            const Luau::Location *related_location = nullptr, std::string_view related_message = {}
+            std::string_view path, const Luau::Location &location, DiagnosticSeverity severity, std::string_view message, std::string_view related_path = {}, const Luau::Location *related_location = nullptr,
+            std::string_view related_message = {}
         ) {
             Diagnostic value{};
             value.path = text(path);
@@ -558,14 +558,9 @@ extern "C" {
                 return failure(error, "definition changes require a new checker");
             }
 
-            Luau::LoadDefinitionFileResult result = checker->frontend.loadDefinitionFile(
-                checker->frontend.globals,
-                checker->frontend.globals.globalScope,
-                *source_view,
-                name,
-                options->capture_comments != 0,
-                options->type_check_for_autocomplete != 0
-            );
+            Luau::LoadDefinitionFileResult result =
+                checker->frontend
+                    .loadDefinitionFile(checker->frontend.globals, checker->frontend.globals.globalScope, *source_view, name, options->capture_comments != 0, options->type_check_for_autocomplete != 0);
 
             for (const Luau::ParseError &parse_error : result.parseResult.errors) {
                 if (!checker->diagnostic(name, parse_error.getLocation(), DiagnosticError, parse_error.getMessage())) {
@@ -675,8 +670,7 @@ extern "C" {
         }
     }
 
-    int32_t
-    checker_result(void *handle, Text name, uint8_t accumulate_nested, uint8_t for_autocomplete, ItemCallback timeout_callback, void *timeout_context, String *error) {
+    int32_t checker_result(void *handle, Text name, uint8_t accumulate_nested, uint8_t for_autocomplete, ItemCallback timeout_callback, void *timeout_context, String *error) {
 
         try {
             if (error) {

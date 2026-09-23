@@ -4,7 +4,7 @@ AllowShortFunctionsOnASingleLine:
   Other: false
 BreakAfterOpenBracketFunction: true
 BreakBeforeCloseBracketFunction: true
-ColumnLimit: 170
+ColumnLimit: 210
 IndentExternBlock: Indent
 IndentWidth: 4
 InsertBraces: true

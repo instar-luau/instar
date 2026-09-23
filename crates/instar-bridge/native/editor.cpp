@@ -99,8 +99,7 @@ namespace instar {
 
         std::optional<Luau::TypeId> type_at(const Luau::Module &module, const Luau::SourceModule &source, Luau::Position position) {
             if (const std::optional<Luau::AstType *> type = type_node_at(source, position)) {
-                if (const auto *reference = (*type)->as<Luau::AstTypeReference>();
-                    reference && reference->prefixLocal && reference->prefixLocation && reference->prefixLocation->contains(position)) {
+                if (const auto *reference = (*type)->as<Luau::AstTypeReference>(); reference && reference->prefixLocal && reference->prefixLocation && reference->prefixLocation->contains(position)) {
                     const Luau::ScopePtr scope = Luau::findScopeAtPosition(module, position);
                     const auto binding = scope ? scope->lookupEx(Luau::Symbol(reference->prefixLocal)) : std::nullopt;
 
@@ -257,8 +256,7 @@ namespace instar {
             return std::nullopt;
         }
 
-        std::optional<std::pair<Luau::ModuleName, Luau::Location>>
-        type_alias_definition(Luau::Frontend &frontend, const ModuleContext &context, const Luau::AstTypeReference *reference) {
+        std::optional<std::pair<Luau::ModuleName, Luau::Location>> type_alias_definition(Luau::Frontend &frontend, const ModuleContext &context, const Luau::AstTypeReference *reference) {
             Luau::ScopePtr scope = Luau::findScopeAtPosition(*context.module, reference->location.begin);
 
             if (!scope) {
@@ -331,10 +329,7 @@ namespace instar {
         bool same_identity(const BindingIdentity &left, const BindingIdentity &right);
         bool same_identity(const PropertyIdentity &left, const PropertyIdentity &right);
 
-        void collect_property_identities(
-            const Luau::Module &module, Luau::TypeId type, std::string_view name, std::vector<PropertyIdentity> &identities, std::vector<Luau::TypeId> &seen,
-            bool &unknown
-        ) {
+        void collect_property_identities(const Luau::Module &module, Luau::TypeId type, std::string_view name, std::vector<PropertyIdentity> &identities, std::vector<Luau::TypeId> &seen, bool &unknown) {
             type = Luau::follow(type);
 
             for (Luau::TypeId candidate : seen) {
@@ -473,8 +468,7 @@ namespace instar {
                 }
 
                 bool visit(Luau::AstType *type) override {
-                    if (const auto *reference = type->as<Luau::AstTypeReference>();
-                        reference && reference->prefixLocation && reference->prefixLocation->contains(position)) {
+                    if (const auto *reference = type->as<Luau::AstTypeReference>(); reference && reference->prefixLocation && reference->prefixLocation->contains(position)) {
                         local = reference->prefixLocal;
                     }
 
@@ -646,9 +640,7 @@ namespace instar {
             std::vector<std::pair<Luau::AstLocal *, Luau::AstExpr *>> assignments;
         };
 
-        void emit_function_sources(
-            const ModuleContext &source_context, std::vector<Luau::AstExprFunction *> functions, NavigationCallback callback, void *context, bool &failed
-        ) {
+        void emit_function_sources(const ModuleContext &source_context, std::vector<Luau::AstExprFunction *> functions, NavigationCallback callback, void *context, bool &failed) {
 
             for (Luau::AstExprFunction *function : functions) {
                 const Location range = location(function->location);
@@ -667,6 +659,14 @@ namespace instar {
             Luau::Location range;
             Luau::AstLocal *local = nullptr;
             std::optional<BindingIdentity> binding;
+            std::optional<PropertyIdentity> property;
+            std::optional<std::pair<Luau::ModuleName, Luau::Location>> alias;
+            Luau::TypeId base = nullptr;
+            const Luau::AstTypeReference *type = nullptr;
+            bool declaration = false;
+            bool variable = false;
+        };
+
         bool private_type_alias(Luau::Frontend &frontend, const RenameSite &site) {
             if (!site.alias) {
                 return false;
@@ -683,14 +683,6 @@ namespace instar {
 
             return declaration && declaration->nameLocation == site.alias->second && !declaration->exported;
         }
-
-            std::optional<PropertyIdentity> property;
-            std::optional<std::pair<Luau::ModuleName, Luau::Location>> alias;
-            Luau::TypeId base = nullptr;
-            const Luau::AstTypeReference *type = nullptr;
-            bool declaration = false;
-            bool variable = false;
-        };
 
         bool same_identity(const RenameSite &left, const RenameSite &right) {
             if (left.local || right.local) {
@@ -921,8 +913,8 @@ namespace instar {
             bool found = false;
 
             RenameVisitor declarations(frontend, *definition, [&](const RenameSite &site) {
-                if (same_identity(site, target.site) && ((site.declaration && !found) || site.range == target.definition ||
-                                                            (target.definition.contains(site.range.begin) && !site.range.contains(target.definition.begin)))) {
+                if (same_identity(site, target.site) &&
+                    ((site.declaration && !found) || site.range == target.definition || (target.definition.contains(site.range.begin) && !site.range.contains(target.definition.begin)))) {
                     target.definition = site.range;
                     found = true;
                 }
@@ -1033,8 +1025,7 @@ namespace instar {
             } else if (target.site.alias && (site.alias || site.type)) {
                 const Luau::ScopePtr scope = Luau::findScopeAtPosition(*context.module, site.range.begin);
 
-                if (scope && same_identity(site, target.site) &&
-                    (site.type && site.type->prefix ? scope->lookupImportedType(site.type->prefix->value, name) : scope->lookupType(name))) {
+                if (scope && same_identity(site, target.site) && (site.type && site.type->prefix ? scope->lookupImportedType(site.type->prefix->value, name) : scope->lookupType(name))) {
                     throw std::runtime_error("a type with the new name already exists");
                 }
 
@@ -1512,8 +1503,7 @@ namespace instar {
                         const Luau::Property *property = origin->property;
                         std::optional<Luau::Location> definition;
 
-                        const std::optional<Luau::ModuleName> module_name =
-                            property->readTy ? type_definition_module(*context_value->module, *property->readTy, definition) : std::nullopt;
+                        const std::optional<Luau::ModuleName> module_name = property->readTy ? type_definition_module(*context_value->module, *property->readTy, definition) : std::nullopt;
 
                         const Luau::Location range = definition.value_or(origin->location);
                         const std::string path = module_name.value_or(origin->module);
@@ -1625,8 +1615,7 @@ namespace instar {
             if (auto *global = expression->as<Luau::AstExprGlobal>()) {
                 if (const auto identity = binding_identity(*context_value, global); identity && identity->binding->location.begin.hasValue()) {
                     struct DeclarationFinder final : Luau::AstVisitor {
-                        DeclarationFinder(const ModuleContext &context, BindingIdentity identity, Luau::Location location)
-                            : context(context), identity(identity), location(location) {}
+                        DeclarationFinder(const ModuleContext &context, BindingIdentity identity, Luau::Location location) : context(context), identity(identity), location(location) {}
 
                         bool visit(Luau::AstExprGlobal *candidate) override {
                             const auto candidate_identity = binding_identity(context, candidate);
@@ -1950,10 +1939,6 @@ namespace instar {
         }
 
         const std::optional<ModuleContext> context_value = module_context(frontend, name);
-        const bool module_local = target->local || private_type_alias(frontend, *target);
-        const auto &target_module = target->alias ? target->alias->first : context_value->source->name;
-        const auto eligible = candidate_modules(candidates, candidate_count);
-
 
         if (!context_value) {
             return StatusSuccess;
@@ -1964,6 +1949,10 @@ namespace instar {
         if (!target) {
             return StatusSuccess;
         }
+
+        const bool module_local = target->local || private_type_alias(frontend, *target);
+        const auto &target_module = target->alias ? target->alias->first : context_value->source->name;
+        const auto eligible = candidate_modules(candidates, candidate_count);
 
         for (const auto &[module_name, source] : frontend.sourceModules) {
             if ((module_local && module_name != target_module) || (candidates && eligible.find(module_name) == eligible.end())) {
@@ -1989,6 +1978,17 @@ namespace instar {
                     failed = !callback(context, &result);
                 }
             });
+
+            source->root->visit(&visitor);
+
+            if (failed) {
+                return StatusCallbackFailure;
+            }
+        }
+
+        return StatusSuccess;
+    }
+
     int32_t editor_reference_target(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, ReferenceTargetCallback callback, void *context) {
         if (!callback) {
             return StatusFailure;
@@ -2004,17 +2004,6 @@ namespace instar {
         const EditorReferenceTarget result{text(target->name), uint8_t(target->local || private_type_alias(frontend, *target)), uint8_t(target->property.has_value())};
 
         return callback(context, &result) ? StatusSuccess : StatusCallbackFailure;
-    }
-
-
-            source->root->visit(&visitor);
-
-            if (failed) {
-                return StatusCallbackFailure;
-            }
-        }
-
-        return StatusSuccess;
     }
 
     int32_t editor_rename_target(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, RenameTargetCallback callback, void *context) {
@@ -2057,19 +2046,19 @@ namespace instar {
             throw std::runtime_error("this symbol cannot be renamed");
         }
 
-        const bool module_local = target->site.local || private_type_alias(frontend, target->site);
-        const auto eligible = candidate_modules(candidates, candidate_count);
-
         const std::string replacement(*input);
         Luau::Lexer lexer(replacement.data(), replacement.size(), *module->source->names);
         const Luau::Lexeme &token = lexer.next();
 
-        if (token.type != Luau::Lexeme::Name || token.location.begin != Luau::Position(0, 0) || token.location.end.line != 0 ||
-            token.location.end.column != replacement.size() || lexer.next().type != Luau::Lexeme::Eof) {
+        if (token.type != Luau::Lexeme::Name || token.location.begin != Luau::Position(0, 0) || token.location.end.line != 0 || token.location.end.column != replacement.size() ||
+            lexer.next().type != Luau::Lexeme::Eof) {
             throw std::runtime_error("the new name must be a Luau identifier");
         }
 
         std::vector<std::pair<Luau::ModuleName, LocalOccurrence>> occurrences;
+
+        const bool module_local = target->site.local || private_type_alias(frontend, target->site);
+        const auto eligible = candidate_modules(candidates, candidate_count);
 
         for (const auto &entry : frontend.sourceModules) {
             const Luau::ModuleName &module_name = entry.first;
