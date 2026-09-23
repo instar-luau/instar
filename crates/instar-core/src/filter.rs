@@ -119,20 +119,27 @@ impl Filters {
         self.global
             .append(directory, &config.include, &config.exclude)?;
 
-        for (service, filter) in [
-            (Service::Analyze, &config.analyze),
-            (Service::Build, &config.build),
-            (Service::Format, &config.format),
-            (Service::Graft, &config.graft),
-            (Service::Lint, &config.lint),
-            (Service::Lsp, &config.lsp),
+        for (service, include, exclude) in [
+            (
+                Service::Analyze,
+                &config.analyze.include,
+                &config.analyze.exclude,
+            ),
+            (Service::Build, &config.build.include, &config.build.exclude),
+            (
+                Service::Format,
+                &config.format.include,
+                &config.format.exclude,
+            ),
+            (Service::Graft, &config.graft.include, &config.graft.exclude),
+            (Service::Lint, &config.lint.include, &config.lint.exclude),
+            (Service::Lsp, &config.lsp.include, &config.lsp.exclude),
         ] {
-            if !filter.include.is_empty() || !filter.exclude.is_empty() {
-                self.services.entry(service).or_default().append(
-                    directory,
-                    &filter.include,
-                    &filter.exclude,
-                )?;
+            if !include.is_empty() || !exclude.is_empty() {
+                self.services
+                    .entry(service)
+                    .or_default()
+                    .append(directory, include, exclude)?;
             }
         }
 

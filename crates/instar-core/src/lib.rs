@@ -5,8 +5,10 @@ mod assets;
 pub mod analysis;
 pub mod config;
 pub mod filter;
+pub mod format;
 pub mod graph;
 pub mod project;
+pub(crate) mod require_order;
 pub mod resolve;
 pub mod roblox;
 

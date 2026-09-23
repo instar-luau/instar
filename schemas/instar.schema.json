@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Config",
-  "description": "Instar project configuration. Luau settings live in `[luau]`.",
+  "description": "Instar project configuration. Luau settings live in `[luau]`; formatting settings in `[format]`.",
   "type": "object",
   "properties": {
     "analyze": {
@@ -29,11 +29,63 @@
       }
     },
     "format": {
-      "description": "Additional file selection for formatting.",
-      "$ref": "#/$defs/FileFilter",
+      "description": "Formatting style and additional file selection.",
+      "$ref": "#/$defs/FormatConfig",
       "default": {
-        "exclude": [],
-        "include": []
+        "blocks": {
+          "edge_blank_lines": "remove",
+          "simple_bodies": "expand"
+        },
+        "calls": {
+          "layout": "vertical",
+          "parentheses": "always",
+          "wrap": "auto"
+        },
+        "chains": {
+          "layout": "method",
+          "wrap": "auto"
+        },
+        "final_newline": true,
+        "if_expressions": {
+          "layout": "block",
+          "placement": "same_line",
+          "wrap": "auto"
+        },
+        "indent_style": "tabs",
+        "indent_width": 4,
+        "leading_zero": "add",
+        "line_ending": "lf",
+        "parameters": {
+          "wrap": "auto"
+        },
+        "quote_style": "prefer_double",
+        "requires": {
+          "blank_lines": "between_groups",
+          "groups": [
+            "alias",
+            "relative",
+            "other"
+          ],
+          "order": "grouped"
+        },
+        "semicolons": "necessary",
+        "spacing": {
+          "before_function_parentheses": "never",
+          "braces": true,
+          "brackets": false,
+          "parentheses": false
+        },
+        "tables": {
+          "blank_lines": "preserve",
+          "trailing_comma": "multiline",
+          "wrap": "preserve"
+        },
+        "types": {
+          "operator_wrap": "auto",
+          "table_separator": "comma",
+          "table_wrap": "auto"
+        },
+        "width": 120
       }
     },
     "graft": {
@@ -103,6 +155,179 @@
           "items": {
             "type": "string"
           }
+        }
+      },
+      "additionalProperties": false
+    },
+    "FormatConfig": {
+      "description": "Optional formatting overrides and file selection. Omitted values inherit;\nschema defaults describe the root configuration.",
+      "type": "object",
+      "properties": {
+        "blocks": {
+          "description": "Block formatting settings.",
+          "$ref": "#/$defs/PartialBlocksOptions",
+          "default": {
+            "edge_blank_lines": "remove",
+            "simple_bodies": "expand"
+          }
+        },
+        "calls": {
+          "description": "Call formatting settings.",
+          "$ref": "#/$defs/PartialCallsOptions",
+          "default": {
+            "layout": "vertical",
+            "parentheses": "always",
+            "wrap": "auto"
+          }
+        },
+        "chains": {
+          "description": "Named call chain formatting settings.",
+          "$ref": "#/$defs/PartialChainsOptions",
+          "default": {
+            "layout": "method",
+            "wrap": "auto"
+          }
+        },
+        "exclude": {
+          "description": "Exclude globs for formatting.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "final_newline": {
+          "description": "Whether output ends in a newline.",
+          "type": "boolean",
+          "default": true
+        },
+        "if_expressions": {
+          "description": "If-expression formatting settings.",
+          "$ref": "#/$defs/PartialIfExpressionsOptions",
+          "default": {
+            "layout": "block",
+            "placement": "same_line",
+            "wrap": "auto"
+          }
+        },
+        "include": {
+          "description": "Additional include globs for formatting.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "indent_style": {
+          "description": "Indentation character.",
+          "type": "string",
+          "default": "tabs",
+          "enum": [
+            "tabs",
+            "spaces"
+          ]
+        },
+        "indent_width": {
+          "description": "Spaces per level or display width of a tab.",
+          "type": "integer",
+          "format": "uint",
+          "default": 4,
+          "minimum": 0
+        },
+        "leading_zero": {
+          "description": "Decimal leading-zero policy.",
+          "type": "string",
+          "default": "add",
+          "enum": [
+            "add",
+            "strip",
+            "preserve"
+          ]
+        },
+        "line_ending": {
+          "description": "Output line ending.",
+          "type": "string",
+          "default": "lf",
+          "enum": [
+            "lf",
+            "crlf"
+          ]
+        },
+        "parameters": {
+          "description": "Function parameter formatting settings.",
+          "$ref": "#/$defs/PartialParametersOptions",
+          "default": {
+            "wrap": "auto"
+          }
+        },
+        "quote_style": {
+          "description": "String delimiter policy.",
+          "type": "string",
+          "default": "prefer_double",
+          "enum": [
+            "prefer_double",
+            "prefer_single",
+            "double",
+            "single",
+            "preserve"
+          ]
+        },
+        "requires": {
+          "description": "Require ordering settings.",
+          "$ref": "#/$defs/PartialRequiresOptions",
+          "default": {
+            "blank_lines": "between_groups",
+            "groups": [
+              "alias",
+              "relative",
+              "other"
+            ],
+            "order": "grouped"
+          }
+        },
+        "semicolons": {
+          "description": "Statement separator policy.",
+          "type": "string",
+          "default": "necessary",
+          "enum": [
+            "necessary",
+            "always"
+          ]
+        },
+        "spacing": {
+          "description": "Whitespace settings.",
+          "$ref": "#/$defs/PartialSpacingOptions",
+          "default": {
+            "before_function_parentheses": "never",
+            "braces": true,
+            "brackets": false,
+            "parentheses": false
+          }
+        },
+        "tables": {
+          "description": "Value table formatting settings.",
+          "$ref": "#/$defs/PartialTablesOptions",
+          "default": {
+            "blank_lines": "preserve",
+            "trailing_comma": "multiline",
+            "wrap": "preserve"
+          }
+        },
+        "types": {
+          "description": "Type layout settings.",
+          "$ref": "#/$defs/PartialTypesOptions",
+          "default": {
+            "operator_wrap": "auto",
+            "table_separator": "comma",
+            "table_wrap": "auto"
+          }
+        },
+        "width": {
+          "description": "Target line width.",
+          "type": "integer",
+          "format": "uint",
+          "default": 120,
+          "minimum": 0
         }
       },
       "additionalProperties": false
@@ -194,6 +419,329 @@
           "description": "Require strict type correctness.",
           "type": "string",
           "const": "strict"
+        }
+      ]
+    },
+    "PartialBlocksOptions": {
+      "description": "Optional overrides for PartialBlocksOptions.",
+      "type": "object",
+      "properties": {
+        "edge_blank_lines": {
+          "description": "Override for `edge_blank_lines`.",
+          "type": "string",
+          "default": "remove",
+          "enum": [
+            "remove",
+            "preserve"
+          ]
+        },
+        "simple_bodies": {
+          "description": "Override for `simple_bodies`.",
+          "type": "string",
+          "default": "expand",
+          "enum": [
+            "expand",
+            "compact_functions",
+            "compact_conditionals",
+            "compact_all"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "PartialCallsOptions": {
+      "description": "Optional overrides for PartialCallsOptions.",
+      "type": "object",
+      "properties": {
+        "layout": {
+          "description": "Override for `layout`.",
+          "type": "string",
+          "default": "vertical",
+          "enum": [
+            "vertical",
+            "hug_last"
+          ]
+        },
+        "parentheses": {
+          "description": "Override for `parentheses`.",
+          "type": "string",
+          "default": "always",
+          "enum": [
+            "always",
+            "omit_string",
+            "omit_table",
+            "omit_literal",
+            "preserve"
+          ]
+        },
+        "wrap": {
+          "description": "Override for `wrap`.",
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "preserve",
+            "always",
+            "never"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "PartialChainsOptions": {
+      "description": "Optional overrides for PartialChainsOptions.",
+      "type": "object",
+      "properties": {
+        "layout": {
+          "description": "Override for `layout`.",
+          "type": "string",
+          "default": "method",
+          "enum": [
+            "method",
+            "full"
+          ]
+        },
+        "wrap": {
+          "description": "Override for `wrap`.",
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "preserve",
+            "always",
+            "never"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "PartialIfExpressionsOptions": {
+      "description": "Optional overrides for PartialIfExpressionsOptions.",
+      "type": "object",
+      "properties": {
+        "layout": {
+          "description": "Override for `layout`.",
+          "type": "string",
+          "default": "block",
+          "enum": [
+            "block",
+            "leading"
+          ]
+        },
+        "placement": {
+          "description": "Override for `placement`.",
+          "type": "string",
+          "default": "same_line",
+          "enum": [
+            "same_line",
+            "next_line"
+          ]
+        },
+        "wrap": {
+          "description": "Override for `wrap`.",
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "preserve",
+            "always",
+            "never"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "PartialParametersOptions": {
+      "description": "Optional overrides for PartialParametersOptions.",
+      "type": "object",
+      "properties": {
+        "wrap": {
+          "description": "Override for `wrap`.",
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "preserve",
+            "always",
+            "never"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "PartialRequiresOptions": {
+      "description": "Optional overrides for PartialRequiresOptions.",
+      "type": "object",
+      "properties": {
+        "blank_lines": {
+          "description": "Override for `blank_lines`.",
+          "type": "string",
+          "default": "between_groups",
+          "enum": [
+            "between_groups",
+            "none"
+          ]
+        },
+        "groups": {
+          "description": "Override for `groups`.",
+          "type": "array",
+          "default": [
+            "alias",
+            "relative",
+            "other"
+          ],
+          "items": {
+            "$ref": "#/$defs/RequireGroup"
+          }
+        },
+        "order": {
+          "description": "Override for `order`.",
+          "type": "string",
+          "default": "grouped",
+          "enum": [
+            "grouped",
+            "alphabetical",
+            "preserve"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "PartialSpacingOptions": {
+      "description": "Optional overrides for PartialSpacingOptions.",
+      "type": "object",
+      "properties": {
+        "before_function_parentheses": {
+          "description": "Override for `before_function_parentheses`.",
+          "type": "string",
+          "default": "never",
+          "enum": [
+            "never",
+            "calls",
+            "definitions",
+            "always"
+          ]
+        },
+        "braces": {
+          "description": "Override for `braces`.",
+          "type": "boolean",
+          "default": true
+        },
+        "brackets": {
+          "description": "Override for `brackets`.",
+          "type": "boolean",
+          "default": false
+        },
+        "parentheses": {
+          "description": "Override for `parentheses`.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "PartialTablesOptions": {
+      "description": "Optional overrides for PartialTablesOptions.",
+      "type": "object",
+      "properties": {
+        "blank_lines": {
+          "description": "Override for `blank_lines`.",
+          "type": "string",
+          "default": "preserve",
+          "enum": [
+            "preserve",
+            "remove"
+          ]
+        },
+        "trailing_comma": {
+          "description": "Override for `trailing_comma`.",
+          "type": "string",
+          "default": "multiline",
+          "enum": [
+            "multiline",
+            "never"
+          ]
+        },
+        "wrap": {
+          "description": "Override for `wrap`.",
+          "type": "string",
+          "default": "preserve",
+          "enum": [
+            "auto",
+            "preserve",
+            "always",
+            "never"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "PartialTypesOptions": {
+      "description": "Optional overrides for PartialTypesOptions.",
+      "type": "object",
+      "properties": {
+        "operator_wrap": {
+          "description": "Override for `operator_wrap`.",
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "preserve",
+            "always",
+            "never"
+          ]
+        },
+        "table_separator": {
+          "description": "Override for `table_separator`.",
+          "type": "string",
+          "default": "comma",
+          "enum": [
+            "comma",
+            "semicolon"
+          ]
+        },
+        "table_wrap": {
+          "description": "Override for `table_wrap`.",
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "preserve",
+            "always",
+            "never"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "RequireGroup": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "alias",
+            "relative",
+            "other"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "patterns": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "patterns"
+          ]
         }
       ]
     },
