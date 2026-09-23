@@ -190,11 +190,8 @@ extern "C" {
     int32_t checker_parse_diagnostics(void *checker, Text name, String *error);
     /**Checks one module and emits its timeout module names.*/
     int32_t checker_check(void *checker, Text name, ItemCallback timeout_callback, void *timeout_context, String *error);
-
     /**Emits cached diagnostics and their timeout module names.*/
-    int32_t
-    checker_result(void *checker, Text name, uint8_t accumulate_nested, uint8_t for_autocomplete, ItemCallback timeout_callback, void *timeout_context, String *error);
-
+    int32_t checker_result(void *checker, Text name, uint8_t accumulate_nested, uint8_t for_autocomplete, ItemCallback timeout_callback, void *timeout_context, String *error);
     /**Enumerates global names known to the checker.*/
     int32_t checker_globals(void *checker, ItemCallback callback, void *context, String *error);
     /**Enumerates modules required by the checker.*/

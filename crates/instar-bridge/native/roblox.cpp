@@ -58,8 +58,7 @@ namespace instar {
         std::optional<Luau::TypeId> class_type(const Metadata &metadata, const std::string &name, MagicKind kind = MagicKind::IsA) {
             const auto found = metadata.classes.find(name);
 
-            if (found == metadata.classes.end() || (kind == MagicKind::Constructor && !found->second.creatable) ||
-                (kind == MagicKind::Service && !found->second.service)) {
+            if (found == metadata.classes.end() || (kind == MagicKind::Constructor && !found->second.creatable) || (kind == MagicKind::Service && !found->second.service)) {
                 return std::nullopt;
             }
 
@@ -96,8 +95,7 @@ namespace instar {
           public:
             MagicFunction(MagicKind kind, std::shared_ptr<const Metadata> metadata) : kind(kind), metadata(std::move(metadata)) {}
 
-            std::optional<Luau::WithPredicate<Luau::TypePackId>>
-            handleOldSolver(Luau::TypeChecker &, const Luau::ScopePtr &, const Luau::AstExprCall &, Luau::WithPredicate<Luau::TypePackId>) override {
+            std::optional<Luau::WithPredicate<Luau::TypePackId>> handleOldSolver(Luau::TypeChecker &, const Luau::ScopePtr &, const Luau::AstExprCall &, Luau::WithPredicate<Luau::TypePackId>) override {
                 throw std::logic_error("old solver is not supported");
             }
 
@@ -190,13 +188,9 @@ namespace instar {
           private:
             size_t maximum_arguments() const { return kind == MagicKind::Constructor || kind == MagicKind::ChildType ? 2 : 1; }
 
-            bool returns_optional() const {
-                return kind == MagicKind::ChildClass || kind == MagicKind::ChildType || kind == MagicKind::AncestorClass || kind == MagicKind::AncestorType;
-            }
+            bool returns_optional() const { return kind == MagicKind::ChildClass || kind == MagicKind::ChildType || kind == MagicKind::AncestorClass || kind == MagicKind::AncestorType; }
 
-            void set_error(const Luau::MagicFunctionCallContext &context) const {
-                Luau::asMutable(context.result)->ty.emplace<Luau::BoundTypePack>(context.solver->builtinTypes->errorTypePack);
-            }
+            void set_error(const Luau::MagicFunctionCallContext &context) const { Luau::asMutable(context.result)->ty.emplace<Luau::BoundTypePack>(context.solver->builtinTypes->errorTypePack); }
 
             MagicKind kind;
             std::shared_ptr<const Metadata> metadata;
@@ -218,8 +212,7 @@ namespace instar {
             }
         }
 
-        template <typename Properties>
-        void attach_property(Properties &properties, const char *name, const std::shared_ptr<Luau::MagicFunction> &magic, const char *tag) {
+        template <typename Properties> void attach_property(Properties &properties, const char *name, const std::shared_ptr<Luau::MagicFunction> &magic, const char *tag) {
             const auto found = properties.find(name);
 
             if (found != properties.end() && found->second.readTy) {
@@ -323,14 +316,12 @@ namespace instar {
                 return;
             }
 
-            const Luau::TypeId function =
-                Luau::makeFunction(globals.globalTypes, instance->type, {globals.builtinTypes->stringType}, {globals.builtinTypes->booleanType});
+            const Luau::TypeId function = Luau::makeFunction(globals.globalTypes, instance->type, {globals.builtinTypes->stringType}, {globals.builtinTypes->booleanType});
 
             instance_type->props.emplace("IsA", Luau::Property::readonly(function));
         }
 
-        void
-        register_magic(Luau::GlobalTypes &globals, const std::shared_ptr<const Metadata> &metadata, MagicKind kind, const char *type, const char *property, bool global) {
+        void register_magic(Luau::GlobalTypes &globals, const std::shared_ptr<const Metadata> &metadata, MagicKind kind, const char *type, const char *property, bool global) {
             const auto magic = std::make_shared<MagicFunction>(kind, metadata);
             const char *tag = kind == MagicKind::Constructor ? "instar.creatable" : kind == MagicKind::Service ? "instar.service" : "instar.class";
 
