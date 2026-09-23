@@ -30,3 +30,6 @@ warnings = { level = "deny", priority = -1 }
 missing_docs = "deny"
 unreachable_pub = "deny"
 unsafe_op_in_unsafe_fn = "deny"
+
+[profile.dev]
+debug = "line-tables-only"

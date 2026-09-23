@@ -32,6 +32,6 @@ jobs:
         with:
           install_args: rust aqua:Kitware/CMake aqua:ninja-build/ninja
       - name: test
-        run: cargo test --workspace --release --locked --target ${{ matrix.target }}
+        run: cargo test --workspace --locked --target ${{ matrix.target }}
       - name: clippy
-        run: cargo clippy --workspace --all-targets --release --locked --target ${{ matrix.target }} -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked --target ${{ matrix.target }} -- -D warnings
