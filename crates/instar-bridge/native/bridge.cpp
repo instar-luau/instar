@@ -818,15 +818,19 @@ extern "C" {
         return call_editor(handle, error, instar::editor_type_definition, name, line, column, callback, context);
     }
 
-    int32_t editor_references(void *handle, Text name, uint32_t line, uint32_t column, ReferenceCallback callback, void *context, String *error) {
-        return call_editor(handle, error, instar::editor_references, name, line, column, callback, context);
+    int32_t editor_references(void *handle, Text name, uint32_t line, uint32_t column, const Text *candidates, size_t candidate_count, ReferenceCallback callback, void *context, String *error) {
+        return call_editor(handle, error, instar::editor_references, name, line, column, candidates, candidate_count, callback, context);
+    }
+
+    int32_t editor_reference_target(void *handle, Text name, uint32_t line, uint32_t column, ReferenceTargetCallback callback, void *context, String *error) {
+        return call_editor(handle, error, instar::editor_reference_target, name, line, column, callback, context);
     }
 
     int32_t editor_rename_target(void *handle, Text name, uint32_t line, uint32_t column, RenameTargetCallback callback, void *context, String *error) {
         return call_editor(handle, error, instar::editor_rename_target, name, line, column, callback, context);
     }
 
-    int32_t editor_rename(void *handle, Text name, uint32_t line, uint32_t column, Text new_name, ReferenceCallback callback, void *context, String *error) {
-        return call_editor(handle, error, instar::editor_rename, name, line, column, new_name, callback, context);
+    int32_t editor_rename(void *handle, Text name, uint32_t line, uint32_t column, Text new_name, const Text *candidates, size_t candidate_count, ReferenceCallback callback, void *context, String *error) {
+        return call_editor(handle, error, instar::editor_rename, name, line, column, new_name, candidates, candidate_count, callback, context);
     }
 }

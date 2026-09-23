@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 namespace instar {
@@ -26,6 +27,22 @@ namespace instar {
 
         Text text(std::string_view value) {
             return {reinterpret_cast<const uint8_t *>(value.data()), value.size()};
+        }
+
+        std::unordered_set<std::string_view> candidate_modules(const Text *candidates, size_t count) {
+            std::unordered_set<std::string_view> names;
+
+            if (candidates) {
+                names.reserve(count);
+
+                for (size_t index = 0; index < count; ++index) {
+                    if (const auto candidate = view(candidates[index])) {
+                        names.insert(*candidate);
+                    }
+                }
+            }
+
+            return names;
         }
 
         Location location(const Luau::Location &value) {
@@ -650,6 +667,23 @@ namespace instar {
             Luau::Location range;
             Luau::AstLocal *local = nullptr;
             std::optional<BindingIdentity> binding;
+        bool private_type_alias(Luau::Frontend &frontend, const RenameSite &site) {
+            if (!site.alias) {
+                return false;
+            }
+
+            const Luau::SourceModule *source = frontend.getSourceModule(site.alias->first);
+
+            if (!source || !source->root) {
+                return false;
+            }
+
+            Luau::AstNode *node = Luau::findNodeAtPosition(*source, site.alias->second.begin);
+            const auto *declaration = node ? node->as<Luau::AstStatTypeAlias>() : nullptr;
+
+            return declaration && declaration->nameLocation == site.alias->second && !declaration->exported;
+        }
+
             std::optional<PropertyIdentity> property;
             std::optional<std::pair<Luau::ModuleName, Luau::Location>> alias;
             Luau::TypeId base = nullptr;
@@ -1909,12 +1943,17 @@ namespace instar {
         return emit_type_definition(frontend, name, line, column, callback, context);
     }
 
-    int32_t editor_references(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, ReferenceCallback callback, void *context) {
+    int32_t editor_references(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, const Text *candidates, size_t candidate_count, ReferenceCallback callback, void *context) {
+
         if (!callback) {
             return StatusFailure;
         }
 
         const std::optional<ModuleContext> context_value = module_context(frontend, name);
+        const bool module_local = target->local || private_type_alias(frontend, *target);
+        const auto &target_module = target->alias ? target->alias->first : context_value->source->name;
+        const auto eligible = candidate_modules(candidates, candidate_count);
+
 
         if (!context_value) {
             return StatusSuccess;
@@ -1927,7 +1966,7 @@ namespace instar {
         }
 
         for (const auto &[module_name, source] : frontend.sourceModules) {
-            if (target->local && module_name != context_value->source->name) {
+            if ((module_local && module_name != target_module) || (candidates && eligible.find(module_name) == eligible.end())) {
                 continue;
             }
 
@@ -1950,6 +1989,23 @@ namespace instar {
                     failed = !callback(context, &result);
                 }
             });
+    int32_t editor_reference_target(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, ReferenceTargetCallback callback, void *context) {
+        if (!callback) {
+            return StatusFailure;
+        }
+
+        const std::optional<ModuleContext> module = module_context(frontend, name);
+        const std::optional<RenameSite> target = module ? symbol_at(frontend, *module, {line, column}) : std::nullopt;
+
+        if (!target) {
+            return StatusSuccess;
+        }
+
+        const EditorReferenceTarget result{text(target->name), uint8_t(target->local || private_type_alias(frontend, *target)), uint8_t(target->property.has_value())};
+
+        return callback(context, &result) ? StatusSuccess : StatusCallbackFailure;
+    }
+
 
             source->root->visit(&visitor);
 
@@ -1987,7 +2043,7 @@ namespace instar {
         return callback(context, &result) ? StatusSuccess : StatusCallbackFailure;
     }
 
-    int32_t editor_rename(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, Text new_name, ReferenceCallback callback, void *context) {
+    int32_t editor_rename(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, Text new_name, const Text *candidates, size_t candidate_count, ReferenceCallback callback, void *context) {
         const std::optional<ModuleContext> module = module_context(frontend, name);
         const std::optional<std::string_view> input = view(new_name);
 
@@ -2000,6 +2056,9 @@ namespace instar {
         if (!target) {
             throw std::runtime_error("this symbol cannot be renamed");
         }
+
+        const bool module_local = target->site.local || private_type_alias(frontend, target->site);
+        const auto eligible = candidate_modules(candidates, candidate_count);
 
         const std::string replacement(*input);
         Luau::Lexer lexer(replacement.data(), replacement.size(), *module->source->names);
@@ -2015,7 +2074,7 @@ namespace instar {
         for (const auto &entry : frontend.sourceModules) {
             const Luau::ModuleName &module_name = entry.first;
 
-            if (target->site.local && module_name != target->module) {
+            if ((module_local && module_name != target->module) || (candidates && eligible.find(module_name) == eligible.end())) {
                 continue;
             }
 

@@ -844,6 +844,26 @@ impl Editor {
         Ok(results)
     }
 
+    /// Returns native identities and source paths for all modules loaded in place contexts.
+    #[must_use]
+    pub fn module_identities(&self) -> Vec<(String, PathBuf)> {
+        let mut identities = self
+            .sessions
+            .iter()
+            .flat_map(|session| {
+                session
+                    .identities
+                    .iter()
+                    .map(|(module, name)| (name.clone(), module.source.clone()))
+            })
+            .collect::<Vec<_>>();
+
+        identities.sort_unstable();
+        identities.dedup();
+
+        identities
+    }
+
     /// Resolves a native identity to its physical source file.
     ///
     /// # Errors
