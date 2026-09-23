@@ -24,6 +24,7 @@ struct Syntax {
     symbols: Vec<Value>,
     folds: Vec<Value>,
     bindings: Index,
+    features: crate::features::Syntax,
 }
 
 pub(crate) fn path(uri: &Uri) -> io::Result<PathBuf> {
@@ -141,7 +142,7 @@ impl Document {
     fn syntax(&self) -> &Syntax {
         self.syntax.get_or_init(|| {
             let tree = vermis::parse(self.text.as_bytes());
-            let mut syntax = Syntax { spans: Vec::new(), symbols: Vec::new(), folds: Vec::new(), bindings: Index::new(&tree) };
+            let mut syntax = Syntax { spans: Vec::new(), symbols: Vec::new(), folds: Vec::new(), bindings: Index::new(&tree), features: crate::features::Syntax::new(&tree) };
 
             for (index, node) in tree.nodes.iter().enumerate() {
                 let span = node.span;
@@ -196,6 +197,10 @@ impl Document {
 
     pub(crate) fn bindings(&self) -> &Index {
         &self.syntax().bindings
+    }
+
+    pub(crate) fn features(&self) -> &crate::features::Syntax {
+        &self.syntax().features
     }
 
     pub(crate) fn tokens(&self) -> Value {

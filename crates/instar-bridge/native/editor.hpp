@@ -122,6 +122,10 @@ extern "C" {
         EditorCompletionKind kind;
         /**Whether the item is deprecated.*/
         uint8_t deprecated;
+        /**Source module containing the declaration, empty when unavailable.*/
+        Text definition_module;
+        /**Source declaration range.*/
+        Location definition;
     } EditorCompletionItem;
 
     /**Signature help for one call site.*/
@@ -178,6 +182,8 @@ extern "C" {
         Location range;
         /**Inferred type text.*/
         Text type;
+        /**Argument name, empty for variable type hints.*/
+        Text parameter;
     } EditorTypeHint;
 
     /**Receives hover information.*/

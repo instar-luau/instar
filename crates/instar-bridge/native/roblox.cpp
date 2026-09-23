@@ -202,27 +202,32 @@ namespace instar {
             std::shared_ptr<const Metadata> metadata;
         };
 
-        void attach(Luau::TypeId type, const std::shared_ptr<Luau::MagicFunction> &magic) {
+        void attach(Luau::TypeId type, const std::shared_ptr<Luau::MagicFunction> &magic, const char *tag) {
             type = Luau::follow(type);
 
             if (auto *function = Luau::getMutable<Luau::FunctionType>(type)) {
-                function->magic = magic;
+                if (magic) {
+                    function->magic = magic;
+                }
+
+                function->tags.emplace_back(tag);
             } else if (const auto *intersection = Luau::get<Luau::IntersectionType>(type)) {
                 for (Luau::TypeId part : intersection->parts) {
-                    attach(part, magic);
+                    attach(part, magic, tag);
                 }
             }
         }
 
-        template <typename Properties> void attach_property(Properties &properties, const char *name, const std::shared_ptr<Luau::MagicFunction> &magic) {
+        template <typename Properties>
+        void attach_property(Properties &properties, const char *name, const std::shared_ptr<Luau::MagicFunction> &magic, const char *tag) {
             const auto found = properties.find(name);
 
             if (found != properties.end() && found->second.readTy) {
-                attach(*found->second.readTy, magic);
+                attach(*found->second.readTy, magic, tag);
             }
         }
 
-        void attach_global(Luau::GlobalTypes &globals, const char *global, const char *property, const std::shared_ptr<Luau::MagicFunction> &magic) {
+        void attach_global(Luau::GlobalTypes &globals, const char *global, const char *property, const std::shared_ptr<Luau::MagicFunction> &magic, const char *tag) {
             const std::optional<Luau::Binding> binding = Luau::tryGetGlobalBinding(globals, global);
 
             if (!binding) {
@@ -230,11 +235,11 @@ namespace instar {
             }
 
             if (auto *table = Luau::getMutable<Luau::TableType>(Luau::follow(binding->typeId))) {
-                attach_property(table->props, property, magic);
+                attach_property(table->props, property, magic, tag);
             }
         }
 
-        void attach_extern(Luau::GlobalTypes &globals, const char *type, const char *property, const std::shared_ptr<Luau::MagicFunction> &magic) {
+        void attach_extern(Luau::GlobalTypes &globals, const char *type, const char *property, const std::shared_ptr<Luau::MagicFunction> &magic, const char *tag) {
             const std::optional<Luau::TypeFun> found = globals.globalScope->lookupType(type);
 
             if (!found) {
@@ -242,7 +247,7 @@ namespace instar {
             }
 
             if (auto *extern_type = Luau::getMutable<Luau::ExternType>(Luau::follow(found->type))) {
-                attach_property(extern_type->props, property, magic);
+                attach_property(extern_type->props, property, magic, tag);
             }
         }
 
@@ -327,11 +332,12 @@ namespace instar {
         void
         register_magic(Luau::GlobalTypes &globals, const std::shared_ptr<const Metadata> &metadata, MagicKind kind, const char *type, const char *property, bool global) {
             const auto magic = std::make_shared<MagicFunction>(kind, metadata);
+            const char *tag = kind == MagicKind::Constructor ? "instar.creatable" : kind == MagicKind::Service ? "instar.service" : "instar.class";
 
             if (global) {
-                attach_global(globals, type, property, magic);
+                attach_global(globals, type, property, magic, tag);
             } else {
-                attach_extern(globals, type, property, magic);
+                attach_extern(globals, type, property, magic, tag);
             }
         }
     } // namespace
@@ -354,6 +360,7 @@ namespace instar {
 
             if (Luau::get<Luau::ExternType>(type) && derives_from(type, base->type)) {
                 metadata->classes.emplace(name, ClassInfo{type, false, false});
+                Luau::getMutable<Luau::ExternType>(type)->tags.emplace_back("instar.class");
             }
         }
 
@@ -377,6 +384,15 @@ namespace instar {
 
             type->second.service = classes[index].service != 0;
             type->second.creatable = classes[index].creatable != 0;
+            auto *klass = Luau::getMutable<Luau::ExternType>(type->second.type);
+
+            if (classes[index].service) {
+                klass->tags.emplace_back("instar.service");
+            }
+
+            if (classes[index].creatable) {
+                klass->tags.emplace_back("instar.creatable");
+            }
         }
 
         add_enum_type_aliases(globals);
@@ -392,6 +408,8 @@ namespace instar {
         register_magic(globals, metadata, MagicKind::ChildType, "Instance", "FindFirstChildWhichIsA", false);
         register_magic(globals, metadata, MagicKind::AncestorClass, "Instance", "FindFirstAncestorOfClass", false);
         register_magic(globals, metadata, MagicKind::AncestorType, "Instance", "FindFirstAncestorWhichIsA", false);
+        attach_extern(globals, "Instance", "FindFirstChild", nullptr, "instar.child");
+        attach_extern(globals, "Instance", "WaitForChild", nullptr, "instar.child");
     }
 
     std::unordered_set<std::string> register_roblox_tree(Luau::Frontend &frontend, const RobloxNode *nodes, size_t node_count) {
@@ -535,6 +553,8 @@ namespace instar {
             } else {
                 found->second = Luau::Property::readonly(globals.globalTypes.addType(Luau::UnionType{{*found->second.readTy, types[index]}}));
             }
+
+            properties.at(name).tags.emplace_back("instar.child");
         }
 
         auto bind_global = [&](const char *name, size_t index) {

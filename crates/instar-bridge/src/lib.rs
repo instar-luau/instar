@@ -1112,6 +1112,9 @@ pub struct Completion {
 
     /// Whether the item is deprecated.
     pub deprecated: bool,
+
+    /// Source declaration used for comment documentation.
+    pub definition: Option<(String, [u32; 4])>,
 }
 
 /// Signature help returned for a call site.
@@ -1133,6 +1136,9 @@ pub struct TypeHint {
 
     /// Inferred type text.
     pub type_: String,
+
+    /// Parameter name for an argument hint, empty for a variable type hint.
+    pub parameter: String,
 }
 
 /// Navigation target and selection range.
@@ -1317,6 +1323,11 @@ unsafe extern "C" fn completion_callback(
             mode: value.mode,
             kind: value.kind,
             deprecated: value.deprecated != 0,
+            definition: if value.definition_module.length == 0 {
+                None
+            } else {
+                Some((read_text(value.definition_module)?, range(value.definition)))
+            },
         });
 
         Ok(())
@@ -1450,6 +1461,7 @@ unsafe extern "C" fn hint_callback(
         context.values.push(TypeHint {
             range: range(value.range),
             type_: read_text(value.type_)?,
+            parameter: read_text(value.parameter)?,
         });
 
         Ok(())
