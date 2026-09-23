@@ -111,6 +111,24 @@ impl Host<'_> {
         Ok(name)
     }
 
+    fn alias(&mut self, module: Module, name: &str) -> io::Result<()> {
+        let configuration = self.project.configuration(&module.source)?;
+        self.identities.insert(module.clone(), name.to_owned());
+
+        self.modules.insert(
+            name.to_owned(),
+            LoadedModule {
+                module,
+                configuration,
+                source: None,
+                expressions: None,
+                line_starts: Vec::new(),
+            },
+        );
+
+        Ok(())
+    }
+
     fn location(&self, name: &str, range: [u32; 4]) -> io::Result<Location> {
         let module = self
             .modules
@@ -250,7 +268,7 @@ impl Callbacks for Host<'_> {
     }
 
     fn diagnostic(&mut self, diagnostic: instar_bridge::Diagnostic<'_>) -> io::Result<()> {
-        if diagnostic.path.starts_with('@') {
+        if diagnostic.path.starts_with('@') && !self.modules.contains_key(diagnostic.path) {
             return Err(invalid(format!(
                 "{} declarations: {}",
                 diagnostic.path, diagnostic.message
@@ -312,10 +330,21 @@ fn environments(
             continue;
         }
 
-        for module in resolver
-            .entries(project, path)
-            .map_err(|error| invalid(error.to_string()))?
-        {
+        let modules = if is_declaration_source(path) {
+            let source = crate::absolute(path)?;
+
+            vec![Module {
+                path: crate::resolve::module_path(&source),
+                source,
+                instance: None,
+            }]
+        } else {
+            resolver
+                .entries(project, path)
+                .map_err(|error| invalid(error.to_string()))?
+        };
+
+        for module in modules {
             let config = project.configuration(&module.source)?;
 
             if config
@@ -323,6 +352,7 @@ fn environments(
                 .definitions
                 .values()
                 .any(|path| Path::new(path) == module.source)
+                && !is_declaration_source(&module.source)
             {
                 continue;
             }
@@ -409,6 +439,97 @@ pub fn check(project: &mut Project, paths: &[PathBuf]) -> io::Result<Vec<Diagnos
     Ok(diagnostics)
 }
 
+fn load_entry_declarations(
+    host: &mut Host<'_>,
+    checker: &mut Checker,
+    entries: &BTreeSet<String>,
+    definitions: &[(String, String)],
+) -> io::Result<Option<Vec<Diagnostic>>> {
+    for module in entries {
+        let module = host
+            .modules
+            .get(module)
+            .expect("entry was interned")
+            .module
+            .clone();
+
+        if is_declaration_source(&module.source)
+            && !definitions.iter().any(|(_, path)| {
+                crate::absolute(Path::new(path)).is_ok_and(|path| path == module.source)
+            })
+        {
+            let name = host.intern(module)?;
+            let source = host.project.source(&host.modules[&name].module.source)?;
+            let before = host.diagnostics.len();
+
+            if let Err(error) = checker.load_definition(host, source.as_bytes(), &name) {
+                if host.diagnostics.len() != before {
+                    host.project.commit_declarations(definitions);
+
+                    return Ok(Some(std::mem::take(&mut host.diagnostics)));
+                }
+
+                return Err(error);
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+fn add_analysis_timeouts(host: &mut Host<'_>, timeouts: BTreeSet<String>) -> io::Result<()> {
+    for name in timeouts {
+        let location = host.location(&name, [0; 4])?;
+
+        if !host
+            .project
+            .includes(&location.module.source, Service::Analyze)?
+        {
+            continue;
+        }
+
+        host.diagnostics.push(Diagnostic {
+            location,
+            error: true,
+            message: "Luau analysis timed out".into(),
+            related: None,
+        });
+    }
+
+    Ok(())
+}
+
+fn collect_analysis_results(
+    host: &mut Host<'_>,
+    checker: &mut Checker,
+    entries: BTreeSet<String>,
+) -> io::Result<BTreeSet<String>> {
+    let mut timeouts = BTreeSet::new();
+
+    for name in entries {
+        if is_declaration_source(&host.modules[&name].module.source) {
+            continue;
+        }
+
+        timeouts.extend(checker.check(host, Path::new(&name))?);
+    }
+
+    let mut loaded = host
+        .modules
+        .iter()
+        .filter(|(_, state)| state.source.is_some())
+        .map(|(name, _)| name.clone())
+        .collect::<Vec<_>>();
+
+    loaded.sort();
+
+    for name in loaded {
+        timeouts.extend(checker.result(host, Path::new(&name))?);
+    }
+
+    Ok(timeouts)
+}
+
 fn check_environment(
     project: &mut Project,
     environment: Environment,
@@ -430,6 +551,18 @@ fn check_environment(
         entries.insert(host.intern(module)?);
     }
 
+    for name in &entries {
+        let module = host.modules[name].module.clone();
+
+        if is_declaration_source(&module.source) {
+            for (package, path) in &environment.definitions {
+                if crate::absolute(Path::new(path))? == module.source {
+                    host.alias(module.clone(), package)?;
+                }
+            }
+        }
+    }
+
     let mut checker = Checker::new(&CheckerOptions {
         run_lint_checks: 1,
         ..CheckerOptions::default()
@@ -438,7 +571,38 @@ fn check_environment(
     let mut registered = false;
 
     for (package, definition) in &declarations {
-        checker.load_definition(&mut host, definition.source.as_bytes(), package)?;
+        let mut source = Rc::clone(&definition.source);
+
+        for (configured_package, location) in &environment.definitions {
+            if configured_package == package {
+                let path = crate::absolute(Path::new(location))?;
+
+                if entries
+                    .iter()
+                    .any(|name| host.modules[name].module.source == path)
+                {
+                    source = host.project.source(&path)?;
+                }
+            }
+        }
+
+        let before = host.diagnostics.len();
+
+        if let Err(error) = checker.load_definition(&mut host, source.as_bytes(), package) {
+            if host.diagnostics.len() != before {
+                host.project.commit_declarations(&environment.definitions);
+
+                return Ok(host.diagnostics);
+            }
+
+            return Err(error);
+        }
+    }
+
+    if let Some(diagnostics) =
+        load_entry_declarations(&mut host, &mut checker, &entries, &environment.definitions)?
+    {
+        return Ok(diagnostics);
     }
 
     for (_, definition) in declarations {
@@ -451,44 +615,15 @@ fn check_environment(
 
     checker.freeze()?;
     host.project.commit_declarations(&environment.definitions);
-    let mut timeouts = BTreeSet::new();
-
-    for name in entries {
-        timeouts.extend(checker.check(&mut host, Path::new(&name))?);
-    }
-
-    let mut loaded = host
-        .modules
-        .iter()
-        .filter(|(_, state)| state.source.is_some())
-        .map(|(name, _)| name.clone())
-        .collect::<Vec<_>>();
-
-    loaded.sort();
-
-    for name in loaded {
-        timeouts.extend(checker.result(&mut host, Path::new(&name))?);
-    }
-
-    for name in timeouts {
-        let location = host.location(&name, [0; 4])?;
-
-        if !host
-            .project
-            .includes(&location.module.source, Service::Analyze)?
-        {
-            continue;
-        }
-
-        host.diagnostics.push(Diagnostic {
-            location,
-            error: true,
-            message: "Luau analysis timed out".into(),
-            related: None,
-        });
-    }
+    let timeouts = collect_analysis_results(&mut host, &mut checker, entries)?;
+    add_analysis_timeouts(&mut host, timeouts)?;
 
     Ok(host.diagnostics)
+}
+
+fn is_declaration_source(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| name.to_string_lossy().ends_with(".d.luau"))
 }
 
 /// Persistent editor analysis. Keep this value on its owning worker thread.
@@ -503,6 +638,7 @@ struct EditorSession {
     settings: RobloxSettings,
     definitions: Vec<(String, String)>,
     map: Option<Rc<Sourcemap>>,
+    declaration_paths: BTreeSet<PathBuf>,
     checker: Checker,
     resolver: Resolver,
     identities: HashMap<Module, String>,
@@ -542,6 +678,10 @@ impl Editor {
     pub fn set_source(&mut self, path: &Path, text: Option<&str>) -> io::Result<()> {
         let path = crate::absolute(path)?;
         self.project.set_source(&path, text)?;
+
+        if is_declaration_source(&path) {
+            self.sessions.clear();
+        }
 
         if text.is_some() {
             self.open.insert(path.clone());
@@ -638,82 +778,21 @@ impl Editor {
                 .cmp(&b.map.as_ref().map(|map| &map.path))
         });
 
-        let mut diagnostics = Vec::new();
-
         let total = environments
             .iter()
             .map(|environment| environment.entries.len())
             .sum();
 
         let mut completed = 0;
+        let mut diagnostics = Vec::new();
 
         for environment in environments {
-            let index = self.sessions.iter().position(|session| {
-                session.settings == environment.settings
-                    && session.definitions == environment.definitions
-                    && session.map.as_ref().map(|map| &map.path)
-                        == environment.map.as_ref().map(|map| &map.path)
-            });
-
-            let index = if let Some(index) = index {
-                index
-            } else {
-                self.create_session(
-                    environment.settings,
-                    environment.definitions,
-                    environment.map,
-                )?
-            };
-
-            let found = self.sessions[index].with_host(
-                &mut self.project,
-                &self.open,
-                |checker, host| {
-                    let mut timeouts = BTreeSet::new();
-
-                    let entries = environment
-                        .entries
-                        .into_iter()
-                        .map(|module| host.intern(module))
-                        .collect::<io::Result<Vec<_>>>()?;
-
-                    for name in &entries {
-                        if !progress(completed, total) {
-                            return Err(io::Error::new(
-                                io::ErrorKind::Interrupted,
-                                "request cancelled",
-                            ));
-                        }
-
-                        timeouts.extend(checker.check(host, Path::new(name))?);
-                        completed += 1;
-                    }
-
-                    for name in &entries {
-                        timeouts.extend(checker.result(host, Path::new(name))?);
-                    }
-
-                    for name in timeouts {
-                        let location = host.location(&name, [0; 4])?;
-
-                        if host
-                            .open
-                            .is_some_and(|open| open.contains(&location.module.source))
-                        {
-                            host.diagnostics.push(Diagnostic {
-                                location,
-                                error: true,
-                                message: "Luau analysis timed out".into(),
-                                related: None,
-                            });
-                        }
-                    }
-
-                    Ok(std::mem::take(&mut host.diagnostics))
-                },
-            )?;
-
-            diagnostics.extend(found);
+            diagnostics.extend(self.check_environment_progress(
+                environment,
+                &mut completed,
+                total,
+                progress,
+            )?);
 
             if !progress(completed, total) {
                 return Err(io::Error::new(
@@ -726,18 +805,119 @@ impl Editor {
         Ok(diagnostics)
     }
 
+    fn check_environment_progress(
+        &mut self,
+        environment: Environment,
+        completed: &mut usize,
+        total: usize,
+        progress: &mut dyn FnMut(usize, usize) -> bool,
+    ) -> io::Result<Vec<Diagnostic>> {
+        let declaration_paths = environment
+            .entries
+            .iter()
+            .filter(|module| is_declaration_source(&module.source))
+            .map(|module| module.source.clone())
+            .collect::<BTreeSet<_>>();
+
+        let index = self.sessions.iter().position(|session| {
+            session.settings == environment.settings
+                && session.definitions == environment.definitions
+                && session.declaration_paths == declaration_paths
+                && session.map.as_ref().map(|map| &map.path)
+                    == environment.map.as_ref().map(|map| &map.path)
+        });
+
+        let (index, mut diagnostics) = if let Some(index) = index {
+            (index, Vec::new())
+        } else {
+            self.create_session(
+                environment.settings.clone(),
+                &environment.definitions,
+                environment.map.clone(),
+                environment
+                    .entries
+                    .iter()
+                    .filter(|module| is_declaration_source(&module.source))
+                    .cloned()
+                    .collect(),
+            )?
+        };
+
+        let found =
+            self.sessions[index].with_host(&mut self.project, &self.open, |checker, host| {
+                let mut timeouts = BTreeSet::new();
+
+                let entries = environment
+                    .entries
+                    .into_iter()
+                    .map(|module| host.intern(module))
+                    .collect::<io::Result<Vec<_>>>()?;
+
+                for name in &entries {
+                    if !progress(*completed, total) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Interrupted,
+                            "request cancelled",
+                        ));
+                    }
+
+                    if !is_declaration_source(&host.modules[name].module.source) {
+                        timeouts.extend(checker.check(host, Path::new(name))?);
+                    }
+
+                    *completed += 1;
+                }
+
+                for name in &entries {
+                    if !is_declaration_source(&host.modules[name].module.source) {
+                        timeouts.extend(checker.result(host, Path::new(name))?);
+                    }
+                }
+
+                for name in timeouts {
+                    let location = host.location(&name, [0; 4])?;
+
+                    if host
+                        .open
+                        .is_some_and(|open| open.contains(&location.module.source))
+                    {
+                        host.diagnostics.push(Diagnostic {
+                            location,
+                            error: true,
+                            message: "Luau analysis timed out".into(),
+                            related: None,
+                        });
+                    }
+                }
+
+                Ok(std::mem::take(&mut host.diagnostics))
+            })?;
+
+        diagnostics.extend(found);
+
+        Ok(diagnostics)
+    }
+
     fn create_session(
         &mut self,
         settings: RobloxSettings,
-        definitions: Vec<(String, String)>,
+        definitions: &[(String, String)],
         map: Option<Rc<Sourcemap>>,
-    ) -> io::Result<usize> {
-        let declarations = self.project.declarations(&definitions)?;
+        declaration_modules: Vec<Module>,
+    ) -> io::Result<(usize, Vec<Diagnostic>)> {
+        let declarations = self.project.declarations(definitions)?;
+        let mut declaration_diagnostics = Vec::new();
+
+        let declaration_paths: BTreeSet<_> = declaration_modules
+            .iter()
+            .map(|module| module.source.clone())
+            .collect();
 
         let mut session = EditorSession {
             settings,
-            definitions,
+            definitions: definitions.to_vec(),
             map,
+            declaration_paths: declaration_paths.clone(),
             checker: Checker::new(&CheckerOptions {
                 retain_full_type_graphs: 1,
                 run_lint_checks: 1,
@@ -754,8 +934,68 @@ impl Editor {
         session.with_host(&mut self.project, &self.open, |checker, host| {
             let mut registered = false;
 
+            for (package, location) in definitions {
+                let path = crate::absolute(Path::new(location))?;
+
+                if declaration_paths.contains(&path) {
+                    host.alias(
+                        Module {
+                            path: crate::resolve::module_path(&path),
+                            source: path,
+                            instance: None,
+                        },
+                        package,
+                    )?;
+                }
+            }
+
             for (package, definition) in &declarations {
-                checker.load_definition(host, definition.source.as_bytes(), package)?;
+                let source = definitions
+                    .iter()
+                    .find(|(name, location)| {
+                        name == package
+                            && crate::absolute(Path::new(location))
+                                .is_ok_and(|path| declaration_paths.contains(&path))
+                    })
+                    .map(|(_, location)| crate::absolute(Path::new(location)))
+                    .transpose()?
+                    .map(|path| host.project.source(&path))
+                    .transpose()?
+                    .unwrap_or_else(|| Rc::clone(&definition.source));
+
+                let before = host.diagnostics.len();
+
+                if let Err(error) = checker.load_definition(host, source.as_bytes(), package) {
+                    if error.to_string() == "definition loading failed"
+                        && host.diagnostics.len() > before
+                    {
+                        declaration_diagnostics.append(&mut host.diagnostics);
+                    } else {
+                        return Err(error);
+                    }
+                }
+            }
+
+            for module in declaration_modules {
+                if definitions.iter().any(|(_, location)| {
+                    crate::absolute(Path::new(location)).is_ok_and(|path| path == module.source)
+                }) {
+                    continue;
+                }
+
+                let name = host.intern(module.clone())?;
+                let source = host.project.source(&module.source)?;
+                let before = host.diagnostics.len();
+
+                if let Err(error) = checker.load_definition(host, source.as_bytes(), &name) {
+                    if error.to_string() == "definition loading failed"
+                        && host.diagnostics.len() > before
+                    {
+                        declaration_diagnostics.append(&mut host.diagnostics);
+                    } else {
+                        return Err(error);
+                    }
+                }
             }
 
             for (_, definition) in declarations {
@@ -772,7 +1012,7 @@ impl Editor {
         self.project.commit_declarations(&session.definitions);
         self.sessions.push(session);
 
-        Ok(self.sessions.len() - 1)
+        Ok((self.sessions.len() - 1, declaration_diagnostics))
     }
 
     /// Runs an editor query against a checked module in its first place context.

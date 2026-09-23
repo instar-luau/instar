@@ -11,7 +11,7 @@ use std::{
 use crate::{
     absolute,
     assets::{self, Assets, Definitions},
-    config::{self, Config, LuauConfig, RobloxConfig, Security},
+    config::{self, Config, FormatOptions, LuauConfig, RobloxConfig, Security},
     filter::{Filters, Service},
     invalid,
     roblox::{Sourcemap, SourcemapLocation},
@@ -31,6 +31,9 @@ pub struct Alias {
 pub struct EffectiveConfig {
     /// Merged settings, with Instar values taking precedence over legacy values.
     pub settings: LuauConfig,
+
+    /// Effective formatting settings for the source directory.
+    pub format_options: FormatOptions,
 
     /// Alias definitions, indexed by lowercase name.
     pub aliases: BTreeMap<String, Alias>,
@@ -110,6 +113,7 @@ struct Layers {
     inputs: Vec<PathBuf>,
     sourcemaps: Option<Vec<SourcemapLocation>>,
     roblox: RobloxConfig,
+    format_options: FormatOptions,
     filters: Filters,
 }
 
@@ -268,6 +272,21 @@ impl Project {
             .configuration(&source)?
             .filters
             .includes(&source, service))
+    }
+
+    /// Returns inherited format options unless the path is filtered out.
+    ///
+    /// # Errors
+    /// Returns path, configuration, or filter errors.
+    pub fn format_options(&mut self, path: &Path) -> io::Result<Option<FormatOptions>> {
+        let path = absolute(path)?;
+        let config = self.configuration(&path)?;
+
+        if !config.filters.includes(&path, Service::Format) {
+            return Ok(None);
+        }
+
+        Ok(Some(config.format_options.clone()))
     }
 
     /// Reads a UTF-8 source once for this snapshot.
@@ -501,6 +520,7 @@ impl Project {
 
         let config = Rc::new(EffectiveConfig {
             settings,
+            format_options: layers.format_options,
             aliases,
             json,
             inputs: layers.inputs,
@@ -585,6 +605,8 @@ impl Project {
 
                             layers.sourcemaps = Some(locations);
                         }
+
+                        layers.format_options.merge(&config.format)?;
 
                         Ok(config.luau)
                     }),

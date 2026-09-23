@@ -1,4 +1,4 @@
-//! Project configuration formats and Luau settings.
+//! Project configuration formats, Luau settings, and formatting options.
 
 use std::{collections::BTreeMap, io, path::PathBuf};
 
@@ -9,7 +9,7 @@ use vermis::{Kind, Parts, View};
 
 use crate::{invalid, string_value};
 
-/// Instar project configuration. Luau settings live in `[luau]`.
+/// Instar project configuration. Luau settings live in `[luau]`; formatting settings in `[format]`.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -26,8 +26,9 @@ pub struct Config {
     /// Additional file selection for builds.
     pub build: FileFilter,
 
-    /// Additional file selection for formatting.
-    pub format: FileFilter,
+    /// Formatting style and additional file selection.
+    #[schemars(extend("default" = FormatOptions::default()))]
+    pub format: FormatConfig,
 
     /// Additional file selection for dependency installation.
     pub graft: FileFilter,
@@ -55,6 +56,538 @@ pub struct FileFilter {
 
     /// Exclude globs relative to their manifest; exclusions always win.
     pub exclude: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+/// Optional formatting overrides and file selection. Omitted values inherit;
+/// schema defaults describe the root configuration.
+pub struct FormatConfig {
+    /// Additional include globs for formatting.
+    pub include: Vec<String>,
+
+    /// Exclude globs for formatting.
+    pub exclude: Vec<String>,
+
+    /// Target line width.
+    #[schemars(with = "usize", extend("default" = FormatOptions::default().width))]
+    pub width: Option<usize>,
+
+    /// Indentation character.
+    #[schemars(with = "IndentStyle", extend("default" = FormatOptions::default().indent_style))]
+    pub indent_style: Option<IndentStyle>,
+
+    /// Spaces per level or display width of a tab.
+    #[schemars(with = "usize", extend("default" = FormatOptions::default().indent_width))]
+    pub indent_width: Option<usize>,
+
+    /// Output line ending.
+    #[schemars(with = "LineEnding", extend("default" = FormatOptions::default().line_ending))]
+    pub line_ending: Option<LineEnding>,
+
+    /// Whether output ends in a newline.
+    #[schemars(with = "bool", extend("default" = FormatOptions::default().final_newline))]
+    pub final_newline: Option<bool>,
+
+    /// String delimiter policy.
+    #[schemars(with = "QuoteStyle", extend("default" = FormatOptions::default().quote_style))]
+    pub quote_style: Option<QuoteStyle>,
+
+    /// Decimal leading-zero policy.
+    #[schemars(with = "LeadingZero", extend("default" = FormatOptions::default().leading_zero))]
+    pub leading_zero: Option<LeadingZero>,
+
+    /// Statement separator policy.
+    #[schemars(with = "Semicolons", extend("default" = FormatOptions::default().semicolons))]
+    pub semicolons: Option<Semicolons>,
+
+    /// Whitespace settings.
+    #[schemars(with = "PartialSpacingOptions", extend("default" = FormatOptions::default().spacing))]
+    pub spacing: Option<PartialSpacingOptions>,
+
+    /// Call formatting settings.
+    #[schemars(with = "PartialCallsOptions", extend("default" = FormatOptions::default().calls))]
+    pub calls: Option<PartialCallsOptions>,
+
+    /// Function parameter formatting settings.
+    #[schemars(with = "PartialParametersOptions", extend("default" = FormatOptions::default().parameters))]
+    pub parameters: Option<PartialParametersOptions>,
+
+    /// Value table formatting settings.
+    #[schemars(with = "PartialTablesOptions", extend("default" = FormatOptions::default().tables))]
+    pub tables: Option<PartialTablesOptions>,
+
+    /// Block formatting settings.
+    #[schemars(with = "PartialBlocksOptions", extend("default" = FormatOptions::default().blocks))]
+    pub blocks: Option<PartialBlocksOptions>,
+
+    /// Named call chain formatting settings.
+    #[schemars(with = "PartialChainsOptions", extend("default" = FormatOptions::default().chains))]
+    pub chains: Option<PartialChainsOptions>,
+
+    /// If-expression formatting settings.
+    #[schemars(with = "PartialIfExpressionsOptions", extend("default" = FormatOptions::default().if_expressions))]
+    pub if_expressions: Option<PartialIfExpressionsOptions>,
+
+    /// Type layout settings.
+    #[schemars(with = "PartialTypesOptions", extend("default" = FormatOptions::default().types))]
+    pub types: Option<PartialTypesOptions>,
+
+    /// Require ordering settings.
+    #[schemars(with = "PartialRequiresOptions", extend("default" = FormatOptions::default().requires))]
+    pub requires: Option<PartialRequiresOptions>,
+}
+
+macro_rules! partial {
+    ($name:ident, $section:ident { $($field:ident : $ty:ty => $schema_ty:tt),+ $(,)? }) => {
+        #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+        #[serde(default, deny_unknown_fields)]
+        #[doc = concat!("Optional overrides for ", stringify!($name), ".")]
+        pub struct $name {
+            $(#[doc = concat!("Override for `", stringify!($field), "`.")]
+              #[schemars(with = $schema_ty, extend("default" = FormatOptions::default().$section.$field))]
+              pub $field: Option<$ty>),+
+        }
+    };
+}
+
+partial!(PartialSpacingOptions, spacing {
+    braces: bool => "bool",
+    parentheses: bool => "bool",
+    brackets: bool => "bool",
+    before_function_parentheses: BeforeFunctionParentheses => "BeforeFunctionParentheses"
+});
+
+partial!(PartialCallsOptions, calls {
+    parentheses: CallParentheses => "CallParentheses",
+    wrap: Wrap => "Wrap",
+    layout: CallLayout => "CallLayout"
+});
+
+partial!(PartialParametersOptions, parameters { wrap: Wrap => "Wrap" });
+
+partial!(PartialTablesOptions, tables {
+    wrap: Wrap => "Wrap",
+    trailing_comma: TrailingComma => "TrailingComma",
+    blank_lines: TableBlankLines => "TableBlankLines"
+});
+
+partial!(PartialBlocksOptions, blocks {
+    edge_blank_lines: EdgeBlankLines => "EdgeBlankLines",
+    simple_bodies: SimpleBodies => "SimpleBodies"
+});
+
+partial!(PartialChainsOptions, chains {
+    wrap: Wrap => "Wrap",
+    layout: ChainLayout => "ChainLayout"
+});
+
+partial!(PartialIfExpressionsOptions, if_expressions {
+    wrap: Wrap => "Wrap",
+    layout: IfExpressionLayout => "IfExpressionLayout",
+    placement: IfExpressionPlacement => "IfExpressionPlacement"
+});
+
+partial!(PartialTypesOptions, types {
+    table_wrap: Wrap => "Wrap",
+    operator_wrap: Wrap => "Wrap",
+    table_separator: TypeTableSeparator => "TypeTableSeparator"
+});
+
+partial!(PartialRequiresOptions, requires {
+    order: RequireOrder => "RequireOrder",
+    blank_lines: RequireBlankLines => "RequireBlankLines",
+    groups: Vec<RequireGroup> => "Vec<RequireGroup>"
+});
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+/// Effective formatting settings after project inheritance.
+pub struct FormatOptions {
+    /// Target line width.
+    pub width: usize,
+
+    /// Indentation character.
+    pub indent_style: IndentStyle,
+
+    /// Spaces per level or display width of a tab.
+    pub indent_width: usize,
+
+    /// Output line ending.
+    pub line_ending: LineEnding,
+
+    /// Whether output ends in a newline.
+    pub final_newline: bool,
+
+    /// String delimiter policy.
+    pub quote_style: QuoteStyle,
+
+    /// Decimal leading-zero policy.
+    pub leading_zero: LeadingZero,
+
+    /// Statement separator policy.
+    pub semicolons: Semicolons,
+
+    /// Whitespace settings.
+    pub spacing: SpacingOptions,
+
+    /// Call formatting settings.
+    pub calls: CallsOptions,
+
+    /// Function parameter formatting settings.
+    pub parameters: ParametersOptions,
+
+    /// Value table formatting settings.
+    pub tables: TablesOptions,
+
+    /// Block formatting settings.
+    pub blocks: BlocksOptions,
+
+    /// Named call chain formatting settings.
+    pub chains: ChainsOptions,
+
+    /// If-expression formatting settings.
+    pub if_expressions: IfExpressionsOptions,
+
+    /// Type layout settings.
+    pub types: TypesOptions,
+
+    /// Require ordering settings.
+    pub requires: RequiresOptions,
+}
+
+macro_rules! options {
+    ($name:ident { $($field:ident : $ty:ty = $default:expr),+ $(,)? }) => {
+        #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+        #[serde(default, deny_unknown_fields)]
+        #[doc = concat!("Effective settings for ", stringify!($name), ".")]
+        pub struct $name {
+            $(#[doc = concat!("`", stringify!($field), "` formatting setting.")]
+              pub $field: $ty),+
+        }
+        impl Default for $name { fn default() -> Self { Self { $($field: $default),+ } } }
+    };
+}
+
+options!(SpacingOptions {
+    braces: bool = true,
+    parentheses: bool = false,
+    brackets: bool = false,
+    before_function_parentheses: BeforeFunctionParentheses = BeforeFunctionParentheses::Never
+});
+
+options!(CallsOptions {
+    parentheses: CallParentheses = CallParentheses::Always,
+    wrap: Wrap = Wrap::Auto,
+    layout: CallLayout = CallLayout::Vertical
+});
+
+options!(ParametersOptions {
+    wrap: Wrap = Wrap::Auto
+});
+
+options!(TablesOptions {
+    wrap: Wrap = Wrap::Preserve,
+    trailing_comma: TrailingComma = TrailingComma::Multiline,
+    blank_lines: TableBlankLines = TableBlankLines::Preserve
+});
+
+options!(BlocksOptions {
+    edge_blank_lines: EdgeBlankLines = EdgeBlankLines::Remove,
+    simple_bodies: SimpleBodies = SimpleBodies::Expand
+});
+
+options!(ChainsOptions {
+    wrap: Wrap = Wrap::Auto,
+    layout: ChainLayout = ChainLayout::Method
+});
+
+options!(IfExpressionsOptions {
+    wrap: Wrap = Wrap::Auto,
+    layout: IfExpressionLayout = IfExpressionLayout::Block,
+    placement: IfExpressionPlacement = IfExpressionPlacement::SameLine
+});
+
+options!(TypesOptions {
+    table_wrap: Wrap = Wrap::Auto,
+    operator_wrap: Wrap = Wrap::Auto,
+    table_separator: TypeTableSeparator = TypeTableSeparator::Comma
+});
+
+options!(RequiresOptions { order: RequireOrder = RequireOrder::Grouped, blank_lines: RequireBlankLines = RequireBlankLines::BetweenGroups, groups: Vec<RequireGroup> = vec![RequireGroup::Alias, RequireGroup::Relative, RequireGroup::Other] });
+
+macro_rules! format_enum {
+    ($name:ident, $default:ident, { $($variant:ident => $value:literal),+ $(,)? }) => {
+        #[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+        #[serde(rename_all = "snake_case")]
+        #[schemars(with = "String", inline, extend("enum" = [$($value),+]))]
+        #[doc = concat!("Formatting setting ", stringify!($name), ".")]
+        pub enum $name {
+            $(#[doc = concat!("`", $value, "`.")]
+              #[serde(rename = $value)] $variant),+
+        }
+        impl Default for $name { fn default() -> Self { Self::$default } }
+    };
+}
+
+format_enum!(IndentStyle, Tabs, { Tabs => "tabs", Spaces => "spaces" });
+format_enum!(LineEnding, Lf, { Lf => "lf", CrLf => "crlf" });
+format_enum!(QuoteStyle, PreferDouble, { PreferDouble => "prefer_double", PreferSingle => "prefer_single", Double => "double", Single => "single", Preserve => "preserve" });
+format_enum!(LeadingZero, Add, { Add => "add", Strip => "strip", Preserve => "preserve" });
+format_enum!(Semicolons, Necessary, { Necessary => "necessary", Always => "always" });
+format_enum!(BeforeFunctionParentheses, Never, { Never => "never", Calls => "calls", Definitions => "definitions", Always => "always" });
+format_enum!(CallParentheses, Always, { Always => "always", OmitString => "omit_string", OmitTable => "omit_table", OmitLiteral => "omit_literal", Preserve => "preserve" });
+format_enum!(Wrap, Preserve, { Auto => "auto", Preserve => "preserve", Always => "always", Never => "never" });
+format_enum!(CallLayout, Vertical, { Vertical => "vertical", HugLast => "hug_last" });
+format_enum!(TrailingComma, Multiline, { Multiline => "multiline", Never => "never" });
+format_enum!(TableBlankLines, Preserve, { Preserve => "preserve", Remove => "remove" });
+format_enum!(EdgeBlankLines, Remove, { Remove => "remove", Preserve => "preserve" });
+format_enum!(SimpleBodies, Expand, { Expand => "expand", CompactFunctions => "compact_functions", CompactConditionals => "compact_conditionals", CompactAll => "compact_all" });
+format_enum!(ChainLayout, Method, { Method => "method", Full => "full" });
+format_enum!(IfExpressionLayout, Block, { Block => "block", Leading => "leading" });
+format_enum!(IfExpressionPlacement, SameLine, { SameLine => "same_line", NextLine => "next_line" });
+format_enum!(TypeTableSeparator, Comma, { Comma => "comma", Semicolon => "semicolon" });
+format_enum!(RequireOrder, Grouped, { Grouped => "grouped", Alphabetical => "alphabetical", Preserve => "preserve" });
+format_enum!(RequireBlankLines, BetweenGroups, { BetweenGroups => "between_groups", None => "none" });
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// Group selection for static require paths.
+pub enum RequireGroup {
+    /// Paths beginning with `@`.
+    Alias,
+
+    /// Paths beginning with `./` or `../`.
+    Relative,
+
+    /// All remaining literal paths.
+    #[default]
+    Other,
+
+    /// A named group with case-sensitive glob patterns.
+    Custom {
+        /// Group name.
+        name: String,
+        /// Path globs.
+        patterns: Vec<String>,
+    },
+}
+
+impl JsonSchema for RequireGroup {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "RequireGroup".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "anyOf": [
+                { "type": "string", "enum": ["alias", "relative", "other"] },
+                {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string" },
+                        "patterns": { "type": "array", "items": { "type": "string" } }
+                    },
+                    "required": ["name", "patterns"],
+                    "additionalProperties": false
+                }
+            ]
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for RequireGroup {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged, deny_unknown_fields)]
+        enum Input {
+            Name(String),
+            Custom { name: String, patterns: Vec<String> },
+        }
+
+        match Input::deserialize(deserializer)? {
+            Input::Name(name) => match name.as_str() {
+                "alias" => Ok(Self::Alias),
+                "relative" => Ok(Self::Relative),
+                "other" => Ok(Self::Other),
+
+                _ => Err(serde::de::Error::custom(format!(
+                    "unknown require group {name:?}"
+                ))),
+            },
+
+            Input::Custom { name, patterns } => Ok(Self::Custom { name, patterns }),
+        }
+    }
+}
+
+impl Serialize for RequireGroup {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Alias => serializer.serialize_str("alias"),
+            Self::Relative => serializer.serialize_str("relative"),
+            Self::Other => serializer.serialize_str("other"),
+
+            Self::Custom { name, patterns } => {
+                use serde::ser::SerializeStruct;
+                let mut state = serializer.serialize_struct("RequireGroup", 2)?;
+                state.serialize_field("name", name)?;
+                state.serialize_field("patterns", patterns)?;
+
+                state.end()
+            }
+        }
+    }
+}
+
+impl Default for FormatOptions {
+    fn default() -> Self {
+        Self {
+            width: 120,
+            indent_style: IndentStyle::Tabs,
+            indent_width: 4,
+            line_ending: LineEnding::Lf,
+            final_newline: true,
+            quote_style: QuoteStyle::PreferDouble,
+            leading_zero: LeadingZero::Add,
+            semicolons: Semicolons::Necessary,
+            spacing: SpacingOptions::default(),
+            calls: CallsOptions::default(),
+            parameters: ParametersOptions::default(),
+            tables: TablesOptions::default(),
+            blocks: BlocksOptions::default(),
+            chains: ChainsOptions::default(),
+            if_expressions: IfExpressionsOptions::default(),
+            types: TypesOptions::default(),
+            requires: RequiresOptions::default(),
+        }
+    }
+}
+
+impl FormatOptions {
+    pub(crate) fn merge(&mut self, layer: &FormatConfig) -> io::Result<()> {
+        macro_rules! set {
+            ($dst:expr, $src:expr) => {
+                if let Some(value) = $src {
+                    $dst = value;
+                }
+            };
+        }
+
+        set!(self.width, layer.width);
+        set!(self.indent_style, layer.indent_style);
+        set!(self.indent_width, layer.indent_width);
+        set!(self.line_ending, layer.line_ending);
+        set!(self.final_newline, layer.final_newline);
+        set!(self.quote_style, layer.quote_style);
+        set!(self.leading_zero, layer.leading_zero);
+        set!(self.semicolons, layer.semicolons);
+
+        if let Some(v) = &layer.spacing {
+            set!(self.spacing.braces, v.braces);
+            set!(self.spacing.parentheses, v.parentheses);
+            set!(self.spacing.brackets, v.brackets);
+
+            set!(
+                self.spacing.before_function_parentheses,
+                v.before_function_parentheses
+            );
+        }
+
+        if let Some(v) = &layer.calls {
+            set!(self.calls.parentheses, v.parentheses);
+            set!(self.calls.wrap, v.wrap);
+            set!(self.calls.layout, v.layout);
+        }
+
+        if let Some(v) = &layer.parameters {
+            set!(self.parameters.wrap, v.wrap);
+        }
+
+        if let Some(v) = &layer.tables {
+            set!(self.tables.wrap, v.wrap);
+            set!(self.tables.trailing_comma, v.trailing_comma);
+            set!(self.tables.blank_lines, v.blank_lines);
+        }
+
+        if let Some(v) = &layer.blocks {
+            set!(self.blocks.edge_blank_lines, v.edge_blank_lines);
+            set!(self.blocks.simple_bodies, v.simple_bodies);
+        }
+
+        if let Some(v) = &layer.chains {
+            set!(self.chains.wrap, v.wrap);
+            set!(self.chains.layout, v.layout);
+        }
+
+        if let Some(v) = &layer.if_expressions {
+            set!(self.if_expressions.wrap, v.wrap);
+            set!(self.if_expressions.layout, v.layout);
+            set!(self.if_expressions.placement, v.placement);
+        }
+
+        if let Some(v) = &layer.types {
+            set!(self.types.table_wrap, v.table_wrap);
+            set!(self.types.operator_wrap, v.operator_wrap);
+            set!(self.types.table_separator, v.table_separator);
+        }
+
+        if let Some(v) = &layer.requires {
+            set!(self.requires.order, v.order);
+            set!(self.requires.blank_lines, v.blank_lines);
+
+            if let Some(groups) = &v.groups {
+                self.requires.groups.clone_from(groups);
+            }
+        }
+
+        if self.width == 0 || self.indent_width == 0 {
+            return Err(invalid("format width and indent_width must be positive"));
+        }
+
+        self.requires.validate()
+    }
+}
+
+impl RequiresOptions {
+    pub(crate) fn validate(&self) -> io::Result<()> {
+        let mut names = std::collections::BTreeSet::new();
+
+        for group in &self.groups {
+            let (name, patterns) = match group {
+                RequireGroup::Alias => ("alias", None),
+                RequireGroup::Relative => ("relative", None),
+                RequireGroup::Other => ("other", None),
+                RequireGroup::Custom { name, patterns } => (name.as_str(), Some(patterns)),
+            };
+
+            if name.is_empty() || !names.insert(name) {
+                return Err(invalid(format!(
+                    "require group names must be nonempty and distinct: {name:?}"
+                )));
+            }
+
+            if let Some(patterns) = patterns {
+                if patterns.is_empty() {
+                    return Err(invalid(format!(
+                        "custom require group {name:?} needs patterns"
+                    )));
+                }
+
+                for pattern in patterns {
+                    if pattern.is_empty()
+                        || pattern.contains('\0')
+                        || glob::Pattern::new(pattern).is_err()
+                    {
+                        return Err(invalid(format!(
+                            "invalid pattern {pattern:?} in require group {name:?}"
+                        )));
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Roblox platform detection, API assets, and sourcemap settings.

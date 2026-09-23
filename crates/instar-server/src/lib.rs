@@ -19,6 +19,7 @@ use std::{
     thread,
 };
 
+use instar_core::{format, project::Project};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, oneshot};
@@ -32,13 +33,13 @@ use tower_lsp_server::{
         CompletionParams, CompletionResponse, DidChangeConfigurationParams,
         DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidChangeWorkspaceFoldersParams,
         DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
-        DocumentHighlight, DocumentHighlightParams, DocumentLink, DocumentLinkParams,
-        DocumentSymbolParams, DocumentSymbolResponse, FoldingRange, FoldingRangeParams,
-        GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams, InitializeParams,
-        InitializeResult, InitializedParams, Location, MessageType, PrepareRenameResponse,
-        ReferenceParams, RenameParams, SelectionRange, SelectionRangeParams, SemanticTokensParams,
-        SemanticTokensResult, SignatureHelp, SignatureHelpParams, TextDocumentPositionParams,
-        TextDocumentSyncKind, Uri, WatchKind, WorkspaceEdit,
+        DocumentFormattingParams, DocumentHighlight, DocumentHighlightParams, DocumentLink,
+        DocumentLinkParams, DocumentSymbolParams, DocumentSymbolResponse, FoldingRange,
+        FoldingRangeParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams,
+        InitializeParams, InitializeResult, InitializedParams, Location, MessageType,
+        PrepareRenameResponse, ReferenceParams, RenameParams, SelectionRange, SelectionRangeParams,
+        SemanticTokensParams, SemanticTokensResult, SignatureHelp, SignatureHelpParams,
+        TextDocumentPositionParams, TextDocumentSyncKind, TextEdit, Uri, WatchKind, WorkspaceEdit,
         request::{GotoTypeDefinitionParams, GotoTypeDefinitionResponse},
     },
 };
@@ -486,7 +487,7 @@ impl LanguageServer for Backend {
                 "declarationProvider": true, "implementationProvider": true,
                 "renameProvider": {"prepareProvider": true}, "documentHighlightProvider": true,
                 "documentLinkProvider": {"resolveProvider": false}, "documentSymbolProvider": true,
-                "foldingRangeProvider": true, "selectionRangeProvider": true,
+                "documentFormattingProvider": true,
                 "workspaceSymbolProvider": true,
                 "codeActionProvider": {"codeActionKinds": ["quickfix"]},
                 "inlayHintProvider": true, "colorProvider": true,
@@ -639,6 +640,65 @@ impl LanguageServer for Backend {
     async fn did_save(&self, _: DidSaveTextDocumentParams) {
         let mut state = self.state.lock().await;
         self.changed(&mut state);
+    }
+
+    async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
+        enum Outcome {
+            Excluded,
+            Unchanged,
+            Changed(String),
+        }
+
+        let (revision, document) = self.document(&params.text_document.uri).await?;
+        let path = document.path.clone();
+        let source = document.text.clone();
+
+        let formatted = tokio::task::spawn_blocking(move || {
+            let mut project = Project::new();
+
+            let Some(options) = project.format_options(&path)? else {
+                return Ok::<_, io::Error>(Outcome::Excluded);
+            };
+
+            let formatted = format::source(&source, &options)?;
+
+            Ok(if formatted == source {
+                Outcome::Unchanged
+            } else {
+                Outcome::Changed(formatted)
+            })
+        })
+        .await
+        .map_err(|failure| error(&failure))?
+        .map_err(|failure| error(&failure))?;
+
+        if revision != self.revision.load(Ordering::Acquire) {
+            return Err(Error::content_modified());
+        }
+
+        let state = self.state.lock().await;
+
+        if state
+            .documents
+            .get(&document.path)
+            .is_none_or(|current| !Arc::ptr_eq(current, &document))
+        {
+            return Err(Error::content_modified());
+        }
+
+        match formatted {
+            Outcome::Excluded => Err(Error::invalid_params(format!(
+                "{} is excluded by format filters",
+                document.path.display()
+            ))),
+
+            Outcome::Unchanged => Ok(None),
+
+            Outcome::Changed(formatted) => Ok(Some(vec![TextEdit::new(
+                document.range(0, document.text.len()),
+                formatted,
+            )])),
+        }
     }
 
     async fn did_change_watched_files(&self, _: DidChangeWatchedFilesParams) {

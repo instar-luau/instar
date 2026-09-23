@@ -180,21 +180,24 @@ impl Workspace {
         if !matches!(
             path.extension().and_then(|value| value.to_str()),
             Some("lua" | "luau")
-        ) || path
-            .file_name()
-            .is_some_and(|name| name.to_string_lossy().ends_with(".d.luau"))
-            || !self.project.includes(path, Service::Lsp)?
+        ) || !self.project.includes(path, Service::Lsp)?
         {
             return Ok(false);
         }
 
-        Ok(!self
-            .project
-            .configuration(path)?
-            .settings
-            .definitions
-            .values()
-            .any(|value| Path::new(value) == path))
+        let declaration = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(".d.luau"));
+
+        Ok(declaration
+            || !self
+                .project
+                .configuration(path)?
+                .settings
+                .definitions
+                .values()
+                .any(|value| Path::new(value) == path))
     }
 
     pub(crate) fn document(&mut self, path: &Path) -> io::Result<Arc<Document>> {

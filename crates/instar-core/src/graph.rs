@@ -276,7 +276,8 @@ struct Extractor<'source> {
     source: &'source str,
     line_starts: Vec<usize>,
     scopes: Vec<HashMap<String, Binding>>,
-    assigned: HashSet<String>,
+    assigned: HashSet<usize>,
+    global_assigned: HashSet<String>,
     sites: Vec<RequireSite>,
     script: Option<Instance>,
     map: Result<Option<Rc<Sourcemap>>, Failure>,
@@ -306,26 +307,14 @@ pub(crate) fn extract(
         })
         .collect();
 
-    // ponytail: writes invalidate same-named constants across scopes; binding IDs can refine this later.
-    let mut assigned = HashSet::new();
+    let mut writes = Writes {
+        scopes: vec![HashMap::new()],
+        assigned: HashSet::new(),
+        global_assigned: HashSet::new(),
+    };
 
-    for index in 0..tree.nodes.len() {
-        if let Some(Parts::Assignment { targets, .. }) = tree.view(index).and_then(View::parts) {
-            for target in targets {
-                if target.kind() == Kind::Name {
-                    assigned.insert(String::from_utf8_lossy(target.text()).into_owned());
-                }
-            }
-        }
-
-        if let Some(Parts::Function {
-            name: Some(name), ..
-        }) = tree.view(index).and_then(View::parts)
-            && matches!(name.text(), b"require" | b"game" | b"script" | b"workspace")
-            && tree.nodes[index].kind != Kind::LocalFunction
-        {
-            assigned.insert(String::from_utf8_lossy(name.text()).into_owned());
-        }
+    if let Some(root) = tree.view(tree.root) {
+        writes.visit(root);
     }
 
     let mut line_starts = vec![0];
@@ -341,7 +330,8 @@ pub(crate) fn extract(
         source,
         line_starts,
         scopes: vec![HashMap::new()],
-        assigned,
+        assigned: writes.assigned,
+        global_assigned: writes.global_assigned,
         sites: Vec::new(),
         script,
         map,
@@ -386,7 +376,7 @@ impl Extractor<'_> {
             }
         }
 
-        if name != "require" && self.assigned.contains(name.as_ref()) {
+        if name != "require" && self.global_assigned.contains(name.as_ref()) {
             return Binding::Other;
         }
 
@@ -568,13 +558,10 @@ impl Extractor<'_> {
                 self.visit(annotation);
             }
 
+            let assigned = self.assigned.contains(&name.span().start);
             let name = String::from_utf8_lossy(name.text()).into_owned();
 
-            let value = if self.assigned.contains(&name) {
-                Binding::Other
-            } else {
-                value
-            };
+            let value = if assigned { Binding::Other } else { value };
 
             if let Some(scope) = self.scopes.last_mut() {
                 scope.insert(name, value);
@@ -634,7 +621,7 @@ impl Extractor<'_> {
             let single = argument.is_some() && values.next().is_none();
             let span = argument.map_or(arguments.span(), View::span);
 
-            let value = if single && !self.assigned.contains("require") {
+            let value = if single && !self.global_assigned.contains("require") {
                 argument.map_or(Binding::Other, |arg| self.value(arg))
             } else {
                 Binding::Other
@@ -792,6 +779,199 @@ impl Extractor<'_> {
                     self.visit(child);
                 }
             }
+        }
+    }
+}
+
+struct Writes {
+    scopes: Vec<HashMap<String, usize>>,
+    assigned: HashSet<usize>,
+    global_assigned: HashSet<String>,
+}
+
+impl Writes {
+    fn bind(&mut self, node: View<'_, '_>) {
+        if let Some(Parts::Binding { name, .. }) = node.parts() {
+            self.scopes.last_mut().unwrap().insert(
+                String::from_utf8_lossy(name.text()).into_owned(),
+                name.span().start,
+            );
+        }
+    }
+
+    fn write(&mut self, name: View<'_, '_>) {
+        let name = String::from_utf8_lossy(name.text());
+
+        if let Some(id) = self
+            .scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name.as_ref()))
+        {
+            self.assigned.insert(*id);
+        } else {
+            self.global_assigned.insert(name.into_owned());
+        }
+    }
+
+    fn scoped(&mut self, node: View<'_, '_>) {
+        self.scopes.push(HashMap::new());
+        self.visit(node);
+        self.scopes.pop();
+    }
+
+    fn visit(&mut self, node: View<'_, '_>) {
+        if node.kind() == Kind::TypeFunction {
+            return;
+        }
+
+        match node.parts() {
+            Some(Parts::Local { bindings, values }) => {
+                for value in values {
+                    self.visit(value);
+                }
+
+                for binding in bindings {
+                    self.bind(binding);
+                }
+            }
+
+            Some(Parts::Assignment { targets, .. }) => {
+                for target in targets {
+                    if target.kind() == Kind::Name {
+                        self.write(target);
+                    }
+                }
+
+                for child in node.children() {
+                    self.visit(child);
+                }
+            }
+
+            Some(Parts::Function { .. }) => self.visit_function(node),
+
+            Some(
+                Parts::If { .. }
+                | Parts::While { .. }
+                | Parts::Repeat { .. }
+                | Parts::NumericFor { .. }
+                | Parts::GenericFor { .. },
+            ) => self.visit_scoped_control(node),
+
+            Some(Parts::Body { .. }) if node.kind() == Kind::Do => {
+                self.visit_scoped_control(node);
+            }
+
+            _ => {
+                for child in node.children() {
+                    self.visit(child);
+                }
+            }
+        }
+    }
+
+    fn visit_function(&mut self, node: View<'_, '_>) {
+        if let Some(Parts::Function {
+            name,
+            parameters,
+            body,
+            ..
+        }) = node.parts()
+        {
+            if let Some(name) = name {
+                if node.kind() == Kind::LocalFunction {
+                    self.scopes.last_mut().unwrap().insert(
+                        String::from_utf8_lossy(name.text()).into_owned(),
+                        name.span().start,
+                    );
+                } else if name.kind() == Kind::Name {
+                    self.write(name);
+                }
+            }
+
+            self.scopes.push(HashMap::new());
+
+            for parameter in parameters.children() {
+                self.bind(parameter);
+            }
+
+            if let Some(body) = body {
+                self.visit(body);
+            }
+
+            self.scopes.pop();
+        }
+    }
+
+    fn visit_scoped_control(&mut self, node: View<'_, '_>) {
+        match node.parts() {
+            Some(Parts::If {
+                branches,
+                otherwise,
+            }) => {
+                for branch in branches {
+                    self.scoped(branch);
+                }
+
+                if let Some(otherwise) = otherwise {
+                    self.scoped(otherwise);
+                }
+            }
+
+            Some(Parts::While { condition, body }) => {
+                self.visit(condition);
+                self.scoped(body);
+            }
+
+            Some(Parts::Repeat { body, condition }) => {
+                self.scopes.push(HashMap::new());
+                self.visit(body);
+                self.visit(condition);
+                self.scopes.pop();
+            }
+
+            Some(Parts::NumericFor {
+                binding,
+                start,
+                end,
+                step,
+                body,
+            }) => {
+                self.visit(start);
+                self.visit(end);
+
+                if let Some(step) = step {
+                    self.visit(step);
+                }
+
+                self.scopes.push(HashMap::new());
+                self.bind(binding);
+                self.visit(body);
+                self.scopes.pop();
+            }
+
+            Some(Parts::GenericFor {
+                bindings,
+                values,
+                body,
+            }) => {
+                for value in values {
+                    self.visit(value);
+                }
+
+                self.scopes.push(HashMap::new());
+
+                for binding in bindings {
+                    self.bind(binding);
+                }
+
+                self.visit(body);
+                self.scopes.pop();
+            }
+
+            Some(Parts::Body { body }) if node.kind() == Kind::Do => self.scoped(body),
+
+            _ => {}
         }
     }
 }
