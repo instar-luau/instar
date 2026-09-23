@@ -188,7 +188,7 @@ namespace instar {
             }
 
           private:
-            size_t maximum_arguments() const { return kind == MagicKind::Constructor || returns_optional() ? 2 : 1; }
+            size_t maximum_arguments() const { return kind == MagicKind::Constructor || kind == MagicKind::ChildType ? 2 : 1; }
 
             bool returns_optional() const {
                 return kind == MagicKind::ChildClass || kind == MagicKind::ChildType || kind == MagicKind::AncestorClass || kind == MagicKind::AncestorType;

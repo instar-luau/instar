@@ -213,6 +213,8 @@ extern "C" {
     int32_t editor_definition(void *checker, Text name, uint32_t line, uint32_t column, NavigationCallback callback, void *context, String *error);
     /**Finds the declaration at a source position.*/
     int32_t editor_declaration(void *checker, Text name, uint32_t line, uint32_t column, NavigationCallback callback, void *context, String *error);
+    /**Finds concrete source implementations at a source position.*/
+    int32_t editor_implementation(void *checker, Text name, uint32_t line, uint32_t column, NavigationCallback callback, void *context, String *error);
     /**Finds the type definition at a source position.*/
     int32_t editor_type_definition(void *checker, Text name, uint32_t line, uint32_t column, NavigationCallback callback, void *context, String *error);
     /**Finds references at a source position.*/
@@ -231,6 +233,7 @@ namespace instar {
     int32_t editor_type_hints(Luau::Frontend &frontend, Text name, HintCallback callback, void *context);
     int32_t editor_definition(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, NavigationCallback callback, void *context);
     int32_t editor_declaration(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, NavigationCallback callback, void *context);
+    int32_t editor_implementation(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, NavigationCallback callback, void *context);
     int32_t editor_type_definition(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, NavigationCallback callback, void *context);
     int32_t editor_references(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, ReferenceCallback callback, void *context);
     int32_t editor_rename_target(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, RenameTargetCallback callback, void *context);

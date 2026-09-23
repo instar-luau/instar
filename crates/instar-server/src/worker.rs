@@ -16,6 +16,8 @@ pub(crate) enum Query {
     Completion(u32, u32),
     Signature(u32, u32),
     Definition(u32, u32),
+    Declaration(u32, u32),
+    Implementation(u32, u32),
     TypeDefinition(u32, u32),
     References(u32, u32, bool),
     Prepare(u32, u32),
@@ -381,7 +383,10 @@ impl Worker {
     pub(crate) fn query(&mut self, path: &Path, query: &Query) -> io::Result<Value> {
         if matches!(
             query,
-            Query::References(..) | Query::Prepare(..) | Query::Rename(..)
+            Query::References(..)
+                | Query::Prepare(..)
+                | Query::Rename(..)
+                | Query::Implementation(..)
         ) {
             self.index_workspace()?;
         }
@@ -425,25 +430,10 @@ impl Worker {
                 )
             }
 
-            Query::Definition(line, column) | Query::TypeDefinition(line, column) => {
-                let results = self.editor.query(path, |checker, host, name| {
-                    if matches!(query, Query::Definition(..)) {
-                        checker.definition(host, name, line, column)
-                    } else {
-                        checker.type_definition(host, name, line, column)
-                    }
-                })?;
-
-                let mut targets = Vec::new();
-
-                for result in results {
-                    if let Ok(target) = self.target(&result.path, result.selection) {
-                        targets.push(target);
-                    }
-                }
-
-                Ok(json!(targets))
-            }
+            Query::Definition(line, column)
+            | Query::Declaration(line, column)
+            | Query::Implementation(line, column)
+            | Query::TypeDefinition(line, column) => self.navigation(path, query, line, column),
 
             Query::References(line, column, include_declaration) => {
                 let results = self.editor.query_all(path, |checker, host, name| {
@@ -496,6 +486,36 @@ impl Worker {
                 Ok(json!(highlights))
             }
         }
+    }
+
+    fn navigation(
+        &mut self,
+        path: &Path,
+        query: &Query,
+        line: u32,
+        column: u32,
+    ) -> io::Result<Value> {
+        let results = self
+            .editor
+            .query_all(path, |checker, host, name| match query {
+                Query::Definition(..) => checker.definition(host, name, line, column),
+                Query::Declaration(..) => checker.declaration(host, name, line, column),
+                Query::Implementation(..) => checker.implementation(host, name, line, column),
+                _ => checker.type_definition(host, name, line, column),
+            })?;
+
+        let mut targets = Vec::new();
+
+        for result in results.into_iter().flatten() {
+            if let Ok(target) = self.target(&result.path, result.selection) {
+                targets.push(target);
+            }
+        }
+
+        targets.sort_by_key(Value::to_string);
+        targets.dedup();
+
+        Ok(json!(targets))
     }
 
     fn hover(&mut self, document: &Document, line: u32, column: u32) -> io::Result<Value> {

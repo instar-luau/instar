@@ -327,7 +327,13 @@ impl Backend {
 
         let query = make(line, column);
 
-        if !matches!(query, Query::Definition(..) | Query::Completion(..)) {
+        if !matches!(
+            query,
+            Query::Definition(..)
+                | Query::Declaration(..)
+                | Query::Implementation(..)
+                | Query::Completion(..)
+        ) {
             return self.dispatch(revision, &document, query).await;
         }
 
@@ -477,6 +483,7 @@ impl LanguageServer for Backend {
                 "hoverProvider": true, "completionProvider": {"triggerCharacters": [".", ":", "\"", "'", "/", "@"]},
                 "signatureHelpProvider": {"triggerCharacters": ["(", ","]},
                 "definitionProvider": true, "typeDefinitionProvider": true, "referencesProvider": true,
+                "declarationProvider": true, "implementationProvider": true,
                 "renameProvider": {"prepareProvider": true}, "documentHighlightProvider": true,
                 "documentLinkProvider": {"resolveProvider": false}, "documentSymbolProvider": true,
                 "foldingRangeProvider": true, "selectionRangeProvider": true,
@@ -687,6 +694,22 @@ impl LanguageServer for Backend {
         params: GotoDefinitionParams,
     ) -> Result<Option<GotoDefinitionResponse>> {
         self.query_at(params.text_document_position_params, Query::Definition)
+            .await
+    }
+
+    async fn goto_declaration(
+        &self,
+        params: lsp::request::GotoDeclarationParams,
+    ) -> Result<Option<lsp::request::GotoDeclarationResponse>> {
+        self.query_at(params.text_document_position_params, Query::Declaration)
+            .await
+    }
+
+    async fn goto_implementation(
+        &self,
+        params: lsp::request::GotoImplementationParams,
+    ) -> Result<Option<lsp::request::GotoImplementationResponse>> {
+        self.query_at(params.text_document_position_params, Query::Implementation)
             .await
     }
 
