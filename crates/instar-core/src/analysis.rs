@@ -405,12 +405,32 @@ fn environments(
 /// # Errors
 /// Returns source, configuration, asset, or native callback failures.
 pub fn check(project: &mut Project, paths: &[PathBuf]) -> io::Result<Vec<Diagnostic>> {
+    check_streaming(project, paths, |_| {}, |_| Ok(()))
+}
+
+/// Checks CLI entries, reporting diagnostics as the native checker produces them.
+///
+/// The returned diagnostics retain the sorted order used by [`check`].
+///
+/// # Errors
+/// Returns source, configuration, asset, native callback, or reporting failures.
+pub fn check_streaming(
+    project: &mut Project,
+    paths: &[PathBuf],
+    mut progress: impl FnMut(&Path),
+    mut report: impl FnMut(&[Diagnostic]) -> io::Result<()>,
+) -> io::Result<Vec<Diagnostic>> {
     let environments = environments(project, paths, Service::Analyze)?;
 
     let mut diagnostics = Vec::new();
 
     for environment in environments {
-        diagnostics.extend(check_environment(project, environment)?);
+        diagnostics.extend(check_environment(
+            project,
+            environment,
+            &mut progress,
+            &mut report,
+        )?);
     }
 
     diagnostics.sort_by(|a, b| {
@@ -503,15 +523,24 @@ fn collect_analysis_results(
     host: &mut Host<'_>,
     checker: &mut Checker,
     entries: BTreeSet<String>,
-) -> io::Result<BTreeSet<String>> {
+    progress: &mut impl FnMut(&Path),
+    report: &mut impl FnMut(&[Diagnostic]) -> io::Result<()>,
+) -> io::Result<(BTreeSet<String>, usize)> {
     let mut timeouts = BTreeSet::new();
+    let mut reported = 0;
 
     for name in entries {
         if is_declaration_source(&host.modules[&name].module.source) {
             continue;
         }
 
+        progress(&host.modules[&name].module.source);
         timeouts.extend(checker.check(host, Path::new(&name))?);
+
+        if reported < host.diagnostics.len() {
+            report(&host.diagnostics[reported..])?;
+            reported = host.diagnostics.len();
+        }
     }
 
     let mut loaded = host
@@ -524,15 +553,23 @@ fn collect_analysis_results(
     loaded.sort();
 
     for name in loaded {
+        progress(&host.modules[&name].module.source);
         timeouts.extend(checker.result(host, Path::new(&name))?);
+
+        if reported < host.diagnostics.len() {
+            report(&host.diagnostics[reported..])?;
+            reported = host.diagnostics.len();
+        }
     }
 
-    Ok(timeouts)
+    Ok((timeouts, reported))
 }
 
 fn check_environment(
     project: &mut Project,
     environment: Environment,
+    progress: &mut impl FnMut(&Path),
+    report: &mut impl FnMut(&[Diagnostic]) -> io::Result<()>,
 ) -> io::Result<Vec<Diagnostic>> {
     let declarations = project.declarations(&environment.definitions)?;
 
@@ -591,6 +628,7 @@ fn check_environment(
         if let Err(error) = checker.load_definition(&mut host, source.as_bytes(), package) {
             if host.diagnostics.len() != before {
                 host.project.commit_declarations(&environment.definitions);
+                report(&host.diagnostics)?;
 
                 return Ok(host.diagnostics);
             }
@@ -602,6 +640,8 @@ fn check_environment(
     if let Some(diagnostics) =
         load_entry_declarations(&mut host, &mut checker, &entries, &environment.definitions)?
     {
+        report(&diagnostics)?;
+
         return Ok(diagnostics);
     }
 
@@ -615,8 +655,15 @@ fn check_environment(
 
     checker.freeze()?;
     host.project.commit_declarations(&environment.definitions);
-    let timeouts = collect_analysis_results(&mut host, &mut checker, entries)?;
+
+    let (timeouts, reported) =
+        collect_analysis_results(&mut host, &mut checker, entries, progress, report)?;
+
     add_analysis_timeouts(&mut host, timeouts)?;
+
+    if reported < host.diagnostics.len() {
+        report(&host.diagnostics[reported..])?;
+    }
 
     Ok(host.diagnostics)
 }
@@ -1142,5 +1189,60 @@ impl Editor {
         symbol: &str,
     ) -> io::Result<Option<Rc<serde_json::Value>>> {
         self.project.documentation(path, symbol)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn streaming_reports_each_diagnostic_once() {
+        let path =
+            std::env::temp_dir().join(format!("instar-streaming-{}.luau", std::process::id()));
+
+        std::fs::write(&path, "--!strict\nlocal value: number = \"text\"\n").unwrap();
+
+        let mut reported = Vec::new();
+        let mut seen = Vec::new();
+
+        let result = check_streaming(
+            &mut Project::new(),
+            std::slice::from_ref(&path),
+            |module| {
+                seen.push(module.to_owned());
+            },
+            |batch| {
+                reported.extend(batch.iter().map(|diagnostic| {
+                    (
+                        diagnostic.location.range,
+                        diagnostic.error,
+                        diagnostic.message.clone(),
+                    )
+                }));
+
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert!(seen.contains(&path));
+        std::fs::remove_file(path).unwrap();
+
+        let mut returned = result
+            .iter()
+            .map(|diagnostic| {
+                (
+                    diagnostic.location.range,
+                    diagnostic.error,
+                    diagnostic.message.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert!(returned.iter().any(|(_, error, _)| *error));
+        reported.sort();
+        returned.sort();
+        assert_eq!(reported, returned);
     }
 }
