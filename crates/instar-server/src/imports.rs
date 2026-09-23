@@ -89,7 +89,13 @@ fn update(project: &mut Project, previous: &Snapshot, current: &Snapshot) -> io:
 }
 
 pub(crate) fn at(document: &Document, query: &Query, offset: usize) -> io::Result<Option<Request>> {
-    if !matches!(query, Query::Definition(..) | Query::Completion(..)) {
+    if !matches!(
+        query,
+        Query::Definition(..)
+            | Query::Declaration(..)
+            | Query::Implementation(..)
+            | Query::Completion(..)
+    ) {
         return Ok(None);
     }
 
@@ -107,7 +113,7 @@ pub(crate) fn at(document: &Document, query: &Query, offset: usize) -> io::Resul
         return Ok(None);
     };
 
-    if matches!(query, Query::Definition(..)) {
+    if !matches!(query, Query::Completion(..)) {
         return Ok(Some(Request::Definition(offset)));
     }
 

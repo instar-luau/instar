@@ -551,6 +551,100 @@ namespace instar {
             std::vector<LocalOccurrence> occurrences;
         };
 
+        struct LocalFunctionSources final : Luau::AstVisitor {
+            LocalFunctionSources() = default;
+
+            void add(Luau::AstLocal *local, Luau::AstExpr *value) {
+                if (local && value) {
+                    assignments.emplace_back(local, value);
+                }
+            }
+
+            bool visit(Luau::AstStatLocal *statement) override {
+                for (size_t index = 0; index < statement->vars.size && index < statement->values.size; ++index) {
+                    add(statement->vars.data[index], statement->values.data[index]);
+                }
+
+                return true;
+            }
+
+            bool visit(Luau::AstStatLocalFunction *statement) override {
+                add(statement->name, statement->func);
+
+                return true;
+            }
+
+            bool visit(Luau::AstStatAssign *statement) override {
+                for (size_t index = 0; index < statement->vars.size && index < statement->values.size; ++index) {
+                    if (const auto *left = statement->vars.data[index]->as<Luau::AstExprLocal>()) {
+                        add(left->local, statement->values.data[index]);
+                    }
+                }
+
+                return true;
+            }
+
+            void resolve(Luau::AstLocal *local, std::vector<Luau::AstLocal *> &seen, std::vector<Luau::AstExprFunction *> &functions) const {
+                if (!local || std::find(seen.begin(), seen.end(), local) != seen.end()) {
+                    return;
+                }
+
+                seen.push_back(local);
+
+                for (const auto &[assigned, value] : assignments) {
+                    if (assigned != local) {
+                        continue;
+                    }
+
+                    if (auto *function = value->as<Luau::AstExprFunction>()) {
+                        if (std::find(functions.begin(), functions.end(), function) == functions.end()) {
+                            functions.push_back(function);
+                        }
+                    } else if (auto *alias = value->as<Luau::AstExprLocal>()) {
+                        resolve(alias->local, seen, functions);
+                    }
+                }
+            }
+
+            void resolve_properties(Luau::AstLocal *local, std::vector<Luau::AstLocal *> &seen, std::vector<Luau::AstExprIndexName *> &properties) const {
+                if (!local || std::find(seen.begin(), seen.end(), local) != seen.end()) {
+                    return;
+                }
+
+                seen.push_back(local);
+
+                for (const auto &[assigned, value] : assignments) {
+                    if (assigned != local) {
+                        continue;
+                    }
+
+                    if (auto *property = value->as<Luau::AstExprIndexName>()) {
+                        properties.push_back(property);
+                    } else if (auto *alias = value->as<Luau::AstExprLocal>()) {
+                        resolve_properties(alias->local, seen, properties);
+                    }
+                }
+            }
+
+            std::vector<std::pair<Luau::AstLocal *, Luau::AstExpr *>> assignments;
+        };
+
+        void emit_function_sources(
+            const ModuleContext &source_context, std::vector<Luau::AstExprFunction *> functions, NavigationCallback callback, void *context, bool &failed
+        ) {
+
+            for (Luau::AstExprFunction *function : functions) {
+                const Location range = location(function->location);
+                const EditorNavigation result{text(source_context.source->name), range, range};
+
+                if (!callback(context, &result)) {
+                    failed = true;
+
+                    return;
+                }
+            }
+        }
+
         struct RenameSite {
             std::string_view name;
             Luau::Location range;
@@ -1494,6 +1588,38 @@ namespace instar {
         Luau::ExprOrLocal target = Luau::findExprOrLocalAtPosition(*context_value->source, position);
 
         if (Luau::AstExpr *expression = target.getExpr()) {
+            if (auto *global = expression->as<Luau::AstExprGlobal>()) {
+                if (const auto identity = binding_identity(*context_value, global); identity && identity->binding->location.begin.hasValue()) {
+                    struct DeclarationFinder final : Luau::AstVisitor {
+                        DeclarationFinder(const ModuleContext &context, BindingIdentity identity, Luau::Location location)
+                            : context(context), identity(identity), location(location) {}
+
+                        bool visit(Luau::AstExprGlobal *candidate) override {
+                            const auto candidate_identity = binding_identity(context, candidate);
+                            found |= candidate->location == location && candidate_identity && same_identity(identity, *candidate_identity);
+
+                            return true;
+                        }
+
+                        const ModuleContext &context;
+                        BindingIdentity identity;
+                        Luau::Location location;
+                        bool found = false;
+                    } finder(*context_value, *identity, identity->binding->location);
+
+                    context_value->source->root->visit(&finder);
+
+                    if (finder.found) {
+                        const Location result_range = location(identity->binding->location);
+                        const EditorNavigation result{text(context_value->source->name), result_range, result_range};
+
+                        return callback(context, &result) ? StatusSuccess : StatusCallbackFailure;
+                    }
+                }
+            }
+        }
+
+        if (Luau::AstExpr *expression = target.getExpr()) {
             if (auto *index = expression->as<Luau::AstExprIndexName>()) {
                 const Luau::TypeId *base = context_value->module->astTypes.find(index->expr);
 
@@ -1516,6 +1642,263 @@ namespace instar {
 
                     return callback(context, &result) ? StatusSuccess : StatusCallbackFailure;
                 }
+            }
+        }
+
+        return StatusSuccess;
+    }
+
+    int32_t editor_implementation(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, NavigationCallback callback, void *context) {
+        if (!callback) {
+            return StatusFailure;
+        }
+
+        const auto selected = module_context(frontend, name);
+
+        if (!selected) {
+            return StatusSuccess;
+        }
+
+        const Luau::Position position(line, column);
+        bool failed = false;
+        std::optional<Luau::AstLocal *> local = target_local(*selected->source, position);
+
+        if (!local) {
+            struct AnnotatedLocalFinder final : Luau::AstVisitor {
+                explicit AnnotatedLocalFinder(Luau::Position position) : position(position) {}
+
+                bool visit(Luau::AstStatLocal *statement) override {
+                    for (Luau::AstLocal *value : statement->vars) {
+                        if (value->annotation && value->annotation->location.contains(position)) {
+                            local = value;
+                        }
+                    }
+
+                    return true;
+                }
+
+                Luau::Position position;
+                Luau::AstLocal *local = nullptr;
+            } finder(position);
+
+            selected->source->root->visit(&finder);
+
+            if (finder.local) {
+                local = finder.local;
+            }
+        }
+
+        std::optional<BindingIdentity> binding;
+        std::vector<PropertyIdentity> properties;
+
+        if (local) {
+            LocalFunctionSources sources;
+            selected->source->root->visit(&sources);
+            std::vector<Luau::AstLocal *> seen;
+            std::vector<Luau::AstExprFunction *> functions;
+            sources.resolve(*local, seen, functions);
+            emit_function_sources(*selected, std::move(functions), callback, context, failed);
+
+            if (failed) {
+                return StatusCallbackFailure;
+            }
+
+            seen.clear();
+            std::vector<Luau::AstExprIndexName *> aliases;
+            sources.resolve_properties(*local, seen, aliases);
+
+            for (Luau::AstExprIndexName *alias : aliases) {
+                const Luau::TypeId *base = selected->module->astTypes.find(alias->expr);
+
+                if (base) {
+                    if (const auto property = property_identity(*selected->module, *base, alias->index.value)) {
+                        properties.push_back(*property);
+                    }
+                }
+            }
+        } else {
+            Luau::ExprOrLocal target = Luau::findExprOrLocalAtPosition(*selected->source, position);
+
+            if (Luau::AstExpr *expression = target.getExpr()) {
+                if (auto *global = expression->as<Luau::AstExprGlobal>()) {
+                    binding = binding_identity(*selected, global);
+                } else if (auto *index = expression->as<Luau::AstExprIndexName>()) {
+                    if (const Luau::TypeId *base = selected->module->astTypes.find(index->expr)) {
+                        if (const auto property = property_identity(*selected->module, *base, index->index.value)) {
+                            properties.push_back(*property);
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!binding && properties.empty()) {
+            return StatusSuccess;
+        }
+
+        struct Finder final : Luau::AstVisitor {
+            Finder(const ModuleContext &module, std::optional<BindingIdentity> binding, const std::vector<PropertyIdentity> &properties, LocalFunctionSources &locals)
+                : module(module), binding(binding), properties(properties), locals(locals) {}
+
+            bool matches(Luau::AstExpr *destination) {
+                if (binding) {
+                    if (auto *global = destination ? destination->as<Luau::AstExprGlobal>() : nullptr) {
+                        const auto candidate = binding_identity(module, global);
+
+                        if (candidate && same_identity(*binding, *candidate)) {
+                            return true;
+                        }
+                    }
+                }
+
+                if (auto *index = destination ? destination->as<Luau::AstExprIndexName>() : nullptr) {
+                    const Luau::TypeId *base = module.module->astTypes.find(index->expr);
+
+                    if (base) {
+                        const auto candidate = property_identity(*module.module, *base, index->index.value);
+
+                        if (candidate) {
+                            for (const PropertyIdentity &property : properties) {
+                                if (same_identity(property, *candidate)) {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                return false;
+            }
+
+            void add_value(Luau::AstExpr *value) {
+                if (!value) {
+                    return;
+                }
+
+                if (auto *function = value->as<Luau::AstExprFunction>()) {
+                    functions.push_back(function);
+                } else if (auto *alias = value->as<Luau::AstExprLocal>()) {
+                    std::vector<Luau::AstLocal *> seen;
+                    locals.resolve(alias->local, seen, functions);
+                }
+            }
+
+            void add(Luau::AstExpr *destination, Luau::AstExpr *value) {
+                if (matches(destination)) {
+                    add_value(value);
+                }
+            }
+
+            bool visit(Luau::AstExprTable *table) override {
+                if (properties.empty()) {
+                    return true;
+                }
+
+                const Luau::TypeId *base = module.module->astTypes.find(table);
+
+                if (!base) {
+                    return true;
+                }
+
+                for (const Luau::AstExprTable::Item &item : table->items) {
+                    const auto *key = item.kind == Luau::AstExprTable::Item::Kind::Record && item.key ? item.key->as<Luau::AstExprConstantString>() : nullptr;
+
+                    if (!key) {
+                        continue;
+                    }
+
+                    const auto candidate = property_identity(*module.module, *base, std::string_view(key->value.data, key->value.size));
+
+                    if (candidate) {
+                        for (const PropertyIdentity &property : properties) {
+                            if (same_identity(property, *candidate)) {
+                                add_value(item.value);
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                return true;
+            }
+
+            bool visit(Luau::AstStatLocal *statement) override {
+                for (size_t index = 0; index < statement->vars.size && index < statement->values.size; ++index) {
+                    Luau::AstLocal *local = statement->vars.data[index];
+                    auto *table = statement->values.data[index]->as<Luau::AstExprTable>();
+                    const Luau::TypeId *declared = local->annotation ? module.module->astResolvedTypes.find(local->annotation) : nullptr;
+
+                    if (!table || !declared) {
+                        continue;
+                    }
+
+                    for (const Luau::AstExprTable::Item &item : table->items) {
+                        const auto *key = item.kind == Luau::AstExprTable::Item::Kind::Record && item.key ? item.key->as<Luau::AstExprConstantString>() : nullptr;
+
+                        if (!key) {
+                            continue;
+                        }
+
+                        const auto candidate = property_identity(*module.module, *declared, std::string_view(key->value.data, key->value.size));
+
+                        if (candidate) {
+                            for (const PropertyIdentity &property : properties) {
+                                if (same_identity(property, *candidate)) {
+                                    add_value(item.value);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                return true;
+            }
+
+            bool visit(Luau::AstStatAssign *statement) override {
+                for (size_t index = 0; index < statement->vars.size && index < statement->values.size; ++index) {
+                    add(statement->vars.data[index], statement->values.data[index]);
+                }
+
+                return true;
+            }
+
+            bool visit(Luau::AstStatFunction *statement) override {
+                if (matches(statement->name)) {
+                    functions.push_back(statement->func);
+                }
+
+                return true;
+            }
+
+            const ModuleContext &module;
+            std::optional<BindingIdentity> binding;
+            const std::vector<PropertyIdentity> &properties;
+            LocalFunctionSources &locals;
+            std::vector<Luau::AstExprFunction *> functions;
+        };
+
+        for (const auto &[module_name, source] : frontend.sourceModules) {
+            if (!source || !source->root || (binding && module_name != selected->source->name)) {
+                continue;
+            }
+
+            const auto candidate_context = module_context(frontend, text(module_name));
+
+            if (!candidate_context) {
+                continue;
+            }
+
+            LocalFunctionSources locals;
+            candidate_context->source->root->visit(&locals);
+            Finder finder(*candidate_context, binding, properties, locals);
+            candidate_context->source->root->visit(&finder);
+            std::sort(finder.functions.begin(), finder.functions.end());
+            finder.functions.erase(std::unique(finder.functions.begin(), finder.functions.end()), finder.functions.end());
+            emit_function_sources(*candidate_context, std::move(finder.functions), callback, context, failed);
+
+            if (failed) {
+                return StatusCallbackFailure;
             }
         }
 

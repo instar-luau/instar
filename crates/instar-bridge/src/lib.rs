@@ -800,6 +800,20 @@ impl Checker {
         self.navigation(callbacks, path, line, column, native::editor_declaration)
     }
 
+    /// Returns concrete source implementation targets at a source position.
+    ///
+    /// # Errors
+    /// Returns an error when the native operation fails.
+    pub fn implementation(
+        &mut self,
+        callbacks: &mut dyn Callbacks,
+        path: &str,
+        line: u32,
+        column: u32,
+    ) -> io::Result<Vec<Navigation>> {
+        self.navigation(callbacks, path, line, column, native::editor_implementation)
+    }
+
     /// Returns type-definition targets at a source position.
     ///
     /// # Errors

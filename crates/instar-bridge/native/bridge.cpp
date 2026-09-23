@@ -1,3 +1,4 @@
+#include "bridge.hpp"
 #include "Luau/BuiltinDefinitions.h"
 #include "Luau/Common.h"
 #include "Luau/Config.h"
@@ -7,7 +8,6 @@
 #include "Luau/Linter.h"
 #include "Luau/Module.h"
 #include "Luau/TypeAttach.h"
-#include "bridge.hpp"
 #include "editor.hpp"
 #include "roblox.hpp"
 
@@ -808,6 +808,10 @@ extern "C" {
 
     int32_t editor_declaration(void *handle, Text name, uint32_t line, uint32_t column, NavigationCallback callback, void *context, String *error) {
         return call_editor(handle, error, instar::editor_declaration, name, line, column, callback, context);
+    }
+
+    int32_t editor_implementation(void *handle, Text name, uint32_t line, uint32_t column, NavigationCallback callback, void *context, String *error) {
+        return call_editor(handle, error, instar::editor_implementation, name, line, column, callback, context);
     }
 
     int32_t editor_type_definition(void *handle, Text name, uint32_t line, uint32_t column, NavigationCallback callback, void *context, String *error) {
