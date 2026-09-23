@@ -2,8 +2,10 @@
 
 mod bindings;
 mod document;
+mod features;
 mod imports;
 mod worker;
+mod workspace;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -20,6 +22,8 @@ use std::{
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, oneshot};
+
+use tower_lsp_server::ls_types as lsp;
 
 use tower_lsp_server::{
     Client, LanguageServer, LspService, Server,
@@ -38,6 +42,29 @@ use tower_lsp_server::{
         request::{GotoTypeDefinitionParams, GotoTypeDefinitionResponse},
     },
 };
+
+type ProgressRequests = Arc<std::sync::Mutex<BTreeMap<String, Arc<AtomicBool>>>>;
+
+struct RequestGuard {
+    cancelled: Arc<AtomicBool>,
+    key: Option<String>,
+    requests: ProgressRequests,
+}
+
+impl Drop for RequestGuard {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
+
+        if let Some(key) = &self.key
+            && let Ok(mut requests) = self.requests.lock()
+            && requests
+                .get(key)
+                .is_some_and(|flag| Arc::ptr_eq(flag, &self.cancelled))
+        {
+            requests.remove(key);
+        }
+    }
+}
 
 use document::Document;
 use worker::{Query, Worker};
@@ -73,6 +100,11 @@ struct Backend {
     threads: std::sync::Mutex<Vec<thread::JoinHandle<()>>>,
     watch: AtomicBool,
     versioned_edits: AtomicBool,
+    workspace: mpsc::Sender<Option<workspace::Command>>,
+    progress_requests: ProgressRequests,
+    hint_types: AtomicBool,
+    hint_parameters: AtomicBool,
+    hint_requires: AtomicBool,
 }
 
 fn error(message: &impl ToString) -> Error {
@@ -166,6 +198,7 @@ impl Backend {
         });
 
         let (imports, import_thread) = imports::start();
+        let (workspace, workspace_thread) = workspace::start();
 
         Self {
             client,
@@ -174,9 +207,14 @@ impl Backend {
             queued,
             commands,
             imports,
-            threads: std::sync::Mutex::new(vec![thread, import_thread]),
+            threads: std::sync::Mutex::new(vec![thread, import_thread, workspace_thread]),
             watch: AtomicBool::new(false),
             versioned_edits: AtomicBool::new(false),
+            workspace,
+            progress_requests: Arc::default(),
+            hint_types: AtomicBool::new(true),
+            hint_parameters: AtomicBool::new(true),
+            hint_requires: AtomicBool::new(false),
         }
     }
 
@@ -389,6 +427,7 @@ impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
         let initialization = serde_json::to_value(&params).map_err(|failure| error(&failure))?;
         let capabilities = &initialization["capabilities"];
+        self.configure_hints(&initialization["initializationOptions"])?;
 
         self.versioned_edits.store(
             capabilities
@@ -428,13 +467,23 @@ impl LanguageServer for Backend {
             json!({"serverInfo": {"name": "instar", "version": env!("CARGO_PKG_VERSION")}, "capabilities": {
                 "positionEncoding": "utf-16",
                 "textDocumentSync": {"openClose": true, "change": TextDocumentSyncKind::INCREMENTAL, "save": {"includeText": false}},
-                "workspace": {"workspaceFolders": {"supported": true, "changeNotifications": true}},
+                "workspace": {"workspaceFolders": {"supported": true, "changeNotifications": true},
+                    "fileOperations": {
+                        "willRename": {"filters": [{"scheme": "file", "pattern": {"glob": "**"}}]},
+                        "didRename": {"filters": [{"scheme": "file", "pattern": {"glob": "**"}}]},
+                        "didCreate": {"filters": [{"scheme": "file", "pattern": {"glob": "**"}}]},
+                        "didDelete": {"filters": [{"scheme": "file", "pattern": {"glob": "**"}}]}
+                    }},
                 "hoverProvider": true, "completionProvider": {"triggerCharacters": [".", ":", "\"", "'", "/", "@"]},
                 "signatureHelpProvider": {"triggerCharacters": ["(", ","]},
                 "definitionProvider": true, "typeDefinitionProvider": true, "referencesProvider": true,
                 "renameProvider": {"prepareProvider": true}, "documentHighlightProvider": true,
                 "documentLinkProvider": {"resolveProvider": false}, "documentSymbolProvider": true,
                 "foldingRangeProvider": true, "selectionRangeProvider": true,
+                "workspaceSymbolProvider": true,
+                "codeActionProvider": {"codeActionKinds": ["quickfix"]},
+                "inlayHintProvider": true, "colorProvider": true,
+                "diagnosticProvider": {"identifier": "instar", "interFileDependencies": true, "workspaceDiagnostics": true, "workDoneProgress": true},
                 "semanticTokensProvider": {"legend": {"tokenTypes": bindings::SemanticKind::LEGEND,
                     "tokenModifiers": bindings::MODIFIER_LEGEND}, "full": true}
             }}),
@@ -472,6 +521,11 @@ impl LanguageServer for Backend {
             .map_err(|failure| error(&failure))?;
 
         self.imports.send(None).map_err(|failure| error(&failure))?;
+
+        self.workspace
+            .send(None)
+            .map_err(|failure| error(&failure))?;
+
         let threads = std::mem::take(&mut *self.threads.lock().map_err(|failure| error(&failure))?);
 
         tokio::task::spawn_blocking(move || {
@@ -584,7 +638,13 @@ impl LanguageServer for Backend {
         self.refresh().await;
     }
 
-    async fn did_change_configuration(&self, _: DidChangeConfigurationParams) {
+    async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
+        if let Err(failure) = self.configure_hints(&params.settings) {
+            self.client
+                .log_message(MessageType::ERROR, failure.to_string())
+                .await;
+        }
+
         self.refresh().await;
     }
 
@@ -653,41 +713,13 @@ impl LanguageServer for Backend {
     }
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
-        let mut result: Option<WorkspaceEdit> = self
+        let result: Option<WorkspaceEdit> = self
             .query_at(params.text_document_position, |line, column| {
                 Query::Rename(line, column, params.new_name)
             })
             .await?;
 
-        if !self.versioned_edits.load(Ordering::Acquire)
-            && let Some(edit) = &mut result
-        {
-            let Some(tower_lsp_server::ls_types::DocumentChanges::Edits(changes)) =
-                edit.document_changes.take()
-            else {
-                return Err(error(&"unexpected rename edit representation"));
-            };
-
-            edit.changes = Some(
-                changes
-                    .into_iter()
-                    .map(|change| {
-                        let edits = change
-                            .edits
-                            .into_iter()
-                            .map(|edit| match edit {
-                                tower_lsp_server::ls_types::OneOf::Left(edit) => edit,
-                                tower_lsp_server::ls_types::OneOf::Right(edit) => edit.text_edit,
-                            })
-                            .collect();
-
-                        (change.text_document.uri, edits)
-                    })
-                    .collect(),
-            );
-        }
-
-        Ok(result)
+        result.map(|edit| self.compatible_edit(edit)).transpose()
     }
 
     async fn document_highlight(
@@ -734,6 +766,180 @@ impl LanguageServer for Backend {
         })
         .await
     }
+
+    async fn symbol(
+        &self,
+        params: lsp::WorkspaceSymbolParams,
+    ) -> Result<Option<lsp::WorkspaceSymbolResponse>> {
+        self.workspace_query(
+            workspace::Request::Symbols(params.query),
+            params.work_done_progress_params.work_done_token,
+        )
+        .await
+    }
+
+    async fn will_rename_files(
+        &self,
+        params: lsp::RenameFilesParams,
+    ) -> Result<Option<WorkspaceEdit>> {
+        let edit = self
+            .workspace_query(
+                workspace::Request::Rename(Self::rename_paths(&params)?),
+                None,
+            )
+            .await?;
+
+        self.compatible_edit(edit).map(Some)
+    }
+
+    async fn did_rename_files(&self, params: lsp::RenameFilesParams) {
+        let result = async {
+            let renames = Self::rename_paths(&params)?;
+            let mut state = self.state.lock().await;
+            let mut documents = BTreeMap::new();
+
+            for (path, document) in &state.documents {
+                let new_path = workspace::remap(path, &renames);
+
+                let document = if new_path == *path {
+                    Arc::clone(document)
+                } else {
+                    Arc::new(
+                        Document::new(
+                            document::uri(&new_path).map_err(|failure| error(&failure))?,
+                            document.version,
+                            document.text.clone(),
+                        )
+                        .map_err(|failure| error(&failure))?,
+                    )
+                };
+
+                documents.insert(new_path, document);
+            }
+
+            state.documents = documents;
+            state.epoch += 1;
+            self.changed(&mut state);
+
+            Ok::<_, Error>(())
+        }
+        .await;
+
+        if let Err(failure) = result {
+            self.client
+                .log_message(MessageType::ERROR, failure.to_string())
+                .await;
+        }
+    }
+
+    async fn did_create_files(&self, _: lsp::CreateFilesParams) {
+        self.refresh().await;
+    }
+
+    async fn did_delete_files(&self, _: lsp::DeleteFilesParams) {
+        self.refresh().await;
+    }
+
+    async fn code_action(
+        &self,
+        params: lsp::CodeActionParams,
+    ) -> Result<Option<lsp::CodeActionResponse>> {
+        if params
+            .context
+            .only
+            .as_ref()
+            .is_some_and(|kinds| !kinds.iter().any(|kind| kind.as_str() == "quickfix"))
+        {
+            return Ok(Some(Vec::new()));
+        }
+
+        let (revision, document) = self.document(&params.text_document.uri).await?;
+
+        let mut actions: lsp::CodeActionResponse = self
+            .dispatch(revision, &document, Query::Actions(params.range))
+            .await?;
+
+        for action in &mut actions {
+            if let lsp::CodeActionOrCommand::CodeAction(action) = action
+                && let Some(edit) = action.edit.take()
+            {
+                action.edit = Some(self.compatible_edit(edit)?);
+            }
+        }
+
+        Ok(Some(actions))
+    }
+
+    async fn inlay_hint(
+        &self,
+        params: lsp::InlayHintParams,
+    ) -> Result<Option<Vec<lsp::InlayHint>>> {
+        let (revision, document) = self.document(&params.text_document.uri).await?;
+
+        self.dispatch(
+            revision,
+            &document,
+            Query::Hints(
+                params.range,
+                self.hint_types.load(Ordering::Acquire),
+                self.hint_parameters.load(Ordering::Acquire),
+                self.hint_requires.load(Ordering::Acquire),
+            ),
+        )
+        .await
+    }
+
+    async fn document_color(
+        &self,
+        params: lsp::DocumentColorParams,
+    ) -> Result<Vec<lsp::ColorInformation>> {
+        self.syntax(params.text_document.uri, |document| {
+            Ok(document.features().colors(document))
+        })
+        .await
+    }
+
+    async fn color_presentation(
+        &self,
+        params: lsp::ColorPresentationParams,
+    ) -> Result<Vec<lsp::ColorPresentation>> {
+        self.syntax(params.text_document.uri, move |document| {
+            Ok(document
+                .features()
+                .presentation(document, params.range, params.color))
+        })
+        .await
+    }
+
+    async fn workspace_diagnostic(
+        &self,
+        params: lsp::WorkspaceDiagnosticParams,
+    ) -> Result<lsp::WorkspaceDiagnosticReportResult> {
+        let previous = params
+            .previous_result_ids
+            .into_iter()
+            .map(|item| (item.uri.to_string(), item.value))
+            .collect();
+
+        self.workspace_query(
+            workspace::Request::Diagnostics(previous),
+            params.work_done_progress_params.work_done_token,
+        )
+        .await
+    }
+
+    async fn diagnostic(
+        &self,
+        params: lsp::DocumentDiagnosticParams,
+    ) -> Result<lsp::DocumentDiagnosticReportResult> {
+        let path = document::path(&params.text_document.uri).map_err(|failure| error(&failure))?;
+
+        self.workspace_query(
+            workspace::Request::Document(path, params.previous_result_id),
+            params.work_done_progress_params.work_done_token,
+        )
+        .await
+    }
 }
 
 /// Serves the language server over standard input and output.
@@ -745,7 +951,9 @@ pub fn run() -> io::Result<()> {
         .enable_all()
         .build()?
         .block_on(async {
-            let (service, socket) = LspService::new(Backend::new);
+            let (service, socket) = LspService::build(Backend::new)
+                .custom_method("window/workDoneProgress/cancel", Backend::cancel_progress)
+                .finish();
 
             Server::new(tokio::io::stdin(), tokio::io::stdout(), socket)
                 .serve(service)
@@ -753,4 +961,190 @@ pub fn run() -> io::Result<()> {
         });
 
     Ok(())
+}
+
+impl Backend {
+    fn configure_hints(&self, settings: &Value) -> Result<()> {
+        if let Some(hints) = settings.get("instar").unwrap_or(settings).get("inlayHints") {
+            for (name, flag) in [
+                ("types", &self.hint_types),
+                ("parameters", &self.hint_parameters),
+                ("requires", &self.hint_requires),
+            ] {
+                if let Some(value) = hints.get(name) {
+                    let value = value.as_bool().ok_or_else(|| {
+                        Error::invalid_params(format!("inlayHints.{name} must be boolean"))
+                    })?;
+
+                    flag.store(value, Ordering::Release);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the notification router requires owned deserialized parameters"
+    )]
+    fn cancel_progress(&self, params: lsp::WorkDoneProgressCancelParams) -> std::future::Ready<()> {
+        if let Ok(requests) = self.progress_requests.lock()
+            && let Some(flag) =
+                requests.get(&serde_json::to_string(&params.token).unwrap_or_default())
+        {
+            flag.store(true, Ordering::Release);
+        }
+
+        std::future::ready(())
+    }
+
+    async fn workspace_query<T: DeserializeOwned>(
+        &self,
+        request: workspace::Request,
+        token: Option<lsp::ProgressToken>,
+    ) -> Result<T> {
+        let cancelled = Arc::new(AtomicBool::new(false));
+
+        let key = token
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|failure| error(&failure))?;
+
+        if let Some(key) = &key {
+            let mut requests = self
+                .progress_requests
+                .lock()
+                .map_err(|failure| error(&failure))?;
+
+            if requests.contains_key(key) {
+                return Err(Error::invalid_params("progress token already in use"));
+            }
+
+            requests.insert(key.clone(), Arc::clone(&cancelled));
+        }
+
+        let _guard = RequestGuard {
+            cancelled: Arc::clone(&cancelled),
+            key,
+            requests: Arc::clone(&self.progress_requests),
+        };
+
+        let snapshot = self.state.lock().await.clone();
+        let revision = snapshot.revision;
+        let (reply, mut response) = oneshot::channel();
+        let (progress, mut updates) = tokio::sync::mpsc::unbounded_channel();
+
+        if let Some(token) = &token {
+            self.client.send_notification::<lsp::notification::Progress>(decode(json!({"token": token, "value": {"kind": "begin", "title": "Instar workspace", "cancellable": true, "percentage": 0}}))?).await;
+        }
+
+        self.workspace
+            .send(Some(workspace::Command {
+                snapshot,
+                request,
+                cancelled,
+                progress,
+                reply,
+            }))
+            .map_err(|failure| error(&failure))?;
+
+        let mut previous = None;
+
+        let result = loop {
+            tokio::select! {
+                result = &mut response => break result.map_err(|failure| error(&failure))?,
+                Some((done, total)) = updates.recv() => {
+                    let percentage = done.saturating_mul(100).checked_div(total).unwrap_or(0);
+                    if previous != Some(percentage) && percentage < 100 {
+                        previous = Some(percentage);
+                        if let Some(token) = &token {
+                            self.client.send_notification::<lsp::notification::Progress>(decode(json!({"token": token, "value": {"kind": "report", "cancellable": true, "percentage": percentage, "message": format!("{done}/{total} modules")}}))?).await;
+                        }
+                    }
+                }
+            }
+        };
+
+        if let Some(token) = token {
+            self.client
+                .send_notification::<lsp::notification::Progress>(decode(
+                    json!({"token": token, "value": {"kind": "end"}}),
+                )?)
+                .await;
+        }
+
+        let value = result.map_err(|failure| {
+            if failure.kind() == io::ErrorKind::Interrupted {
+                Error::request_cancelled()
+            } else {
+                error(&failure)
+            }
+        })?;
+
+        if revision != self.revision.load(Ordering::Acquire) {
+            return Err(Error::content_modified());
+        }
+
+        decode(value)
+    }
+
+    fn compatible_edit(&self, mut edit: WorkspaceEdit) -> Result<WorkspaceEdit> {
+        if !self.versioned_edits.load(Ordering::Acquire)
+            && let Some(changes) = edit.document_changes.take()
+        {
+            let lsp::DocumentChanges::Edits(changes) = changes else {
+                return Err(Error::invalid_params(
+                    "client does not support document changes",
+                ));
+            };
+
+            edit.changes = Some(
+                changes
+                    .into_iter()
+                    .map(|change| {
+                        (
+                            change.text_document.uri,
+                            change
+                                .edits
+                                .into_iter()
+                                .map(|edit| match edit {
+                                    lsp::OneOf::Left(edit) => edit,
+                                    lsp::OneOf::Right(edit) => edit.text_edit,
+                                })
+                                .collect(),
+                        )
+                    })
+                    .collect(),
+            );
+        }
+
+        Ok(edit)
+    }
+}
+
+impl Backend {
+    fn rename_paths(params: &lsp::RenameFilesParams) -> Result<Vec<(PathBuf, PathBuf)>> {
+        params
+            .files
+            .iter()
+            .map(|file| {
+                let old = file
+                    .old_uri
+                    .parse::<Uri>()
+                    .map_err(|failure| error(&failure))?;
+
+                let new = file
+                    .new_uri
+                    .parse::<Uri>()
+                    .map_err(|failure| error(&failure))?;
+
+                Ok((
+                    document::path(&old).map_err(|failure| error(&failure))?,
+                    document::path(&new).map_err(|failure| error(&failure))?,
+                ))
+            })
+            .collect()
+    }
 }

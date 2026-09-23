@@ -38,6 +38,12 @@ pub(crate) struct Definitions {
 }
 
 impl Definitions {
+    pub(crate) fn services(&self) -> impl Iterator<Item = &str> {
+        self.metadata
+            .iter()
+            .flat_map(|metadata| metadata.services.iter().map(String::as_str))
+    }
+
     pub(crate) fn register(&self, checker: &mut Checker) -> io::Result<bool> {
         let Some(metadata) = &self.metadata else {
             return Ok(false);

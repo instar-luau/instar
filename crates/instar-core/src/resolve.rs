@@ -119,6 +119,126 @@ impl Resolver {
         Self::default()
     }
 
+    /// Returns an import argument that resolves to the target in every source context.
+    ///
+    /// # Errors
+    /// Returns invalid entry or configuration errors.
+    pub fn import_argument(
+        &mut self,
+        project: &mut Project,
+        source: &Path,
+        target: &Path,
+    ) -> Result<Option<String>, Failure> {
+        let origins = self.entries(project, source)?;
+        let mut targets = self.entries(project, target)?;
+
+        for map in project
+            .sourcemaps_for(source)
+            .map_err(|error| Failure::Configuration(error.to_string()))?
+        {
+            for instance in map.instances_for_source(target) {
+                if instance.class_name() == "ModuleScript" {
+                    targets.push(instance.module(true)?);
+                }
+            }
+        }
+
+        let config = project
+            .configuration(source)
+            .map_err(|error| Failure::Configuration(error.to_string()))?;
+
+        let mut candidates = BTreeSet::new();
+
+        for origin in &origins {
+            let mut roots: Vec<_> = config
+                .aliases
+                .keys()
+                .map(|name| format!("@{name}"))
+                .collect();
+
+            roots.extend(["@game".to_owned(), "@self".to_owned(), "./".to_owned()]);
+
+            for prefix in roots {
+                let mut trace = Resolution {
+                    result: Err(Failure::Invalid(String::new())),
+                    candidates: BTreeSet::new(),
+                    configurations: BTreeSet::new(),
+                    sourcemaps: BTreeSet::new(),
+                };
+
+                let Ok(base) = self.request_navigation(project, origin, &prefix, &mut trace) else {
+                    continue;
+                };
+
+                for destination in &targets {
+                    let relative = match (&base, &destination.instance) {
+                        (Navigation::File(base), None) => relative_path(base, &destination.path),
+
+                        (Navigation::Instance(base), Some(instance)) => {
+                            relative_instance(base, instance)
+                        }
+
+                        _ => None,
+                    };
+
+                    if let Some(relative) = relative {
+                        let request = if prefix == "./" {
+                            if relative.starts_with("../") {
+                                relative
+                            } else {
+                                format!("./{relative}")
+                            }
+                        } else if relative == "." {
+                            prefix.clone()
+                        } else if !relative.starts_with("..") {
+                            format!("{prefix}/{relative}")
+                        } else {
+                            continue;
+                        };
+
+                        candidates.insert(request);
+                    }
+                }
+            }
+        }
+
+        let mut candidates: Vec<_> = candidates.into_iter().collect();
+
+        candidates
+            .sort_by_key(|request| (!request.starts_with('@'), request.len(), request.clone()));
+
+        for request in candidates {
+            if origins.iter().all(|origin| {
+                self.resolve(project, origin, &request)
+                    .result
+                    .is_ok_and(|module| module.source == target)
+            }) {
+                if let Some(tail) = request.strip_prefix("@game/") {
+                    let mut expression = "game".to_owned();
+
+                    for component in tail.split('/') {
+                        expression.push('[');
+
+                        expression.push_str(
+                            &serde_json::to_string(component)
+                                .map_err(|error| Failure::Invalid(error.to_string()))?,
+                        );
+
+                        expression.push(']');
+                    }
+
+                    return Ok(Some(expression));
+                }
+
+                return serde_json::to_string(&request)
+                    .map(Some)
+                    .map_err(|error| Failure::Invalid(error.to_string()));
+            }
+        }
+
+        Ok(None)
+    }
+
     /// Maps an entry file to every instance context, or to one filesystem module if unmapped.
     ///
     /// # Errors
@@ -671,6 +791,70 @@ impl Resolver {
         self.entries.insert(path.to_owned(), lookup.clone());
 
         lookup
+    }
+}
+
+fn relative_path(base: &Path, target: &Path) -> Option<String> {
+    let base: Vec<_> = base.components().collect();
+    let target: Vec<_> = target.components().collect();
+
+    if base.first() != target.first() {
+        return None;
+    }
+
+    let common = base.iter().zip(&target).take_while(|(a, b)| a == b).count();
+
+    let parts = std::iter::repeat_n("..".to_owned(), base.len() - common)
+        .chain(
+            target[common..]
+                .iter()
+                .map(|part| part.as_os_str().to_string_lossy().into_owned()),
+        )
+        .collect::<Vec<_>>();
+
+    Some(if parts.is_empty() {
+        ".".to_owned()
+    } else {
+        parts.join("/")
+    })
+}
+
+fn relative_instance(base: &Instance, target: &Instance) -> Option<String> {
+    let mut ancestors = Vec::new();
+    let mut node = base.clone();
+
+    loop {
+        ancestors.push(node.clone());
+
+        let Ok(parent) = node.parent() else { break };
+
+        node = parent;
+    }
+
+    let mut names = Vec::new();
+    let mut node = target.clone();
+
+    loop {
+        if let Some(index) = ancestors.iter().position(|ancestor| *ancestor == node) {
+            names.reverse();
+
+            let parts: Vec<_> = std::iter::repeat_n("..".to_owned(), index)
+                .chain(names)
+                .collect();
+
+            return Some(if parts.is_empty() {
+                ".".to_owned()
+            } else {
+                parts.join("/")
+            });
+        }
+
+        if node.name().contains('/') {
+            return None;
+        }
+
+        names.push(node.name().to_owned());
+        node = node.parent().ok()?;
     }
 }
 

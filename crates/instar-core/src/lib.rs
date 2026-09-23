@@ -19,8 +19,11 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-// Lexical identity preserves symlink spelling, matching Luau's filesystem navigator.
-fn absolute(path: &Path) -> io::Result<PathBuf> {
+/// Normalizes an absolute lexical path without resolving symlinks.
+///
+/// # Errors
+/// Returns an error when the working directory or absolute path cannot be obtained.
+pub fn absolute(path: &Path) -> io::Result<PathBuf> {
     let path = std::path::absolute(path)?;
     let mut result = PathBuf::new();
 

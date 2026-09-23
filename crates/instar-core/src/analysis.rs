@@ -587,7 +587,39 @@ impl Editor {
         self.check_roots(paths).map(drop)
     }
 
+    /// Checks workspace roots with lint diagnostics and cancellable per-module progress.
+    ///
+    /// # Errors
+    /// Returns analysis errors or `Interrupted` when progress returns false.
+    pub fn check_workspace(
+        &mut self,
+        paths: &[PathBuf],
+        progress: &mut dyn FnMut(usize, usize) -> bool,
+    ) -> io::Result<Vec<Diagnostic>> {
+        let open = self.open.clone();
+        self.open.extend(paths.iter().cloned());
+        let result = self.check_roots_progress(paths, progress);
+        self.open = open;
+
+        result
+    }
+
     fn check_roots(&mut self, additional: &[PathBuf]) -> io::Result<Vec<Diagnostic>> {
+        self.check_roots_progress(additional, &mut |_, _| true)
+    }
+
+    fn check_roots_progress(
+        &mut self,
+        additional: &[PathBuf],
+        progress: &mut dyn FnMut(usize, usize) -> bool,
+    ) -> io::Result<Vec<Diagnostic>> {
+        if !progress(0, 0) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "request cancelled",
+            ));
+        }
+
         let paths = self
             .open
             .iter()
@@ -608,6 +640,13 @@ impl Editor {
 
         let mut diagnostics = Vec::new();
 
+        let total = environments
+            .iter()
+            .map(|environment| environment.entries.len())
+            .sum();
+
+        let mut completed = 0;
+
         for environment in environments {
             let index = self.sessions.iter().position(|session| {
                 session.settings == environment.settings
@@ -619,48 +658,11 @@ impl Editor {
             let index = if let Some(index) = index {
                 index
             } else {
-                let declarations = self.project.declarations(&environment.definitions)?;
-
-                let mut session = EditorSession {
-                    settings: environment.settings,
-                    definitions: environment.definitions,
-                    map: environment.map,
-                    checker: Checker::new(&CheckerOptions {
-                        retain_full_type_graphs: 1,
-                        run_lint_checks: 1,
-                        ..CheckerOptions::default()
-                    })?,
-                    resolver: Resolver::new(),
-                    identities: HashMap::new(),
-                    modules: HashMap::new(),
-                };
-
-                let map = session.map.clone();
-                let roblox = session.settings.enabled;
-
-                session.with_host(&mut self.project, &self.open, |checker, host| {
-                    let mut registered = false;
-
-                    for (package, definition) in &declarations {
-                        checker.load_definition(host, definition.source.as_bytes(), package)?;
-                    }
-
-                    for (_, definition) in declarations {
-                        registered |= roblox && definition.register(checker)?;
-                    }
-
-                    if registered && let Some(map) = map {
-                        map.register(checker, |module| host.intern(module))?;
-                    }
-
-                    checker.freeze()
-                })?;
-
-                self.project.commit_declarations(&session.definitions);
-
-                self.sessions.push(session);
-
-                self.sessions.len() - 1
+                self.create_session(
+                    environment.settings,
+                    environment.definitions,
+                    environment.map,
+                )?
             };
 
             let found = self.sessions[index].with_host(
@@ -676,7 +678,15 @@ impl Editor {
                         .collect::<io::Result<Vec<_>>>()?;
 
                     for name in &entries {
+                        if !progress(completed, total) {
+                            return Err(io::Error::new(
+                                io::ErrorKind::Interrupted,
+                                "request cancelled",
+                            ));
+                        }
+
                         timeouts.extend(checker.check(host, Path::new(name))?);
+                        completed += 1;
                     }
 
                     for name in &entries {
@@ -704,9 +714,65 @@ impl Editor {
             )?;
 
             diagnostics.extend(found);
+
+            if !progress(completed, total) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "request cancelled",
+                ));
+            }
         }
 
         Ok(diagnostics)
+    }
+
+    fn create_session(
+        &mut self,
+        settings: RobloxSettings,
+        definitions: Vec<(String, String)>,
+        map: Option<Rc<Sourcemap>>,
+    ) -> io::Result<usize> {
+        let declarations = self.project.declarations(&definitions)?;
+
+        let mut session = EditorSession {
+            settings,
+            definitions,
+            map,
+            checker: Checker::new(&CheckerOptions {
+                retain_full_type_graphs: 1,
+                run_lint_checks: 1,
+                ..CheckerOptions::default()
+            })?,
+            resolver: Resolver::new(),
+            identities: HashMap::new(),
+            modules: HashMap::new(),
+        };
+
+        let map = session.map.clone();
+        let roblox = session.settings.enabled;
+
+        session.with_host(&mut self.project, &self.open, |checker, host| {
+            let mut registered = false;
+
+            for (package, definition) in &declarations {
+                checker.load_definition(host, definition.source.as_bytes(), package)?;
+            }
+
+            for (_, definition) in declarations {
+                registered |= roblox && definition.register(checker)?;
+            }
+
+            if registered && let Some(map) = map {
+                map.register(checker, |module| host.intern(module))?;
+            }
+
+            checker.freeze()
+        })?;
+
+        self.project.commit_declarations(&session.definitions);
+        self.sessions.push(session);
+
+        Ok(self.sessions.len() - 1)
     }
 
     /// Runs an editor query against a checked module in its first place context.
@@ -796,6 +862,14 @@ impl Editor {
     /// Returns source-loading errors.
     pub fn source(&mut self, path: &Path) -> io::Result<Rc<str>> {
         self.project.source(path)
+    }
+
+    /// Lists services from the editor's cached platform declarations.
+    ///
+    /// # Errors
+    /// Returns configuration or declaration-loading errors.
+    pub fn services(&mut self, path: &Path) -> io::Result<Vec<String>> {
+        self.project.services(path)
     }
 
     /// Loads merged documentation for a source's platform configuration.

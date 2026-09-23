@@ -7,6 +7,7 @@
 #include "Luau/ToString.h"
 #include "Luau/Type.h"
 
+#include <algorithm>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -188,6 +189,30 @@ namespace instar {
 
         std::string type_text(Luau::TypeId type) {
             return Luau::toString(type, Luau::ToStringOptions{});
+        }
+
+        std::string type_hint_text(Luau::TypeId type) {
+            Luau::TypeId followed = Luau::follow(type);
+            const auto *table = Luau::get<Luau::TableType>(followed);
+            const auto *external = Luau::get<Luau::ExternType>(followed);
+            const bool named = (table && table->name && !table->name->empty()) || external;
+
+            Luau::ToStringOptions options{!named};
+            options.hideTableAliasExpansions = true;
+            options.ignoreSyntheticName = true;
+
+            if (!named) {
+                options.maxTableLength = 58;
+                options.maxTypeLength = 58;
+            }
+
+            Luau::ToStringResult result = Luau::toStringDetailed(type, options);
+
+            if (result.cycle || result.truncated || (!named && result.name.size() > 58)) {
+                return "{...}";
+            }
+
+            return std::move(result.name);
         }
 
         std::optional<Luau::ModuleName> type_definition_module(const Luau::Module &module, Luau::TypeId type, std::optional<Luau::Location> &definition) {
@@ -1049,7 +1074,9 @@ namespace instar {
             }
         }
 
-        const std::string type_value = Luau::toString(*type, Luau::ToStringOptions{is_type});
+        Luau::ToStringOptions options{is_type};
+        options.ignoreSyntheticName = true;
+        const std::string type_value = Luau::toString(*type, options);
         const Text name_text = name_value ? text(*name_value) : Text{};
         const Text type_output = text(type_value);
         const Text documentation_text = documentation ? text(*documentation) : Text{};
@@ -1076,7 +1103,35 @@ namespace instar {
             frontend,
             std::string(*module_name),
             Luau::Position(line, column),
-            [](std::string, std::optional<const Luau::ExternType *>, std::optional<std::string>) { return std::optional<Luau::AutocompleteEntryMap>(); }
+            [&frontend](std::string tag, std::optional<const Luau::ExternType *> receiver, std::optional<std::string>) -> std::optional<Luau::AutocompleteEntryMap> {
+                if (tag != "instar.class" && tag != "instar.service" && tag != "instar.creatable" && tag != "instar.child") {
+                    return std::nullopt;
+                }
+                Luau::AutocompleteEntryMap entries;
+                auto add = [&](const std::string &name, Luau::TypeId type) {
+                    Luau::AutocompleteEntry entry;
+                    entry.kind = Luau::AutocompleteEntryKind::String;
+                    entry.type = type;
+                    entries.emplace(name, std::move(entry));
+                };
+                if (tag == "instar.child") {
+                    if (receiver && *receiver) {
+                        for (const auto &[name, prop] : (*receiver)->props) {
+                            if (prop.readTy && std::find(prop.tags.begin(), prop.tags.end(), tag) != prop.tags.end()) {
+                                add(name, *prop.readTy);
+                            }
+                        }
+                    }
+                } else {
+                    for (const auto &[name, binding] : frontend.globals.globalScope->exportedTypeBindings) {
+                        auto type = Luau::follow(binding.type);
+                        if (const auto *klass = Luau::get<Luau::ExternType>(type); klass && std::find(klass->tags.begin(), klass->tags.end(), tag) != klass->tags.end()) {
+                            add(name, type);
+                        }
+                    }
+                }
+                return entries;
+            }
         );
 
         for (const auto &[candidate_name, candidate] : result.entryMap) {
@@ -1086,6 +1141,26 @@ namespace instar {
             const Text detail_text = text(detail);
             const Text documentation = candidate.documentationSymbol ? text(*candidate.documentationSymbol) : Text{};
             const Text insert = candidate.insertText ? text(*candidate.insertText) : Text{};
+            std::optional<Luau::Location> definition;
+            std::optional<Luau::ModuleName> definition_module;
+
+            if (candidate.type) {
+                definition_module = type_definition_module(*context_value->module, *candidate.type, definition);
+            }
+
+            if (!definition && candidate.kind == Luau::AutocompleteEntryKind::Binding) {
+                auto scope = Luau::findScopeAtPosition(*context_value->module, Luau::Position(line, column));
+
+                for (; scope && !definition; scope = scope->parent) {
+                    for (const auto &[symbol, binding] : scope->bindings) {
+                        if (symbol.local && candidate_name == symbol.local->name.value) {
+                            definition = binding.location;
+                            definition_module = std::string(*module_name);
+                            break;
+                        }
+                    }
+                }
+            }
 
             const EditorCompletionItem item{
                 candidate_name_text,
@@ -1097,6 +1172,8 @@ namespace instar {
                 candidate.kind == Luau::AutocompleteEntryKind::RequirePath ? CompletionRequirePath : CompletionNormal,
                 completion_kind(candidate.kind),
                 uint8_t(candidate.deprecated),
+                definition_module && definition ? text(*definition_module) : Text{},
+                definition ? location(*definition) : Location{},
             };
 
             if (!callback(context, &item)) {
@@ -1188,10 +1265,10 @@ namespace instar {
                     }
 
                     if (const Luau::TypeId *type = module.astTypes.find(statement->values.data[index])) {
-                        hints.push_back({local->location, type_text(*type)});
+                        hints.push_back({local->location, type_hint_text(*type), {}});
                     } else if (const Luau::TypePackId *pack = module.astTypePacks.find(statement->values.data[index])) {
                         if (const std::optional<Luau::TypeId> type = Luau::first(*pack)) {
-                            hints.push_back({local->location, type_text(*type)});
+                            hints.push_back({local->location, type_hint_text(*type), {}});
                         }
                     }
                 }
@@ -1222,7 +1299,7 @@ namespace instar {
                 for (size_t index = 0; index < call->args.size; ++index) {
                     const size_t parameter = index + offset;
 
-                    if (parameter >= function->argNames.size() || !function->argNames[parameter]) {
+                    if (parameter >= parameters.size() || parameter >= function->argNames.size() || !function->argNames[parameter]) {
                         continue;
                     }
 
@@ -1230,6 +1307,7 @@ namespace instar {
                         {
                             Luau::Location(call->args.data[index]->location.begin, call->args.data[index]->location.begin),
                             type_text(parameters[parameter]),
+                            function->argNames[parameter]->name,
                         }
                     );
                 }
@@ -1238,13 +1316,20 @@ namespace instar {
             }
 
             const Luau::Module &module;
-            std::vector<std::pair<Luau::Location, std::string>> hints;
+
+            struct Hint {
+                Luau::Location range;
+                std::string type;
+                std::string parameter;
+            };
+
+            std::vector<Hint> hints;
         } visitor(*context_value->module);
 
         context_value->source->root->visit(&visitor);
 
-        for (const auto &[range, type] : visitor.hints) {
-            const EditorTypeHint result{location(range), text(type)};
+        for (const auto &[range, type, parameter] : visitor.hints) {
+            const EditorTypeHint result{location(range), text(type), text(parameter)};
 
             if (!callback(context, &result)) {
                 return StatusCallbackFailure;

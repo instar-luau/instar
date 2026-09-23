@@ -291,6 +291,28 @@ impl Project {
         Ok(source)
     }
 
+    /// Lists services supplied by the active platform declarations.
+    ///
+    /// # Errors
+    /// Returns configuration or declaration-loading errors.
+    pub fn services(&mut self, source: &Path) -> io::Result<Vec<String>> {
+        let config = self.configuration(source)?;
+        let mut services = std::collections::BTreeSet::new();
+
+        if config.roblox.enabled {
+            for location in config.settings.definitions.values() {
+                services.extend(
+                    self.assets
+                        .declaration(location)?
+                        .services()
+                        .map(str::to_owned),
+                );
+            }
+        }
+
+        Ok(services.into_iter().collect())
+    }
+
     /// Loads JSON documentation for an exact native symbol, with custom entries taking precedence.
     ///
     /// # Errors
