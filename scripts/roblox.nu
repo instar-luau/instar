@@ -1,5 +1,4 @@
 const DATA = path self | path dirname | path join roblox
-const ASSETS = path self | path dirname | path dirname | path join generated
 const ROOT = '<<<ROOT>>>'
 
 def identifier [name: string]: nothing -> bool {
@@ -418,7 +417,41 @@ def references [value: record, mappings: record]: nothing -> list<string> {
     ] { [$type] } else { [] }
 }
 
-def main []: nothing -> nothing {
+def canonical-symbol [value: string, roots: record]: nothing -> string {
+    let symbol = $value | parse --regex '^@roblox/global/(?<root>[A-Za-z_][A-Za-z0-9_]*)(?<suffix>(?:[./].*)?)$' | get --optional 0
+
+    if $symbol != null and $symbol.root in $roots.luau and $symbol.root not-in $roots.roblox {
+        $"@luau/global/($symbol.root)($symbol.suffix)"
+    } else {
+        $value
+    }
+}
+
+def canonical [value: oneof<record, list<any>, string, int, float, bool, nothing>, roots: record]: nothing -> oneof<record, list<any>, string, number, bool, nothing> {
+    if ($value | describe) starts-with record {
+        let keys = $value | columns
+
+        $value | transpose key value | reduce --fold {} {|entry, result|
+            let key = canonical-symbol $entry.key $roots
+
+            if $key != $entry.key and $key in $keys {
+                $result
+            } else {
+                $result | upsert $key (canonical $entry.value $roots)
+            }
+        }
+    } else if ($value | describe) starts-with list or ($value | describe) starts-with table {
+        $value | each {|entry| canonical $entry $roots }
+    } else if ($value | describe) == string {
+        canonical-symbol $value $roots
+    } else {
+        $value
+    }
+}
+
+def main [
+    destination: path # Directory for generated publishing artifacts.
+]: nothing -> nothing {
     let corrections = open ($DATA | path join corrections.json)
     let types = open ($DATA | path join types.json)
     let tracker = 'https://raw.githubusercontent.com/MaximumADHD/Roblox-Client-Tracker/roblox'
@@ -488,15 +521,21 @@ def main []: nothing -> nothing {
     let injections = injected $source {corrections: $corrections, declarations: $declarations}
     let declared = $"($declarations)\n($injections)"
 
+    let vendor = $DATA | path dirname | path dirname | path join crates instar-bridge vendor luau Analysis src
+    let embedded = open --raw ($vendor | path join EmbeddedBuiltinDefinitions.cpp)
+    let builtin = open --raw ($vendor | path join BuiltinDefinitions.cpp)
+    let registered = $builtin | parse --regex 'addGlobalBinding\(\s*globals,\s*"(?<name>[^"]+)"(?s:.*?)"@luau"' | get name
+    let luau_roots = blocks $embedded | get name | append $registered | uniq
+
     let defined = [
         ...($classes | get Name)
         ...($datatypes | get Name)
         ...($dump.Enums | each {|value| $"Enum($value.Name)" })
         ...(
-        $declared
-        | parse --regex '(?:type|declare extern type) (?<name>[A-Za-z_][A-Za-z0-9_]*)'
-        | get name
-    )
+            $declared
+            | parse --regex '(?:type|declare extern type) (?<name>[A-Za-z_][A-Za-z0-9_]*)'
+            | get name
+        )
     ]
 
     let referenced = [$classes $datatypes $constructors] | flatten | get Members | flatten | each {|value|
@@ -574,7 +613,13 @@ def main []: nothing -> nothing {
         $definitions = $definitions | upsert $level.file $"--#METADATA#($metadata)\n($body)"
     }
 
-    mkdir $ASSETS
+    mkdir $destination
 
-    {definitions: $definitions, documentation: $documentation} | to json --raw | save --force ($ASSETS | path join bundle.json)
+    for entry in ($definitions | transpose file source) {
+        $entry.source | save --force ($destination | path join $"($entry.file).d.luau")
+    }
+
+    let roblox_roots = $definitions | values | each {|source| blocks $source | where key starts-with value: | get name } | flatten | uniq
+    let canonical_documentation = canonical $documentation {luau: $luau_roots, roblox: $roblox_roots}
+    $canonical_documentation | to json --raw | save --force ($destination | path join documentation.json)
 }
