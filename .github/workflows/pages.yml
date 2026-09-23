@@ -10,14 +10,17 @@ on:
       - crates/instar-bridge/vendor/luau
       - scripts/pages.nu
       - .github/workflows/pages.yml
+  repository_dispatch:
+    types: [release-published]
   schedule:
-    - cron: '0 0 * * *'
+    - cron: "0 0 * * *"
   workflow_dispatch:
 
 permissions: {}
 
 concurrency:
-  group: pages
+  group: release-pages
+  queue: max
 
 jobs:
   build:

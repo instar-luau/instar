@@ -47,4 +47,5 @@ def "main publish" [
     let manifest = $directory | path join checksums.txt
     $"($checksums)\n" | save --force $manifest
     gh release create $tag ...$archives $manifest --verify-tag
+    gh api 'repos/{owner}/{repo}/dispatches' --method POST --field event_type=release-published
 }

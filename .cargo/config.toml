@@ -1,0 +1,2 @@
+[build]
+rustflags = ["-Z", "unstable-options", "--jobs-frontend=0"]
