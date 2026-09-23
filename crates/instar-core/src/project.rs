@@ -283,7 +283,7 @@ impl Project {
         let parent = directory.parent().unwrap_or(&directory);
 
         Ok(self
-            .configuration_at(parent)?
+            .load_layers(parent)?
             .filters
             .excludes_subtree(&directory, service))
     }
