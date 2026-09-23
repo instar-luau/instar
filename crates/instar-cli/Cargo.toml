@@ -14,6 +14,8 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", default-features = false, features = ["derive", "help", "std", "usage"] }
+console = "0.16"
+indicatif = "0.18"
 instar-core = { path = "../instar-core" }
 instar-server = { path = "../instar-server" }
 
