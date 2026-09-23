@@ -161,6 +161,15 @@ extern "C" {
         /**Whether the reference is a declaration.*/
         uint8_t declaration;
     } EditorReference;
+    /**Symbol identity information used to select conservative workspace candidates.*/
+    typedef struct EditorReferenceTarget {
+        /**Selected symbol name.*/
+        Text name;
+        /**Whether occurrences are confined to the declaration module.*/
+        uint8_t local;
+        /**Whether the selected symbol is a property.*/
+        uint8_t property;
+    } EditorReferenceTarget;
 
     /**Resolved, source-editable rename target.*/
     typedef struct EditorRenameTarget {
@@ -196,6 +205,8 @@ extern "C" {
     typedef uint8_t (*NavigationCallback)(void *context, const EditorNavigation *navigation);
     /**Receives one reference occurrence.*/
     typedef uint8_t (*ReferenceCallback)(void *context, const EditorReference *reference);
+    /**Receives selected symbol identity information.*/
+    typedef uint8_t (*ReferenceTargetCallback)(void *context, const EditorReferenceTarget *target);
     /**Receives a resolved rename target.*/
     typedef uint8_t (*RenameTargetCallback)(void *context, const EditorRenameTarget *target);
     /**Receives one type hint.*/
@@ -218,11 +229,13 @@ extern "C" {
     /**Finds the type definition at a source position.*/
     int32_t editor_type_definition(void *checker, Text name, uint32_t line, uint32_t column, NavigationCallback callback, void *context, String *error);
     /**Finds references at a source position.*/
-    int32_t editor_references(void *checker, Text name, uint32_t line, uint32_t column, ReferenceCallback callback, void *context, String *error);
+    int32_t editor_references(void *checker, Text name, uint32_t line, uint32_t column, const Text *candidates, size_t candidate_count, ReferenceCallback callback, void *context, String *error);
+    /**Resolves the semantic symbol at a source position for reference candidate selection.*/
+    int32_t editor_reference_target(void *checker, Text name, uint32_t line, uint32_t column, ReferenceTargetCallback callback, void *context, String *error);
     /**Resolves a source-editable rename target.*/
     int32_t editor_rename_target(void *checker, Text name, uint32_t line, uint32_t column, RenameTargetCallback callback, void *context, String *error);
     /**Validates a rename and returns every affected occurrence.*/
-    int32_t editor_rename(void *checker, Text name, uint32_t line, uint32_t column, Text new_name, ReferenceCallback callback, void *context, String *error);
+    int32_t editor_rename(void *checker, Text name, uint32_t line, uint32_t column, Text new_name, const Text *candidates, size_t candidate_count, ReferenceCallback callback, void *context, String *error);
 #ifdef __cplusplus
 }
 
@@ -235,9 +248,10 @@ namespace instar {
     int32_t editor_declaration(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, NavigationCallback callback, void *context);
     int32_t editor_implementation(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, NavigationCallback callback, void *context);
     int32_t editor_type_definition(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, NavigationCallback callback, void *context);
-    int32_t editor_references(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, ReferenceCallback callback, void *context);
+    int32_t editor_references(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, const Text *candidates, size_t candidate_count, ReferenceCallback callback, void *context);
+    int32_t editor_reference_target(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, ReferenceTargetCallback callback, void *context);
     int32_t editor_rename_target(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, RenameTargetCallback callback, void *context);
-    int32_t editor_rename(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, Text new_name, ReferenceCallback callback, void *context);
+    int32_t editor_rename(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, Text new_name, const Text *candidates, size_t candidate_count, ReferenceCallback callback, void *context);
 } // namespace instar
 #endif
 

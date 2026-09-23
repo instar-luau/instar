@@ -874,6 +874,9 @@ impl Checker {
 
     /// Returns reference occurrences at a source position.
     ///
+    /// `candidates` restricts the native occurrence walk to exact module identities;
+    /// `None` leaves it unrestricted. The selected source module must be included.
+    ///
     /// # Errors
     /// Returns an error when the native operation fails.
     pub fn references(
@@ -882,9 +885,18 @@ impl Checker {
         path: &str,
         line: u32,
         column: u32,
+        candidates: Option<&[String]>,
     ) -> io::Result<Vec<Reference>> {
         self.with_callbacks(callbacks, |checker| {
             let mut result = ManyResults::default();
+
+            let candidate_text: Vec<native::Text> = candidates
+                .unwrap_or_default()
+                .iter()
+                .map(|candidate| text(candidate))
+                .collect();
+
+            let candidate_pointer = candidates.map_or(ptr::null(), |_| candidate_text.as_ptr());
 
             Self::editor_call(
                 |context, error| unsafe {
@@ -893,6 +905,8 @@ impl Checker {
                         text(path),
                         line,
                         column,
+                        candidate_pointer,
+                        candidate_text.len(),
                         Some(reference_callback),
                         context,
                         error,
@@ -902,6 +916,39 @@ impl Checker {
             )?;
 
             Ok(result.values)
+        })
+    }
+
+    /// Resolves the semantic symbol at a source position for candidate selection.
+    ///
+    /// # Errors
+    /// Returns an error when native symbol resolution fails.
+    pub fn reference_target(
+        &mut self,
+        callbacks: &mut dyn Callbacks,
+        path: &str,
+        line: u32,
+        column: u32,
+    ) -> io::Result<Option<ReferenceTarget>> {
+        self.with_callbacks(callbacks, |checker| {
+            let mut result = OneResult::default();
+
+            Self::editor_call(
+                |context, error| unsafe {
+                    native::editor_reference_target(
+                        checker.handle,
+                        text(path),
+                        line,
+                        column,
+                        Some(reference_target_callback),
+                        context,
+                        error,
+                    )
+                },
+                &mut result,
+            )?;
+
+            Ok(result.value)
         })
     }
 
@@ -940,6 +987,9 @@ impl Checker {
 
     /// Validates a rename and returns every affected reference.
     ///
+    /// `candidates` restricts the native occurrence walk to exact module identities;
+    /// `None` leaves it unrestricted. The selected source module must be included.
+    ///
     /// # Errors
     /// Returns an error for invalid names, conflicts, or incomplete native analysis.
     pub fn rename(
@@ -949,9 +999,18 @@ impl Checker {
         line: u32,
         column: u32,
         new_name: &str,
+        candidates: Option<&[String]>,
     ) -> io::Result<Vec<Reference>> {
         self.with_callbacks(callbacks, |checker| {
             let mut result = ManyResults::default();
+
+            let candidate_text: Vec<native::Text> = candidates
+                .unwrap_or_default()
+                .iter()
+                .map(|candidate| text(candidate))
+                .collect();
+
+            let candidate_pointer = candidates.map_or(ptr::null(), |_| candidate_text.as_ptr());
 
             Self::editor_call(
                 |context, error| unsafe {
@@ -961,6 +1020,8 @@ impl Checker {
                         line,
                         column,
                         text(new_name),
+                        candidate_pointer,
+                        candidate_text.len(),
                         Some(reference_callback),
                         context,
                         error,
@@ -1141,6 +1202,18 @@ pub struct SignatureHelp {
 
     /// Active parameter index when present.
     pub active_parameter: Option<u32>,
+}
+
+/// Semantic identity information for reference candidate selection.
+pub struct ReferenceTarget {
+    /// Selected symbol name.
+    pub name: String,
+
+    /// Whether occurrences are confined to the declaration module.
+    pub local: bool,
+
+    /// Whether the symbol is a property.
+    pub property: bool,
 }
 
 /// Inferred type for a source range.
@@ -1385,6 +1458,35 @@ unsafe extern "C" fn signature_callback(
     })();
 
     callback_result::<OneResult<SignatureHelp>>(context, result)
+}
+
+unsafe extern "C" fn reference_target_callback(
+    context: *mut c_void,
+    value: *const native::EditorReferenceTarget,
+) -> u8 {
+    let result = (|| {
+        let value =
+            unsafe { value.as_ref() }.ok_or_else(|| io::Error::other("null reference target"))?;
+
+        let context = unsafe { context.cast::<OneResult<ReferenceTarget>>().as_mut() }
+            .ok_or_else(|| io::Error::other("null reference target callback context"))?;
+
+        if context.value.is_some() {
+            return Err(io::Error::other(
+                "native resolution returned multiple reference targets",
+            ));
+        }
+
+        context.value = Some(ReferenceTarget {
+            name: read_text(value.name)?,
+            local: value.local != 0,
+            property: value.property != 0,
+        });
+
+        Ok(())
+    })();
+
+    callback_result::<OneResult<ReferenceTarget>>(context, result)
 }
 
 unsafe extern "C" fn navigation_callback(

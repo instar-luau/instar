@@ -159,6 +159,74 @@ impl Worker {
                 || self.folders.iter().any(|root| path.starts_with(root)))
     }
 
+    fn reference_target(
+        &mut self,
+        path: &Path,
+        line: u32,
+        column: u32,
+    ) -> io::Result<(Option<instar_bridge::ReferenceTarget>, bool)> {
+        let targets = self.editor.query_all(path, |checker, host, module| {
+            checker.reference_target(host, module, line, column)
+        })?;
+
+        let mut selected: Option<instar_bridge::ReferenceTarget> = None;
+        let mut uncertain = false;
+
+        for target in targets {
+            if let Some(target) = target {
+                if let Some(previous) = &selected {
+                    uncertain |= previous.name != target.name
+                        || previous.local != target.local
+                        || previous.property != target.property;
+                } else {
+                    selected = Some(target);
+                }
+            } else {
+                uncertain = true;
+            }
+        }
+
+        Ok((selected, uncertain))
+    }
+
+    fn candidate_identities(
+        &mut self,
+        selected: &Path,
+        target: &instar_bridge::ReferenceTarget,
+        new_name: Option<&str>,
+    ) -> io::Result<Vec<String>> {
+        let mut names = vec![target.name.as_str()];
+
+        if let Some(new_name) = new_name {
+            names.push(new_name);
+        }
+
+        let mut candidates = self
+            .workspace
+            .syntax_candidates(&names, target.property, &|| false)?
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+
+        candidates.insert(selected.to_owned());
+
+        let workspace = self
+            .workspace
+            .files(&|| false)?
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+
+        self.editor
+            .index(&candidates.iter().cloned().collect::<Vec<_>>())?;
+
+        Ok(self
+            .editor
+            .module_identities()
+            .into_iter()
+            .filter(|(_, path)| candidates.contains(path) || !workspace.contains(path))
+            .map(|(name, _)| name)
+            .collect())
+    }
+
     fn rename_target(
         &mut self,
         path: &Path,
@@ -202,9 +270,29 @@ impl Worker {
     }
 
     fn rename(&mut self, path: &Path, line: u32, column: u32, name: &str) -> io::Result<Value> {
+        let (reference, uncertain) = self.reference_target(path, line, column)?;
+
+        if uncertain {
+            self.index_workspace()?;
+        }
+
         let (definition, target) = self
             .rename_target(path, line, column)?
             .ok_or_else(|| io::Error::other("this symbol cannot be renamed"))?;
+
+        let candidates = if uncertain {
+            None
+        } else if let Some(reference) = reference {
+            if reference.local {
+                None
+            } else {
+                Some(self.candidate_identities(&definition, &reference, Some(name))?)
+            }
+        } else {
+            self.index_workspace()?;
+
+            None
+        };
 
         let results = self
             .editor
@@ -229,6 +317,7 @@ impl Worker {
                     target.definition[0],
                     target.definition[1],
                     name,
+                    candidates.as_deref(),
                 )
             })?;
 
@@ -363,9 +452,8 @@ impl Worker {
         }
 
         if let Some(link) = value
-            .get("learn_more_link")
+            .get("link")
             .and_then(Value::as_str)
-            .map(str::trim)
             .filter(|link| !link.is_empty())
         {
             if !text.is_empty() {
@@ -381,13 +469,7 @@ impl Worker {
     }
 
     pub(crate) fn query(&mut self, path: &Path, query: &Query) -> io::Result<Value> {
-        if matches!(
-            query,
-            Query::References(..)
-                | Query::Prepare(..)
-                | Query::Rename(..)
-                | Query::Implementation(..)
-        ) {
+        if matches!(query, Query::Implementation(..)) {
             self.index_workspace()?;
         }
 
@@ -436,8 +518,24 @@ impl Worker {
             | Query::TypeDefinition(line, column) => self.navigation(path, query, line, column),
 
             Query::References(line, column, include_declaration) => {
+                let (target, uncertain) = self.reference_target(path, line, column)?;
+
+                let candidates = if uncertain || target.is_none() {
+                    self.index_workspace()?;
+
+                    None
+                } else if let Some(target) = target {
+                    if target.local {
+                        None
+                    } else {
+                        Some(self.candidate_identities(path, &target, None)?)
+                    }
+                } else {
+                    None
+                };
+
                 let results = self.editor.query_all(path, |checker, host, name| {
-                    checker.references(host, name, line, column)
+                    checker.references(host, name, line, column, candidates.as_deref())
                 })?;
 
                 let mut targets = Vec::new();
@@ -466,7 +564,7 @@ impl Worker {
 
             Query::Highlights(line, column) => {
                 let references = self.editor.query(path, |checker, host, name| {
-                    checker.references(host, name, line, column)
+                    checker.references(host, name, line, column, None)
                 })?;
 
                 let mut highlights = Vec::new();
@@ -802,7 +900,7 @@ impl Worker {
             let (line, column) = document.byte_position(range.start)?;
 
             let references = self.editor.query(&document.path, |checker, host, name| {
-                checker.references(host, name, line, column)
+                checker.references(host, name, line, column, None)
             })?;
 
             if references.is_empty() || references.iter().any(|reference| !reference.declaration) {

@@ -22,8 +22,18 @@ pub(crate) struct Workspace {
     documents: BTreeMap<PathBuf, Arc<Document>>,
     snapshot: Snapshot,
     files: Option<Vec<PathBuf>>,
+    syntax_candidates: BTreeMap<PathBuf, SyntaxCandidates>,
     resolver: Resolver,
     matcher: nucleo_matcher::Matcher,
+}
+
+#[derive(Default)]
+struct SyntaxCandidates {
+    names: BTreeSet<String>,
+    strings: Vec<String>,
+    decoded_strings: Vec<String>,
+    uncertain_string: bool,
+    dynamic_bracket: bool,
 }
 
 impl Workspace {
@@ -35,6 +45,7 @@ impl Workspace {
             self.project = Project::default();
             self.documents.clear();
             self.files = None;
+            self.syntax_candidates.clear();
         }
 
         for path in self
@@ -44,6 +55,7 @@ impl Workspace {
             .filter(|path| !snapshot.documents.contains_key(*path))
         {
             self.project.set_source(path, None)?;
+            self.syntax_candidates.remove(path);
             self.documents.remove(path);
         }
 
@@ -56,6 +68,7 @@ impl Workspace {
                     .is_none_or(|old| !Arc::ptr_eq(old, document))
             {
                 self.project.set_source(path, Some(&document.text))?;
+                self.syntax_candidates.remove(path);
                 self.documents.insert(path.clone(), Arc::clone(document));
             }
         }
@@ -96,6 +109,71 @@ impl Workspace {
         }
 
         Ok(files.into_iter().collect())
+    }
+
+    pub(crate) fn syntax_candidates(
+        &mut self,
+        names: &[&str],
+        property: bool,
+        cancelled: &impl Fn() -> bool,
+    ) -> io::Result<Vec<PathBuf>> {
+        let mut candidates = Vec::new();
+
+        for path in self.files(cancelled)? {
+            check_cancelled(cancelled)?;
+
+            if !self.syntax_candidates.contains_key(&path) {
+                let document = self.document(&path)?;
+                let source = document.text.as_bytes();
+                let mut index = SyntaxCandidates::default();
+
+                for token in vermis::Lexer::new(source) {
+                    match token.kind {
+                        vermis::TokenKind::Name => {
+                            if let Ok(name) = token.utf8(source) {
+                                index.names.insert(name.to_owned());
+                            }
+                        }
+
+                        vermis::TokenKind::QuotedString
+                        | vermis::TokenKind::RawString
+                        | vermis::TokenKind::Error(vermis::LexError::BrokenString) => {
+                            index
+                                .strings
+                                .push(String::from_utf8_lossy(token.bytes(source)).into_owned());
+
+                            match instar_core::string_value(token.bytes(source)) {
+                                Ok(value) => index.decoded_strings.push(value),
+                                Err(_) => index.uncertain_string = true,
+                            }
+                        }
+
+                        vermis::TokenKind::Byte(b'[') => index.dynamic_bracket = true,
+                        _ => {}
+                    }
+                }
+
+                self.syntax_candidates.insert(path.clone(), index);
+            }
+
+            let index = &self.syntax_candidates[&path];
+
+            if (property && index.dynamic_bracket)
+                || index.uncertain_string
+                || names.iter().any(|name| {
+                    index.names.contains(*name)
+                        || index.strings.iter().any(|value| value.contains(name))
+                        || index
+                            .decoded_strings
+                            .iter()
+                            .any(|value| value.contains(name))
+                })
+            {
+                candidates.push(path);
+            }
+        }
+
+        Ok(candidates)
     }
 
     fn include(&mut self, path: &Path) -> io::Result<bool> {
