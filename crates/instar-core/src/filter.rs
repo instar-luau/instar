@@ -55,6 +55,30 @@ impl Rule {
             },
         )
     }
+
+    fn excludes_subtree(&self, directory: &Path) -> bool {
+        let Some(base) = self.directory.as_deref() else {
+            return false;
+        };
+
+        let Some(prefix) = self.pattern.as_str().strip_suffix("/**").or_else(|| {
+            if cfg!(windows) {
+                self.pattern.as_str().strip_suffix("\\**")
+            } else {
+                None
+            }
+        }) else {
+            return false;
+        };
+
+        !prefix.is_empty()
+            && !prefix.bytes().any(|byte| {
+                matches!(byte, b'*' | b'?' | b'[' | b']') || (byte == b'\\' && !cfg!(windows))
+            })
+            && directory
+                .strip_prefix(base)
+                .is_ok_and(|relative| relative.starts_with(prefix))
+    }
 }
 
 #[derive(Clone, Default)]
@@ -106,6 +130,12 @@ impl Scope {
         (self.include.is_empty() || self.include.iter().any(|rule| rule.matches(path)))
             && !self.exclude.iter().any(|rule| rule.matches(path))
     }
+
+    fn excludes_subtree(&self, directory: &Path) -> bool {
+        self.exclude
+            .iter()
+            .any(|rule| rule.excludes_subtree(directory))
+    }
 }
 
 #[derive(Clone, Default)]
@@ -152,5 +182,49 @@ impl Filters {
                 .services
                 .get(&service)
                 .is_none_or(|scope| scope.includes(path))
+    }
+
+    pub(crate) fn excludes_subtree(&self, directory: &Path, service: Service) -> bool {
+        self.global.excludes_subtree(directory)
+            || self
+                .services
+                .get(&service)
+                .is_some_and(|scope| scope.excludes_subtree(directory))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prunes_only_literal_recursive_exclusions() {
+        let root: Rc<Path> = Rc::from(Path::new("project"));
+
+        let rule = Rule {
+            directory: Some(Rc::clone(&root)),
+            pattern: Pattern::new("packages/**").unwrap(),
+        };
+
+        assert!(rule.excludes_subtree(Path::new("project/packages")));
+        assert!(rule.excludes_subtree(Path::new("project/packages/nested")));
+        assert!(!rule.excludes_subtree(Path::new("project/packages-extra")));
+
+        let wildcard = Rule {
+            directory: Some(root),
+            pattern: Pattern::new("packages/*/**").unwrap(),
+        };
+
+        assert!(!wildcard.excludes_subtree(Path::new("project/packages/module")));
+        let mut filters = Filters::default();
+
+        let config = Config {
+            exclude: vec!["packages/**".to_owned()],
+            ..Config::default()
+        };
+
+        let root = crate::absolute(Path::new("project")).unwrap();
+        filters.append(&root, &config).unwrap();
+        assert!(filters.excludes_subtree(&root.join("packages"), Service::Format));
     }
 }

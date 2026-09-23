@@ -1,8 +1,8 @@
 //! Luau source formatting.
 
-use std::{io, mem};
+use std::{borrow::Cow, io, mem};
 
-use vermis::{Parts, View};
+use vermis::{InterpolatedKind, Keyword, Lexer, Operator, Parts, Span, TokenKind, View};
 
 use crate::config::{
     BeforeFunctionParentheses, CallParentheses, FormatOptions, IndentStyle, LeadingZero,
@@ -21,9 +21,18 @@ enum Kind {
 struct Token {
     text: String,
     kind: Kind,
+    syntax_kind: TokenKind,
     start: usize,
     end: usize,
     newlines: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ParenRole {
+    Call,
+    Definition,
+    Group,
+    TypeOf,
 }
 
 #[derive(Default)]
@@ -34,241 +43,198 @@ struct FormatSyntax {
     declarations: Vec<(usize, usize)>,
     class_headers: Vec<(usize, usize)>,
     bare_calls: Vec<(usize, usize)>,
+    calls: Vec<usize>,
+    list_starts: Vec<usize>,
+    function_arguments: Vec<(usize, Span)>,
+    last_arguments: Vec<(usize, usize)>,
+    return_values: Vec<usize>,
+    return_spans: Vec<(Span, std::ops::Range<usize>)>,
+    conditionals: Vec<Span>,
+    conditional_branches: Vec<(usize, Span)>,
+    statement_ifs: Vec<Span>,
+    binary_operators: Vec<usize>,
+    interpolation_expressions: Vec<Span>,
+    unary_minus: Vec<usize>,
+    type_tables: Vec<usize>,
     type_spans: Vec<(usize, usize)>,
+    typeof_gaps: Vec<(usize, usize)>,
+    type_operator_gaps: Vec<(usize, usize)>,
+    type_chains: Vec<(usize, usize)>,
     optional_ends: Vec<usize>,
     outer_type_spans: Vec<(usize, usize)>,
     access_modifiers: Vec<usize>,
     parameters: Vec<usize>,
+    signature_ends: Vec<(usize, usize)>,
 }
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "one lexer pass must track trivia and token boundaries together"
-)]
 fn lex(input: &str) -> io::Result<Vec<Token>> {
     let bytes = input.as_bytes();
     let mut tokens = Vec::new();
-    let mut at = 0;
     let mut newlines = 0;
 
-    while at < bytes.len() {
-        match bytes[at] {
-            b' ' | b'\t' | b'\r' => at += 1,
+    for token in Lexer::new(bytes) {
+        match token.kind {
+            TokenKind::Eof => break,
 
-            b'\n' => {
-                newlines += 1;
-                at += 1;
+            TokenKind::Whitespace => {
+                newlines += token.bytes(bytes).split(|&byte| byte == b'\n').count() - 1;
+                continue;
             }
 
-            _ => {
-                let start = at;
-                let kind;
-
-                if bytes[at] == b'-' && bytes.get(at + 1) == Some(&b'-') {
-                    kind = Kind::Comment;
-                    at += 2;
-
-                    if bytes.get(at) == Some(&b'[') {
-                        let mut cursor = at + 1;
-
-                        while bytes.get(cursor) == Some(&b'=') {
-                            cursor += 1;
-                        }
-
-                        if bytes.get(cursor) == Some(&b'[') {
-                            let level = cursor - at - 1;
-                            at = cursor + 1;
-
-                            while at < bytes.len() {
-                                if bytes[at] == b']' {
-                                    let mut end = at + 1;
-                                    let mut count = 0;
-
-                                    while bytes.get(end) == Some(&b'=') {
-                                        count += 1;
-                                        end += 1;
-                                    }
-
-                                    if count == level && bytes.get(end) == Some(&b']') {
-                                        at = end + 1;
-                                        break;
-                                    }
-                                }
-
-                                at += 1;
-                            }
-                        } else {
-                            while at < bytes.len() && bytes[at] != b'\n' {
-                                at += 1;
-                            }
-                        }
-                    } else {
-                        while at < bytes.len() && bytes[at] != b'\n' {
-                            at += 1;
-                        }
-                    }
-                } else if bytes[at] == b'\'' || bytes[at] == b'"' {
-                    kind = Kind::String;
-                    let quote = bytes[at];
-                    at += 1;
-
-                    while at < bytes.len() {
-                        if bytes[at] == b'\\' {
-                            at = (at + 2).min(bytes.len());
-                        } else if bytes[at] == quote {
-                            at += 1;
-                            break;
-                        } else {
-                            at += 1;
-                        }
-                    }
-                } else if bytes[at] == b'[' {
-                    let mut cursor = at + 1;
-
-                    while bytes.get(cursor) == Some(&b'=') {
-                        cursor += 1;
-                    }
-
-                    if bytes.get(cursor) == Some(&b'[') {
-                        kind = Kind::String;
-                        let level = cursor - at - 1;
-                        at = cursor + 1;
-
-                        while at < bytes.len() {
-                            if bytes[at] == b']' {
-                                let mut end = at + 1;
-                                let mut count = 0;
-
-                                while bytes.get(end) == Some(&b'=') {
-                                    count += 1;
-                                    end += 1;
-                                }
-
-                                if count == level && bytes.get(end) == Some(&b']') {
-                                    at = end + 1;
-                                    break;
-                                }
-                            }
-
-                            at += 1;
-                        }
-                    } else {
-                        kind = Kind::Symbol;
-                        at += 1;
-                    }
-                } else if bytes[at].is_ascii_alphabetic() || bytes[at] == b'_' {
-                    kind = Kind::Word;
-                    at += 1;
-
-                    while at < bytes.len()
-                        && (bytes[at].is_ascii_alphanumeric() || bytes[at] == b'_')
-                    {
-                        at += 1;
-                    }
-                } else if bytes[at].is_ascii_digit()
-                    || (bytes[at] == b'.' && bytes.get(at + 1).is_some_and(u8::is_ascii_digit))
-                {
-                    kind = Kind::Number;
-
-                    let hexadecimal =
-                        bytes[start..].starts_with(b"0x") || bytes[start..].starts_with(b"0X");
-
-                    if bytes[at] == b'.' {
-                        at += 1;
-                    } else if hexadecimal {
-                        at += 2;
-                    }
-
-                    while at < bytes.len()
-                        && if hexadecimal {
-                            bytes[at].is_ascii_hexdigit() || bytes[at] == b'_'
-                        } else {
-                            bytes[at].is_ascii_digit() || bytes[at] == b'_'
-                        }
-                    {
-                        at += 1;
-                    }
-
-                    if !hexadecimal
-                        && bytes.get(at) == Some(&b'.')
-                        && bytes.get(at + 1) != Some(&b'.')
-                    {
-                        at += 1;
-
-                        while at < bytes.len() && (bytes[at].is_ascii_digit() || bytes[at] == b'_')
-                        {
-                            at += 1;
-                        }
-                    }
-
-                    let exponent = if hexadecimal { b'p' } else { b'e' };
-
-                    if bytes
-                        .get(at)
-                        .is_some_and(|byte| byte.to_ascii_lowercase() == exponent)
-                    {
-                        at += 1;
-
-                        if bytes
-                            .get(at)
-                            .is_some_and(|byte| matches!(byte, b'+' | b'-'))
-                        {
-                            at += 1;
-                        }
-
-                        while at < bytes.len() && (bytes[at].is_ascii_digit() || bytes[at] == b'_')
-                        {
-                            at += 1;
-                        }
-                    }
-                } else {
-                    kind = Kind::Symbol;
-                    at += 1;
-
-                    for op in [
-                        b"...".as_slice(),
-                        b"::",
-                        b"->",
-                        b"..",
-                        b"==",
-                        b"~=",
-                        b"<=",
-                        b">=",
-                        b"+=",
-                        b"-=",
-                        b"*=",
-                        b"/=",
-                        b"//",
-                        b"&&",
-                        b"||",
-                    ] {
-                        if bytes[start..].starts_with(op) {
-                            at = start + op.len();
-                            break;
-                        }
-                    }
-                }
-
-                let text = std::str::from_utf8(&bytes[start..at])
-                    .map_err(|error| invalid(error.to_string()))?
-                    .to_owned();
-
-                tokens.push(Token {
-                    text,
-                    kind,
-                    start,
-                    end: at,
-                    newlines: mem::take(&mut newlines),
-                });
+            TokenKind::Error(_) => {
+                return Err(invalid(format!(
+                    "invalid token at byte {}",
+                    token.span.start
+                )));
             }
+
+            _ => {}
         }
+
+        let kind = match token.kind {
+            TokenKind::Name | TokenKind::Keyword(_) => Kind::Word,
+            TokenKind::Number => Kind::Number,
+
+            TokenKind::QuotedString | TokenKind::RawString | TokenKind::Interpolated(_) => {
+                Kind::String
+            }
+
+            TokenKind::Comment | TokenKind::BlockComment | TokenKind::MarkupComment => {
+                Kind::Comment
+            }
+
+            _ => Kind::Symbol,
+        };
+
+        tokens.push(Token {
+            text: token
+                .utf8(bytes)
+                .map_err(|error| invalid(error.to_string()))?
+                .to_owned(),
+            kind,
+            syntax_kind: token.kind,
+            start: token.span.start,
+            end: token.span.end,
+            newlines: mem::take(&mut newlines),
+        });
     }
 
     Ok(tokens)
+}
+
+fn collect_type_chain(
+    node: View<'_, '_>,
+    parent: Option<vermis::Kind>,
+    types: vermis::Children<'_, '_>,
+    syntax: &mut FormatSyntax,
+) {
+    let span = node.span();
+
+    if parent != Some(node.kind()) {
+        syntax.type_chains.push((span.start, span.end));
+    }
+
+    let mut previous = span.start;
+
+    for member in types {
+        let start = member.span().start;
+
+        if previous < start {
+            syntax.type_operator_gaps.push((previous, start));
+        }
+
+        previous = member.span().end;
+    }
+}
+
+fn collect_list_metadata(node: View<'_, '_>, syntax: &mut FormatSyntax) {
+    match node.parts() {
+        Some(Parts::TypeTable { fields, .. }) => {
+            syntax.type_tables.push(node.span().start);
+
+            syntax
+                .list_starts
+                .extend(fields.map(|field| field.span().start));
+        }
+
+        Some(Parts::Table { fields } | Parts::Parameters { parameters: fields }) => syntax
+            .list_starts
+            .extend(fields.map(|field| field.span().start)),
+
+        Some(Parts::Arguments { values }) => {
+            let list_start = node.span().start;
+            let mut last = None;
+
+            for value in values {
+                let span = value.span();
+                syntax.list_starts.push(span.start);
+                last = Some(span.start);
+
+                if value.kind() == vermis::Kind::Function {
+                    syntax.function_arguments.push((list_start, span));
+                }
+            }
+
+            if let Some(last) = last {
+                syntax.last_arguments.push((list_start, last));
+            }
+        }
+
+        Some(Parts::Return { values }) => {
+            let first = syntax.return_values.len();
+
+            syntax
+                .return_values
+                .extend(values.map(|value| value.span().start));
+
+            syntax
+                .return_spans
+                .push((node.span(), first..syntax.return_values.len()));
+        }
+
+        _ => {}
+    }
+}
+
+fn collect_conditional_branches(node: View<'_, '_>, syntax: &mut FormatSyntax) {
+    if !node.text().starts_with(b"if") {
+        return;
+    }
+
+    let root = node.span().start;
+    let mut branch = node;
+
+    while let Some(Parts::Conditional { truthy, falsy, .. }) = branch.parts() {
+        syntax.conditional_branches.push((root, truthy.span()));
+
+        if falsy.kind() == vermis::Kind::Conditional && falsy.text().starts_with(b"elseif") {
+            branch = falsy;
+        } else {
+            syntax.conditional_branches.push((root, falsy.span()));
+            break;
+        }
+    }
+}
+
+fn collect_signature_metadata(node: View<'_, '_>, syntax: &mut FormatSyntax) {
+    if let Some(Parts::Function {
+        parameters: args,
+        returns,
+        ..
+    }) = node.parts()
+    {
+        syntax.parameters.push(args.span().start);
+
+        if let Some(annotation) = returns {
+            syntax
+                .signature_ends
+                .push((args.span().start, annotation.span().end));
+        }
+    }
 }
 
 fn body_starts(
@@ -277,6 +243,9 @@ fn body_starts(
     options: &FormatOptions,
     syntax: &mut FormatSyntax,
 ) {
+    collect_list_metadata(node, syntax);
+    collect_signature_metadata(node, syntax);
+
     if node.kind() == vermis::Kind::Declaration {
         let span = node.span();
         syntax.declarations.push((span.start, span.end));
@@ -302,6 +271,35 @@ fn body_starts(
         Some(Parts::TypeArguments { .. } | Parts::Generics { .. }) => {
             let span = node.span();
             syntax.type_spans.push((span.start, span.end));
+        }
+
+        Some(Parts::TypeOf { name, expression }) => syntax
+            .typeof_gaps
+            .push((name.span().end, expression.span().start)),
+
+        Some(Parts::TypeUnion { types } | Parts::TypeIntersection { types }) => {
+            collect_type_chain(node, parent, types, syntax);
+        }
+
+        Some(Parts::Conditional { .. }) => {
+            syntax.conditionals.push(node.span());
+            collect_conditional_branches(node, syntax);
+        }
+
+        Some(Parts::If { .. }) => syntax.statement_ifs.push(node.span()),
+
+        Some(Parts::Binary { operator, .. }) => {
+            syntax.binary_operators.push(operator.span().start);
+        }
+
+        Some(Parts::Interpolation { segments }) => syntax.interpolation_expressions.extend(
+            segments
+                .filter(|segment| segment.kind() != vermis::Kind::String)
+                .map(View::span),
+        ),
+
+        Some(Parts::Unary { operator, .. }) if operator.text() == b"-" => {
+            syntax.unary_minus.push(operator.span().start);
         }
 
         Some(Parts::TypeOptional { .. }) => syntax.optional_ends.push(node.span().end),
@@ -342,23 +340,16 @@ fn body_starts(
         }
     }
 
-    if let Some(Parts::Function {
-        parameters: args, ..
-    }) = node.parts()
-    {
-        syntax.parameters.push(args.span().start);
-    }
+    if let Some(arguments) = match node.parts() {
+        Some(Parts::Call { arguments, .. } | Parts::MethodCall { arguments, .. }) => {
+            Some(arguments)
+        }
 
-    if options.calls.parentheses == CallParentheses::Always {
-        let arguments = match node.parts() {
-            Some(Parts::Call { arguments, .. } | Parts::MethodCall { arguments, .. }) => {
-                Some(arguments)
-            }
+        _ => None,
+    } {
+        syntax.calls.push(arguments.span().start);
 
-            _ => None,
-        };
-
-        if let Some(arguments) = arguments
+        if options.calls.parentheses == CallParentheses::Always
             && matches!(arguments.text().first(), Some(b'\'' | b'"' | b'[' | b'{'))
         {
             syntax
@@ -467,15 +458,8 @@ fn quote(text: &str, style: QuoteStyle) -> String {
     result
 }
 
-fn type_table(tokens: &[Token], start: usize) -> bool {
-    tokens[..start]
-        .iter()
-        .rev()
-        .take_while(|token| token.newlines == 0)
-        .any(|token| {
-            (token.kind == Kind::Word && token.text == "type")
-                || matches!(token.text.as_str(), ":" | "->")
-        })
+fn type_table(syntax: &FormatSyntax, opener: &Token) -> bool {
+    syntax.type_tables.binary_search(&opener.start).is_ok()
 }
 
 fn chain_step(tokens: &[Token], index: usize) -> bool {
@@ -501,7 +485,7 @@ fn enclosing_brace(tokens: &[Token], index: usize) -> Option<usize> {
     None
 }
 
-fn if_expression_start(tokens: &[Token], index: usize) -> Option<usize> {
+fn if_expression_start(tokens: &[Token], index: usize, syntax: &FormatSyntax) -> Option<usize> {
     for start in (0..=index).rev() {
         if start < index
             && tokens[start].kind == Kind::Word
@@ -510,28 +494,42 @@ fn if_expression_start(tokens: &[Token], index: usize) -> Option<usize> {
                 "local" | "return" | "type" | "function"
             )
         {
-            return None;
+            break;
         }
 
         if tokens[start].kind == Kind::Word && tokens[start].text == "end" {
-            return None;
+            break;
         }
 
-        if tokens[start].kind == Kind::Word && tokens[start].text == "if" {
-            let previous = start.checked_sub(1).map(|position| &tokens[position]);
-
-            let expression = previous.is_some_and(|token| {
-                matches!(
-                    token.text.as_str(),
-                    "=" | "return" | "(" | "," | "then" | "else"
-                )
-            });
-
-            return expression.then_some(start);
+        if tokens[start].text == "if"
+            && let Ok(conditional) = syntax
+                .conditionals
+                .binary_search_by_key(&tokens[start].start, |span| span.start)
+            && tokens[index].end <= syntax.conditionals[conditional].end
+        {
+            return Some(start);
         }
     }
 
-    None
+    if !matches!(tokens[index].text.as_str(), "then" | "else" | "elseif") {
+        return None;
+    }
+
+    let conditional = syntax
+        .conditionals
+        .iter()
+        .rev()
+        .find(|span| span.start < tokens[index].start && tokens[index].end <= span.end)?;
+
+    if syntax.statement_ifs.iter().any(|span| {
+        span.start > conditional.start
+            && span.start <= tokens[index].start
+            && tokens[index].end <= span.end
+    }) {
+        return None;
+    }
+
+    Some(tokens.partition_point(|token| token.start < conditional.start))
 }
 
 fn if_expression_wrap(
@@ -539,22 +537,35 @@ fn if_expression_wrap(
     start: usize,
     line_len: usize,
     options: &FormatOptions,
+    syntax: &FormatSyntax,
+    tight_type: &[bool],
 ) -> bool {
-    let end = (start..tokens.len())
-        .find(|&position| tokens[position].kind == Kind::Word && tokens[position].text == "else")
-        .unwrap_or_else(|| tokens.len().saturating_sub(1));
+    let conditional = syntax
+        .conditionals
+        .binary_search_by_key(&tokens[start].start, |span| span.start)
+        .expect("if-expression start recorded");
 
-    let multiline = tokens[start..=end].iter().any(|token| token.newlines > 0);
+    let end = tokens
+        .partition_point(|token| token.start < syntax.conditionals[conditional].end)
+        .saturating_sub(1);
 
-    let width = tokens[start..=end]
+    let multiline = tokens[start + 1..=end]
         .iter()
-        .map(|token| token.text.len() + 1)
-        .sum::<usize>();
+        .any(|token| token.newlines > 0);
+
+    let over_width = options.if_expressions.wrap == Wrap::Auto
+        && line_len
+            .saturating_add(usize::from(
+                start > 0
+                    && token_needs_space(tokens, start - 1, start, options, syntax, tight_type),
+            ))
+            .saturating_add(flat_width(tokens, start, end, options, syntax, tight_type))
+            > options.width;
 
     wrap_break(
         options.if_expressions.wrap,
         multiline,
-        line_len.saturating_add(width) > options.width,
+        over_width || multiline,
         end > start,
     )
 }
@@ -650,6 +661,7 @@ fn prepare_conditional_bodies(
     options: &FormatOptions,
     starts: &mut Vec<usize>,
     compact_ends: &mut [bool],
+    conditionals: &[Span],
 ) {
     let compact_conditionals = matches!(
         options.blocks.simple_bodies,
@@ -659,7 +671,9 @@ fn prepare_conditional_bodies(
     for conditional in 0..tokens.len() {
         if tokens[conditional].kind != Kind::Word
             || tokens[conditional].text != "if"
-            || if_expression_start(tokens, conditional).is_some()
+            || conditionals
+                .binary_search_by_key(&tokens[conditional].start, |span| span.start)
+                .is_ok()
         {
             continue;
         }
@@ -775,39 +789,28 @@ fn type_punctuation(
     tight
 }
 
-fn is_spaced_operator(token: &str) -> bool {
-    matches!(
-        token,
-        "=" | "+"
-            | "-"
-            | "*"
-            | "/"
-            | "//"
-            | "%"
-            | "^"
-            | "=="
-            | "~="
-            | "<"
-            | ">"
-            | "<="
-            | ">="
-            | ".."
-            | "and"
-            | "or"
-            | "->"
-            | "|"
-            | "&"
-            | "?"
-    )
+fn is_spaced_operator(token: &Token) -> bool {
+    match token.syntax_kind {
+        TokenKind::Operator(Operator::Ellipsis) => false,
+
+        TokenKind::Operator(_)
+        | TokenKind::Byte(
+            b'=' | b'+' | b'-' | b'*' | b'/' | b'%' | b'^' | b'<' | b'>' | b'|' | b'&' | b'?',
+        )
+        | TokenKind::Keyword(Keyword::And | Keyword::Or | Keyword::Not) => true,
+
+        _ => false,
+    }
 }
 
 fn needs_space(
     prev: &Token,
     current: &Token,
+    next: Option<&Token>,
     options: &FormatOptions,
-    definition: bool,
-    method_name: bool,
+    role: ParenRole,
     tight_type_spacing: bool,
+    unary_minus: bool,
 ) -> bool {
     let a = prev.text.as_str();
     let b = current.text.as_str();
@@ -816,7 +819,24 @@ fn needs_space(
         return true;
     }
 
-    if method_name || tight_type_spacing {
+    if matches!(
+        prev.syntax_kind,
+        TokenKind::Interpolated(InterpolatedKind::Begin | InterpolatedKind::Middle)
+    ) {
+        return options.spacing.interpolation || current.syntax_kind == TokenKind::Byte(b'{');
+    }
+
+    if matches!(
+        current.syntax_kind,
+        TokenKind::Interpolated(InterpolatedKind::Middle | InterpolatedKind::End)
+    ) {
+        return options.spacing.interpolation;
+    }
+
+    if unary_minus
+        || tight_type_spacing
+        || (a == ":" && current.kind == Kind::Word && next.is_some_and(|next| next.text == "("))
+    {
         return false;
     }
 
@@ -832,7 +852,7 @@ fn needs_space(
         return options.spacing.brackets;
     }
 
-    if matches!(a, "." | "::") || matches!(b, "." | "::" | "," | ";") {
+    if a == "." || matches!(b, "." | "," | ";") {
         return false;
     }
 
@@ -841,15 +861,22 @@ fn needs_space(
     }
 
     if b == "(" {
-        if matches!(a, "=" | ":" | "->" | "|" | "&") {
-            return true;
-        }
+        return match role {
+            ParenRole::TypeOf => false,
 
-        return match options.spacing.before_function_parentheses {
-            BeforeFunctionParentheses::Never => false,
-            BeforeFunctionParentheses::Calls => !definition,
-            BeforeFunctionParentheses::Definitions => definition,
-            BeforeFunctionParentheses::Always => true,
+            ParenRole::Group => {
+                is_spaced_operator(prev) || prev.kind == Kind::Word || matches!(a, ":" | "," | ";")
+            }
+
+            ParenRole::Call => matches!(
+                options.spacing.before_function_parentheses,
+                BeforeFunctionParentheses::Calls | BeforeFunctionParentheses::Always
+            ),
+
+            ParenRole::Definition => matches!(
+                options.spacing.before_function_parentheses,
+                BeforeFunctionParentheses::Definitions | BeforeFunctionParentheses::Always
+            ),
         };
     }
 
@@ -873,6 +900,12 @@ fn needs_space(
         return false;
     }
 
+    if matches!(a, ")" | "]" | "}")
+        && matches!(current.kind, Kind::Word | Kind::Number | Kind::String)
+    {
+        return true;
+    }
+
     if matches!(prev.kind, Kind::Word | Kind::Number | Kind::String)
         && matches!(current.kind, Kind::Word | Kind::Number | Kind::String)
     {
@@ -883,11 +916,118 @@ fn needs_space(
         return true;
     }
 
-    if is_spaced_operator(a) || is_spaced_operator(b) || matches!(a, "not" | ":") {
+    if is_spaced_operator(prev) || is_spaced_operator(current) || a == ":" {
         return true;
     }
 
-    prev.kind == Kind::Number && current.kind == Kind::Word
+    (prev.kind == Kind::Word && current.syntax_kind == TokenKind::Byte(b'#'))
+        || (prev.kind == Kind::Number && current.kind == Kind::Word)
+}
+
+fn paren_role(token: &Token, syntax: &FormatSyntax) -> ParenRole {
+    if token.text != "(" {
+        return ParenRole::Group;
+    }
+
+    if syntax.parameters.binary_search(&token.start).is_ok() {
+        ParenRole::Definition
+    } else if syntax
+        .typeof_gaps
+        .partition_point(|&(start, _)| start <= token.start)
+        .checked_sub(1)
+        .is_some_and(|gap| token.end <= syntax.typeof_gaps[gap].1)
+    {
+        ParenRole::TypeOf
+    } else if syntax.calls.binary_search(&token.start).is_ok() {
+        ParenRole::Call
+    } else {
+        ParenRole::Group
+    }
+}
+
+fn token_needs_space(
+    tokens: &[Token],
+    previous: usize,
+    current: usize,
+    options: &FormatOptions,
+    syntax: &FormatSyntax,
+    tight_type: &[bool],
+) -> bool {
+    let prev = &tokens[previous];
+    let token = &tokens[current];
+    let text = token.text.as_str();
+
+    let tight = (tight_type[previous] && prev.text == "<")
+        || (tight_type[previous] && prev.text == ">" && text == "(")
+        || (tight_type[current] && matches!(text, ">" | "?"))
+        || (tight_type[current] && text == "<" && prev.kind == Kind::Word);
+
+    (text == "[" && syntax.access_modifiers.binary_search(&prev.start).is_ok())
+        || needs_space(
+            prev,
+            token,
+            tokens.get(current + 1),
+            options,
+            paren_role(token, syntax),
+            tight,
+            prev.syntax_kind == TokenKind::Byte(b'-')
+                && syntax.unary_minus.binary_search(&prev.start).is_ok(),
+        )
+}
+
+fn flat_width(
+    tokens: &[Token],
+    start: usize,
+    end: usize,
+    options: &FormatOptions,
+    syntax: &FormatSyntax,
+    tight_type: &[bool],
+) -> usize {
+    let mut width = tokens[start].text.len();
+
+    for current in start + 1..=end {
+        width += tokens[current].text.len()
+            + usize::from(token_needs_space(
+                tokens,
+                current - 1,
+                current,
+                options,
+                syntax,
+                tight_type,
+            ));
+    }
+
+    width
+}
+
+fn call_content_layout(
+    tokens: &[Token],
+    start: usize,
+    end: usize,
+    function_arguments: &[(usize, Span)],
+) -> (bool, usize) {
+    let first = function_arguments.partition_point(|&(call, _)| call < tokens[start].start);
+    let last = function_arguments.partition_point(|&(call, _)| call <= tokens[start].start);
+    let functions = &function_arguments[first..last];
+    let mut multiline = false;
+    let mut width_end = end;
+
+    for (index, token) in tokens.iter().enumerate().take(end + 1).skip(start + 1) {
+        if token.newlines == 0 {
+            continue;
+        }
+
+        if functions
+            .iter()
+            .any(|&(_, span)| span.start < token.start && token.end <= span.end)
+        {
+            width_end = width_end.min(index - 1);
+        } else {
+            multiline = true;
+        }
+    }
+
+    (multiline, width_end)
 }
 
 fn delimiter_end(tokens: &[Token], start: usize) -> Option<usize> {
@@ -915,29 +1055,29 @@ fn delimiter_end(tokens: &[Token], start: usize) -> Option<usize> {
     None
 }
 
-fn hug_last_start(tokens: &[Token], start: usize) -> Option<usize> {
-    let end = delimiter_end(tokens, start)?;
-    let mut nesting = 0usize;
-    let mut last = start + 1;
+fn hug_last_start(
+    tokens: &[Token],
+    start: usize,
+    last_arguments: &[(usize, usize)],
+) -> Option<usize> {
+    let last = last_arguments
+        .binary_search_by_key(&tokens[start].start, |&(list, _)| list)
+        .ok()
+        .map(|index| last_arguments[index].1)?;
 
-    for (index, token) in tokens.iter().enumerate().take(end).skip(start + 1) {
-        match token.text.as_str() {
-            "(" | "{" | "[" => nesting += 1,
-            ")" | "}" | "]" => nesting = nesting.saturating_sub(1),
-            "," if nesting == 0 => last = index + 1,
-            _ => {}
-        }
-    }
+    let index = tokens
+        .partition_point(|token| token.start < last)
+        .max(start + 1);
 
-    let arg = tokens.get(last)?;
+    let arg = tokens.get(index)?;
 
     (arg.text == "{"
         || arg.text == "function"
         || (arg.kind == Kind::String && arg.text.contains('\n')))
-    .then_some(last)
+    .then_some(index)
 }
 
-fn normalize_calls(tokens: &mut Vec<Token>, style: CallParentheses) {
+fn normalize_calls(tokens: &mut Vec<Token>, style: CallParentheses, calls: &[usize]) {
     if !matches!(
         style,
         CallParentheses::OmitString | CallParentheses::OmitTable | CallParentheses::OmitLiteral
@@ -948,18 +1088,10 @@ fn normalize_calls(tokens: &mut Vec<Token>, style: CallParentheses) {
     let mut index = 1;
 
     while index + 2 < tokens.len() {
-        if tokens[index].text != "("
-            || matches!(
-                tokens[index - 1].text.as_str(),
-                "if" | "while" | "for" | "function" | "typeof"
-            )
-        {
+        if tokens[index].text != "(" || calls.binary_search(&tokens[index].start).is_err() {
             index += 1;
             continue;
         }
-
-        let is_call = tokens[index - 1].kind == Kind::Word
-            || matches!(tokens[index - 1].text.as_str(), ")" | "]" | "}");
 
         let end = delimiter_end(tokens, index);
 
@@ -974,17 +1106,16 @@ fn normalize_calls(tokens: &mut Vec<Token>, style: CallParentheses) {
             && tokens[index + 1].text == "{"
             && delimiter_end(tokens, index + 1) == Some(end - 1);
 
-        let omit = is_call
-            && ((literal
+        let omit = (literal
+            && matches!(
+                style,
+                CallParentheses::OmitString | CallParentheses::OmitLiteral
+            ))
+            || (table
                 && matches!(
                     style,
-                    CallParentheses::OmitString | CallParentheses::OmitLiteral
-                ))
-                || (table
-                    && matches!(
-                        style,
-                        CallParentheses::OmitTable | CallParentheses::OmitLiteral
-                    )));
+                    CallParentheses::OmitTable | CallParentheses::OmitLiteral
+                ));
 
         if omit {
             if literal {
@@ -1003,6 +1134,39 @@ fn normalize_calls(tokens: &mut Vec<Token>, style: CallParentheses) {
     }
 }
 
+fn return_continuation_levels(tokens: &[Token], syntax: &FormatSyntax) -> Vec<isize> {
+    let mut levels = Vec::new();
+
+    for (span, values) in &syntax.return_spans {
+        let first_break = syntax.return_values[values.clone()]
+            .iter()
+            .find_map(|&start| {
+                let index = tokens.partition_point(|token| token.start < start);
+
+                (tokens[index].newlines > 0).then_some(index)
+            });
+
+        if let Some(first) = first_break {
+            if levels.is_empty() {
+                levels.resize(tokens.len() + 1, 0);
+            }
+
+            let end = tokens.partition_point(|token| token.start < span.end);
+            levels[first] += 1;
+            levels[end] -= 1;
+        }
+    }
+
+    let mut active = 0;
+
+    for level in &mut levels {
+        active += *level;
+        *level = active;
+    }
+
+    levels
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "one rendering pass keeps nested line and indentation state coherent"
@@ -1014,7 +1178,8 @@ fn format_tokens(
 ) -> String {
     for index in 0..tokens.len() {
         if matches!(tokens[index].text.as_str(), "," | ";")
-            && enclosing_brace(&tokens, index).is_some_and(|start| type_table(&tokens, start))
+            && enclosing_brace(&tokens, index)
+                .is_some_and(|start| type_table(syntax, &tokens[start]))
         {
             tokens[index].text = match (tokens[index].text.as_str(), options.types.table_separator)
             {
@@ -1063,7 +1228,13 @@ fn format_tokens(
     let mut compact_ends =
         prepare_function_bodies(&mut tokens, options, &mut syntax.starts, &declared);
 
-    prepare_conditional_bodies(&mut tokens, options, &mut syntax.starts, &mut compact_ends);
+    prepare_conditional_bodies(
+        &mut tokens,
+        options,
+        &mut syntax.starts,
+        &mut compact_ends,
+        &syntax.conditionals,
+    );
 
     for token in &mut tokens {
         if syntax.starts.binary_search(&token.start).is_ok() {
@@ -1083,6 +1254,9 @@ fn format_tokens(
         }
     }
 
+    let return_levels = return_continuation_levels(&tokens, syntax);
+    syntax.return_values.sort_unstable();
+
     let mut output = String::new();
     let mut level = 0usize;
     let mut line_len = 0usize;
@@ -1094,11 +1268,20 @@ fn format_tokens(
     let mut hug_starts: Vec<Option<usize>> = Vec::new();
     let mut previous: Option<usize> = None;
     let mut block_stack: Vec<bool> = Vec::new();
+    let mut expression_wraps = vec![None; tokens.len()];
+    let mut type_chain_wraps = vec![None; syntax.type_chains.len()];
+    let mut conditional_events = Vec::new();
+    let mut conditional_depth = 0;
 
     for i in 0..tokens.len() {
         let text = tokens[i].text.as_str();
         let in_declaration = declared.get(i) == Some(&true);
-        let current_if_expression = if_expression_start(&tokens, i).is_some();
+        let expression_start = if_expression_start(&tokens, i, syntax);
+        let current_if_expression = expression_start.is_some();
+
+        let hugged_argument = call_lists.last() == Some(&true)
+            && stack.last().is_some_and(|(_, wrapped)| !wrapped)
+            && hug_starts.last().copied().flatten() == Some(i);
 
         let block_closer = matches!(text, "end" | "until")
             || (matches!(text, "else" | "elseif") && !current_if_expression);
@@ -1115,6 +1298,9 @@ fn format_tokens(
             level = level.saturating_sub(1);
         }
 
+        let parent_wrapped = stack.last().is_some_and(|(_, wrapped)| *wrapped);
+        let parent_mode = modes.last().copied();
+
         let opener = match text {
             "(" => Some('('),
             "{" => Some('{'),
@@ -1123,32 +1309,20 @@ fn format_tokens(
         };
 
         let mut open_wrapped = false;
+        let role = paren_role(&tokens[i], syntax);
 
         if let Some(open) = opener
             && let Some(end) = delimiter_end(&tokens, i)
         {
-            let multiline = tokens[i + 1..=end].iter().any(|token| token.newlines > 0);
-
-            let content_width = tokens[i..=end]
-                .iter()
-                .map(|token| token.text.len() + 1)
-                .sum::<usize>();
-
             let nonempty = end > i + 1;
 
-            let function_parameters =
-                open == '(' && syntax.parameters.binary_search(&tokens[i].start).is_ok();
+            let function_parameters = role == ParenRole::Definition;
+            let call = role == ParenRole::Call;
 
-            let call = i > 0
-                && ((tokens[i - 1].kind == Kind::Word
-                    && !matches!(
-                        tokens[i - 1].text.as_str(),
-                        "if" | "while" | "for" | "function" | "typeof"
-                    ))
-                    || matches!(tokens[i - 1].text.as_str(), ")" | "]" | "}"));
+            let table_type = open == '{' && type_table(syntax, &tokens[i]);
 
             let mode = if open == '{' {
-                if type_table(&tokens, i) {
+                if table_type {
                     options.types.table_wrap
                 } else {
                     options.tables.wrap
@@ -1164,17 +1338,70 @@ fn format_tokens(
             };
 
             let hug_start = if call && options.calls.layout == crate::config::CallLayout::HugLast {
-                hug_last_start(&tokens, i)
+                hug_last_start(&tokens, i, &syntax.last_arguments)
             } else {
                 None
             };
 
-            open_wrapped = wrap_break(
-                mode,
-                multiline,
-                line_len.saturating_add(content_width) > options.width,
-                nonempty,
-            );
+            let content_end = hug_start.unwrap_or(end);
+
+            let (multiline, mut width_end) = if call {
+                call_content_layout(&tokens, i, content_end, &syntax.function_arguments)
+            } else {
+                (
+                    tokens[i + 1..=content_end]
+                        .iter()
+                        .any(|token| token.newlines > 0),
+                    content_end,
+                )
+            };
+
+            if function_parameters
+                && let Ok(signature) = syntax
+                    .signature_ends
+                    .binary_search_by_key(&tokens[i].start, |&(start, _)| start)
+            {
+                let end = tokens
+                    .partition_point(|token| token.start < syntax.signature_ends[signature].1)
+                    - 1;
+
+                if tokens[width_end + 1..=end]
+                    .iter()
+                    .all(|token| token.newlines == 0)
+                {
+                    width_end = end;
+                }
+            }
+
+            let over_width = nonempty
+                && mode == Wrap::Auto
+                && line_len
+                    .saturating_add(usize::from(previous.is_some_and(|p| {
+                        token_needs_space(&tokens, p, i, options, syntax, &tight_type)
+                    })))
+                    .saturating_add(flat_width(
+                        &tokens,
+                        i,
+                        width_end,
+                        options,
+                        syntax,
+                        &tight_type,
+                    ))
+                    > options.width;
+
+            open_wrapped = if open == '{' && mode == Wrap::Auto {
+                multiline
+                    || over_width
+                    || tokens[end - 1].text == ","
+                    || (table_type && tokens[end - 1].text == ";")
+            } else {
+                wrap_break(
+                    mode,
+                    multiline,
+                    over_width || (in_declaration && function_parameters && multiline),
+                    nonempty,
+                )
+            };
 
             stack.push((open, open_wrapped));
             modes.push(mode);
@@ -1189,18 +1416,18 @@ fn format_tokens(
         }
 
         let explicit_break = tokens[i].newlines > 0;
-        let in_wrapped_list = stack.last().is_some_and(|(_, wrapped)| *wrapped);
+        let in_wrapped_list = parent_wrapped;
 
         let type_operator = matches!(text, "|" | "&")
-            && tokens[..i]
-                .iter()
-                .rev()
-                .take(24)
-                .any(|token| matches!(token.text.as_str(), "type" | ":" | "->"));
+            && syntax
+                .type_operator_gaps
+                .partition_point(|&(start, _)| start <= tokens[i].start)
+                .checked_sub(1)
+                .is_some_and(|gap| tokens[i].end <= syntax.type_operator_gaps[gap].1);
 
         let chain = chain_step(&tokens, i);
 
-        let preserve_break = modes.last().map_or_else(
+        let preserve_break = parent_mode.map_or_else(
             || {
                 if current_if_expression {
                     matches!(options.if_expressions.wrap, Wrap::Preserve | Wrap::Always)
@@ -1215,56 +1442,192 @@ fn format_tokens(
             |mode| matches!(mode, Wrap::Preserve | Wrap::Always),
         );
 
-        let mut continuation = false;
+        let mut continuation = 0;
 
         let mut line_break = close_block
             || (matches!(text, "else" | "elseif") && !current_if_expression)
             || (previous.is_some() && syntax.starts.binary_search(&tokens[i].start).is_ok())
             || (explicit_break
+                && !hugged_argument
                 && previous.is_some()
                 && (preserve_break
                     || tokens[i].kind == Kind::Comment
                     || previous.is_some_and(|p| tokens[p].kind == Kind::Comment)));
 
-        let expression_start = if_expression_start(&tokens, i);
+        let expression_wrap = expression_start.is_some_and(|start| {
+            *expression_wraps[start].get_or_insert_with(|| {
+                if_expression_wrap(&tokens, start, line_len, options, syntax, &tight_type)
+            })
+        });
 
-        let expression_wrap = expression_start
-            .is_some_and(|start| if_expression_wrap(&tokens, start, line_len, options));
-
-        if expression_wrap
-            && ((text == "if"
-                && options.if_expressions.placement
-                    == crate::config::IfExpressionPlacement::NextLine)
-                || text == "else"
-                || (options.if_expressions.layout == crate::config::IfExpressionLayout::Block
-                    && previous
-                        .is_some_and(|p| matches!(tokens[p].text.as_str(), "then" | "else")))
-                || (options.if_expressions.layout == crate::config::IfExpressionLayout::Leading
-                    && matches!(text, "then" | "else")))
+        if expression_start == Some(i)
+            && expression_wrap
+            && options.if_expressions.layout == crate::config::IfExpressionLayout::Block
         {
-            line_break = true;
-            continuation = true;
+            let branches = syntax
+                .conditional_branches
+                .partition_point(|&(root, _)| root < tokens[i].start);
+
+            for &(_, span) in syntax.conditional_branches[branches..]
+                .iter()
+                .take_while(|&&(root, _)| root == tokens[i].start)
+            {
+                if conditional_events.is_empty() {
+                    conditional_events.resize(tokens.len() + 1, 0);
+                }
+
+                let first = tokens.partition_point(|token| token.start < span.start);
+                let end = tokens.partition_point(|token| token.start < span.end);
+
+                let indent = 1 + isize::from(
+                    options.if_expressions.placement
+                        == crate::config::IfExpressionPlacement::NextLine,
+                );
+
+                conditional_events[first] += indent;
+                conditional_events[end] -= indent;
+            }
         }
 
-        if type_operator
-            && (wrap_break(
-                options.types.operator_wrap,
-                explicit_break,
-                line_len > options.width,
-                true,
-            ) || (options.types.operator_wrap == Wrap::Auto && explicit_break))
+        conditional_depth += conditional_events.get(i).copied().unwrap_or(0);
+
+        let wrapped_branch = options.if_expressions.layout
+            == crate::config::IfExpressionLayout::Block
+            && previous.is_some_and(|p| {
+                matches!(tokens[p].text.as_str(), "then" | "else")
+                    && syntax
+                        .conditionals
+                        .iter()
+                        .rev()
+                        .filter(|span| span.start <= tokens[p].start && tokens[p].end <= span.end)
+                        .find_map(|span| {
+                            let start = tokens.partition_point(|token| token.start < span.start);
+
+                            expression_wraps[start]
+                        })
+                        .unwrap_or(false)
+            });
+
+        if wrapped_branch
+            || (expression_wrap
+                && ((text == "if"
+                    && options.if_expressions.placement
+                        == crate::config::IfExpressionPlacement::NextLine)
+                    || matches!(text, "else" | "elseif")
+                    || (options.if_expressions.layout
+                        == crate::config::IfExpressionLayout::Leading
+                        && matches!(text, "then" | "else"))))
         {
             line_break = true;
-            continuation = true;
+
+            continuation = if wrapped_branch {
+                usize::from(
+                    text == "if"
+                        && options.if_expressions.placement
+                            == crate::config::IfExpressionPlacement::NextLine,
+                )
+            } else if text == "if" {
+                1
+            } else {
+                usize::from(
+                    options.if_expressions.placement
+                        == crate::config::IfExpressionPlacement::NextLine,
+                ) + usize::from(!matches!(text, "else" | "elseif"))
+            };
+        }
+
+        if type_operator {
+            let wrap = match options.types.operator_wrap {
+                Wrap::Always => true,
+                Wrap::Never => false,
+                Wrap::Preserve => explicit_break,
+
+                Wrap::Auto if text == "|" => {
+                    let mut chain = syntax
+                        .type_chains
+                        .partition_point(|&(start, _)| start <= tokens[i].start);
+
+                    let mut over_width = line_len > options.width;
+
+                    while chain > 0 {
+                        chain -= 1;
+                        let (start, end) = syntax.type_chains[chain];
+
+                        if tokens[i].end <= end {
+                            over_width |= *type_chain_wraps[chain].get_or_insert_with(|| {
+                                let first = tokens.partition_point(|token| token.start < start);
+                                let last = tokens.partition_point(|token| token.start < end);
+
+                                let multiline_operand =
+                                    tokens[first..last].iter().skip(1).any(|token| {
+                                        token.newlines > 0
+                                            && !matches!(token.text.as_str(), "|" | "&")
+                                    });
+
+                                if multiline_operand {
+                                    false
+                                } else {
+                                    let remaining = flat_width(
+                                        &tokens,
+                                        i,
+                                        last - 1,
+                                        options,
+                                        syntax,
+                                        &tight_type,
+                                    );
+
+                                    line_len
+                                        .saturating_add(usize::from(previous.is_some_and(|p| {
+                                            token_needs_space(
+                                                &tokens,
+                                                p,
+                                                i,
+                                                options,
+                                                syntax,
+                                                &tight_type,
+                                            )
+                                        })))
+                                        .saturating_add(remaining)
+                                        > options.width
+                                }
+                            });
+
+                            break;
+                        }
+                    }
+
+                    over_width || explicit_break
+                }
+
+                Wrap::Auto => line_len > options.width || explicit_break,
+            };
+
+            if wrap {
+                line_break = true;
+                continuation = 1;
+            }
         }
 
         if chain {
-            let rest = (i + 3..tokens.len()).take_while(|&index| tokens[index].newlines == 0);
+            let interpolation = syntax
+                .interpolation_expressions
+                .iter()
+                .rev()
+                .find(|span| span.start <= tokens[i].start && tokens[i].end <= span.end);
+
+            let rest = (i + 3..tokens.len()).take_while(|&index| {
+                tokens[index].newlines == 0
+                    && interpolation.is_none_or(|span| tokens[index].end <= span.end)
+            });
+
             let more_calls = rest.clone().any(|index| chain_step(&tokens, index));
 
             let previous_steps = (0..i)
                 .rev()
-                .take_while(|&index| tokens[index].newlines == 0 || chain_step(&tokens, index))
+                .take_while(|&index| {
+                    (tokens[index].newlines == 0 || chain_step(&tokens, index))
+                        && interpolation.is_none_or(|span| tokens[index].start >= span.start)
+                })
                 .filter(|&index| chain_step(&tokens, index))
                 .count();
 
@@ -1272,7 +1635,7 @@ fn format_tokens(
                 let mode = wrap_break(
                     options.chains.wrap,
                     explicit_break,
-                    line_len > options.width,
+                    interpolation.is_none() && line_len > options.width,
                     true,
                 ) || (options.chains.wrap == Wrap::Auto && explicit_break);
 
@@ -1287,23 +1650,42 @@ fn format_tokens(
             }
         }
 
-        let hug_inline = call_lists.last() == Some(&true)
-            && hug_starts
-                .last()
-                .copied()
-                .flatten()
-                .is_some_and(|start| i < start);
+        let hug_inline = hugged_argument
+            || (call_lists.last() == Some(&true)
+                && hug_starts
+                    .last()
+                    .copied()
+                    .flatten()
+                    .is_some_and(|start| i < start));
 
         if i > 0
             && in_wrapped_list
-            && (matches!(tokens[i - 1].text.as_str(), "," | "(" | "{") || close_delimiter)
+            && (matches!(tokens[i - 1].text.as_str(), "(" | "{")
+                || close_delimiter
+                || (tokens[i - 1].text == ","
+                    && (syntax.list_starts.binary_search(&tokens[i].start).is_ok()
+                        || tokens[i].kind == Kind::Comment)))
             && (!hug_inline || close_delimiter)
         {
             line_break = true;
         }
 
+        if explicit_break && syntax.return_values.binary_search(&tokens[i].start).is_ok() {
+            line_break = true;
+        }
+
         if chain && line_break {
-            continuation = true;
+            continuation = 1;
+        }
+
+        if explicit_break
+            && syntax
+                .binary_operators
+                .binary_search(&tokens[i].start)
+                .is_ok()
+        {
+            line_break = true;
+            continuation = 1;
         }
 
         if text == "}"
@@ -1311,7 +1693,7 @@ fn format_tokens(
                 .last()
                 .is_some_and(|(kind, wrapped)| *kind == '{' && *wrapped)
             && options.tables.trailing_comma == TrailingComma::Multiline
-            && !enclosing_brace(&tokens, i).is_some_and(|start| type_table(&tokens, start))
+            && !enclosing_brace(&tokens, i).is_some_and(|start| type_table(syntax, &tokens[start]))
             && previous.is_some_and(|p| tokens[p].text != "," && tokens[p].text != "{")
         {
             output.push(',');
@@ -1348,8 +1730,12 @@ fn format_tokens(
         }
 
         if output.ends_with('\n') || output.is_empty() {
-            let visual_level =
-                level.saturating_sub(parameter_depth) + usize::from(continuation && line_break);
+            let visual_level = level.saturating_sub(parameter_depth)
+                + usize::try_from(return_levels.get(i).copied().unwrap_or(0))
+                    .expect("return continuation is nonnegative")
+                + usize::try_from(conditional_depth)
+                    .expect("conditional continuation is nonnegative")
+                + if line_break { continuation } else { 0 };
 
             match options.indent_style {
                 IndentStyle::Tabs => output.extend(std::iter::repeat_n('\t', visual_level)),
@@ -1361,35 +1747,11 @@ fn format_tokens(
             }
 
             line_len = visual_level.saturating_mul(options.indent_width);
-        } else if let Some(p) = previous {
-            let definition =
-                text == "(" && syntax.parameters.binary_search(&tokens[i].start).is_ok();
-
-            let method_name = tokens[p].text == ":"
-                && tokens[i].kind == Kind::Word
-                && tokens.get(i + 1).is_some_and(|next| next.text == "(");
-
-            let tight_type_spacing = (tight_type[p] && tokens[p].text == "<")
-                || (tight_type[i] && matches!(text, ">" | "?"))
-                || (tight_type[i] && text == "<" && tokens[p].kind == Kind::Word);
-
-            if (text == "["
-                && syntax
-                    .access_modifiers
-                    .binary_search(&tokens[p].start)
-                    .is_ok())
-                || needs_space(
-                    &tokens[p],
-                    &tokens[i],
-                    options,
-                    definition,
-                    method_name,
-                    tight_type_spacing,
-                )
-            {
-                output.push(' ');
-                line_len += 1;
-            }
+        } else if let Some(p) = previous
+            && token_needs_space(&tokens, p, i, options, syntax, &tight_type)
+        {
+            output.push(' ');
+            line_len += 1;
         }
 
         if text == ","
@@ -1416,9 +1778,8 @@ fn format_tokens(
             level += 1;
         }
 
-        if text == ";" {
+        if text == ";" && enclosing_brace(&tokens, i).is_none() {
             if options.semicolons == Semicolons::Necessary
-                && enclosing_brace(&tokens, i).is_none()
                 && !tokens
                     .get(i + 1)
                     .is_some_and(|next| matches!(next.text.as_str(), "(" | "["))
@@ -1506,8 +1867,19 @@ pub fn source(input: &str, options: &FormatOptions) -> io::Result<String> {
         )));
     }
 
-    let ordered = crate::require_order::sort(input, &options.requires)?;
-    let parsed_ordered = vermis::parse(ordered.as_bytes());
+    let ordered = crate::require_order::sort(input, &options.requires, &parsed)?;
+    let reparsed;
+
+    let parsed_ordered = match &ordered {
+        Cow::Borrowed(_) => &parsed,
+
+        Cow::Owned(source) => {
+            reparsed = vermis::parse(source.as_bytes());
+
+            &reparsed
+        }
+    };
+
     let mut syntax = FormatSyntax::default();
 
     if let Some(root) = parsed_ordered.view(parsed_ordered.root) {
@@ -1515,12 +1887,45 @@ pub fn source(input: &str, options: &FormatOptions) -> io::Result<String> {
     }
 
     syntax.starts.sort_unstable();
+    syntax.calls.sort_unstable();
+    syntax.list_starts.sort_unstable();
+
+    syntax
+        .function_arguments
+        .sort_unstable_by_key(|&(call, span)| (call, span.start));
+
+    syntax
+        .last_arguments
+        .sort_unstable_by_key(|&(list, _)| list);
+
     syntax.edges.sort_unstable();
     syntax.declarations.sort_unstable();
+    syntax.conditionals.sort_unstable_by_key(|span| span.start);
+
+    syntax
+        .conditional_branches
+        .sort_unstable_by_key(|&(root, _)| root);
+
+    syntax.unary_minus.sort_unstable();
+    syntax.binary_operators.sort_unstable();
+
+    syntax
+        .interpolation_expressions
+        .sort_unstable_by_key(|span| span.start);
+
     syntax.type_spans.sort_unstable();
+    syntax.typeof_gaps.sort_unstable();
+    syntax.type_operator_gaps.sort_unstable();
+    syntax.type_chains.sort_unstable();
+    syntax.type_tables.sort_unstable();
     syntax.optional_ends.sort_unstable();
     syntax.outer_type_spans.sort_unstable();
     syntax.parameters.sort_unstable();
+
+    syntax
+        .signature_ends
+        .sort_unstable_by_key(|&(start, _)| start);
+
     syntax.access_modifiers.sort_unstable();
     let mut tokens = lex(&ordered)?;
 
@@ -1537,6 +1942,7 @@ pub fn source(input: &str, options: &FormatOptions) -> io::Result<String> {
                 Token {
                     text: ")".to_owned(),
                     kind: Kind::Symbol,
+                    syntax_kind: TokenKind::Byte(b')'),
                     start: end,
                     end,
                     newlines: 0,
@@ -1551,6 +1957,7 @@ pub fn source(input: &str, options: &FormatOptions) -> io::Result<String> {
                 Token {
                     text: "(".to_owned(),
                     kind: Kind::Symbol,
+                    syntax_kind: TokenKind::Byte(b'('),
                     start,
                     end: start,
                     newlines,
@@ -1559,7 +1966,7 @@ pub fn source(input: &str, options: &FormatOptions) -> io::Result<String> {
         }
     }
 
-    normalize_calls(&mut tokens, options.calls.parentheses);
+    normalize_calls(&mut tokens, options.calls.parentheses, &syntax.calls);
     let formatted = format_tokens(tokens, options, &mut syntax);
 
     if let Some(error) = vermis::parse(formatted.as_bytes()).diagnostics.first() {
@@ -1592,6 +1999,19 @@ mod tests {
     }
 
     #[test]
+    fn omits_literal_call_parentheses_without_touching_declarations() {
+        let mut options = FormatOptions::default();
+        options.calls.parentheses = CallParentheses::OmitLiteral;
+        let input = "function show(value) return value end\nlocal a = show(\"hello\")\nlocal b = show({ value = 1 })\n";
+        let output = source(input, &options).unwrap();
+
+        assert!(output.contains("function show(value)"), "{output}");
+        assert!(output.contains("show \"hello\""), "{output}");
+        assert!(output.contains("show { value = 1 }"), "{output}");
+        assert_eq!(source(&output, &options).unwrap(), output);
+    }
+
+    #[test]
     fn never_wrap_collapses_type_operators_and_named_calls() {
         let mut options = FormatOptions::default();
         options.types.operator_wrap = Wrap::Never;
@@ -1606,6 +2026,84 @@ mod tests {
                 .any(|line| line.contains("first") && line.contains("second"))
         );
 
+        assert_eq!(source(&output, &options).unwrap(), output);
+    }
+
+    #[test]
+    fn spaces_every_compound_assignment_from_the_parser() {
+        let options = FormatOptions::default();
+
+        let input = concat!(
+            "local users=1\n",
+            "users+=1\nusers-=2\nusers*=3\nusers/=4\n",
+            "users//=5\nusers%=6\nusers^=7\nusers+=(2)\n",
+            "local label=\"a\"\nlabel..=\"b\"\n",
+        );
+
+        let expected = concat!(
+            "local users = 1\n",
+            "users += 1\nusers -= 2\nusers *= 3\nusers /= 4\n",
+            "users //= 5\nusers %= 6\nusers ^= 7\nusers += (2)\n",
+            "local label = \"a\"\nlabel ..= \"b\"\n",
+        );
+
+        assert_eq!(source(input, &options).unwrap(), expected);
+        assert_eq!(source(expected, &options).unwrap(), expected);
+    }
+
+    #[test]
+    fn keeps_unary_minus_tight_without_collapsing_binary_subtraction() {
+        let options = FormatOptions::default();
+        let input = "local a=-1\nlocal b=1- -2\nlocal c=#items\n";
+        let expected = "local a = -1\nlocal b = 1 - -2\nlocal c = #items\n";
+
+        assert_eq!(source(input, &options).unwrap(), expected);
+        assert_eq!(source(expected, &options).unwrap(), expected);
+    }
+
+    #[test]
+    fn recognizes_if_expressions_after_compound_assignment() {
+        let mut options = FormatOptions {
+            indent_style: IndentStyle::Spaces,
+            ..FormatOptions::default()
+        };
+
+        options.if_expressions.wrap = Wrap::Always;
+        options.if_expressions.placement = crate::config::IfExpressionPlacement::NextLine;
+        let input = "local users = 1\nusers += if ready then 1 else 2\n";
+        let output = source(input, &options).unwrap();
+
+        assert!(output.contains("users +=\n    if ready then"), "{output}");
+        assert_eq!(source(&output, &options).unwrap(), output);
+    }
+
+    #[test]
+    fn keeps_short_conditional_cast_in_function_on_one_line() {
+        let options = FormatOptions {
+            indent_style: IndentStyle::Spaces,
+            ..FormatOptions::default()
+        };
+
+        let input = concat!(
+            "local handlers = {\n",
+            "    choose = function(item): Result?\n",
+            "        return if item:matches(\"Result\") then item :: Result else nil\n",
+            "    end,\n",
+            "}\n",
+        );
+
+        let output = source(input, &options).unwrap();
+        assert_eq!(output, input);
+        assert_eq!(source(&output, &options).unwrap(), output);
+    }
+
+    #[test]
+    fn spaces_cast_before_parenthesized_function_type() {
+        let options = FormatOptions::default();
+        let input = "(callback :: (string) -> ())(value)\n";
+        let output = source(input, &options).unwrap();
+
+        assert_eq!(output, input);
         assert_eq!(source(&output, &options).unwrap(), output);
     }
 
@@ -1673,6 +2171,21 @@ mod tests {
     }
 
     #[test]
+    fn keeps_value_table_separators_distinct_from_type_table_separators() {
+        let mut options = FormatOptions::default();
+        options.types.table_separator = crate::config::TypeTableSeparator::Semicolon;
+
+        let input =
+            "type Named = { a: number, b: number }\nlocal value: Named = { a = 1, b = 2 }\n";
+
+        let expected =
+            "type Named = { a: number; b: number }\nlocal value: Named = { a = 1, b = 2 }\n";
+
+        assert_eq!(source(input, &options).unwrap(), expected);
+        assert_eq!(source(expected, &options).unwrap(), expected);
+    }
+
+    #[test]
     fn respects_inner_delimiter_spacing_without_separating_calls_or_indexes() {
         let mut options = FormatOptions::default();
         options.spacing.parentheses = true;
@@ -1692,14 +2205,14 @@ mod tests {
         };
 
         let input = concat!(
-            "type Drawings = {\n",
-            "    new: ((kind: \"Circle\") -> DrawingCircle)\n",
-            "        & ((kind: \"Image\") -> DrawingImage)\n",
-            "        & ((kind: \"Line\") -> DrawingLine)\n",
-            "        & ((kind: \"Quad\") -> DrawingQuad)\n",
-            "        & ((kind: \"Square\") -> DrawingSquare)\n",
-            "        & ((kind: \"Text\") -> DrawingText)\n",
-            "        & ((kind: \"Triangle\") -> DrawingTriangle),\n",
+            "type Registry = {\n",
+            "    create: ((tag: \"A\") -> A)\n",
+            "        & ((tag: \"B\") -> B)\n",
+            "        & ((tag: \"C\") -> C)\n",
+            "        & ((tag: \"D\") -> D)\n",
+            "        & ((tag: \"E\") -> E)\n",
+            "        & ((tag: \"F\") -> F)\n",
+            "        & ((tag: \"G\") -> G),\n",
             "}\n",
         );
 
@@ -1710,19 +2223,214 @@ mod tests {
 
     #[test]
     fn indents_wrapped_declaration_parameters_without_a_runtime_body() {
+        let mut options = FormatOptions {
+            indent_style: IndentStyle::Spaces,
+            ..FormatOptions::default()
+        };
+
+        options.parameters.wrap = Wrap::Always;
+
+        let input = concat!(
+            "declare function wrap<A..., B..., C..., D...>(\n",
+            "    target: (A...) -> B...,\n",
+            "    replacement: (C...) -> D...\n",
+            "): (A...) -> B...\n",
+        );
+
+        assert_eq!(source(input, &options).unwrap(), input);
+    }
+
+    #[test]
+    fn preserves_declaration_parameters_when_return_type_exceeds_width() {
+        let options = FormatOptions {
+            indent_style: IndentStyle::Spaces,
+            ..FormatOptions::default()
+        };
+
+        let multiline = concat!(
+            "declare function replace_handler<A1..., R1..., A2..., R2...>(\n",
+            "    original: (A1...) -> R1...,\n",
+            "    replacement: (A2...) -> R2...\n",
+            "): (A1...) -> R1...\n",
+            "declare function patch_method(\n",
+            "    receiver: AnyTable | Instance | userdata,\n",
+            "    method: string,\n",
+            "    replacement: AnyFunction\n",
+            "): AnyFunction\n",
+        );
+
+        let flat = concat!(
+            "declare function replace_handler<A1..., R1..., A2..., R2...>(original: (A1...) -> R1..., replacement: (A2...) -> R2...): (A1...) -> R1...\n",
+            "declare function patch_method(receiver: AnyTable | Instance | userdata, method: string, replacement: AnyFunction): AnyFunction\n",
+        );
+
+        assert_eq!(source(multiline, &options).unwrap(), multiline);
+        assert_eq!(source(flat, &options).unwrap(), multiline);
+
+        assert_eq!(
+            source(&source(flat, &options).unwrap(), &options).unwrap(),
+            multiline
+        );
+    }
+
+    #[test]
+    fn wraps_if_expressions_only_past_the_formatted_line_width() {
+        let input = "local choice = if data[1] == data[2] and data[3] then x else y\n";
+
+        let mut options = FormatOptions {
+            indent_style: IndentStyle::Spaces,
+            width: input.trim_end().len(),
+            ..FormatOptions::default()
+        };
+
+        let inline = source(input, &options).unwrap();
+        assert_eq!(inline, input);
+        assert_eq!(source(&inline, &options).unwrap(), inline);
+
+        options.width -= 1;
+        let wrapped = source(input, &options).unwrap();
+
+        assert_eq!(
+            wrapped,
+            "local choice = if data[1] == data[2] and data[3] then\n    x\nelse\n    y\n"
+        );
+
+        assert_eq!(source(&wrapped, &options).unwrap(), wrapped);
+    }
+
+    #[test]
+    fn preserves_multiline_binary_continuations_inside_auto_wrapped_calls() {
         let options = FormatOptions {
             indent_style: IndentStyle::Spaces,
             ..FormatOptions::default()
         };
 
         let input = concat!(
-            "declare function hookfunction<A1..., R1..., A2..., R2...>(\n",
-            "    functionToHook: (A1...) -> R1...,\n",
-            "    hook: (A2...) -> R2...\n",
-            "): (A1...) -> R1...\n",
+            "local value = compute(function()\n",
+            "    local direction = axes.RightVector * horizontal\n",
+            "        + Vector3.yAxis * vertical\n",
+            "        + axes.LookVector * depth\n",
+            "    local content_size = node.size\n",
+            "        - Vector2.new(padding.left + padding.right, padding.top + padding.bottom) * node.scale\n",
+            "    return direction\n",
+            "end)\n",
+        );
+
+        let output = source(input, &options).unwrap();
+        assert_eq!(output, input);
+        assert_eq!(source(&output, &options).unwrap(), output);
+    }
+
+    #[test]
+    fn indents_standalone_subtraction_continuation() {
+        let options = FormatOptions {
+            indent_style: IndentStyle::Spaces,
+            ..FormatOptions::default()
+        };
+
+        let input = concat!(
+            "function measure(node, padding)\n",
+            "    const content_size = node.size\n",
+            "        - Vector2.new(padding.left + padding.right, padding.top + padding.bottom) * node.scale\n",
+            "    return content_size\n",
+            "end\n",
+        );
+
+        let output = source(input, &options).unwrap();
+        assert_eq!(output, input);
+        assert_eq!(source(&output, &options).unwrap(), output);
+    }
+
+    #[test]
+    fn indents_leading_logical_operators_as_continuations() {
+        let options = FormatOptions {
+            indent_style: IndentStyle::Spaces,
+            ..FormatOptions::default()
+        };
+
+        let input = concat!(
+            "function is_ready(flag)\n",
+            "    return available\n",
+            "        and flag ~= false\n",
+            "        and (typeof(flag) ~= \"function\" or (flag :: Reader<boolean>)())\n",
+            "end\n",
         );
 
         assert_eq!(source(input, &options).unwrap(), input);
+
+        assert_eq!(
+            source(&source(input, &options).unwrap(), &options).unwrap(),
+            input
+        );
+    }
+
+    #[test]
+    fn keeps_nested_if_expression_inline_inside_multiline_branch() {
+        let options = FormatOptions {
+            indent_style: IndentStyle::Spaces,
+            ..FormatOptions::default()
+        };
+
+        let input = concat!(
+            "local function collect(dictionary, mapper)\n",
+            "    local result = {}\n",
+            "    for key, value in dictionary do\n",
+            "        local choice = if mapper == nil then\n",
+            "            if value == nil then nil else { key = key, value = value }\n",
+            "        else\n",
+            "            mapper(key, value)\n",
+            "        if choice ~= nil then\n",
+            "            table.insert(result, choice)\n",
+            "        end\n",
+            "    end\n",
+            "    return result\n",
+            "end\n",
+        );
+
+        let output = source(input, &options).unwrap();
+        assert_eq!(output, input);
+        assert_eq!(source(&output, &options).unwrap(), output);
+    }
+
+    #[test]
+    fn preserves_multiline_if_expression_branch_alignment() {
+        let options = FormatOptions {
+            indent_style: IndentStyle::Spaces,
+            ..FormatOptions::default()
+        };
+
+        let input = concat!(
+            "local bounds = if corner then\n",
+            "    Vector.offset(WIDTH, WIDTH)\n",
+            "elseif direction ~= 0 then\n",
+            "    Vector.new(0, WIDTH, 1, 0)\n",
+            "else\n",
+            "    Vector.new(1, 0, 0, WIDTH)\n",
+        );
+
+        let output = source(input, &options).unwrap();
+        assert_eq!(output, input);
+        assert_eq!(source(&output, &options).unwrap(), output);
+    }
+
+    #[test]
+    fn keeps_statement_else_after_nested_if_expression() {
+        let options = FormatOptions {
+            indent_style: IndentStyle::Spaces,
+            ..FormatOptions::default()
+        };
+
+        let input = concat!(
+            "if options.pick == nil then\n",
+            "    getter, setter = wire.signal(if options.default ~= nil then options.default else false)\n",
+            "else\n",
+            "    getter, setter = options.pick, options.set\n",
+            "end\n",
+        );
+
+        let output = source(input, &options).unwrap();
+        assert_eq!(output, input);
+        assert_eq!(source(&output, &options).unwrap(), output);
     }
 
     #[test]
@@ -1748,7 +2456,11 @@ mod tests {
             "{output}"
         );
 
-        assert!(output.contains("\n    yes\n    else\n    no\n"), "{output}");
+        assert!(
+            output.contains("\n        yes\n    else\n        no\n"),
+            "{output}"
+        );
+
         assert_eq!(source(&output, &options).unwrap(), output);
 
         options.chains.wrap = Wrap::Auto;
@@ -1761,6 +2473,484 @@ mod tests {
         );
 
         assert_eq!(source(&formatted, &options).unwrap(), formatted);
+    }
+
+    #[test]
+    fn keeps_conditional_table_call_indented_through_nested_functions() {
+        let mut options = FormatOptions {
+            indent_style: IndentStyle::Spaces,
+            ..FormatOptions::default()
+        };
+
+        options.calls.layout = crate::config::CallLayout::HugLast;
+
+        let input = concat!(
+            "local nodes = {\n",
+            "    if state.active and on_action ~= nil then\n",
+            "        UI.Button({\n",
+            "            Opacity = function()\n",
+            "                return if hovered() then 0 else 1\n",
+            "            end,\n",
+            "            Text = \"×\",\n",
+            "            MouseEnter = function()\n",
+            "                hovered(true)\n",
+            "            end,\n",
+            "        })\n",
+            "    else\n",
+            "        nil,\n",
+            "}\n",
+        );
+
+        let output = source(input, &options).unwrap();
+        assert_eq!(output, input);
+        assert_eq!(source(&output, &options).unwrap(), output);
+    }
+
+    #[test]
+    fn keeps_statement_else_and_elseif_branches_in_nested_conditional_call() {
+        let mut options = FormatOptions {
+            indent_style: IndentStyle::Spaces,
+            ..FormatOptions::default()
+        };
+
+        options.calls.layout = crate::config::CallLayout::HugLast;
+
+        let input = concat!(
+            "local cards = {\n",
+            "    if primary then\n",
+            "        UI.Card({\n",
+            "            OnClick = function()\n",
+            "                if ready then\n",
+            "                    fire()\n",
+            "                else\n",
+            "                    defer()\n",
+            "                end\n",
+            "            end,\n",
+            "        })\n",
+            "    elseif secondary then\n",
+            "        UI.Card({\n",
+            "            Label = \"retry\",\n",
+            "        })\n",
+            "    else\n",
+            "        nil,\n",
+            "}\n",
+        );
+
+        let output = source(input, &options).unwrap();
+        assert_eq!(output, input);
+        assert_eq!(source(&output, &options).unwrap(), output);
+    }
+
+    #[test]
+    fn keeps_nested_table_indented_inside_multiline_return_list() {
+        let mut options = FormatOptions {
+            indent_style: IndentStyle::Spaces,
+            ..FormatOptions::default()
+        };
+
+        options.calls.layout = crate::config::CallLayout::HugLast;
+
+        let input = concat!(
+            "function render(item)\n",
+            "    return\n",
+            "        UI.Panel({\n",
+            "            Enabled = true,\n",
+            "            Opacity = function()\n",
+            "                return math.clamp(item.opacity, 0, 1)\n",
+            "            end,\n",
+            "            item.child,\n",
+            "        }),\n",
+            "        EXIT_TIME\n",
+            "end\n",
+        );
+
+        let output = source(input, &options).unwrap();
+        assert_eq!(output, input);
+        assert_eq!(source(&output, &options).unwrap(), output);
+    }
+
+    #[test]
+    fn keeps_multiline_function_argument_inline_and_return_values_separate() {
+        let options = FormatOptions {
+            indent_style: IndentStyle::Spaces,
+            ..FormatOptions::default()
+        };
+
+        let input = concat!(
+            "local rows = map_all(source, function(item, active)\n",
+            "    return\n",
+            "        make_row(item.label, active),\n",
+            "        TIMEOUT\n",
+            "end)\n",
+        );
+
+        let output = source(input, &options).unwrap();
+        assert_eq!(output, input);
+        assert_eq!(source(&output, &options).unwrap(), output);
+
+        let nested_table = concat!(
+            "local rows = map_all(source, function(item, active)\n",
+            "    return\n",
+            "        Row({\n",
+            "            title = item.title,\n",
+            "        }),\n",
+            "        TIMEOUT\n",
+            "end)\n",
+        );
+
+        let output = source(nested_table, &options).unwrap();
+        assert!(output.starts_with("local rows = map_all(source, function(item, active)\n"));
+        assert!(output.contains("\n    return\n        Row("));
+        assert!(output.contains("\n        TIMEOUT\nend)\n"));
+        assert_eq!(source(&output, &options).unwrap(), output);
+    }
+
+    #[test]
+    fn hugs_last_function_argument_past_commas_in_its_body() {
+        let mut options = FormatOptions {
+            indent_style: IndentStyle::Spaces,
+            ..FormatOptions::default()
+        };
+
+        options.calls.layout = crate::config::CallLayout::HugLast;
+        options.width = "local rows = map_all(source, function".len();
+
+        let input = concat!(
+            "local rows = map_all(source, function()\n",
+            "    return 1, 2\n",
+            "end)\n",
+        );
+
+        let output = source(input, &options).unwrap();
+        assert_eq!(output, input);
+        assert_eq!(source(&output, &options).unwrap(), output);
+    }
+
+    #[test]
+    fn hugs_multiline_final_table_argument() {
+        let mut options = FormatOptions {
+            indent_style: IndentStyle::Spaces,
+            ..FormatOptions::default()
+        };
+
+        options.calls.layout = crate::config::CallLayout::HugLast;
+
+        let expected = concat!(
+            "local result = stream.watch(context, {\n",
+            "    signal = item:on(\"Change\"),\n",
+            "    read = function()\n",
+            "        return item.value\n",
+            "    end,\n",
+            "})\n",
+        );
+
+        let vertical = concat!(
+            "local result = stream.watch(\n",
+            "    context,\n",
+            "    {\n",
+            "        signal = item:on(\"Change\"),\n",
+            "        read = function()\n",
+            "            return item.value\n",
+            "        end,\n",
+            "    }\n",
+            ")\n",
+        );
+
+        assert_eq!(source(expected, &options).unwrap(), expected);
+        assert_eq!(source(vertical, &options).unwrap(), expected);
+    }
+
+    #[test]
+    fn wraps_nested_calls_only_past_the_formatted_line_width() {
+        let call = "    return Keyframe.make(parts[1], Tone.make(parts[2], parts[3], parts[4]))";
+        let input = format!("function build(parts)\n{call}\nend\n");
+
+        let mut options = FormatOptions {
+            indent_style: IndentStyle::Spaces,
+            width: call.len(),
+            ..FormatOptions::default()
+        };
+
+        let inline = source(&input, &options).unwrap();
+        assert_eq!(inline, input);
+        assert_eq!(source(&inline, &options).unwrap(), inline);
+
+        options.width -= 1;
+        let wrapped = source(&input, &options).unwrap();
+
+        assert_eq!(
+            wrapped,
+            "function build(parts)\n    return Keyframe.make(\n        parts[1],\n        Tone.make(parts[2], parts[3], parts[4])\n    )\nend\n"
+        );
+
+        assert_eq!(source(&wrapped, &options).unwrap(), wrapped);
+    }
+
+    #[test]
+    fn preserves_keyed_table_rows_without_wrapping_short_calls() {
+        let options = FormatOptions {
+            indent_style: IndentStyle::Spaces,
+            ..FormatOptions::default()
+        };
+
+        let input = concat!(
+            "local checks = {\n",
+            "    plain = typeof(api.plain) == \"function\",\n",
+            "    [\"api.alpha\"] = typeof(api.alpha) == \"function\",\n",
+            "    [\"api.beta\"] = typeof(api.beta) == \"function\",\n",
+            "}\n",
+        );
+
+        let output = source(input, &options).unwrap();
+        assert_eq!(output, input);
+        assert_eq!(source(&output, &options).unwrap(), output);
+    }
+
+    #[test]
+    fn keeps_numeric_for_header_on_one_line_inside_a_table_function() {
+        let options = FormatOptions {
+            indent_style: IndentStyle::Spaces,
+            ..FormatOptions::default()
+        };
+
+        let input = concat!(
+            "local handlers = {\n",
+            "    invoke = function(items)\n",
+            "        for i = #items, 1, -1 do\n",
+            "            if items[i]() then\n",
+            "                break\n",
+            "            end\n",
+            "        end\n",
+            "    end,\n",
+            "}\n",
+        );
+
+        let output = source(input, &options).unwrap();
+        assert_eq!(output, input);
+        assert_eq!(source(&output, &options).unwrap(), output);
+    }
+
+    #[test]
+    fn keeps_parenthesized_casts_and_unary_conditions_spaced() {
+        let options = FormatOptions::default();
+
+        let input = concat!(
+            "local value = (factory :: Getter<number>)()\n",
+            "local count = if #items > 0 then #items else 0\n",
+            "local end_index = if offset == nil then #items else offset - 1\n",
+            "if #items >= LIMIT then\n",
+            "\ttable.remove(items, 1)\n",
+            "end\n",
+            "return (value :: Getter<number>)()\n",
+        );
+
+        let output = source(input, &options).unwrap();
+        assert_eq!(output, input);
+        assert_eq!(source(&output, &options).unwrap(), output);
+    }
+
+    #[test]
+    fn keeps_generic_type_arguments_inline_inside_wrapped_type_table() {
+        let options = FormatOptions {
+            indent_style: IndentStyle::Spaces,
+            ..FormatOptions::default()
+        };
+
+        let input = concat!(
+            "export type Registry = {\n",
+            "    read first: (self: Registry) -> Outcome<string, number>,\n",
+            "    read second: <T>(self: Registry, key: string, fallback: T) -> Outcome<T, string>,\n",
+            "    read third: (self: Registry) -> Outcome<string, number>,\n",
+            "}\n",
+        );
+
+        let output = source(input, &options).unwrap();
+        assert_eq!(output, input);
+        assert_eq!(source(&output, &options).unwrap(), output);
+    }
+
+    #[test]
+    fn keeps_multiline_table_operands_with_their_type_operators() {
+        let options = FormatOptions {
+            indent_style: IndentStyle::Spaces,
+            ..FormatOptions::default()
+        };
+
+        let intersection = concat!(
+            "export type Combined = Base & {\n",
+            "    read kind: \"READY\",\n",
+            "    read changed: ((boolean) -> ())?,\n",
+            "    read reset: (() -> ())?,\n",
+            "}\n",
+        );
+
+        let union = concat!(
+            "type Variant = Base | {\n",
+            "    read status: boolean,\n",
+            "} | string\n",
+        );
+
+        for input in [intersection, union] {
+            let output = source(input, &options).unwrap();
+            assert_eq!(output, input);
+            assert_eq!(source(&output, &options).unwrap(), output);
+        }
+    }
+
+    #[test]
+    fn wraps_flat_type_unions_only_past_the_formatted_line_width() {
+        let input = "type Variant = Outcome<number> | Missing | false\n";
+
+        let mut options = FormatOptions {
+            indent_style: IndentStyle::Spaces,
+            width: input.trim_end().len(),
+            ..FormatOptions::default()
+        };
+
+        let inline = source(input, &options).unwrap();
+        assert_eq!(inline, input);
+        assert_eq!(source(&inline, &options).unwrap(), inline);
+
+        options.width -= 1;
+        let wrapped = source(input, &options).unwrap();
+
+        assert_eq!(
+            wrapped,
+            "type Variant = Outcome<number>\n    | Missing\n    | false\n"
+        );
+
+        assert_eq!(source(&wrapped, &options).unwrap(), wrapped);
+    }
+
+    #[test]
+    fn expands_entire_over_width_type_union() {
+        let options = FormatOptions {
+            indent_style: IndentStyle::Spaces,
+            ..FormatOptions::default()
+        };
+
+        let choices = (0..40)
+            .map(|index| format!("\"choice_{index:02}\""))
+            .collect::<Vec<_>>();
+
+        let input = format!("export type Choices = {}\n", choices.join(" | "));
+        let expected = format!("export type Choices = {}\n", choices.join("\n    | "));
+        let output = source(&input, &options).unwrap();
+
+        assert_eq!(output, expected);
+        assert_eq!(source(&output, &options).unwrap(), output);
+
+        assert_eq!(
+            source("type Short = \"a\" | \"b\"\n", &options).unwrap(),
+            "type Short = \"a\" | \"b\"\n"
+        );
+    }
+
+    #[test]
+    fn auto_wraps_type_and_value_tables_with_trailing_separators() {
+        let mut options = FormatOptions {
+            indent_style: IndentStyle::Spaces,
+            ..FormatOptions::default()
+        };
+
+        options.tables.wrap = Wrap::Auto;
+        options.types.table_wrap = Wrap::Auto;
+
+        let value = "local settings = { active = true, }\n";
+        let expanded_value = "local settings = {\n    active = true,\n}\n";
+        assert_eq!(source(value, &options).unwrap(), expanded_value);
+        assert_eq!(source(expanded_value, &options).unwrap(), expanded_value);
+
+        let ty = "type Shape = { active: boolean, }\n";
+        let expanded_type = "type Shape = {\n    active: boolean,\n}\n";
+        assert_eq!(source(ty, &options).unwrap(), expanded_type);
+        assert_eq!(source(expanded_type, &options).unwrap(), expanded_type);
+
+        options.tables.trailing_comma = TrailingComma::Never;
+        let without_comma = "local settings = {\n    active = true\n}\n";
+        assert_eq!(source(value, &options).unwrap(), without_comma);
+        assert_eq!(source(without_comma, &options).unwrap(), without_comma);
+
+        options.types.table_separator = crate::config::TypeTableSeparator::Semicolon;
+        let with_semicolon = "type Shape = {\n    active: boolean;\n}\n";
+        assert_eq!(source(ty, &options).unwrap(), with_semicolon);
+        assert_eq!(source(with_semicolon, &options).unwrap(), with_semicolon);
+    }
+
+    #[test]
+    fn configures_interpolation_padding_independently_of_table_spacing() {
+        let mut options = FormatOptions::default();
+
+        let input = concat!(
+            "local text = `sum={left+right}, grouped={(left + right)}, count={count}`\n",
+            "local card = `value={ { enabled=true } }`\n",
+        );
+
+        let compact = concat!(
+            "local text = `sum={left + right}, grouped={(left + right)}, count={count}`\n",
+            "local card = `value={ { enabled = true }}`\n",
+        );
+
+        let output = source(input, &options).unwrap();
+        assert_eq!(output, compact);
+        assert_eq!(source(&output, &options).unwrap(), output);
+
+        options.spacing.braces = false;
+
+        assert_eq!(
+            source("local text = `value={count}`\n", &options).unwrap(),
+            "local text = `value={count}`\n"
+        );
+
+        options.spacing.braces = true;
+        options.spacing.interpolation = true;
+
+        let padded = concat!(
+            "local text = `sum={ left + right }, grouped={ (left + right) }, count={ count }`\n",
+            "local card = `value={ { enabled = true } }`\n",
+        );
+
+        let output = source(input, &options).unwrap();
+        assert_eq!(output, padded);
+        assert_eq!(source(&output, &options).unwrap(), output);
+
+        options.spacing.braces = false;
+
+        assert_eq!(
+            source("local card = `value={ { enabled=true } }`\n", &options).unwrap(),
+            "local card = `value={ {enabled = true} }`\n"
+        );
+    }
+
+    #[test]
+    fn keeps_interpolated_chains_intact_past_line_width() {
+        let options = FormatOptions {
+            width: 80,
+            ..FormatOptions::default()
+        };
+
+        let input = concat!(
+            "local text = `alpha={first:read():format()}, beta={second:read()}, ",
+            "gamma={third:read()}, delta={fourth:read()}, epsilon={fifth:read()}`\n",
+        );
+
+        let output = source(input, &options).unwrap();
+        assert_eq!(output, input);
+        assert_eq!(source(&output, &options).unwrap(), output);
+    }
+
+    #[test]
+    fn keeps_typeof_parentheses_tight_inside_generic_types() {
+        let mut options = FormatOptions::default();
+        let input = "type Value = wrapper.infer<typeof (ROOT)>\ntype Direct = typeof (ROOT)\n";
+        let expected = "type Value = wrapper.infer<typeof(ROOT)>\ntype Direct = typeof(ROOT)\n";
+
+        let output = source(input, &options).unwrap();
+        assert_eq!(output, expected);
+        assert_eq!(source(&output, &options).unwrap(), output);
+
+        options.spacing.before_function_parentheses = BeforeFunctionParentheses::Always;
+        assert_eq!(source(input, &options).unwrap(), expected);
     }
 
     #[test]
