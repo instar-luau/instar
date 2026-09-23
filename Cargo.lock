@@ -680,7 +680,7 @@ dependencies = [
 
 [[package]]
 name = "instar-bridge"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "bindgen",
  "cmake",
@@ -688,7 +688,7 @@ dependencies = [
 
 [[package]]
 name = "instar-cli"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "clap",
  "instar-core",
@@ -697,7 +697,7 @@ dependencies = [
 
 [[package]]
 name = "instar-core"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "glob",
  "instar-bridge",
@@ -714,7 +714,7 @@ dependencies = [
 
 [[package]]
 name = "instar-server"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "instar-bridge",
  "instar-core",
