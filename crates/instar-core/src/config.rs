@@ -27,7 +27,7 @@ pub struct Config {
     pub build: FileFilter,
 
     /// Formatting style and additional file selection.
-    #[schemars(extend("default" = FormatOptions::default()))]
+    #[schemars(extend("default" = format_schema_default()))]
     pub format: FormatConfig,
 
     /// Additional file selection for dependency installation.
@@ -138,6 +138,24 @@ pub struct FormatConfig {
     pub requires: Option<PartialRequiresOptions>,
 }
 
+fn format_schema_default() -> Value {
+    let mut config =
+        serde_json::to_value(FormatConfig::default()).expect("default format config serializes");
+
+    let Value::Object(style) =
+        serde_json::to_value(FormatOptions::default()).expect("default format options serialize")
+    else {
+        unreachable!("format options serialize as an object");
+    };
+
+    config
+        .as_object_mut()
+        .expect("format config serializes as an object")
+        .extend(style);
+
+    config
+}
+
 macro_rules! partial {
     ($name:ident, $section:ident { $($field:ident : $ty:ty => $schema_ty:tt),+ $(,)? }) => {
         #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
@@ -153,6 +171,7 @@ macro_rules! partial {
 
 partial!(PartialSpacingOptions, spacing {
     braces: bool => "bool",
+    interpolation: bool => "bool",
     parentheses: bool => "bool",
     brackets: bool => "bool",
     before_function_parentheses: BeforeFunctionParentheses => "BeforeFunctionParentheses"
@@ -271,6 +290,7 @@ macro_rules! options {
 
 options!(SpacingOptions {
     braces: bool = true,
+    interpolation: bool = false,
     parentheses: bool = false,
     brackets: bool = false,
     before_function_parentheses: BeforeFunctionParentheses = BeforeFunctionParentheses::Never
@@ -484,6 +504,7 @@ impl FormatOptions {
 
         if let Some(v) = &layer.spacing {
             set!(self.spacing.braces, v.braces);
+            set!(self.spacing.interpolation, v.interpolation);
             set!(self.spacing.parentheses, v.parentheses);
             set!(self.spacing.brackets, v.brackets);
 

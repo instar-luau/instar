@@ -1,4 +1,4 @@
-use std::io;
+use std::{borrow::Cow, io};
 
 use glob::{MatchOptions, Pattern};
 use vermis::{Kind, Parts, View};
@@ -17,15 +17,13 @@ struct Edit {
     text: String,
 }
 
-pub(crate) fn sort(source: &str, options: &RequiresOptions) -> io::Result<String> {
+pub(crate) fn sort<'source>(
+    source: &'source str,
+    options: &RequiresOptions,
+    tree: &vermis::Tree<'source>,
+) -> io::Result<Cow<'source, str>> {
     if options.order == RequireOrder::Preserve {
-        return Ok(source.to_owned());
-    }
-
-    let tree = vermis::parse(source.as_bytes());
-
-    if !tree.diagnostics.is_empty() {
-        return Ok(source.to_owned());
+        return Ok(Cow::Borrowed(source));
     }
 
     let patterns = options
@@ -49,6 +47,13 @@ pub(crate) fn sort(source: &str, options: &RequiresOptions) -> io::Result<String
         collect(root, source, options, &patterns, &mut edits);
     }
 
+    if edits
+        .iter()
+        .all(|edit| source[edit.start..edit.end] == edit.text)
+    {
+        return Ok(Cow::Borrowed(source));
+    }
+
     let mut output = source.to_owned();
     edits.sort_unstable_by_key(|edit| std::cmp::Reverse(edit.start));
 
@@ -56,7 +61,7 @@ pub(crate) fn sort(source: &str, options: &RequiresOptions) -> io::Result<String
         output.replace_range(edit.start..edit.end, &edit.text);
     }
 
-    Ok(output)
+    Ok(Cow::Owned(output))
 }
 
 fn collect(

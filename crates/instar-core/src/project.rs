@@ -274,6 +274,20 @@ impl Project {
             .includes(&source, service))
     }
 
+    /// Prunes a directory only when an inherited literal `directory/**` rule excludes its subtree.
+    ///
+    /// # Errors
+    /// Returns path or configuration errors.
+    pub fn excludes_subtree(&mut self, directory: &Path, service: Service) -> io::Result<bool> {
+        let directory = absolute(directory)?;
+        let parent = directory.parent().unwrap_or(&directory);
+
+        Ok(self
+            .configuration_at(parent)?
+            .filters
+            .excludes_subtree(&directory, service))
+    }
+
     /// Returns inherited format options unless the path is filtered out.
     ///
     /// # Errors

@@ -45,12 +45,14 @@
           "layout": "method",
           "wrap": "auto"
         },
+        "exclude": [],
         "final_newline": true,
         "if_expressions": {
           "layout": "block",
           "placement": "same_line",
           "wrap": "auto"
         },
+        "include": [],
         "indent_style": "tabs",
         "indent_width": 4,
         "leading_zero": "add",
@@ -73,6 +75,7 @@
           "before_function_parentheses": "never",
           "braces": true,
           "brackets": false,
+          "interpolation": false,
           "parentheses": false
         },
         "tables": {
@@ -301,6 +304,7 @@
             "before_function_parentheses": "never",
             "braces": true,
             "brackets": false,
+            "interpolation": false,
             "parentheses": false
           }
         },
@@ -629,6 +633,11 @@
         },
         "brackets": {
           "description": "Override for `brackets`.",
+          "type": "boolean",
+          "default": false
+        },
+        "interpolation": {
+          "description": "Override for `interpolation`.",
           "type": "boolean",
           "default": false
         },
