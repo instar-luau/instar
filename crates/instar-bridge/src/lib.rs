@@ -2,11 +2,103 @@
 
 #![expect(unsafe_code, reason = "the bridge owns the C ABI marshalling boundary")]
 
-use std::{ffi::c_void, io, path::Path, ptr, slice, str};
+use std::{collections::BTreeMap, ffi::c_void, io, path::Path, ptr, slice, str};
 
 /// Raw C ABI declarations generated from the native bridge headers.
 pub mod native {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+}
+
+/// Current value of a supported compiled Luau fast flag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FastFlagValue {
+    /// Boolean flag value.
+    Bool(bool),
+
+    /// Integer flag value.
+    Int(i32),
+}
+
+/// Returns compiled bool and int fast flags by their full Roblox names.
+///
+/// # Errors
+/// Returns an error if the native registry cannot be enumerated.
+pub fn fast_flags() -> io::Result<BTreeMap<String, FastFlagValue>> {
+    let mut context = FastFlagsContext {
+        values: BTreeMap::new(),
+        error: None,
+    };
+
+    let status = unsafe { native::fast_flags(Some(fast_flag_callback), (&raw mut context).cast()) };
+
+    if let Some(error) = context.error {
+        return Err(error);
+    }
+
+    if status != native::Status::StatusSuccess as i32 {
+        return Err(io::Error::other("native fast flag enumeration failed"));
+    }
+
+    Ok(context.values)
+}
+
+/// Sets a compiled fast flag, rejecting unknown names and value type mismatches.
+///
+/// # Errors
+/// Returns an error for an unknown flag, a type mismatch, or a native failure.
+pub fn set_fast_flag(name: &str, value: FastFlagValue) -> io::Result<()> {
+    let (kind, bool_value, int_value) = match value {
+        FastFlagValue::Bool(value) => (native::FastFlagType::FastFlagBool, u8::from(value), 0),
+        FastFlagValue::Int(value) => (native::FastFlagType::FastFlagInt, 0, value),
+    };
+
+    let mut error = native::String::default();
+
+    let status =
+        unsafe { native::set_fast_flag(text(name), kind, bool_value, int_value, &raw mut error) };
+
+    if status == native::Status::StatusSuccess as i32 {
+        Ok(())
+    } else {
+        Err(io::Error::other(take_string(error)?))
+    }
+}
+
+struct FastFlagsContext {
+    values: BTreeMap<String, FastFlagValue>,
+    error: Option<io::Error>,
+}
+
+unsafe extern "C" fn fast_flag_callback(context: *mut c_void, flag: *const native::FastFlag) -> u8 {
+    let result = (|| {
+        let context = unsafe { context.cast::<FastFlagsContext>().as_mut() }
+            .ok_or_else(|| io::Error::other("null fast flag context"))?;
+
+        let flag = unsafe { flag.as_ref() }.ok_or_else(|| io::Error::other("null fast flag"))?;
+
+        let name = read_text(flag.name)?;
+
+        let value = match flag.type_ {
+            native::FastFlagType::FastFlagBool => FastFlagValue::Bool(flag.bool_value != 0),
+            native::FastFlagType::FastFlagInt => FastFlagValue::Int(flag.int_value),
+        };
+
+        context.values.insert(name, value);
+
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => 1,
+
+        Err(error) => {
+            if let Some(context) = unsafe { context.cast::<FastFlagsContext>().as_mut() } {
+                context.error = Some(error);
+            }
+
+            0
+        }
+    }
 }
 
 /// Source bytes and kind supplied to the native checker.
@@ -1626,4 +1718,29 @@ fn take_string(value: native::String) -> io::Result<String> {
     unsafe { native::string_destroy(value) };
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FastFlagValue, fast_flags, set_fast_flag};
+
+    #[test]
+    fn native_flags_reject_mismatched_and_unknown_values() {
+        let original = fast_flags().unwrap();
+        let name = "FIntLuauTarjanChildLimit";
+        assert_eq!(original.get(name), Some(&FastFlagValue::Int(10_000)));
+
+        assert!(set_fast_flag(name, FastFlagValue::Bool(true)).is_err());
+        assert!(set_fast_flag("FIntInstarUnknownFlag", FastFlagValue::Int(1)).is_err());
+        assert_eq!(fast_flags().unwrap().get(name), original.get(name));
+
+        set_fast_flag(name, FastFlagValue::Int(12_345)).unwrap();
+
+        assert_eq!(
+            fast_flags().unwrap().get(name),
+            Some(&FastFlagValue::Int(12_345))
+        );
+
+        set_fast_flag(name, FastFlagValue::Int(10_000)).unwrap();
+    }
 }

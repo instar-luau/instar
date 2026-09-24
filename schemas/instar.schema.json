@@ -124,9 +124,14 @@
       }
     },
     "luau": {
-      "description": "Settings shared by analysis and require resolution.",
+      "description": "Luau analysis, resolution, and process-global fast-flag settings.",
       "$ref": "#/$defs/LuauConfig",
-      "default": {}
+      "default": {
+        "fflags": {
+          "overrides": {},
+          "sync_roblox": null
+        }
+      }
     },
     "roblox": {
       "description": "Optional Roblox sourcemap configuration.",
@@ -161,6 +166,20 @@
         }
       },
       "additionalProperties": false
+    },
+    "FlagValue": {
+      "description": "Supported native Luau flag value types.",
+      "anyOf": [
+        {
+          "description": "Boolean value.",
+          "type": "boolean"
+        },
+        {
+          "description": "Signed 32-bit integer value.",
+          "type": "integer",
+          "format": "int32"
+        }
+      ]
     },
     "FormatConfig": {
       "description": "Optional formatting overrides and file selection. Omitted values inherit;\nschema defaults describe the root configuration.",
@@ -361,6 +380,14 @@
             "type": "string"
           }
         },
+        "fflags": {
+          "description": "Process-global Luau flag settings.",
+          "$ref": "#/$defs/LuauFlagsConfig",
+          "default": {
+            "overrides": {},
+            "sync_roblox": null
+          }
+        },
         "globals": {
           "description": "Additional globals. An explicit list replaces the inherited list.",
           "type": [
@@ -402,6 +429,29 @@
             "boolean",
             "null"
           ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "LuauFlagsConfig": {
+      "description": "Process-global Luau flag settings shared across projects in one Instar process.",
+      "type": "object",
+      "properties": {
+        "overrides": {
+          "description": "Explicit bool or integer values applied after synced values.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/FlagValue"
+          },
+          "default": {}
+        },
+        "sync_roblox": {
+          "description": "Fetch supported values from Roblox Studio's `PCStudioApp` settings at startup.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
         }
       },
       "additionalProperties": false

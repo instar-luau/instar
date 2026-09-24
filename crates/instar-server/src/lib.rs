@@ -17,6 +17,7 @@ use std::{
         mpsc,
     },
     thread,
+    time::Duration,
 };
 
 use instar_core::{format, project::Project};
@@ -101,6 +102,7 @@ struct Backend {
     threads: std::sync::Mutex<Vec<thread::JoinHandle<()>>>,
     watch: AtomicBool,
     versioned_edits: AtomicBool,
+    flag_refresh: AtomicBool,
     workspace: mpsc::Sender<Option<workspace::Command>>,
     progress_requests: ProgressRequests,
     hint_types: AtomicBool,
@@ -210,6 +212,7 @@ impl Backend {
             imports,
             threads: std::sync::Mutex::new(vec![thread, import_thread, workspace_thread]),
             watch: AtomicBool::new(false),
+            flag_refresh: AtomicBool::new(false),
             versioned_edits: AtomicBool::new(false),
             workspace,
             progress_requests: Arc::default(),
@@ -217,6 +220,58 @@ impl Backend {
             hint_parameters: AtomicBool::new(true),
             hint_requires: AtomicBool::new(false),
         }
+    }
+
+    async fn prepare_flags(&self, paths: Vec<PathBuf>) -> Result<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+
+        let (sync, warnings) = tokio::task::spawn_blocking(move || {
+            let mut project = Project::new();
+            let sync = project.prepare_fast_flags(&paths)?;
+
+            Ok::<_, io::Error>((sync, project.take_asset_warnings()))
+        })
+        .await
+        .map_err(|failure| error(&failure))?
+        .map_err(|failure| error(&failure))?;
+
+        for warning in warnings {
+            self.client.log_message(MessageType::WARNING, warning).await;
+        }
+
+        if sync && !self.flag_refresh.swap(true, Ordering::AcqRel) {
+            let client = self.client.clone();
+
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_hours(12)).await;
+
+                    match tokio::task::spawn_blocking(Project::refresh_fast_flag_cache).await {
+                        Ok(Ok(warnings)) => {
+                            for warning in warnings {
+                                client.log_message(MessageType::WARNING, warning).await;
+                            }
+                        }
+
+                        Ok(Err(failure)) => {
+                            client
+                                .log_message(MessageType::WARNING, failure.to_string())
+                                .await;
+                        }
+
+                        Err(failure) => {
+                            client
+                                .log_message(MessageType::ERROR, failure.to_string())
+                                .await;
+                        }
+                    }
+                }
+            });
+        }
+
+        Ok(())
     }
 
     async fn publish(
@@ -470,6 +525,10 @@ impl LanguageServer for Backend {
                 .insert(document::path(&root).map_err(|failure| error(&failure))?);
         }
 
+        let folders = state.folders.iter().cloned().collect();
+        drop(state);
+        self.prepare_flags(folders).await?;
+
         decode(
             json!({"serverInfo": {"name": "instar", "version": env!("CARGO_PKG_VERSION")}, "capabilities": {
                 "positionEncoding": "utf-16",
@@ -557,6 +616,14 @@ impl LanguageServer for Backend {
 
         match Document::new(item.uri, item.version, item.text) {
             Ok(document) => {
+                if let Err(failure) = self.prepare_flags(vec![document.path.clone()]).await {
+                    self.client
+                        .log_message(MessageType::ERROR, failure.to_string())
+                        .await;
+
+                    return;
+                }
+
                 let mut state = self.state.lock().await;
 
                 state
@@ -716,19 +783,30 @@ impl LanguageServer for Backend {
     }
 
     async fn did_change_workspace_folders(&self, params: DidChangeWorkspaceFoldersParams) {
-        let mut state = self.state.lock().await;
+        let mut folders = self.state.lock().await.folders.clone();
 
         for folder in params.event.removed {
             if let Ok(path) = document::path(&folder.uri) {
-                state.folders.remove(&path);
+                folders.remove(&path);
             }
         }
 
         for folder in params.event.added {
             if let Ok(path) = document::path(&folder.uri) {
-                state.folders.insert(path);
+                folders.insert(path);
             }
         }
+
+        if let Err(failure) = self.prepare_flags(folders.iter().cloned().collect()).await {
+            self.client
+                .log_message(MessageType::ERROR, failure.to_string())
+                .await;
+
+            return;
+        }
+
+        let mut state = self.state.lock().await;
+        state.folders = folders;
 
         state.epoch += 1;
         self.changed(&mut state);
