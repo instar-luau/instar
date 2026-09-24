@@ -6,10 +6,10 @@ use std::{
     path::{Path, PathBuf},
     rc::Rc,
     sync::atomic::{AtomicU64, Ordering},
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use instar_bridge::{Checker, RobloxClass};
+use instar_bridge::{Checker, FastFlagValue, RobloxClass};
 
 use reqwest::{
     StatusCode, Url,
@@ -157,6 +157,26 @@ struct Cached {
     body: String,
 }
 
+#[derive(Deserialize, Serialize)]
+struct CachedStudioFlags {
+    url: String,
+    etag: Option<String>,
+    modified: Option<String>,
+    checked_at: u64,
+    values: BTreeMap<String, serde_json::Value>,
+}
+
+struct FetchedStudioFlags {
+    etag: Option<String>,
+    modified: Option<String>,
+    values: BTreeMap<String, FastFlagValue>,
+}
+
+const STUDIO_FLAGS_URL: &str =
+    "https://clientsettingscdn.roblox.com/v1/settings/application?applicationName=PCStudioApp";
+
+const STUDIO_FLAGS_REFRESH: Duration = Duration::from_hours(12);
+
 #[derive(Default)]
 pub(crate) struct Assets {
     client: Option<Client>,
@@ -165,6 +185,201 @@ pub(crate) struct Assets {
     documentation: HashMap<Vec<String>, Rc<serde_json::Value>>,
     pending: HashMap<String, Cached>,
     warnings: Vec<String>,
+}
+
+impl Assets {
+    pub(crate) fn studio_flags(
+        &mut self,
+        supported: &BTreeMap<String, FastFlagValue>,
+    ) -> BTreeMap<String, FastFlagValue> {
+        let path = match cache_path(STUDIO_FLAGS_URL) {
+            Ok(path) => path,
+
+            Err(error) => {
+                self.warnings
+                    .push(format!("Could not access Studio fast-flag cache: {error}"));
+
+                return BTreeMap::new();
+            }
+        };
+
+        let cached = match fs::File::open(&path) {
+            Ok(file) => read_limited(file, LIMIT)
+                .and_then(|body| {
+                    serde_json::from_str::<CachedStudioFlags>(&body).map_err(io::Error::other)
+                })
+                .and_then(|cached| {
+                    if cached.url != STUDIO_FLAGS_URL {
+                        return Err(invalid("studio flag cache URL mismatch"));
+                    }
+
+                    Ok(cached)
+                })
+                .map(Some),
+
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        };
+
+        let cached = match cached {
+            Ok(cached) => cached,
+
+            Err(error) => {
+                self.warnings.push(format!(
+                    "Ignoring unusable Studio fast-flag cache {}: {error}",
+                    path.display()
+                ));
+
+                None
+            }
+        };
+
+        let cached_values = cached
+            .as_ref()
+            .map_or_default(|cache| decode_studio_flags(&cache.values, supported));
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        if let Some(cache) = &cached
+            && now >= cache.checked_at
+            && now - cache.checked_at < STUDIO_FLAGS_REFRESH.as_secs()
+        {
+            return cached_values;
+        }
+
+        match self.fetch_studio_flags(supported, cached.as_ref()) {
+            Ok(None) => {
+                if let Some(mut cache) = cached {
+                    cache.checked_at = now;
+
+                    if let Err(error) = save_cache(&path, &cache) {
+                        self.warnings
+                            .push(format!("Could not cache {STUDIO_FLAGS_URL}: {error}"));
+                    }
+
+                    cached_values
+                } else {
+                    self.warnings
+                        .push("Studio fast-flag server returned 304 without a cache".into());
+
+                    BTreeMap::new()
+                }
+            }
+
+            Ok(Some(FetchedStudioFlags {
+                etag,
+                modified,
+                values,
+            })) => {
+                let cache = CachedStudioFlags {
+                    url: STUDIO_FLAGS_URL.to_owned(),
+                    etag,
+                    modified,
+                    checked_at: now,
+                    values: encode_studio_flags(&values),
+                };
+
+                if let Err(error) = save_cache(&path, &cache) {
+                    self.warnings
+                        .push(format!("Could not cache {STUDIO_FLAGS_URL}: {error}"));
+                }
+
+                values
+            }
+
+            Err(error) => {
+                if cached.is_some() {
+                    self.warnings.push(format!(
+                        "Using cached Studio fast flags; refresh failed: {error}"
+                    ));
+                } else {
+                    self.warnings.push(format!(
+                        "Could not load Studio fast flags; no cache: {error}"
+                    ));
+                }
+
+                cached_values
+            }
+        }
+    }
+
+    fn fetch_studio_flags(
+        &mut self,
+        supported: &BTreeMap<String, FastFlagValue>,
+        cached: Option<&CachedStudioFlags>,
+    ) -> io::Result<Option<FetchedStudioFlags>> {
+        if self.client.is_none() {
+            self.client = Some(
+                Client::builder()
+                    .https_only(true)
+                    .timeout(Duration::from_secs(30))
+                    .connect_timeout(Duration::from_secs(10))
+                    .user_agent(concat!("instar/", env!("CARGO_PKG_VERSION")))
+                    .build()
+                    .map_err(io::Error::other)?,
+            );
+        }
+
+        let mut request = self
+            .client
+            .as_ref()
+            .expect("client initialized")
+            .get(STUDIO_FLAGS_URL);
+
+        if let Some(cache) = cached {
+            if let Some(etag) = &cache.etag {
+                request = request.header(IF_NONE_MATCH, etag);
+            } else if let Some(modified) = &cache.modified {
+                request = request.header(IF_MODIFIED_SINCE, modified);
+            }
+        }
+
+        let response = request.send().map_err(io::Error::other)?;
+
+        if response.status() == StatusCode::NOT_MODIFIED {
+            return Ok(None);
+        }
+
+        let response = response.error_for_status().map_err(io::Error::other)?;
+
+        let etag = response
+            .headers()
+            .get(ETAG)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+
+        let modified = response
+            .headers()
+            .get(LAST_MODIFIED)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+
+        let body = read_limited(response, LIMIT)?;
+        let json: serde_json::Value = serde_json::from_str(&body).map_err(io::Error::other)?;
+
+        let map = json
+            .get("applicationSettings")
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(|| invalid("invalid Studio fast-flag response"))?;
+
+        let values = map
+            .iter()
+            .filter_map(|(name, value)| {
+                let expected = supported.get(name)?;
+
+                parse_studio_flag(value, *expected).map(|value| (name.clone(), value))
+            })
+            .collect();
+
+        Ok(Some(FetchedStudioFlags {
+            etag,
+            modified,
+            values,
+        }))
+    }
 }
 
 impl Assets {
@@ -440,7 +655,7 @@ fn cache_path(url: &str) -> io::Result<PathBuf> {
         .join(format!("{:016x}.json", hash.finish())))
 }
 
-fn save_cache(path: &Path, cached: &Cached) -> io::Result<()> {
+fn save_cache(path: &Path, cached: &impl Serialize) -> io::Result<()> {
     fs::create_dir_all(
         path.parent()
             .ok_or_else(|| invalid("cache has no parent directory"))?,
@@ -471,4 +686,59 @@ fn save_cache(path: &Path, cached: &Cached) -> io::Result<()> {
     }
 
     result
+}
+
+fn encode_studio_flags(
+    values: &BTreeMap<String, FastFlagValue>,
+) -> BTreeMap<String, serde_json::Value> {
+    values
+        .iter()
+        .map(|(name, value)| {
+            let value = match value {
+                FastFlagValue::Bool(value) => serde_json::Value::Bool(*value),
+                FastFlagValue::Int(value) => serde_json::Value::Number((*value).into()),
+            };
+
+            (name.clone(), value)
+        })
+        .collect()
+}
+
+fn decode_studio_flags(
+    values: &BTreeMap<String, serde_json::Value>,
+    supported: &BTreeMap<String, FastFlagValue>,
+) -> BTreeMap<String, FastFlagValue> {
+    values
+        .iter()
+        .filter_map(|(name, value)| {
+            let expected = *supported.get(name)?;
+
+            parse_studio_flag(value, expected).map(|value| (name.clone(), value))
+        })
+        .collect()
+}
+
+fn parse_studio_flag(value: &serde_json::Value, expected: FastFlagValue) -> Option<FastFlagValue> {
+    match expected {
+        FastFlagValue::Bool(_) => {
+            let parsed = match value {
+                serde_json::Value::Bool(value) => *value,
+                serde_json::Value::String(value) if value.eq_ignore_ascii_case("true") => true,
+                serde_json::Value::String(value) if value.eq_ignore_ascii_case("false") => false,
+                _ => return None,
+            };
+
+            Some(FastFlagValue::Bool(parsed))
+        }
+
+        FastFlagValue::Int(_) => {
+            let parsed = match value {
+                serde_json::Value::Number(value) => i32::try_from(value.as_i64()?).ok()?,
+                serde_json::Value::String(value) => value.parse().ok()?,
+                _ => return None,
+            };
+
+            Some(FastFlagValue::Int(parsed))
+        }
+    }
 }

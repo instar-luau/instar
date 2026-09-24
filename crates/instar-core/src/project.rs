@@ -6,16 +6,21 @@ use std::{
     fs, io,
     path::{Path, PathBuf},
     rc::Rc,
+    sync::Mutex,
 };
 
 use crate::{
     absolute,
     assets::{self, Assets, Definitions},
-    config::{self, Config, FormatOptions, LuauConfig, RobloxConfig, Security},
+    config::{
+        self, Config, FlagValue, FormatOptions, LuauConfig, LuauFlagsConfig, RobloxConfig, Security,
+    },
     filter::{Filters, Service},
     invalid,
     roblox::{Sourcemap, SourcemapLocation},
 };
+
+static INSTALLED_FLAGS: Mutex<Option<LuauFlagsConfig>> = Mutex::new(None);
 
 /// An alias with the configuration file that defines its lookup scope.
 #[derive(Clone, Debug)]
@@ -135,6 +140,109 @@ impl Project {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Applies the one process-wide Luau flag snapshot before analysis begins.
+    ///
+    /// # Errors
+    /// Returns configuration, cache, or native flag errors; conflicting projects require a restart.
+    pub fn prepare_fast_flags(&mut self, paths: &[PathBuf]) -> io::Result<bool> {
+        if paths.is_empty() {
+            return Ok(false);
+        }
+
+        let mut selected: Option<LuauFlagsConfig> = None;
+
+        for path in paths {
+            let directory = if path.is_dir() {
+                path.as_path()
+            } else {
+                path.parent()
+                    .ok_or_else(|| invalid("source path has no parent directory"))?
+            };
+
+            let config = self.configuration_at(directory)?;
+
+            let mut flags = config.settings.fflags.clone();
+            flags.sync_roblox = Some(flags.sync_roblox.unwrap_or(false));
+
+            if selected.as_ref().is_some_and(|previous| previous != &flags) {
+                return Err(invalid(
+                    "conflicting Luau FFlag settings across project roots",
+                ));
+            }
+
+            selected = Some(flags);
+        }
+
+        let selected = selected.unwrap_or_default();
+        let sync = selected.sync_roblox == Some(true);
+        let enabled = sync || !selected.overrides.is_empty();
+
+        let mut installed = INSTALLED_FLAGS
+            .lock()
+            .map_err(|_| invalid("Luau flag state was poisoned"))?;
+
+        if let Some(previous) = installed.as_ref() {
+            if previous != &selected {
+                return Err(invalid("Luau FFlag changes require restarting Instar"));
+            }
+
+            return Ok(sync);
+        }
+
+        let registry = if enabled {
+            instar_bridge::fast_flags()?
+        } else {
+            BTreeMap::new()
+        };
+
+        let mut flags = if sync {
+            self.assets.studio_flags(&registry)
+        } else {
+            BTreeMap::new()
+        };
+
+        for (name, value) in &selected.overrides {
+            let value = match (value, registry.get(name)) {
+                (FlagValue::Bool(value), Some(instar_bridge::FastFlagValue::Bool(_))) => {
+                    instar_bridge::FastFlagValue::Bool(*value)
+                }
+
+                (FlagValue::Int(value), Some(instar_bridge::FastFlagValue::Int(_))) => {
+                    instar_bridge::FastFlagValue::Int(*value)
+                }
+
+                (_, None) => return Err(invalid(format!("unknown Luau fast flag {name:?}"))),
+
+                _ => {
+                    return Err(invalid(format!(
+                        "wrong value type for Luau fast flag {name:?}"
+                    )));
+                }
+            };
+
+            flags.insert(name.clone(), value);
+        }
+
+        for (name, value) in &flags {
+            instar_bridge::set_fast_flag(name, *value)?;
+        }
+
+        *installed = Some(selected);
+
+        Ok(sync)
+    }
+
+    /// Refreshes the cached Studio flag snapshot without changing active native flags.
+    ///
+    /// # Errors
+    /// Returns cache or native registry errors.
+    pub fn refresh_fast_flag_cache() -> io::Result<Vec<String>> {
+        let mut assets = Assets::default();
+        assets.studio_flags(&instar_bridge::fast_flags()?);
+
+        Ok(assets.take_warnings())
     }
 
     /// Replaces an unsaved source, or returns it to disk ownership.

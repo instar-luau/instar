@@ -150,6 +150,34 @@ extern "C" {
     /**Receives one text item from an enumeration operation.*/
     typedef uint8_t (*ItemCallback)(void *context, Text item);
 
+    /**Type of an exposed Luau fast flag.*/
+    typedef enum FastFlagType {
+        /**Boolean flag.*/
+        FastFlagBool = 0,
+        /**Integer flag.*/
+        FastFlagInt = 1,
+    } FastFlagType;
+
+    /**Compiled Luau fast flag and its current value.*/
+    typedef struct FastFlag {
+        /**Full Roblox flag name, including its static or dynamic prefix.*/
+        Text name;
+        /**Flag value type.*/
+        FastFlagType type;
+        /**Boolean value when the type is `FastFlagBool`.*/
+        uint8_t bool_value;
+        /**Integer value when the type is `FastFlagInt`.*/
+        int32_t int_value;
+    } FastFlag;
+
+    /**Receives one compiled fast flag.*/
+    typedef uint8_t (*FastFlagCallback)(void *context, const FastFlag *flag);
+
+    /**Enumerates compiled bool and int fast flags.*/
+    int32_t fast_flags(FastFlagCallback callback, void *context);
+    /**Sets one known fast flag, rejecting unknown names and type mismatches.*/
+    int32_t set_fast_flag(Text name, FastFlagType type, uint8_t bool_value, int32_t int_value, String *error);
+
     /**Callbacks used by the native checker to access project data.*/
     typedef struct BridgeCallbacks {
         /**Source callback.*/

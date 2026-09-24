@@ -25,8 +25,6 @@
 #include <utility>
 #include <vector>
 
-LUAU_FASTINT(LuauTarjanChildLimit)
-
 namespace {
 
     struct CallbackFailure final : std::exception {
@@ -301,6 +299,59 @@ namespace {
 
         return static_cast<const Configuration *>(configuration)->value;
     }
+
+    template <typename T> int32_t emit_fast_flags(Luau::FValue<T> *flags, FastFlagType type, const char *prefix, const char *dynamic_prefix, FastFlagCallback callback, void *context) {
+        for (Luau::FValue<T> *flag = flags; flag; flag = flag->next) {
+            const std::string name = std::string(flag->dynamic ? dynamic_prefix : prefix) + flag->name;
+
+            FastFlag value{
+                text(name),
+                type,
+                uint8_t(type == FastFlagBool && flag->value),
+                type == FastFlagInt ? flag->value : 0,
+            };
+
+            if (!callback(context, &value)) {
+                return StatusCallbackFailure;
+            }
+        }
+
+        return StatusSuccess;
+    }
+
+    template <typename T> bool flag_name_matches(const Luau::FValue<T> &flag, std::string_view name, std::string_view prefix, std::string_view dynamic_prefix) {
+        const std::string_view selected_prefix = flag.dynamic ? dynamic_prefix : prefix;
+
+        return name.size() == selected_prefix.size() + std::strlen(flag.name) && name.substr(0, selected_prefix.size()) == selected_prefix && name.substr(selected_prefix.size()) == flag.name;
+    }
+
+    int32_t set_flag_value(std::string_view name, FastFlagType type, uint8_t bool_value, int32_t int_value, String *error) {
+        for (Luau::FValue<bool> *flag = Luau::FValue<bool>::list; flag; flag = flag->next) {
+            if (flag_name_matches(*flag, name, "FFlag", "DFFlag")) {
+                if (type != FastFlagBool) {
+                    return failure(error, "fast flag type mismatch");
+                }
+
+                flag->value = bool_value != 0;
+
+                return StatusSuccess;
+            }
+        }
+
+        for (Luau::FValue<int> *flag = Luau::FValue<int>::list; flag; flag = flag->next) {
+            if (flag_name_matches(*flag, name, "FInt", "DFInt")) {
+                if (type != FastFlagInt) {
+                    return failure(error, "fast flag type mismatch");
+                }
+
+                flag->value = int_value;
+
+                return StatusSuccess;
+            }
+        }
+
+        return failure(error, "unknown fast flag");
+    }
 } // namespace
 
 template <typename Function, typename... Arguments> int32_t call_editor(void *handle, String *error, Function function, Arguments &&...arguments) {
@@ -316,12 +367,49 @@ template <typename Function, typename... Arguments> int32_t call_editor(void *ha
         }
 
         return function(checker->frontend, std::forward<Arguments>(arguments)...);
+
     } catch (...) {
         return exception_failure(error);
     }
 }
 
 extern "C" {
+    int32_t fast_flags(FastFlagCallback callback, void *context) {
+        if (!callback) {
+            return StatusFailure;
+        }
+
+        try {
+            const int32_t bool_status = emit_fast_flags(Luau::FValue<bool>::list, FastFlagBool, "FFlag", "DFFlag", callback, context);
+
+            if (bool_status != StatusSuccess) {
+                return bool_status;
+            }
+
+            return emit_fast_flags(Luau::FValue<int>::list, FastFlagInt, "FInt", "DFInt", callback, context);
+        } catch (...) {
+            return StatusFailure;
+        }
+    }
+
+    int32_t set_fast_flag(Text name, FastFlagType type, uint8_t bool_value, int32_t int_value, String *error) {
+        try {
+            if (error) {
+                *error = {};
+            }
+
+            const std::optional<std::string_view> value = view(name);
+
+            if (!value || (type != FastFlagBool && type != FastFlagInt)) {
+                return failure(error, "invalid fast flag");
+            }
+
+            return set_flag_value(*value, type, bool_value, int_value, error);
+        } catch (...) {
+            return exception_failure(error);
+        }
+    }
+
     void string_destroy(String value) {
         std::free(value.data);
     }
@@ -373,9 +461,6 @@ extern "C" {
 
                 return nullptr;
             }
-
-            // Modern Roblox definitions exceed Luau's default 10,000-child limit.
-            FInt::LuauTarjanChildLimit.value = 12'500;
 
             return new Checker(*callbacks, context, *options);
         } catch (...) {

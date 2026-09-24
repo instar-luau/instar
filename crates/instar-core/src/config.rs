@@ -39,7 +39,7 @@ pub struct Config {
     /// Additional file selection for the language server.
     pub lsp: FileFilter,
 
-    /// Settings shared by analysis and require resolution.
+    /// Luau analysis, resolution, and process-global fast-flag settings.
     pub luau: LuauConfig,
 
     /// Optional Roblox sourcemap configuration.
@@ -658,6 +658,28 @@ impl Security {
     }
 }
 
+/// Process-global Luau flag settings shared across projects in one Instar process.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct LuauFlagsConfig {
+    /// Fetch supported values from Roblox Studio's `PCStudioApp` settings at startup.
+    pub sync_roblox: Option<bool>,
+
+    /// Explicit bool or integer values applied after synced values.
+    pub overrides: BTreeMap<String, FlagValue>,
+}
+
+/// Supported native Luau flag value types.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum FlagValue {
+    /// Boolean value.
+    Bool(bool),
+
+    /// Signed 32-bit integer value.
+    Int(i32),
+}
+
 /// Luau settings in Instar's `snake_case` configuration format.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -695,6 +717,9 @@ pub struct LuauConfig {
     /// Later files override matching keys; paths are relative to their manifest.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub documentation: Vec<String>,
+
+    /// Process-global Luau flag settings.
+    pub fflags: LuauFlagsConfig,
 }
 
 /// Luau typechecking mode.
@@ -736,6 +761,12 @@ impl LuauConfig {
         self.lint.extend(layer.lint.clone());
         self.aliases.extend(layer.aliases.clone());
         self.definitions.extend(layer.definitions.clone());
+
+        if let Some(sync) = layer.fflags.sync_roblox {
+            self.fflags.sync_roblox = Some(sync);
+        }
+
+        self.fflags.overrides.extend(layer.fflags.overrides.clone());
 
         self.documentation
             .extend(layer.documentation.iter().cloned());
@@ -798,6 +829,7 @@ impl LuauConfig {
         if let Value::Object(object) = &mut value {
             object.remove("definitions");
             object.remove("documentation");
+            object.remove("fflags");
 
             for (from, to) in [
                 ("language_mode", "languageMode"),
