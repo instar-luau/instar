@@ -736,6 +736,7 @@ dependencies = [
  "instar-bridge",
  "jsonc-parser",
  "petgraph",
+ "regex",
  "reqwest",
  "schemars",
  "serde",

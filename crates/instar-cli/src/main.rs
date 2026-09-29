@@ -184,10 +184,15 @@ fn run_analyze(
 
         let errors = diagnostics
             .iter()
-            .filter(|diagnostic| diagnostic.error)
+            .filter(|diagnostic| diagnostic.severity == analysis::Severity::Error)
             .count();
 
-        let warnings = diagnostics.len() - errors;
+        let warnings = diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == analysis::Severity::Warning)
+            .count();
+
+        let infos = diagnostics.len() - errors - warnings;
 
         let style = if stderr_color {
             if errors != 0 {
@@ -202,13 +207,13 @@ fn run_analyze(
         };
 
         eprintln!(
-            "{} {count} {}: {errors} errors, {warnings} warnings in {:.2?}",
+            "{} {count} {}: {errors} errors, {warnings} warnings, {infos} infos in {:.2?}",
             style.apply_to("Analyzed"),
             if count == 1 { "input" } else { "inputs" },
             started.elapsed()
         );
 
-        Ok(diagnostics.iter().any(|diagnostic| diagnostic.error))
+        Ok(errors != 0)
     })
 }
 
@@ -314,13 +319,17 @@ fn show_progress(progress: &ProgressBar, task: &'static str, count: usize, color
 }
 
 fn print_diagnostic(diagnostic: &analysis::Diagnostic, color: bool) -> io::Result<()> {
-    let severity = if diagnostic.error { "error" } else { "warning" };
+    let severity = match diagnostic.severity {
+        analysis::Severity::Error => "error",
+        analysis::Severity::Warning => "warning",
+        analysis::Severity::Information => "info",
+    };
 
     let style = if color {
-        if diagnostic.error {
-            Style::new().red().for_stdout()
-        } else {
-            Style::new().yellow().for_stdout()
+        match diagnostic.severity {
+            analysis::Severity::Error => Style::new().red().for_stdout(),
+            analysis::Severity::Warning => Style::new().yellow().for_stdout(),
+            analysis::Severity::Information => Style::new().cyan().for_stdout(),
         }
     } else {
         Style::new()

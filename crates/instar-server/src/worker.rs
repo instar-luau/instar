@@ -5,7 +5,7 @@ use std::{
     sync::Arc,
 };
 
-use instar_core::analysis::Editor;
+use instar_core::analysis::{Editor, Severity};
 use serde_json::{Value, json};
 use tower_lsp_server::ls_types::{CompletionItemTag, DiagnosticSeverity, DocumentHighlightKind};
 
@@ -34,6 +34,7 @@ pub(crate) struct Worker {
     folders: Vec<PathBuf>,
     indexed: bool,
     pub(crate) revision: u64,
+    diagnostics_revision: u64,
     pub(crate) diagnostics: BTreeMap<PathBuf, Vec<Value>>,
     workspace: crate::workspace::Workspace,
 }
@@ -47,6 +48,7 @@ impl Default for Worker {
             folders: Vec::new(),
             indexed: false,
             revision: u64::MAX,
+            diagnostics_revision: u64::MAX,
             diagnostics: BTreeMap::new(),
             workspace: crate::workspace::Workspace::default(),
         }
@@ -54,50 +56,84 @@ impl Default for Worker {
 }
 
 impl Worker {
-    pub(crate) fn update(&mut self, snapshot: &crate::Snapshot) -> io::Result<()> {
-        if self.revision == snapshot.revision {
+    pub(crate) fn update(
+        &mut self,
+        snapshot: &crate::Snapshot,
+        diagnostics: bool,
+    ) -> io::Result<()> {
+        if self.revision == snapshot.revision
+            && (!diagnostics || self.diagnostics_revision == snapshot.revision)
+        {
             return Ok(());
         }
 
-        self.workspace.update(snapshot)?;
+        if self.revision != snapshot.revision {
+            self.workspace.update(snapshot)?;
 
-        for path in self
-            .documents
-            .keys()
-            .filter(|path| !snapshot.documents.contains_key(*path))
-        {
-            self.editor.set_source(path, None)?;
-        }
-
-        for (path, document) in &snapshot.documents {
-            if self
-                .documents
-                .get(path)
-                .is_none_or(|old| !Arc::ptr_eq(old, document))
-            {
-                self.editor.set_source(path, Some(&document.text))?;
+            for path in self.documents.keys().filter(|path| {
+                !snapshot.documents.contains_key(*path) || snapshot.preparing.contains_key(*path)
+            }) {
+                self.editor.set_source(path, None)?;
             }
+
+            for (path, document) in &snapshot.documents {
+                if snapshot.preparing.contains_key(path) {
+                    continue;
+                }
+
+                if self
+                    .documents
+                    .get(path)
+                    .is_none_or(|old| !Arc::ptr_eq(old, document))
+                {
+                    self.editor.set_source(path, Some(&document.text))?;
+                }
+            }
+
+            if self.epoch != snapshot.epoch {
+                self.editor.refresh();
+            }
+
+            self.epoch = snapshot.epoch;
+
+            self.documents = snapshot
+                .documents
+                .iter()
+                .filter(|(path, _)| !snapshot.preparing.contains_key(*path))
+                .map(|(path, document)| (path.clone(), Arc::clone(document)))
+                .collect();
+
+            self.folders = snapshot.folders.iter().cloned().collect();
+            self.indexed = false;
+            self.diagnostics_revision = u64::MAX;
+            self.diagnostics.clear();
         }
 
-        if self.epoch != snapshot.epoch {
-            self.editor.refresh();
+        if !diagnostics {
+            self.editor.check_for_query()?;
+            self.revision = snapshot.revision;
+
+            return Ok(());
         }
 
-        self.epoch = snapshot.epoch;
-        self.documents.clone_from(&snapshot.documents);
-        self.folders = snapshot.folders.iter().cloned().collect();
-        self.indexed = false;
+        let findings = self.editor.check()?;
         self.diagnostics.clear();
 
-        for diagnostic in self.editor.check()? {
+        for diagnostic in findings {
             let path = &diagnostic.location.module.source;
 
             let Some(document) = self.documents.get(path) else {
                 continue;
             };
 
+            let severity = match diagnostic.severity {
+                Severity::Error => DiagnosticSeverity::ERROR,
+                Severity::Warning => DiagnosticSeverity::WARNING,
+                Severity::Information => DiagnosticSeverity::INFORMATION,
+            };
+
             let mut item = json!({"range": document.native_range(diagnostic.location.range),
-                "severity": if diagnostic.error { DiagnosticSeverity::ERROR } else { DiagnosticSeverity::WARNING }, "source": "instar", "message": diagnostic.message});
+                "severity": severity, "source": "instar", "message": diagnostic.message});
 
             if let Some((related, message)) = diagnostic.related
                 && let Ok(target) = self.document(&related.module.source)
@@ -114,6 +150,7 @@ impl Worker {
             items.dedup();
         }
 
+        self.diagnostics_revision = snapshot.revision;
         self.revision = snapshot.revision;
 
         Ok(())
@@ -911,5 +948,82 @@ impl Worker {
         }
 
         Ok(json!(actions))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn navigation_preparation_defers_lint_until_diagnostic_publication() {
+        let directory =
+            std::env::temp_dir().join(format!("instar-worker-lint-{}", std::process::id()));
+
+        std::fs::create_dir_all(&directory).unwrap();
+
+        std::fs::write(
+            directory.join("instar.toml"),
+            "[lint.luau]\nTableLiteral = true\n",
+        )
+        .unwrap();
+
+        let path = directory.join("main.luau");
+
+        let mut snapshot = crate::Snapshot {
+            revision: 1,
+            documents: BTreeMap::from([(
+                path.clone(),
+                Arc::new(
+                    Document::new(
+                        uri(&path).unwrap(),
+                        1,
+                        "local t = { x = 1, x = 2 }\nprint(t.x)\nlocal list = {}\nif #list then print(1) end\n".into(),
+                    )
+                    .unwrap(),
+                ),
+            )]),
+            ..crate::Snapshot::default()
+        };
+
+        let mut worker = Worker::default();
+
+        worker.update(&snapshot, false).unwrap();
+        assert!(worker.diagnostics.is_empty());
+
+        worker.update(&snapshot, true).unwrap();
+
+        assert!(worker.diagnostics[&path].iter().any(|item| {
+            item["message"]
+                .as_str()
+                .unwrap()
+                .contains("length_as_condition")
+        }));
+
+        assert!(
+            worker.diagnostics[&path]
+                .iter()
+                .any(|item| { item["message"].as_str().unwrap().contains("TableLiteral") })
+        );
+
+        snapshot.revision += 1;
+
+        snapshot.documents.insert(
+            path.clone(),
+            Arc::new(
+                Document::new(
+                    uri(&path).unwrap(),
+                    2,
+                    "local t = { x = 1 }\nprint(t.x)\nlocal list = {}\nif #list > 0 then print(1) end\n".into(),
+                )
+                .unwrap(),
+            ),
+        );
+
+        worker.update(&snapshot, false).unwrap();
+        assert!(worker.diagnostics.is_empty());
+        worker.update(&snapshot, true).unwrap();
+        assert!(!worker.diagnostics.contains_key(&path));
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

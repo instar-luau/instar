@@ -13,7 +13,8 @@ use crate::{
     absolute,
     assets::{self, Assets, Definitions},
     config::{
-        self, Config, FlagValue, FormatOptions, LuauConfig, LuauFlagsConfig, RobloxConfig, Security,
+        self, Config, FlagValue, FormatOptions, LintConfig, LuauConfig, LuauFlagsConfig,
+        RobloxConfig, Security,
     },
     filter::{Filters, Service},
     invalid,
@@ -39,6 +40,9 @@ pub struct EffectiveConfig {
 
     /// Effective formatting settings for the source directory.
     pub format_options: FormatOptions,
+
+    /// Merged lint settings for this source directory.
+    pub lint: LintConfig,
 
     /// Alias definitions, indexed by lowercase name.
     pub aliases: BTreeMap<String, Alias>,
@@ -119,6 +123,7 @@ struct Layers {
     sourcemaps: Option<Vec<SourcemapLocation>>,
     roblox: RobloxConfig,
     format_options: FormatOptions,
+    lint: LintConfig,
     filters: Filters,
 }
 
@@ -614,6 +619,16 @@ impl Project {
         let mut settings = layers.legacy;
         settings.merge(&layers.instar);
 
+        if let Some(lint_errors) = layers.lint.lint_errors {
+            settings.lint_errors = Some(lint_errors);
+        }
+
+        if layers.lint.luau.contains_key("*") {
+            settings.lint.clear();
+        }
+
+        settings.lint.extend(layers.lint.luau.clone());
+
         if roblox.enabled {
             settings
                 .definitions
@@ -643,6 +658,7 @@ impl Project {
         let config = Rc::new(EffectiveConfig {
             settings,
             format_options: layers.format_options,
+            lint: layers.lint,
             aliases,
             json,
             inputs: layers.inputs,
@@ -693,6 +709,8 @@ impl Project {
                 _ => toml::from_str::<Config>(&source)
                     .map_err(|e| invalid(e.to_string()))
                     .and_then(|config| {
+                        config.lint.validate()?;
+                        layers.lint.merge(&config.lint);
                         layers.filters.append(directory, &config)?;
 
                         if let Some(enabled) = config.roblox.enabled {
@@ -730,7 +748,7 @@ impl Project {
 
                         layers.format_options.merge(&config.format)?;
 
-                        Ok(config.luau)
+                        Ok(config.luau.into())
                     }),
             };
 
