@@ -6,7 +6,7 @@ use std::{
     sync::Arc,
 };
 
-use instar_core::{filter::Service, project::Project, resolve::Resolver};
+use instar_core::{analysis::Severity, filter::Service, project::Project, resolve::Resolver};
 use serde_json::{Value, json};
 use tower_lsp_server::ls_types::{CompletionItemKind, Range};
 
@@ -803,7 +803,14 @@ impl Workspace {
             check_cancelled(cancelled)?;
             let path = diagnostic.location.module.source;
             let document = self.document(&path)?;
-            let mut item = json!({"range": document.native_range(diagnostic.location.range), "severity": if diagnostic.error { 1 } else { 2 }, "source": "instar", "message": diagnostic.message});
+
+            let severity = match diagnostic.severity {
+                Severity::Error => 1,
+                Severity::Warning => 2,
+                Severity::Information => 3,
+            };
+
+            let mut item = json!({"range": document.native_range(diagnostic.location.range), "severity": severity, "source": "instar", "message": diagnostic.message});
 
             if let Some((location, message)) = diagnostic.related {
                 let target = self.document(&location.module.source)?;

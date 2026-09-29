@@ -17,13 +17,13 @@ use std::{
         mpsc,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use instar_core::{format, project::Project};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{Mutex, Notify, oneshot};
 
 use tower_lsp_server::ls_types as lsp;
 
@@ -76,6 +76,7 @@ struct Snapshot {
     revision: u64,
     epoch: u64,
     documents: BTreeMap<PathBuf, Arc<Document>>,
+    preparing: BTreeMap<PathBuf, Arc<Notify>>,
     folders: BTreeSet<PathBuf>,
 }
 
@@ -138,44 +139,70 @@ impl Backend {
         let thread = thread::spawn(move || {
             let mut worker = Worker::default();
 
-            while let Ok(command) = receiver.recv() {
-                if matches!(command, Command::Stop) {
-                    break;
-                }
+            let mut diagnostic_deadline: Option<Instant> = None;
 
-                if matches!(command, Command::Wake) {
-                    worker_queued.store(false, Ordering::Release);
-                }
+            loop {
+                let command = match diagnostic_deadline {
+                    Some(deadline) => match receiver
+                        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                    {
+                        Ok(command) => command,
 
-                if let Command::Query {
-                    revision,
-                    ref reply,
-                    ..
-                } = command
-                {
-                    if reply.is_closed() {
-                        continue;
-                    }
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            diagnostic_deadline = None;
+                            let snapshot = worker_state.blocking_lock().clone();
+                            let checked = worker.update(&snapshot, true);
+                            let diagnostics = worker.diagnostics.clone();
 
-                    if revision != worker_revision.load(Ordering::Acquire) {
-                        if let Command::Query { reply, .. } = command {
-                            drop(reply.send(Err("content modified".into())));
+                            runtime.spawn(Self::publish(
+                                worker_client.clone(),
+                                Arc::clone(&worker_state),
+                                snapshot,
+                                diagnostics,
+                                checked,
+                            ));
+
+                            continue;
                         }
 
-                        continue;
-                    }
-                }
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    },
 
-                let snapshot = worker_state.blocking_lock().clone();
-                let checked = worker.update(&snapshot);
+                    None => match receiver.recv() {
+                        Ok(command) => command,
+                        Err(_) => break,
+                    },
+                };
 
                 match command {
+                    Command::Stop => break,
+
+                    Command::Wake => {
+                        worker_queued.store(false, Ordering::Release);
+                        diagnostic_deadline = Some(Instant::now() + Duration::from_millis(40));
+                    }
+
                     Command::Query {
-                        path, query, reply, ..
+                        revision,
+                        path,
+                        query,
+                        reply,
                     } => {
-                        let result = checked
+                        if reply.is_closed() {
+                            continue;
+                        }
+
+                        if revision != worker_revision.load(Ordering::Acquire) {
+                            drop(reply.send(Err("content modified".into())));
+                            continue;
+                        }
+
+                        let snapshot = worker_state.blocking_lock().clone();
+
+                        let result = worker
+                            .update(&snapshot, false)
                             .and_then(|()| worker.query(&path, &query))
-                            .map_err(|e| e.to_string());
+                            .map_err(|failure| failure.to_string());
 
                         let result = if snapshot.revision == worker_revision.load(Ordering::Acquire)
                         {
@@ -186,16 +213,6 @@ impl Backend {
 
                         drop(reply.send(result));
                     }
-
-                    Command::Wake => {
-                        let client = worker_client.clone();
-                        let state = Arc::clone(&worker_state);
-                        let diagnostics = worker.diagnostics.clone();
-
-                        runtime.spawn(Self::publish(client, state, snapshot, diagnostics, checked));
-                    }
-
-                    Command::Stop => break,
                 }
             }
         });
@@ -340,6 +357,30 @@ impl Backend {
         Ok((state.revision, document))
     }
 
+    async fn ready_document(&self, uri: &Uri) -> Result<(u64, Arc<Document>)> {
+        let path = document::path(uri).map_err(|failure| error(&failure))?;
+
+        loop {
+            let state = self.state.lock().await;
+
+            if let Some(preparing) = state.preparing.get(&path).cloned() {
+                let notified = preparing.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                drop(state);
+                notified.await;
+            } else {
+                let document = state
+                    .documents
+                    .get(&path)
+                    .cloned()
+                    .ok_or_else(|| Error::invalid_params("document is not open"))?;
+
+                return Ok((state.revision, document));
+            }
+        }
+    }
+
     async fn dispatch<T: DeserializeOwned>(
         &self,
         revision: u64,
@@ -375,7 +416,7 @@ impl Backend {
         params: TextDocumentPositionParams,
         make: impl FnOnce(u32, u32) -> Query + Send,
     ) -> Result<T> {
-        let (revision, document) = self.document(&params.text_document.uri).await?;
+        let (revision, document) = self.ready_document(&params.text_document.uri).await?;
 
         let (line, column) = document
             .byte_position(params.position)
@@ -616,21 +657,40 @@ impl LanguageServer for Backend {
 
         match Document::new(item.uri, item.version, item.text) {
             Ok(document) => {
-                if let Err(failure) = self.prepare_flags(vec![document.path.clone()]).await {
+                let path = document.path.clone();
+                let preparing = Arc::new(Notify::new());
+
+                {
+                    let mut state = self.state.lock().await;
+                    state.documents.insert(path.clone(), Arc::new(document));
+                    state.preparing.insert(path.clone(), Arc::clone(&preparing));
+                }
+
+                let result = self.prepare_flags(vec![path.clone()]).await;
+                let mut state = self.state.lock().await;
+
+                if state
+                    .preparing
+                    .get(&path)
+                    .is_some_and(|current| Arc::ptr_eq(current, &preparing))
+                {
+                    state.preparing.remove(&path);
+
+                    if result.is_err() {
+                        state.documents.remove(&path);
+                    }
+
+                    self.changed(&mut state);
+                }
+
+                drop(state);
+                preparing.notify_waiters();
+
+                if let Err(failure) = result {
                     self.client
                         .log_message(MessageType::ERROR, failure.to_string())
                         .await;
-
-                    return;
                 }
-
-                let mut state = self.state.lock().await;
-
-                state
-                    .documents
-                    .insert(document.path.clone(), Arc::new(document));
-
-                self.changed(&mut state);
             }
 
             Err(failure) => {
@@ -696,6 +756,11 @@ impl LanguageServer for Backend {
         if let Ok(path) = document::path(&params.text_document.uri) {
             let mut state = self.state.lock().await;
             state.documents.remove(&path);
+
+            if let Some(preparing) = state.preparing.remove(&path) {
+                preparing.notify_waiters();
+            }
+
             self.changed(&mut state);
 
             self.client
@@ -892,7 +957,7 @@ impl LanguageServer for Backend {
     }
 
     async fn document_link(&self, params: DocumentLinkParams) -> Result<Option<Vec<DocumentLink>>> {
-        let (_, document) = self.document(&params.text_document.uri).await?;
+        let (_, document) = self.ready_document(&params.text_document.uri).await?;
 
         self.resolve(document, imports::Request::Links).await
     }
@@ -1014,7 +1079,7 @@ impl LanguageServer for Backend {
             return Ok(Some(Vec::new()));
         }
 
-        let (revision, document) = self.document(&params.text_document.uri).await?;
+        let (revision, document) = self.ready_document(&params.text_document.uri).await?;
 
         let mut actions: lsp::CodeActionResponse = self
             .dispatch(revision, &document, Query::Actions(params.range))
@@ -1035,7 +1100,7 @@ impl LanguageServer for Backend {
         &self,
         params: lsp::InlayHintParams,
     ) -> Result<Option<Vec<lsp::InlayHint>>> {
-        let (revision, document) = self.document(&params.text_document.uri).await?;
+        let (revision, document) = self.ready_document(&params.text_document.uri).await?;
 
         self.dispatch(
             revision,

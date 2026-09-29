@@ -1,7 +1,7 @@
 //! Checks entry files with Luau using Instar's on-demand resolver.
 
 use instar_core::{
-    analysis::{self, Location},
+    analysis::{self, Location, Severity},
     project::Project,
 };
 
@@ -75,7 +75,11 @@ fn run() -> io::Result<ExitCode> {
         writeln!(
             output,
             ": {}: {}",
-            if diagnostic.error { "error" } else { "warning" },
+            match diagnostic.severity {
+                Severity::Error => "error",
+                Severity::Warning => "warning",
+                Severity::Information => "info",
+            },
             diagnostic.message
         )?;
 
@@ -91,11 +95,16 @@ fn run() -> io::Result<ExitCode> {
 
     output.flush()?;
 
-    Ok(if diagnostics.iter().any(|diagnostic| diagnostic.error) {
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
-    })
+    Ok(
+        if diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == Severity::Error)
+        {
+            ExitCode::FAILURE
+        } else {
+            ExitCode::SUCCESS
+        },
+    )
 }
 
 fn main() -> ExitCode {

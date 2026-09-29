@@ -108,11 +108,36 @@
       }
     },
     "lint": {
-      "description": "Additional file selection for linting.",
-      "$ref": "#/$defs/FileFilter",
+      "description": "Lint rules, options, and additional file selection.",
+      "$ref": "#/$defs/LintConfig",
       "default": {
         "exclude": [],
-        "include": []
+        "groups": {},
+        "include": [],
+        "lint_errors": false,
+        "luau": {},
+        "options": {
+          "deprecated": {
+            "additional": {},
+            "ambiguous_methods": false
+          },
+          "high_cyclomatic_complexity": {
+            "maximum_complexity": 40
+          },
+          "prefer_const": {
+            "mutated_tables_stay_local": false
+          },
+          "restricted_globals": {},
+          "restricted_module_paths": {
+            "paths": {}
+          },
+          "unused_variable": {
+            "ignore_pattern": "^_",
+            "loop_variables": false,
+            "parameters": false
+          }
+        },
+        "rules": {}
       }
     },
     "lsp": {
@@ -125,12 +150,18 @@
     },
     "luau": {
       "description": "Luau analysis, resolution, and process-global fast-flag settings.",
-      "$ref": "#/$defs/LuauConfig",
+      "$ref": "#/$defs/ManifestLuauConfig",
       "default": {
+        "aliases": {},
+        "definitions": {},
+        "documentation": [],
         "fflags": {
           "overrides": {},
           "sync_roblox": null
-        }
+        },
+        "globals": null,
+        "language_mode": null,
+        "type_errors": null
       }
     },
     "roblox": {
@@ -144,6 +175,26 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "DeprecatedOptions": {
+      "description": "Project-specific deprecation settings.",
+      "type": "object",
+      "properties": {
+        "additional": {
+          "description": "Deprecated API path to replacement mappings.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "ambiguous_methods": {
+          "description": "Report calls whose method name cannot be resolved uniquely.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
     "FileFilter": {
       "description": "Service-specific globs, intersected with global selection.\nLists append through inheritance; `[]` adds nothing.",
       "type": "object",
@@ -355,80 +406,171 @@
       },
       "additionalProperties": false
     },
-    "LuauConfig": {
-      "description": "Luau settings in Instar's `snake_case` configuration format.",
+    "HighCyclomaticComplexityOptions": {
+      "description": "Maximum cyclomatic complexity setting.",
       "type": "object",
       "properties": {
-        "aliases": {
-          "description": "Case-insensitive aliases; relative targets retain their defining directory.",
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          }
-        },
-        "definitions": {
-          "description": "Declaration files keyed by documentation namespace (for example `@test`).\nPaths are relative to their manifest; child keys override inherited keys.",
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          }
-        },
-        "documentation": {
-          "description": "JSON documentation paths or HTTPS URLs. Lists append through inheritance.\nLater files override matching keys; paths are relative to their manifest.",
+        "maximum_complexity": {
+          "description": "Report function scores strictly above this limit.",
+          "type": "integer",
+          "format": "uint",
+          "default": 40,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "LintConfig": {
+      "description": "Lint configuration and file selection.",
+      "type": "object",
+      "properties": {
+        "exclude": {
+          "description": "File exclude globs.",
           "type": "array",
+          "default": [],
           "items": {
             "type": "string"
           }
         },
-        "fflags": {
-          "description": "Process-global Luau flag settings.",
-          "$ref": "#/$defs/LuauFlagsConfig",
-          "default": {
-            "overrides": {},
-            "sync_roblox": null
-          }
-        },
-        "globals": {
-          "description": "Additional globals. An explicit list replaces the inherited list.",
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "string"
-          }
-        },
-        "language_mode": {
-          "description": "Typechecking mode.",
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Mode"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "lint": {
-          "description": "Warning overrides, including the `*` wildcard.",
+        "groups": {
+          "description": "Instar group levels by name.",
           "type": "object",
           "additionalProperties": {
-            "type": "boolean"
+            "$ref": "#/$defs/LintLevel"
+          },
+          "default": {}
+        },
+        "include": {
+          "description": "File include globs.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
           }
         },
         "lint_errors": {
-          "description": "Whether lint warnings are errors.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "description": "Whether native warnings are promoted to errors.",
+          "type": "boolean",
+          "default": false
         },
-        "type_errors": {
-          "description": "Whether type errors are reported.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+        "luau": {
+          "description": "Native warning switches by Luau warning name.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "default": {}
+        },
+        "options": {
+          "description": "Instar rule detection options.",
+          "$ref": "#/$defs/LintOptions",
+          "default": {
+            "deprecated": {
+              "additional": {},
+              "ambiguous_methods": false
+            },
+            "high_cyclomatic_complexity": {
+              "maximum_complexity": 40
+            },
+            "prefer_const": {
+              "mutated_tables_stay_local": false
+            },
+            "restricted_globals": {},
+            "restricted_module_paths": {
+              "paths": {}
+            },
+            "unused_variable": {
+              "ignore_pattern": "^_",
+              "loop_variables": false,
+              "parameters": false
+            }
+          }
+        },
+        "rules": {
+          "description": "Instar rule levels by name.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/LintLevel"
+          },
+          "default": {}
+        }
+      },
+      "additionalProperties": false
+    },
+    "LintLevel": {
+      "description": "Diagnostic severity.",
+      "oneOf": [
+        {
+          "description": "Suppress the rule.",
+          "type": "string",
+          "const": "allow"
+        },
+        {
+          "description": "Publish informational diagnostics.",
+          "type": "string",
+          "const": "info"
+        },
+        {
+          "description": "Publish non-fatal warnings.",
+          "type": "string",
+          "const": "warn"
+        },
+        {
+          "description": "Publish fatal diagnostics.",
+          "type": "string",
+          "const": "deny"
+        }
+      ]
+    },
+    "LintOptions": {
+      "description": "Typed options for Instar-owned lint rules.",
+      "type": "object",
+      "properties": {
+        "deprecated": {
+          "description": "Project-specific deprecated API paths.",
+          "$ref": "#/$defs/DeprecatedOptions",
+          "default": {
+            "additional": {},
+            "ambiguous_methods": false
+          }
+        },
+        "high_cyclomatic_complexity": {
+          "description": "Maximum function branch score.",
+          "$ref": "#/$defs/HighCyclomaticComplexityOptions",
+          "default": {
+            "maximum_complexity": 40
+          }
+        },
+        "prefer_const": {
+          "description": "Constant-binding preferences.",
+          "$ref": "#/$defs/PreferConstOptions",
+          "default": {
+            "mutated_tables_stay_local": false
+          }
+        },
+        "restricted_globals": {
+          "description": "Forbidden global names and reasons.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "restricted_module_paths": {
+          "description": "Forbidden literal require paths.",
+          "$ref": "#/$defs/RestrictedModulePathsOptions",
+          "default": {
+            "paths": {}
+          }
+        },
+        "unused_variable": {
+          "description": "Unused binding checks.",
+          "$ref": "#/$defs/UnusedVariableOptions",
+          "default": {
+            "ignore_pattern": "^_",
+            "loop_variables": false,
+            "parameters": false
+          }
         }
       },
       "additionalProperties": false
@@ -447,6 +589,76 @@
         },
         "sync_roblox": {
           "description": "Fetch supported values from Roblox Studio's `PCStudioApp` settings at startup.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "ManifestLuauConfig": {
+      "description": "Manifest Luau settings; native lint switches belong under `[lint]`.",
+      "type": "object",
+      "properties": {
+        "aliases": {
+          "description": "Luau module aliases.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "definitions": {
+          "description": "Definition file paths.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "documentation": {
+          "description": "Documentation file paths and URLs.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "fflags": {
+          "description": "Process-global Luau flag settings.",
+          "$ref": "#/$defs/LuauFlagsConfig",
+          "default": {
+            "overrides": {},
+            "sync_roblox": null
+          }
+        },
+        "globals": {
+          "description": "Additional Luau globals.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "type": "string"
+          }
+        },
+        "language_mode": {
+          "description": "Typechecking mode.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Mode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "type_errors": {
+          "description": "Whether type errors are reported.",
           "type": [
             "boolean",
             "null"
@@ -773,6 +985,18 @@
       },
       "additionalProperties": false
     },
+    "PreferConstOptions": {
+      "description": "Constant-binding detection settings.",
+      "type": "object",
+      "properties": {
+        "mutated_tables_stay_local": {
+          "description": "Exempt locally mutated tables from prefer-const checks.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
     "RequireGroup": {
       "anyOf": [
         {
@@ -803,6 +1027,21 @@
           ]
         }
       ]
+    },
+    "RestrictedModulePathsOptions": {
+      "description": "Restricted module path settings.",
+      "type": "object",
+      "properties": {
+        "paths": {
+          "description": "Forbidden literal require paths and reasons.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        }
+      },
+      "additionalProperties": false
     },
     "RobloxConfig": {
       "description": "Roblox platform detection, API assets, and sourcemap settings.",
@@ -865,6 +1104,28 @@
           "const": "roblox"
         }
       ]
+    },
+    "UnusedVariableOptions": {
+      "description": "Optional unused-binding detection settings.",
+      "type": "object",
+      "properties": {
+        "ignore_pattern": {
+          "description": "Pattern for ignored binding names.",
+          "type": "string",
+          "default": "^_"
+        },
+        "loop_variables": {
+          "description": "Check otherwise unused loop variables.",
+          "type": "boolean",
+          "default": false
+        },
+        "parameters": {
+          "description": "Check otherwise unused unannotated parameters.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
     }
   }
 }

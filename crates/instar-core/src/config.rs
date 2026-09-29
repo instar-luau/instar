@@ -9,6 +9,423 @@ use vermis::{Kind, Parts, View};
 
 use crate::{invalid, string_value};
 
+/// Lint configuration and file selection.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct LintConfig {
+    /// File include globs.
+    pub include: Vec<String>,
+
+    /// File exclude globs.
+    pub exclude: Vec<String>,
+
+    /// Whether native warnings are promoted to errors.
+    #[schemars(with = "bool", extend("default" = false))]
+    pub lint_errors: Option<bool>,
+
+    /// Native warning switches by Luau warning name.
+    pub luau: BTreeMap<String, bool>,
+
+    /// Instar rule levels by name.
+    pub rules: BTreeMap<String, LintLevel>,
+
+    /// Instar group levels by name.
+    pub groups: BTreeMap<String, LintLevel>,
+
+    /// Instar rule detection options.
+    #[schemars(extend("default" = lint_schema_default().options))]
+    pub options: LintOptions,
+}
+
+/// Diagnostic severity.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum LintLevel {
+    /// Suppress the rule.
+    Allow,
+
+    /// Publish informational diagnostics.
+    Info,
+
+    /// Publish non-fatal warnings.
+    #[default]
+    Warn,
+
+    /// Publish fatal diagnostics.
+    Deny,
+}
+
+/// Typed options for Instar-owned lint rules.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct LintOptions {
+    /// Unused binding checks.
+    #[schemars(extend("default" = lint_schema_default().options.unused_variable))]
+    pub unused_variable: UnusedVariableOptions,
+
+    /// Maximum function branch score.
+    #[schemars(extend("default" = lint_schema_default().options.high_cyclomatic_complexity))]
+    pub high_cyclomatic_complexity: HighCyclomaticComplexityOptions,
+
+    /// Constant-binding preferences.
+    #[schemars(extend("default" = lint_schema_default().options.prefer_const))]
+    pub prefer_const: PreferConstOptions,
+
+    /// Project-specific deprecated API paths.
+    #[schemars(extend("default" = lint_schema_default().options.deprecated))]
+    pub deprecated: DeprecatedOptions,
+
+    /// Forbidden global names and reasons.
+    pub restricted_globals: BTreeMap<String, String>,
+
+    /// Forbidden literal require paths.
+    pub restricted_module_paths: RestrictedModulePathsOptions,
+}
+
+/// Optional unused-binding detection settings.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct UnusedVariableOptions {
+    /// Check otherwise unused unannotated parameters.
+    #[schemars(with = "bool", extend("default" = false))]
+    pub parameters: Option<bool>,
+
+    /// Check otherwise unused loop variables.
+    #[schemars(with = "bool", extend("default" = false))]
+    pub loop_variables: Option<bool>,
+
+    /// Pattern for ignored binding names.
+    #[schemars(with = "String", extend("default" = "^_"))]
+    pub ignore_pattern: Option<String>,
+}
+
+impl UnusedVariableOptions {
+    /// Returns whether parameters are checked.
+    #[must_use]
+    pub fn parameters(&self) -> bool {
+        self.parameters.unwrap_or(false)
+    }
+
+    /// Returns whether loop bindings are checked.
+    #[must_use]
+    pub fn loop_variables(&self) -> bool {
+        self.loop_variables.unwrap_or(false)
+    }
+
+    /// Returns the ignored-name regular expression.
+    #[must_use]
+    pub fn ignore_pattern(&self) -> &str {
+        self.ignore_pattern.as_deref().unwrap_or("^_")
+    }
+}
+
+/// Maximum cyclomatic complexity setting.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct HighCyclomaticComplexityOptions {
+    /// Report function scores strictly above this limit.
+    #[schemars(with = "usize", extend("default" = 40))]
+    pub maximum_complexity: Option<usize>,
+}
+
+impl HighCyclomaticComplexityOptions {
+    /// Returns the maximum allowed branch score.
+    #[must_use]
+    pub fn maximum_complexity(&self) -> usize {
+        self.maximum_complexity.unwrap_or(40)
+    }
+}
+
+/// Constant-binding detection settings.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct PreferConstOptions {
+    /// Exempt locally mutated tables from prefer-const checks.
+    #[schemars(with = "bool", extend("default" = false))]
+    pub mutated_tables_stay_local: Option<bool>,
+}
+
+impl PreferConstOptions {
+    /// Returns whether locally mutated tables remain local.
+    #[must_use]
+    pub fn mutated_tables_stay_local(&self) -> bool {
+        self.mutated_tables_stay_local.unwrap_or(false)
+    }
+}
+
+/// Project-specific deprecation settings.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct DeprecatedOptions {
+    /// Deprecated API path to replacement mappings.
+    pub additional: BTreeMap<String, String>,
+
+    /// Report calls whose method name cannot be resolved uniquely.
+    #[schemars(with = "bool", extend("default" = false))]
+    pub ambiguous_methods: Option<bool>,
+}
+
+impl DeprecatedOptions {
+    /// Returns whether ambiguous method calls are checked.
+    #[must_use]
+    pub fn ambiguous_methods(&self) -> bool {
+        self.ambiguous_methods.unwrap_or(false)
+    }
+}
+
+/// Restricted module path settings.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct RestrictedModulePathsOptions {
+    /// Forbidden literal require paths and reasons.
+    pub paths: BTreeMap<String, String>,
+}
+
+/// Manifest Luau settings; native lint switches belong under `[lint]`.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct ManifestLuauConfig {
+    /// Typechecking mode.
+    pub language_mode: Option<Mode>,
+
+    /// Whether type errors are reported.
+    pub type_errors: Option<bool>,
+
+    /// Additional Luau globals.
+    pub globals: Option<Vec<String>>,
+
+    /// Luau module aliases.
+    pub aliases: BTreeMap<String, String>,
+
+    /// Definition file paths.
+    pub definitions: BTreeMap<String, String>,
+
+    /// Documentation file paths and URLs.
+    pub documentation: Vec<String>,
+
+    /// Process-global Luau flag settings.
+    pub fflags: LuauFlagsConfig,
+}
+
+impl From<ManifestLuauConfig> for LuauConfig {
+    fn from(config: ManifestLuauConfig) -> Self {
+        Self {
+            language_mode: config.language_mode,
+            lint: BTreeMap::new(),
+            lint_errors: None,
+            type_errors: config.type_errors,
+            globals: config.globals,
+            aliases: config.aliases,
+            definitions: config.definitions,
+            documentation: config.documentation,
+            fflags: config.fflags,
+        }
+    }
+}
+
+impl LintConfig {
+    /// Merges an inherited lint layer, preserving explicit scalar overrides.
+    pub fn merge(&mut self, layer: &Self) {
+        self.include.extend(layer.include.iter().cloned());
+        self.exclude.extend(layer.exclude.iter().cloned());
+
+        if layer.lint_errors.is_some() {
+            self.lint_errors = layer.lint_errors;
+        }
+
+        if layer.luau.contains_key("*") {
+            self.luau.clear();
+        }
+
+        self.luau.extend(layer.luau.clone());
+        self.rules.extend(layer.rules.clone());
+        self.groups.extend(layer.groups.clone());
+
+        self.options.unused_variable.parameters = layer
+            .options
+            .unused_variable
+            .parameters
+            .or(self.options.unused_variable.parameters);
+
+        self.options.unused_variable.loop_variables = layer
+            .options
+            .unused_variable
+            .loop_variables
+            .or(self.options.unused_variable.loop_variables);
+
+        if layer.options.unused_variable.ignore_pattern.is_some() {
+            self.options
+                .unused_variable
+                .ignore_pattern
+                .clone_from(&layer.options.unused_variable.ignore_pattern);
+        }
+
+        self.options.high_cyclomatic_complexity.maximum_complexity = layer
+            .options
+            .high_cyclomatic_complexity
+            .maximum_complexity
+            .or(self.options.high_cyclomatic_complexity.maximum_complexity);
+
+        self.options.prefer_const.mutated_tables_stay_local = layer
+            .options
+            .prefer_const
+            .mutated_tables_stay_local
+            .or(self.options.prefer_const.mutated_tables_stay_local);
+
+        self.options
+            .deprecated
+            .additional
+            .extend(layer.options.deprecated.additional.clone());
+
+        self.options.deprecated.ambiguous_methods = layer
+            .options
+            .deprecated
+            .ambiguous_methods
+            .or(self.options.deprecated.ambiguous_methods);
+
+        self.options
+            .restricted_globals
+            .extend(layer.options.restricted_globals.clone());
+
+        self.options
+            .restricted_module_paths
+            .paths
+            .extend(layer.options.restricted_module_paths.paths.clone());
+    }
+
+    /// Resolves the effective level for an Instar rule.
+    #[must_use]
+    pub fn level(&self, rule: &str) -> LintLevel {
+        if let Some(level) = self.rules.get(rule) {
+            return *level;
+        }
+
+        let Some(&(_, group, default)) = RULES.iter().find(|(name, _, _)| *name == rule) else {
+            return LintLevel::Allow;
+        };
+
+        if default != LintLevel::Allow
+            && let Some(level) = self.groups.get(group)
+        {
+            return *level;
+        }
+
+        default
+    }
+
+    /// Validates Instar rule names, groups, and option patterns.
+    ///
+    /// # Errors
+    /// Returns an error for unknown rules/groups or an invalid pattern.
+    pub fn validate(&self) -> io::Result<()> {
+        for rule in self.rules.keys() {
+            if !RULES.iter().any(|(name, _, _)| name == rule) {
+                return Err(invalid(format!("unknown lint rule {rule:?}")));
+            }
+        }
+
+        for group in self.groups.keys() {
+            if !GROUPS.contains(&group.as_str()) {
+                return Err(invalid(format!("unknown lint group {group:?}")));
+            }
+        }
+
+        if let Some(pattern) = &self.options.unused_variable.ignore_pattern {
+            regex::Regex::new(pattern).map_err(|error| {
+                invalid(format!("invalid unused_variable.ignore_pattern: {error}"))
+            })?;
+        }
+
+        Ok(())
+    }
+}
+
+fn lint_schema_default() -> LintConfig {
+    LintConfig {
+        lint_errors: Some(false),
+        options: LintOptions {
+            unused_variable: UnusedVariableOptions {
+                parameters: Some(false),
+                loop_variables: Some(false),
+                ignore_pattern: Some("^_".to_owned()),
+            },
+            high_cyclomatic_complexity: HighCyclomaticComplexityOptions {
+                maximum_complexity: Some(40),
+            },
+            prefer_const: PreferConstOptions {
+                mutated_tables_stay_local: Some(false),
+            },
+            deprecated: DeprecatedOptions {
+                ambiguous_methods: Some(false),
+                ..DeprecatedOptions::default()
+            },
+            ..LintOptions::default()
+        },
+        ..LintConfig::default()
+    }
+}
+
+const GROUPS: &[&str] = &[
+    "correctness",
+    "suspicious",
+    "style",
+    "complexity",
+    "performance",
+    "roblox",
+];
+
+const RULES: &[(&str, &str, LintLevel)] = &[
+    ("almost_swapped", "correctness", LintLevel::Warn),
+    ("bad_string_escape", "correctness", LintLevel::Warn),
+    ("compare_nan", "correctness", LintLevel::Warn),
+    ("constant_condition", "correctness", LintLevel::Warn),
+    ("constant_table_comparison", "correctness", LintLevel::Warn),
+    ("length_as_condition", "correctness", LintLevel::Deny),
+    ("mismatched_arg_count", "correctness", LintLevel::Warn),
+    ("must_use", "correctness", LintLevel::Warn),
+    ("unused_variable", "correctness", LintLevel::Warn),
+    ("type_check_inside_call", "correctness", LintLevel::Warn),
+    ("zero_step_loop", "correctness", LintLevel::Deny),
+    ("divide_by_zero", "suspicious", LintLevel::Warn),
+    ("empty_if", "suspicious", LintLevel::Warn),
+    ("empty_loop", "suspicious", LintLevel::Warn),
+    ("global_usage", "suspicious", LintLevel::Warn),
+    ("if_same_then_else", "suspicious", LintLevel::Warn),
+    ("ignored_pcall_result", "suspicious", LintLevel::Warn),
+    ("implicit_any_local", "suspicious", LintLevel::Warn),
+    ("implicit_any_parameter", "suspicious", LintLevel::Allow),
+    ("mixed_table", "suspicious", LintLevel::Warn),
+    ("self_assignment", "suspicious", LintLevel::Warn),
+    ("unscoped_variables", "suspicious", LintLevel::Warn),
+    ("and_or_conditional", "style", LintLevel::Allow),
+    ("collapsible_if", "style", LintLevel::Allow),
+    ("deprecated", "style", LintLevel::Warn),
+    ("else_after_return", "style", LintLevel::Allow),
+    ("if_expression_assignment", "style", LintLevel::Allow),
+    ("negated_condition", "style", LintLevel::Allow),
+    ("non_const_require", "style", LintLevel::Allow),
+    ("parenthese_conditions", "style", LintLevel::Warn),
+    ("prefer_const", "style", LintLevel::Allow),
+    ("restricted_globals", "style", LintLevel::Warn),
+    ("restricted_module_paths", "style", LintLevel::Warn),
+    ("high_cyclomatic_complexity", "complexity", LintLevel::Allow),
+    ("loop_invariant_call", "performance", LintLevel::Warn),
+    ("manual_table_clone", "performance", LintLevel::Warn),
+    ("string_concat_in_loop", "performance", LintLevel::Warn),
+    (
+        "roblox_incorrect_color3_new_bounds",
+        "roblox",
+        LintLevel::Warn,
+    ),
+    (
+        "roblox_manual_fromscale_or_fromoffset",
+        "roblox",
+        LintLevel::Warn,
+    ),
+    ("roblox_prefer_get_players", "roblox", LintLevel::Warn),
+    ("roblox_suspicious_udim2_new", "roblox", LintLevel::Warn),
+];
+
 /// Instar project configuration. Luau settings live in `[luau]`; formatting settings in `[format]`.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -33,14 +450,15 @@ pub struct Config {
     /// Additional file selection for dependency installation.
     pub graft: FileFilter,
 
-    /// Additional file selection for linting.
-    pub lint: FileFilter,
+    /// Lint rules, options, and additional file selection.
+    #[schemars(extend("default" = lint_schema_default()))]
+    pub lint: LintConfig,
 
     /// Additional file selection for the language server.
     pub lsp: FileFilter,
 
     /// Luau analysis, resolution, and process-global fast-flag settings.
-    pub luau: LuauConfig,
+    pub luau: ManifestLuauConfig,
 
     /// Optional Roblox sourcemap configuration.
     pub roblox: RobloxConfig,

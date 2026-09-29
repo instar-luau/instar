@@ -13,16 +13,17 @@ use instar_bridge::{
 };
 
 use crate::{
+    config::LintLevel,
     filter::Service,
     graph::{self, Request},
-    invalid,
+    invalid, lint,
     project::{EffectiveConfig, Project, RobloxSettings},
     resolve::{Failure, Module, Resolver},
     roblox::Sourcemap,
 };
 
 /// Source context and zero-based line/byte-column range of a diagnostic.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Location {
     /// Physical source and optional place/instance identity.
     pub module: Module,
@@ -31,19 +32,32 @@ pub struct Location {
     pub range: [u32; 4],
 }
 
-/// A diagnostic emitted by Luau, with module identities mapped back to source contexts.
-#[derive(Debug)]
+/// Diagnostic severity in CLI and editor output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Severity {
+    /// Fails command-line analysis.
+    Error,
+
+    /// Reports a non-fatal warning.
+    Warning,
+
+    /// Reports non-fatal information.
+    Information,
+}
+
+/// A diagnostic mapped to its source context.
+#[derive(Clone, Debug)]
 pub struct Diagnostic {
     /// Source location.
     pub location: Location,
 
-    /// Whether this is an error rather than a warning.
-    pub error: bool,
+    /// CLI and editor severity.
+    pub severity: Severity,
 
-    /// Luau's explanation.
+    /// Explanation of the finding.
     pub message: String,
 
-    /// Related source location and explanation, if present.
+    /// Related source location and explanation.
     pub related: Option<(Location, String)>,
 }
 
@@ -55,6 +69,8 @@ struct LoadedModule {
     line_starts: Vec<usize>,
 }
 
+type LintCache = HashMap<PathBuf, (Rc<str>, Vec<Diagnostic>)>;
+
 struct Host<'project> {
     project: &'project mut Project,
     resolver: Resolver,
@@ -62,6 +78,7 @@ struct Host<'project> {
     modules: HashMap<String, LoadedModule>,
     diagnostics: Vec<Diagnostic>,
     open: Option<&'project BTreeSet<PathBuf>>,
+    lint_cache: Option<&'project mut LintCache>,
 }
 
 impl Host<'_> {
@@ -139,6 +156,115 @@ impl Host<'_> {
             module: module.module.clone(),
             range,
         })
+    }
+
+    fn lint(&mut self) -> io::Result<()> {
+        let mut seen = BTreeSet::new();
+
+        for state in self.modules.values() {
+            let Some(source) = state.source.as_ref() else {
+                continue;
+            };
+
+            let path = &state.module.source;
+
+            if is_declaration_source(path)
+                || self.open.is_some_and(|open| !open.contains(path))
+                || !seen.insert(path)
+                || !self.project.includes(path, self.service())?
+                || !self.project.includes(path, Service::Lint)?
+            {
+                continue;
+            }
+
+            if let Some((cached_source, cached)) =
+                self.lint_cache.as_deref().and_then(|cache| cache.get(path))
+                && Rc::ptr_eq(cached_source, source)
+            {
+                self.diagnostics.extend(cached.iter().cloned());
+                continue;
+            }
+
+            let before = self.diagnostics.len();
+
+            let findings = lint::check(
+                source,
+                &state.configuration.lint,
+                state
+                    .configuration
+                    .settings
+                    .globals
+                    .as_deref()
+                    .unwrap_or(&[]),
+                state.configuration.roblox.enabled,
+            );
+
+            if findings.is_empty() {
+                if let Some(cache) = self.lint_cache.as_deref_mut() {
+                    cache.insert(path.clone(), (Rc::clone(source), Vec::new()));
+                }
+
+                continue;
+            }
+
+            let computed;
+
+            let starts = if state.line_starts.is_empty() {
+                computed = std::iter::once(0)
+                    .chain(
+                        source
+                            .bytes()
+                            .enumerate()
+                            .filter_map(|(index, byte)| (byte == b'\n').then_some(index + 1)),
+                    )
+                    .collect::<Vec<_>>();
+
+                computed.as_slice()
+            } else {
+                state.line_starts.as_slice()
+            };
+
+            let position = |offset: usize| -> io::Result<(u32, u32)> {
+                let line = starts.partition_point(|&start| start <= offset) - 1;
+
+                Ok((
+                    u32::try_from(line).map_err(|error| invalid(error.to_string()))?,
+                    u32::try_from(offset - starts[line])
+                        .map_err(|error| invalid(error.to_string()))?,
+                ))
+            };
+
+            for finding in findings {
+                let (start_line, start_column) = position(finding.span.start)?;
+                let (end_line, end_column) = position(finding.span.end)?;
+
+                let severity = match finding.level {
+                    LintLevel::Allow => continue,
+                    LintLevel::Info => Severity::Information,
+                    LintLevel::Warn => Severity::Warning,
+                    LintLevel::Deny => Severity::Error,
+                };
+
+                self.diagnostics.push(Diagnostic {
+                    location: Location {
+                        module: state.module.clone(),
+                        range: [start_line, start_column, end_line, end_column],
+                    },
+                    severity,
+                    message: format!("{}: {}", finding.rule, finding.message),
+                    related: None,
+                });
+            }
+
+            if let Some(cache) = self.lint_cache.as_deref_mut() {
+                cache.insert(
+                    path.clone(),
+                    (Rc::clone(source), self.diagnostics[before..].to_vec()),
+                );
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -301,7 +427,11 @@ impl Callbacks for Host<'_> {
 
         self.diagnostics.push(Diagnostic {
             location,
-            error: diagnostic.severity == DiagnosticSeverity::DiagnosticError,
+            severity: if diagnostic.severity == DiagnosticSeverity::DiagnosticError {
+                Severity::Error
+            } else {
+                Severity::Warning
+            },
             message: diagnostic.message.to_owned(),
             related,
         });
@@ -510,7 +640,7 @@ fn add_analysis_timeouts(host: &mut Host<'_>, timeouts: BTreeSet<String>) -> io:
 
         host.diagnostics.push(Diagnostic {
             location,
-            error: true,
+            severity: Severity::Error,
             message: "Luau analysis timed out".into(),
             related: None,
         });
@@ -580,6 +710,7 @@ fn check_environment(
         modules: HashMap::new(),
         diagnostics: Vec::new(),
         open: None,
+        lint_cache: None,
     };
 
     let mut entries = BTreeSet::new();
@@ -660,6 +791,7 @@ fn check_environment(
         collect_analysis_results(&mut host, &mut checker, entries, progress, report)?;
 
     add_analysis_timeouts(&mut host, timeouts)?;
+    host.lint()?;
 
     if reported < host.diagnostics.len() {
         report(&host.diagnostics[reported..])?;
@@ -690,6 +822,7 @@ struct EditorSession {
     resolver: Resolver,
     identities: HashMap<Module, String>,
     modules: HashMap<String, LoadedModule>,
+    lint_cache: LintCache,
 }
 
 impl EditorSession {
@@ -706,6 +839,7 @@ impl EditorSession {
             modules: std::mem::take(&mut self.modules),
             diagnostics: Vec::new(),
             open: Some(open),
+            lint_cache: Some(&mut self.lint_cache),
         };
 
         let result = operation(&mut self.checker, &mut host);
@@ -737,6 +871,7 @@ impl Editor {
         }
 
         for session in &mut self.sessions {
+            session.lint_cache.remove(&path);
             session.resolver = Resolver::new();
 
             for (name, state) in &mut session.modules {
@@ -763,7 +898,15 @@ impl Editor {
     /// # Errors
     /// Returns source, configuration, or analysis errors.
     pub fn check(&mut self) -> io::Result<Vec<Diagnostic>> {
-        self.check_roots(&[])
+        self.check_roots(&[], true)
+    }
+
+    /// Checks types for editor queries without running Instar's diagnostic pass.
+    ///
+    /// # Errors
+    /// Returns source, configuration, or native analysis errors.
+    pub fn check_for_query(&mut self) -> io::Result<()> {
+        self.check_roots(&[], false).map(drop)
     }
 
     /// Checks additional workspace roots for navigation without enabling their lint passes.
@@ -771,7 +914,7 @@ impl Editor {
     /// # Errors
     /// Returns source, configuration, or analysis errors.
     pub fn index(&mut self, paths: &[PathBuf]) -> io::Result<()> {
-        self.check_roots(paths).map(drop)
+        self.check_roots(paths, false).map(drop)
     }
 
     /// Checks workspace roots with lint diagnostics and cancellable per-module progress.
@@ -785,20 +928,25 @@ impl Editor {
     ) -> io::Result<Vec<Diagnostic>> {
         let open = self.open.clone();
         self.open.extend(paths.iter().cloned());
-        let result = self.check_roots_progress(paths, progress);
+        let result = self.check_roots_progress(paths, progress, true);
         self.open = open;
 
         result
     }
 
-    fn check_roots(&mut self, additional: &[PathBuf]) -> io::Result<Vec<Diagnostic>> {
-        self.check_roots_progress(additional, &mut |_, _| true)
+    fn check_roots(
+        &mut self,
+        additional: &[PathBuf],
+        diagnostics: bool,
+    ) -> io::Result<Vec<Diagnostic>> {
+        self.check_roots_progress(additional, &mut |_, _| true, diagnostics)
     }
 
     fn check_roots_progress(
         &mut self,
         additional: &[PathBuf],
         progress: &mut dyn FnMut(usize, usize) -> bool,
+        diagnostics_enabled: bool,
     ) -> io::Result<Vec<Diagnostic>> {
         if !progress(0, 0) {
             return Err(io::Error::new(
@@ -839,6 +987,7 @@ impl Editor {
                 &mut completed,
                 total,
                 progress,
+                diagnostics_enabled,
             )?);
 
             if !progress(completed, total) {
@@ -858,6 +1007,7 @@ impl Editor {
         completed: &mut usize,
         total: usize,
         progress: &mut dyn FnMut(usize, usize) -> bool,
+        diagnostics_enabled: bool,
     ) -> io::Result<Vec<Diagnostic>> {
         let declaration_paths = environment
             .entries
@@ -915,26 +1065,30 @@ impl Editor {
                     *completed += 1;
                 }
 
-                for name in &entries {
-                    if !is_declaration_source(&host.modules[name].module.source) {
-                        timeouts.extend(checker.result(host, Path::new(name))?);
+                if diagnostics_enabled {
+                    for name in &entries {
+                        if !is_declaration_source(&host.modules[name].module.source) {
+                            timeouts.extend(checker.result(host, Path::new(name))?);
+                        }
                     }
-                }
 
-                for name in timeouts {
-                    let location = host.location(&name, [0; 4])?;
+                    for name in timeouts {
+                        let location = host.location(&name, [0; 4])?;
 
-                    if host
-                        .open
-                        .is_some_and(|open| open.contains(&location.module.source))
-                    {
-                        host.diagnostics.push(Diagnostic {
-                            location,
-                            error: true,
-                            message: "Luau analysis timed out".into(),
-                            related: None,
-                        });
+                        if host
+                            .open
+                            .is_some_and(|open| open.contains(&location.module.source))
+                        {
+                            host.diagnostics.push(Diagnostic {
+                                location,
+                                severity: Severity::Error,
+                                message: "Luau analysis timed out".into(),
+                                related: None,
+                            });
+                        }
                     }
+
+                    host.lint()?;
                 }
 
                 Ok(std::mem::take(&mut host.diagnostics))
@@ -973,6 +1127,7 @@ impl Editor {
             resolver: Resolver::new(),
             identities: HashMap::new(),
             modules: HashMap::new(),
+            lint_cache: HashMap::new(),
         };
 
         let map = session.map.clone();
@@ -1216,7 +1371,7 @@ mod tests {
                 reported.extend(batch.iter().map(|diagnostic| {
                     (
                         diagnostic.location.range,
-                        diagnostic.error,
+                        diagnostic.severity,
                         diagnostic.message.clone(),
                     )
                 }));
@@ -1234,13 +1389,18 @@ mod tests {
             .map(|diagnostic| {
                 (
                     diagnostic.location.range,
-                    diagnostic.error,
+                    diagnostic.severity,
                     diagnostic.message.clone(),
                 )
             })
             .collect::<Vec<_>>();
 
-        assert!(returned.iter().any(|(_, error, _)| *error));
+        assert!(
+            returned
+                .iter()
+                .any(|(_, severity, _)| *severity == Severity::Error)
+        );
+
         reported.sort();
         returned.sort();
         assert_eq!(reported, returned);
