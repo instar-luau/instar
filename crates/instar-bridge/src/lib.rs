@@ -1722,10 +1722,48 @@ fn take_string(value: native::String) -> io::Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{FastFlagValue, fast_flags, set_fast_flag};
+    use std::{io, path::Path};
+
+    use super::{
+        Callbacks, Checker, CheckerOptions, Configuration, Diagnostic, FastFlagValue,
+        ResolveRequest, Source, fast_flags, native, set_fast_flag,
+    };
+
+    struct TestHost {
+        config: Configuration,
+        diagnostics: Vec<(String, String)>,
+    }
+
+    impl Callbacks for TestHost {
+        fn source<'source>(&'source mut self, name: &str) -> io::Result<Source<'source>> {
+            if name != "main" {
+                return Err(io::Error::other(format!("unexpected source {name}")));
+            }
+
+            Ok(Source {
+                bytes: b"function f(t)\n    t.x.y.z = 441\nend\n",
+                kind: native::SourceKind::SourceModule,
+            })
+        }
+
+        fn configuration(&mut self, _: &str) -> io::Result<&Configuration> {
+            Ok(&self.config)
+        }
+
+        fn resolve(&mut self, _: &ResolveRequest<'_>) -> io::Result<Option<String>> {
+            Ok(None)
+        }
+
+        fn diagnostic(&mut self, diagnostic: Diagnostic<'_>) -> io::Result<()> {
+            self.diagnostics
+                .push((diagnostic.path.into(), diagnostic.message.into()));
+
+            Ok(())
+        }
+    }
 
     #[test]
-    fn native_flags_reject_mismatched_and_unknown_values() {
+    fn native_flags_and_unnamed_complexity_error_owner() {
         let original = fast_flags().unwrap();
         let name = "FIntLuauTarjanChildLimit";
         assert_eq!(original.get(name), Some(&FastFlagValue::Int(10_000)));
@@ -1742,5 +1780,32 @@ mod tests {
         );
 
         set_fast_flag(name, FastFlagValue::Int(10_000)).unwrap();
+        let mut checker = Checker::new(&CheckerOptions::default()).unwrap();
+        checker.freeze().unwrap();
+
+        set_fast_flag(name, FastFlagValue::Int(1)).unwrap();
+
+        let result = (|| -> io::Result<_> {
+            let mut host = TestHost {
+                config: Configuration::new(br#"{"languageMode":"strict"}"#)?,
+                diagnostics: Vec::new(),
+            };
+
+            checker.check(&mut host, Path::new("main"))?;
+            checker.result(&mut host, Path::new("main"))?;
+
+            Ok(host.diagnostics)
+        })();
+
+        set_fast_flag(name, original[name]).unwrap();
+
+        let diagnostics = result.unwrap();
+
+        assert!(
+            diagnostics.iter().any(|(path, message)| {
+                path == "main" && message.to_ascii_lowercase().contains("complex")
+            }),
+            "{diagnostics:?}"
+        );
     }
 }
