@@ -162,15 +162,16 @@ namespace {
             return callbacks.diagnostic(context, &value) != 0;
         }
 
-        bool emit(const Luau::TypeError &error) {
+        bool emit(const Luau::TypeError &error, std::string_view checked) {
+            const std::string_view owner = error.moduleName.empty() ? checked : std::string_view(error.moduleName);
             const std::string message = Luau::toString(error, Luau::TypeErrorToStringOptions{&files});
             const Luau::DuplicateTypeDefinition *duplicate = Luau::get<Luau::DuplicateTypeDefinition>(error);
 
             if (duplicate && duplicate->previousLocation) {
-                return diagnostic(error.moduleName, error.location, DiagnosticError, message, error.moduleName, &*duplicate->previousLocation, "previous definition");
+                return diagnostic(owner, error.location, DiagnosticError, message, owner, &*duplicate->previousLocation, "previous definition");
             }
 
-            return diagnostic(error.moduleName, error.location, DiagnosticError, message);
+            return diagnostic(owner, error.location, DiagnosticError, message);
         }
 
         bool emit(std::string_view path, const Luau::LintWarning &warning, bool error) {
@@ -181,7 +182,7 @@ namespace {
 
         bool emit(const Luau::CheckResult &result, std::string_view path) {
             for (const Luau::TypeError &error : result.errors) {
-                if (!emit(error)) {
+                if (!emit(error, path)) {
                     return false;
                 }
             }
@@ -655,7 +656,7 @@ extern "C" {
 
             if (result.module) {
                 for (const Luau::TypeError &type_error : result.module->errors) {
-                    if (!checker->emit(type_error)) {
+                    if (!checker->emit(type_error, name)) {
                         return StatusCallbackFailure;
                     }
                 }
