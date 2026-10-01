@@ -215,26 +215,27 @@ impl Backend {
                             continue;
                         }
 
-                        if revision != worker_revision.load(Ordering::Acquire) {
-                            drop(reply.send(Err(QueryFailure::ContentModified)));
-                            continue;
-                        }
+                        let snapshot = {
+                            let snapshot = worker_state.blocking_lock();
 
-                        let snapshot = worker_state.blocking_lock().clone();
+                            if snapshot.revision != revision {
+                                drop(reply.send(Err(QueryFailure::ContentModified)));
+                                continue;
+                            }
 
-                        let result = worker
+                            snapshot.clone()
+                        };
+
+                        let mut result = worker
                             .update(&snapshot, false)
                             .and_then(|()| worker.query(&path, &query))
                             .map_err(QueryFailure::Operation);
 
                         log_asset_warnings(&worker_client, &runtime, worker.take_asset_warnings());
 
-                        let result = if snapshot.revision == worker_revision.load(Ordering::Acquire)
-                        {
-                            result
-                        } else {
-                            Err(QueryFailure::ContentModified)
-                        };
+                        if revision != worker_revision.load(Ordering::Acquire) {
+                            result = Err(QueryFailure::ContentModified);
+                        }
 
                         drop(reply.send(result));
                     }
