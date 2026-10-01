@@ -1261,6 +1261,8 @@ pub fn run() -> io::Result<()> {
                 .finish();
 
             Server::new(tokio::io::stdin(), tokio::io::stdout(), socket)
+                // ponytail: unbounded admission; add per-class limits if clients flood requests.
+                .concurrency_level(usize::MAX)
                 .serve(service)
                 .await;
         });
