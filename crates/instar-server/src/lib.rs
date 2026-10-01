@@ -126,6 +126,20 @@ fn error(message: &impl ToString) -> Error {
     }
 }
 
+fn log_asset_warnings(client: &Client, runtime: &tokio::runtime::Handle, warnings: Vec<String>) {
+    if warnings.is_empty() {
+        return;
+    }
+
+    let client = client.clone();
+
+    runtime.spawn(async move {
+        for warning in warnings {
+            client.log_message(MessageType::WARNING, warning).await;
+        }
+    });
+}
+
 fn decode<T: DeserializeOwned>(value: Value) -> Result<T> {
     serde_json::from_value(value).map_err(|failure| error(&failure))
 }
@@ -213,6 +227,8 @@ impl Backend {
                             .and_then(|()| worker.query(&path, &query))
                             .map_err(QueryFailure::Operation);
 
+                        log_asset_warnings(&worker_client, &runtime, worker.take_asset_warnings());
+
                         let result = if snapshot.revision == worker_revision.load(Ordering::Acquire)
                         {
                             result
@@ -227,7 +243,8 @@ impl Backend {
         });
 
         let (imports, import_thread) = imports::start();
-        let (workspace, workspace_thread) = workspace::start();
+        let (workspace, workspace_thread) =
+            workspace::start(client.clone(), tokio::runtime::Handle::current());
 
         Self {
             client,
@@ -325,6 +342,8 @@ impl Backend {
             let diagnostics = worker
                 .update(&snapshot, true)
                 .map(|()| worker.diagnostics.clone());
+
+            log_asset_warnings(&client, runtime, worker.take_asset_warnings());
 
             runtime.spawn(Self::publish(
                 client,

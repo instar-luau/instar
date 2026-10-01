@@ -56,6 +56,10 @@ impl Default for Worker {
 }
 
 impl Worker {
+    pub(crate) fn take_asset_warnings(&mut self) -> Vec<String> {
+        self.editor.take_asset_warnings()
+    }
+
     pub(crate) fn update(
         &mut self,
         snapshot: &crate::Snapshot,

@@ -674,7 +674,10 @@ pub(crate) struct Command {
     pub(crate) reply: tokio::sync::oneshot::Sender<io::Result<Value>>,
 }
 
-pub(crate) fn start() -> (
+pub(crate) fn start(
+    client: tower_lsp_server::Client,
+    runtime: tokio::runtime::Handle,
+) -> (
     std::sync::mpsc::Sender<Option<Command>>,
     std::thread::JoinHandle<()>,
 ) {
@@ -763,6 +766,8 @@ pub(crate) fn start() -> (
                     }
                 }
             })();
+
+            crate::log_asset_warnings(&client, &runtime, editor.take_asset_warnings());
 
             drop(command.reply.send(result));
         }

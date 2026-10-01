@@ -397,7 +397,6 @@ impl Assets {
         self.loaded.clear();
         self.documentation.clear();
         self.pending.clear();
-        self.warnings.clear();
     }
 
     pub(crate) fn documentation(

@@ -1323,6 +1323,11 @@ impl Editor {
         self.project.source(path)
     }
 
+    /// Drains asset warnings.
+    pub fn take_asset_warnings(&mut self) -> Vec<String> {
+        self.project.take_asset_warnings()
+    }
+
     /// Lists services from the editor's cached platform declarations.
     ///
     /// # Errors
