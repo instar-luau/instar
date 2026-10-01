@@ -414,7 +414,7 @@ impl Backend {
             .cloned()
             .ok_or_else(|| Error::invalid_params("document is not open"))?;
 
-        Ok((state.revision, document))
+        Ok((state.epoch, document))
     }
 
     async fn ready_document(&self, uri: &Uri) -> Result<(u64, Arc<Document>)> {
@@ -863,7 +863,7 @@ impl LanguageServer for Backend {
             Changed(String),
         }
 
-        let (revision, document) = self.document(&params.text_document.uri).await?;
+        let (epoch, document) = self.document(&params.text_document.uri).await?;
         let path = document.path.clone();
         let source = document.text.clone();
 
@@ -886,16 +886,13 @@ impl LanguageServer for Backend {
         .map_err(|failure| error(&failure))?
         .map_err(|failure| error(&failure))?;
 
-        if revision != self.revision.load(Ordering::Acquire) {
-            return Err(Error::content_modified());
-        }
-
         let state = self.state.lock().await;
 
-        if state
-            .documents
-            .get(&document.path)
-            .is_none_or(|current| !Arc::ptr_eq(current, &document))
+        if state.epoch != epoch
+            || state
+                .documents
+                .get(&document.path)
+                .is_none_or(|current| !Arc::ptr_eq(current, &document))
         {
             return Err(Error::content_modified());
         }
@@ -1454,5 +1451,133 @@ impl Backend {
                 ))
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{future::poll_fn, task::Poll};
+
+    #[derive(Clone, Copy)]
+    enum Change {
+        Save,
+        OtherDocument,
+        Document,
+        Configuration,
+        Close,
+    }
+
+    #[test]
+    fn formatting_invalidates_only_for_its_document_or_configuration() {
+        tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let (service, _socket) = LspService::new(Backend::new);
+                let backend = service.inner();
+                backend.pull_diagnostics.store(true, Ordering::Release);
+                let uri = document::uri(&std::env::temp_dir().join("formatting.luau")).unwrap();
+                let other = document::uri(&std::env::temp_dir().join("other.luau")).unwrap();
+                let identifier = lsp::TextDocumentIdentifier::new(uri.clone());
+
+                for change in [
+                    Change::Save,
+                    Change::OtherDocument,
+                    Change::Document,
+                    Change::Configuration,
+                    Change::Close,
+                ] {
+                    {
+                        let mut state = backend.state.lock().await;
+
+                        for uri in [&uri, &other] {
+                            let document =
+                                Document::new(uri.clone(), 1, "local value=1\n".into()).unwrap();
+                            state
+                                .documents
+                                .insert(document.path.clone(), Arc::new(document));
+                        }
+
+                        backend.changed(&mut state);
+                    }
+
+                    let (release, blocked) = mpsc::channel::<()>();
+                    let (started, ready) = oneshot::channel();
+                    let blocking = tokio::task::spawn_blocking(move || {
+                        started.send(()).unwrap();
+                        let _ = blocked.recv();
+                    });
+                    ready.await.unwrap();
+
+                    let formatting = backend.formatting(DocumentFormattingParams {
+                        text_document: identifier.clone(),
+                        options: lsp::FormattingOptions {
+                            tab_size: 4,
+                            insert_spaces: true,
+                            ..Default::default()
+                        },
+                        work_done_progress_params: lsp::WorkDoneProgressParams::default(),
+                    });
+                    tokio::pin!(formatting);
+                    assert!(
+                        poll_fn(|context| Poll::Ready(formatting.as_mut().poll(context)))
+                            .await
+                            .is_pending()
+                    );
+
+                    match change {
+                        Change::Save => {
+                            backend
+                                .did_save(DidSaveTextDocumentParams {
+                                    text_document: identifier.clone(),
+                                    text: None,
+                                })
+                                .await;
+                        }
+                        Change::OtherDocument | Change::Document => {
+                            backend
+                                .did_change(DidChangeTextDocumentParams {
+                                    text_document: lsp::VersionedTextDocumentIdentifier::new(
+                                        if matches!(change, Change::OtherDocument) {
+                                            other.clone()
+                                        } else {
+                                            uri.clone()
+                                        },
+                                        2,
+                                    ),
+                                    content_changes: vec![lsp::TextDocumentContentChangeEvent {
+                                        range: None,
+                                        range_length: None,
+                                        text: "local value=2\n".into(),
+                                    }],
+                                })
+                                .await;
+                        }
+                        Change::Configuration => backend.refresh().await,
+                        Change::Close => {
+                            backend
+                                .did_close(DidCloseTextDocumentParams {
+                                    text_document: identifier.clone(),
+                                })
+                                .await;
+                        }
+                    }
+
+                    drop(release);
+                    blocking.await.unwrap();
+                    let result = formatting.await;
+
+                    if matches!(change, Change::Save | Change::OtherDocument) {
+                        assert_eq!(result.unwrap().unwrap()[0].new_text, "local value = 1\n");
+                    } else {
+                        assert_eq!(result.unwrap_err().code, ErrorCode::ContentModified);
+                    }
+                }
+
+                backend.shutdown().await.unwrap();
+            });
     }
 }
