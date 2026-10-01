@@ -17,7 +17,7 @@ struct Edit {
     text: String,
 }
 
-pub(crate) fn sort<'source>(
+pub(super) fn sort<'source>(
     source: &'source str,
     options: &RequiresOptions,
     tree: &vermis::Tree<'source>,

@@ -9,7 +9,6 @@ pub mod format;
 pub mod graph;
 pub(crate) mod lint;
 pub mod project;
-pub(crate) mod require_order;
 pub mod resolve;
 pub mod roblox;
 
