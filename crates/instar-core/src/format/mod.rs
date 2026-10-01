@@ -9,6 +9,8 @@ use crate::config::{
     LineEnding, QuoteStyle, Semicolons, TrailingComma, Wrap,
 };
 
+mod requires;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     Word,
@@ -1853,7 +1855,7 @@ pub fn source(input: &str, options: &FormatOptions) -> io::Result<String> {
         )));
     }
 
-    let ordered = crate::require_order::sort(input, &options.requires, &parsed)?;
+    let ordered = requires::sort(input, &options.requires, &parsed)?;
     let reparsed;
 
     let parsed_ordered = match &ordered {
