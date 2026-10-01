@@ -225,7 +225,6 @@ fn run_format(paths: Vec<PathBuf>, plain: bool, stderr_color: bool) -> io::Resul
     let result = expand_paths(paths, &mut project, Service::Format).and_then(|paths| {
         let count = paths.len();
         show_progress(&progress, "Formatting", count, stderr_color);
-        project.prepare_fast_flags(&paths)?;
         let mut excluded = 0;
         let mut changed = 0;
 
@@ -261,10 +260,6 @@ fn run_format(paths: Vec<PathBuf>, plain: bool, stderr_color: bool) -> io::Resul
     });
 
     progress.finish_and_clear();
-
-    for warning in project.take_asset_warnings() {
-        eprintln!("warning: {warning}");
-    }
 
     result.map(|(count, changed, excluded)| {
         let style = if stderr_color {
