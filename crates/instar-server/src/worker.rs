@@ -120,12 +120,21 @@ impl Worker {
             return Ok(());
         }
 
+        self.check_diagnostics(snapshot.revision)?;
+        self.revision = snapshot.revision;
+
+        Ok(())
+    }
+
+    fn check_diagnostics(&mut self, revision: u64) -> io::Result<()> {
+        if self.diagnostics_revision == revision {
+            return Ok(());
+        }
+
         let mut findings = self.editor.check()?;
         findings.retain(|finding| self.documents.contains_key(&finding.location.module.source));
         self.diagnostics = crate::document::diagnostics(findings, |path| self.document(path))?;
-
-        self.diagnostics_revision = snapshot.revision;
-        self.revision = snapshot.revision;
+        self.diagnostics_revision = revision;
 
         Ok(())
     }
@@ -837,6 +846,8 @@ impl Worker {
         document: &Document,
         requested: tower_lsp_server::ls_types::Range,
     ) -> io::Result<Value> {
+        self.check_diagnostics(self.revision)?;
+
         let mut actions = Vec::new();
 
         for diagnostic in self
@@ -994,6 +1005,61 @@ mod tests {
         assert!(worker.diagnostics.is_empty());
         worker.update(&snapshot, true).unwrap();
         assert!(!worker.diagnostics.contains_key(&path));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn import_actions_use_current_diagnostics_without_publication() {
+        let directory =
+            std::env::temp_dir().join(format!("instar-worker-actions-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("Widget.luau"), "return {}\n").unwrap();
+        let path = directory.join("main.luau");
+        let document = Arc::new(
+            Document::new(uri(&path).unwrap(), 1, "--!strict\nreturn Widget\n".into()).unwrap(),
+        );
+        let snapshot = crate::Snapshot {
+            revision: 1,
+            folders: [directory.clone()].into(),
+            documents: BTreeMap::from([(path.clone(), document)]),
+            ..crate::Snapshot::default()
+        };
+        let range = tower_lsp_server::ls_types::Range::new(
+            tower_lsp_server::ls_types::Position::new(1, 7),
+            tower_lsp_server::ls_types::Position::new(1, 13),
+        );
+        let mut expected = None;
+
+        for diagnostics in [false, true] {
+            let mut worker = Worker::default();
+            worker.update(&snapshot, diagnostics).unwrap();
+            let actions = worker.query(&path, &Query::Actions(range)).unwrap();
+            assert!(actions.as_array().unwrap().iter().any(|action| {
+                action["title"]
+                    .as_str()
+                    .is_some_and(|title| title.starts_with("Import Widget from "))
+                    && action["edit"]["documentChanges"][0]["textDocument"]["version"] == 1
+            }));
+
+            if let Some(expected) = &expected {
+                assert_eq!(&actions, expected);
+            } else {
+                expected = Some(actions);
+            }
+
+            let mut changed = snapshot.clone();
+            changed.revision += 1;
+            changed.documents.insert(
+                path.clone(),
+                Arc::new(Document::new(uri(&path).unwrap(), 2, "return 1\n".into()).unwrap()),
+            );
+            worker.update(&changed, false).unwrap();
+            assert_eq!(
+                worker.query(&path, &Query::Actions(range)).unwrap(),
+                json!([])
+            );
+        }
+
         std::fs::remove_dir_all(directory).unwrap();
     }
 }
