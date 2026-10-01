@@ -12,14 +12,6 @@
         "include": []
       }
     },
-    "build": {
-      "description": "Additional file selection for builds.",
-      "$ref": "#/$defs/FileFilter",
-      "default": {
-        "exclude": [],
-        "include": []
-      }
-    },
     "exclude": {
       "description": "Global exclude globs; exclusions always win.",
       "type": "array",
@@ -89,14 +81,6 @@
           "table_wrap": "auto"
         },
         "width": 120
-      }
-    },
-    "graft": {
-      "description": "Additional file selection for dependency installation.",
-      "$ref": "#/$defs/FileFilter",
-      "default": {
-        "exclude": [],
-        "include": []
       }
     },
     "include": {

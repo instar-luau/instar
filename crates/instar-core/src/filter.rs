@@ -13,14 +13,8 @@ pub enum Service {
     /// Type analysis.
     Analyze,
 
-    /// Compiled output.
-    Build,
-
     /// Source formatting.
     Format,
-
-    /// Dependency installation.
-    Graft,
 
     /// Lint diagnostics.
     Lint,
@@ -155,13 +149,11 @@ impl Filters {
                 &config.analyze.include,
                 &config.analyze.exclude,
             ),
-            (Service::Build, &config.build.include, &config.build.exclude),
             (
                 Service::Format,
                 &config.format.include,
                 &config.format.exclude,
             ),
-            (Service::Graft, &config.graft.include, &config.graft.exclude),
             (Service::Lint, &config.lint.include, &config.lint.exclude),
             (Service::Lsp, &config.lsp.include, &config.lsp.exclude),
         ] {
