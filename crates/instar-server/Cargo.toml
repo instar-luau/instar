@@ -13,7 +13,6 @@ instar-core = { path = "../instar-core" }
 instar-bridge = { path = "../instar-bridge" }
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "io-std", "sync", "macros", "time"] }
 tower-lsp-server = { version = "0.23", default-features = false, features = ["runtime-tokio"] }
-serde = { version = "1", default-features = false, features = ["derive"] }
 serde_json = { version = "1", default-features = false, features = ["std"] }
 url = { version = "2", default-features = false, features = ["std"] }
 vermis = { version = "0.4", default-features = false }

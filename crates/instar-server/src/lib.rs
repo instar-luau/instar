@@ -8,7 +8,7 @@ mod worker;
 mod workspace;
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
     path::PathBuf,
     sync::{
@@ -21,8 +21,7 @@ use std::{
 };
 
 use instar_core::{format, project::Project};
-use serde::de::DeserializeOwned;
-use serde_json::{Value, json};
+use serde_json::Value;
 use tokio::sync::{Mutex, Notify, oneshot};
 
 use tower_lsp_server::ls_types as lsp;
@@ -45,11 +44,11 @@ use tower_lsp_server::{
     },
 };
 
-type ProgressRequests = Arc<std::sync::Mutex<BTreeMap<String, Arc<AtomicBool>>>>;
+type ProgressRequests = Arc<std::sync::Mutex<HashMap<lsp::ProgressToken, Arc<AtomicBool>>>>;
 
 struct RequestGuard {
     cancelled: Arc<AtomicBool>,
-    key: Option<String>,
+    key: Option<lsp::ProgressToken>,
     requests: ProgressRequests,
 }
 
@@ -80,6 +79,22 @@ struct Snapshot {
     folders: BTreeSet<PathBuf>,
 }
 
+enum Response {
+    Hover(Option<lsp::Hover>),
+    Completion(lsp::CompletionResponse),
+    Signature(Option<lsp::SignatureHelp>),
+    Locations(Vec<lsp::Location>),
+    Prepare(Option<lsp::PrepareRenameResponse>),
+    Edit(lsp::WorkspaceEdit),
+    Highlights(Vec<lsp::DocumentHighlight>),
+    Hints(Vec<lsp::InlayHint>),
+    Actions(lsp::CodeActionResponse),
+    Links(Vec<lsp::DocumentLink>),
+    Symbols(Vec<lsp::SymbolInformation>),
+    Diagnostics(lsp::WorkspaceDiagnosticReport),
+    Diagnostic(lsp::DocumentDiagnosticReport),
+}
+
 enum Command {
     Wake,
 
@@ -87,7 +102,7 @@ enum Command {
         revision: u64,
         path: PathBuf,
         query: Query,
-        reply: oneshot::Sender<std::result::Result<Value, QueryFailure>>,
+        reply: oneshot::Sender<std::result::Result<Response, QueryFailure>>,
     },
 
     Stop,
@@ -140,8 +155,113 @@ fn log_asset_warnings(client: &Client, runtime: &tokio::runtime::Handle, warning
     });
 }
 
-fn decode<T: DeserializeOwned>(value: Value) -> Result<T> {
-    serde_json::from_value(value).map_err(|failure| error(&failure))
+fn workspace_capabilities() -> lsp::WorkspaceServerCapabilities {
+    let operations = lsp::FileOperationRegistrationOptions {
+        filters: vec![lsp::FileOperationFilter {
+            scheme: Some("file".to_owned()),
+            pattern: lsp::FileOperationPattern {
+                glob: "**".to_owned(),
+                ..lsp::FileOperationPattern::default()
+            },
+        }],
+    };
+
+    lsp::WorkspaceServerCapabilities {
+        workspace_folders: Some(lsp::WorkspaceFoldersServerCapabilities {
+            supported: Some(true),
+            change_notifications: Some(lsp::OneOf::Left(true)),
+        }),
+        file_operations: Some(lsp::WorkspaceFileOperationsServerCapabilities {
+            will_rename: Some(operations.clone()),
+            did_rename: Some(operations.clone()),
+            did_create: Some(operations.clone()),
+            did_delete: Some(operations),
+            ..lsp::WorkspaceFileOperationsServerCapabilities::default()
+        }),
+    }
+}
+
+fn capabilities(pull_diagnostics: bool) -> lsp::ServerCapabilities {
+    lsp::ServerCapabilities {
+        position_encoding: Some(lsp::PositionEncodingKind::UTF16),
+        text_document_sync: Some(
+            lsp::TextDocumentSyncOptions {
+                open_close: Some(true),
+                change: Some(TextDocumentSyncKind::INCREMENTAL),
+                save: Some(
+                    lsp::SaveOptions {
+                        include_text: Some(false),
+                    }
+                    .into(),
+                ),
+                ..lsp::TextDocumentSyncOptions::default()
+            }
+            .into(),
+        ),
+        workspace: Some(workspace_capabilities()),
+        hover_provider: Some(true.into()),
+        completion_provider: Some(lsp::CompletionOptions {
+            trigger_characters: Some(
+                [".", ":", "\"", "'", "/", "@"]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+            ),
+            ..lsp::CompletionOptions::default()
+        }),
+        signature_help_provider: Some(lsp::SignatureHelpOptions {
+            trigger_characters: Some(["(", ","].into_iter().map(str::to_owned).collect()),
+            ..lsp::SignatureHelpOptions::default()
+        }),
+        definition_provider: Some(lsp::OneOf::Left(true)),
+        type_definition_provider: Some(true.into()),
+        references_provider: Some(lsp::OneOf::Left(true)),
+        declaration_provider: Some(lsp::DeclarationCapability::Simple(true)),
+        implementation_provider: Some(true.into()),
+        rename_provider: Some(lsp::OneOf::Right(lsp::RenameOptions {
+            prepare_provider: Some(true),
+            work_done_progress_options: lsp::WorkDoneProgressOptions::default(),
+        })),
+        document_highlight_provider: Some(lsp::OneOf::Left(true)),
+        document_link_provider: Some(lsp::DocumentLinkOptions {
+            resolve_provider: Some(false),
+            work_done_progress_options: lsp::WorkDoneProgressOptions::default(),
+        }),
+        document_symbol_provider: Some(lsp::OneOf::Left(true)),
+        document_formatting_provider: Some(lsp::OneOf::Left(true)),
+        workspace_symbol_provider: Some(lsp::OneOf::Left(true)),
+        code_action_provider: Some(
+            lsp::CodeActionOptions {
+                code_action_kinds: Some(vec![lsp::CodeActionKind::QUICKFIX]),
+                ..lsp::CodeActionOptions::default()
+            }
+            .into(),
+        ),
+        inlay_hint_provider: Some(lsp::OneOf::Left(true)),
+        color_provider: Some(true.into()),
+        diagnostic_provider: pull_diagnostics.then(|| {
+            lsp::DiagnosticServerCapabilities::Options(lsp::DiagnosticOptions {
+                identifier: Some("instar".to_owned()),
+                inter_file_dependencies: true,
+                workspace_diagnostics: true,
+                work_done_progress_options: lsp::WorkDoneProgressOptions {
+                    work_done_progress: Some(true),
+                },
+            })
+        }),
+        semantic_tokens_provider: Some(
+            lsp::SemanticTokensOptions {
+                legend: lsp::SemanticTokensLegend {
+                    token_types: bindings::SemanticKind::LEGEND.to_vec(),
+                    token_modifiers: bindings::MODIFIER_LEGEND.to_vec(),
+                },
+                full: Some(lsp::SemanticTokensFullOptions::Bool(true)),
+                ..lsp::SemanticTokensOptions::default()
+            }
+            .into(),
+        ),
+        ..lsp::ServerCapabilities::default()
+    }
 }
 
 impl Backend {
@@ -455,12 +575,7 @@ impl Backend {
         }
     }
 
-    async fn dispatch<T: DeserializeOwned>(
-        &self,
-        revision: u64,
-        document: &Document,
-        query: Query,
-    ) -> Result<T> {
+    async fn dispatch(&self, revision: u64, document: &Document, query: Query) -> Result<Response> {
         let (reply, receiver) = oneshot::channel();
 
         self.commands
@@ -473,18 +588,18 @@ impl Backend {
             .map_err(|failure| error(&failure))?;
 
         match receiver.await.map_err(|failure| error(&failure))? {
-            Ok(value) => decode(value),
+            Ok(value) => Ok(value),
 
             Err(QueryFailure::ContentModified) => Err(Error::content_modified()),
             Err(QueryFailure::Operation(failure)) => Err(error(&failure)),
         }
     }
 
-    async fn query_at<T: DeserializeOwned>(
+    async fn query_at(
         &self,
         params: TextDocumentPositionParams,
         make: impl FnOnce(u32, u32) -> Query + Send,
-    ) -> Result<T> {
+    ) -> Result<Response> {
         let (revision, document) = self.ready_document(&params.text_document.uri).await?;
 
         let (line, column) = document
@@ -527,11 +642,11 @@ impl Backend {
         self.dispatch(revision, &document, query).await
     }
 
-    async fn resolve<T: DeserializeOwned>(
+    async fn resolve(
         &self,
         document: Arc<Document>,
         request: imports::Request,
-    ) -> Result<T> {
+    ) -> Result<Response> {
         let snapshot = self.state.lock().await.clone();
 
         if snapshot
@@ -560,13 +675,13 @@ impl Backend {
             return Err(Error::content_modified());
         }
 
-        decode(result.map_err(|failure| error(&failure))?)
+        result.map_err(|failure| error(&failure))
     }
 
-    async fn syntax<T: DeserializeOwned>(
+    async fn syntax<T: Send + 'static>(
         &self,
         uri: Uri,
-        operation: impl FnOnce(&Document) -> io::Result<Value> + Send + 'static,
+        operation: impl FnOnce(&Document) -> io::Result<T> + Send + 'static,
     ) -> Result<T> {
         let (_, document) = self.document(&uri).await?;
         let source = Arc::clone(&document);
@@ -587,43 +702,49 @@ impl Backend {
             return Err(Error::content_modified());
         }
 
-        decode(value)
+        Ok(value)
     }
 }
 
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
-        let initialization = serde_json::to_value(&params).map_err(|failure| error(&failure))?;
-        let capabilities = &initialization["capabilities"];
-        self.configure_hints(&initialization["initializationOptions"])?;
+        self.configure_hints(
+            params
+                .initialization_options
+                .as_ref()
+                .unwrap_or(&Value::Null),
+        )?;
 
-        let pull_diagnostics = capabilities
-            .pointer("/textDocument/diagnostic")
-            .is_some_and(Value::is_object);
+        let pull_diagnostics = params
+            .capabilities
+            .text_document
+            .as_ref()
+            .is_some_and(|document| document.diagnostic.is_some());
+        let workspace = params.capabilities.workspace.as_ref();
 
         self.pull_diagnostics
             .store(pull_diagnostics, Ordering::Release);
 
         self.diagnostic_refresh.store(
-            capabilities
-                .pointer("/workspace/diagnostics/refreshSupport")
-                .and_then(Value::as_bool)
+            workspace
+                .and_then(|workspace| workspace.diagnostics.as_ref())
+                .and_then(|diagnostics| diagnostics.refresh_support)
                 .unwrap_or(false),
             Ordering::Release,
         );
 
         self.versioned_edits.store(
-            capabilities
-                .pointer("/workspace/workspaceEdit/documentChanges")
-                .and_then(Value::as_bool)
+            workspace
+                .and_then(|workspace| workspace.workspace_edit.as_ref())
+                .and_then(|edit| edit.document_changes)
                 .unwrap_or(false),
             Ordering::Release,
         );
 
         self.watch.store(
-            capabilities
-                .pointer("/workspace/didChangeWatchedFiles/dynamicRegistration")
-                .and_then(Value::as_bool)
+            workspace
+                .and_then(|workspace| workspace.did_change_watched_files.as_ref())
+                .and_then(|watch| watch.dynamic_registration)
                 .unwrap_or(false),
             Ordering::Release,
         );
@@ -636,11 +757,15 @@ impl LanguageServer for Backend {
                 .insert(document::path(&folder.uri).map_err(|failure| error(&failure))?);
         }
 
-        if state.folders.is_empty()
-            && let Some(root) = initialization.get("rootUri").and_then(Value::as_str)
-        {
-            let root = root.parse::<Uri>().map_err(|failure| error(&failure))?;
+        #[expect(
+            deprecated,
+            reason = "clients without workspace folders still send rootUri"
+        )]
+        let root = params.root_uri;
 
+        if state.folders.is_empty()
+            && let Some(root) = root
+        {
             state
                 .folders
                 .insert(document::path(&root).map_err(|failure| error(&failure))?);
@@ -650,39 +775,29 @@ impl LanguageServer for Backend {
         drop(state);
         self.prepare_flags(folders).await?;
 
-        decode(
-            json!({"serverInfo": {"name": "instar", "version": env!("CARGO_PKG_VERSION")}, "capabilities": {
-                "positionEncoding": "utf-16",
-                "textDocumentSync": {"openClose": true, "change": TextDocumentSyncKind::INCREMENTAL, "save": {"includeText": false}},
-                "workspace": {"workspaceFolders": {"supported": true, "changeNotifications": true},
-                    "fileOperations": {
-                        "willRename": {"filters": [{"scheme": "file", "pattern": {"glob": "**"}}]},
-                        "didRename": {"filters": [{"scheme": "file", "pattern": {"glob": "**"}}]},
-                        "didCreate": {"filters": [{"scheme": "file", "pattern": {"glob": "**"}}]},
-                        "didDelete": {"filters": [{"scheme": "file", "pattern": {"glob": "**"}}]}
-                    }},
-                "hoverProvider": true, "completionProvider": {"triggerCharacters": [".", ":", "\"", "'", "/", "@"]},
-                "signatureHelpProvider": {"triggerCharacters": ["(", ","]},
-                "definitionProvider": true, "typeDefinitionProvider": true, "referencesProvider": true,
-                "declarationProvider": true, "implementationProvider": true,
-                "renameProvider": {"prepareProvider": true}, "documentHighlightProvider": true,
-                "documentLinkProvider": {"resolveProvider": false}, "documentSymbolProvider": true,
-                "documentFormattingProvider": true,
-                "workspaceSymbolProvider": true,
-                "codeActionProvider": {"codeActionKinds": ["quickfix"]},
-                "inlayHintProvider": true, "colorProvider": true,
-                "diagnosticProvider": pull_diagnostics.then(|| json!({"identifier": "instar", "interFileDependencies": true, "workspaceDiagnostics": true, "workDoneProgress": true})),
-                "semanticTokensProvider": {"legend": {"tokenTypes": bindings::SemanticKind::LEGEND,
-                    "tokenModifiers": bindings::MODIFIER_LEGEND}, "full": true}
-            }}),
-        )
+        Ok(InitializeResult {
+            capabilities: capabilities(pull_diagnostics),
+            server_info: Some(lsp::ServerInfo {
+                name: "instar".to_owned(),
+                version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+            }),
+            ..InitializeResult::default()
+        })
     }
 
     async fn initialized(&self, _: InitializedParams) {
         if self.watch.load(Ordering::Acquire) {
-            let registration = decode(
-                json!({"id": "instar.files", "method": "workspace/didChangeWatchedFiles", "registerOptions": {"watchers": [{"globPattern": "**/*", "kind": WatchKind::Create | WatchKind::Change | WatchKind::Delete}]}}),
-            );
+            let options = lsp::DidChangeWatchedFilesRegistrationOptions {
+                watchers: vec![lsp::FileSystemWatcher {
+                    glob_pattern: lsp::GlobPattern::String("**/*".to_owned()),
+                    kind: Some(WatchKind::Create | WatchKind::Change | WatchKind::Delete),
+                }],
+            };
+            let registration = serde_json::to_value(options).map(|options| lsp::Registration {
+                id: "instar.files".to_owned(),
+                method: "workspace/didChangeWatchedFiles".to_owned(),
+                register_options: Some(options),
+            });
 
             match registration {
                 Ok(registration) => {
@@ -957,109 +1072,169 @@ impl LanguageServer for Backend {
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
-        self.query_at(params.text_document_position_params, Query::Hover)
-            .await
+        let Response::Hover(result) = self
+            .query_at(params.text_document_position_params, Query::Hover)
+            .await?
+        else {
+            return Err(error(&"unexpected hover response"));
+        };
+        Ok(result)
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
-        self.query_at(params.text_document_position, Query::Completion)
-            .await
+        let Response::Completion(result) = self
+            .query_at(params.text_document_position, Query::Completion)
+            .await?
+        else {
+            return Err(error(&"unexpected completion response"));
+        };
+        Ok(Some(result))
     }
 
     async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
-        self.query_at(params.text_document_position_params, Query::Signature)
-            .await
+        let Response::Signature(result) = self
+            .query_at(params.text_document_position_params, Query::Signature)
+            .await?
+        else {
+            return Err(error(&"unexpected signature response"));
+        };
+        Ok(result)
     }
 
     async fn goto_definition(
         &self,
         params: GotoDefinitionParams,
     ) -> Result<Option<GotoDefinitionResponse>> {
-        self.query_at(params.text_document_position_params, Query::Definition)
-            .await
+        let Response::Locations(result) = self
+            .query_at(params.text_document_position_params, Query::Definition)
+            .await?
+        else {
+            return Err(error(&"unexpected definition response"));
+        };
+        Ok(Some(GotoDefinitionResponse::Array(result)))
     }
 
     async fn goto_declaration(
         &self,
         params: lsp::request::GotoDeclarationParams,
     ) -> Result<Option<lsp::request::GotoDeclarationResponse>> {
-        self.query_at(params.text_document_position_params, Query::Declaration)
-            .await
+        let Response::Locations(result) = self
+            .query_at(params.text_document_position_params, Query::Declaration)
+            .await?
+        else {
+            return Err(error(&"unexpected declaration response"));
+        };
+        Ok(Some(GotoDefinitionResponse::Array(result)))
     }
 
     async fn goto_implementation(
         &self,
         params: lsp::request::GotoImplementationParams,
     ) -> Result<Option<lsp::request::GotoImplementationResponse>> {
-        self.query_at(params.text_document_position_params, Query::Implementation)
-            .await
+        let Response::Locations(result) = self
+            .query_at(params.text_document_position_params, Query::Implementation)
+            .await?
+        else {
+            return Err(error(&"unexpected implementation response"));
+        };
+        Ok(Some(GotoDefinitionResponse::Array(result)))
     }
 
     async fn goto_type_definition(
         &self,
         params: GotoTypeDefinitionParams,
     ) -> Result<Option<GotoTypeDefinitionResponse>> {
-        self.query_at(params.text_document_position_params, Query::TypeDefinition)
-            .await
+        let Response::Locations(result) = self
+            .query_at(params.text_document_position_params, Query::TypeDefinition)
+            .await?
+        else {
+            return Err(error(&"unexpected type definition response"));
+        };
+        Ok(Some(GotoDefinitionResponse::Array(result)))
     }
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
-        self.query_at(params.text_document_position, |line, column| {
-            Query::References(line, column, params.context.include_declaration)
-        })
-        .await
+        let Response::Locations(result) = self
+            .query_at(params.text_document_position, |line, column| {
+                Query::References(line, column, params.context.include_declaration)
+            })
+            .await?
+        else {
+            return Err(error(&"unexpected references response"));
+        };
+        Ok(Some(result))
     }
 
     async fn prepare_rename(
         &self,
         params: TextDocumentPositionParams,
     ) -> Result<Option<PrepareRenameResponse>> {
-        self.query_at(params, Query::Prepare).await
+        let Response::Prepare(result) = self.query_at(params, Query::Prepare).await? else {
+            return Err(error(&"unexpected prepare rename response"));
+        };
+        Ok(result)
     }
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
-        let result: Option<WorkspaceEdit> = self
+        let Response::Edit(result) = self
             .query_at(params.text_document_position, |line, column| {
                 Query::Rename(line, column, params.new_name)
             })
-            .await?;
-
-        result.map(|edit| self.compatible_edit(edit)).transpose()
+            .await?
+        else {
+            return Err(error(&"unexpected rename response"));
+        };
+        self.compatible_edit(result).map(Some)
     }
 
     async fn document_highlight(
         &self,
         params: DocumentHighlightParams,
     ) -> Result<Option<Vec<DocumentHighlight>>> {
-        self.query_at(params.text_document_position_params, Query::Highlights)
-            .await
+        let Response::Highlights(result) = self
+            .query_at(params.text_document_position_params, Query::Highlights)
+            .await?
+        else {
+            return Err(error(&"unexpected highlights response"));
+        };
+        Ok(Some(result))
     }
 
     async fn document_link(&self, params: DocumentLinkParams) -> Result<Option<Vec<DocumentLink>>> {
         let (_, document) = self.ready_document(&params.text_document.uri).await?;
-
-        self.resolve(document, imports::Request::Links).await
+        let Response::Links(result) = self.resolve(document, imports::Request::Links).await? else {
+            return Err(error(&"unexpected links response"));
+        };
+        Ok(Some(result))
     }
 
     async fn semantic_tokens_full(
         &self,
         params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
-        self.syntax(params.text_document.uri, |document| Ok(document.tokens()))
-            .await
+        self.syntax(params.text_document.uri, |document| {
+            Ok(Some(SemanticTokensResult::Tokens(document.tokens())))
+        })
+        .await
     }
 
     async fn document_symbol(
         &self,
         params: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
-        self.syntax(params.text_document.uri, |document| Ok(document.symbols()))
-            .await
+        self.syntax(params.text_document.uri, |document| {
+            Ok(Some(DocumentSymbolResponse::Nested(
+                document.symbols().to_vec(),
+            )))
+        })
+        .await
     }
 
     async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {
-        self.syntax(params.text_document.uri, |document| Ok(document.folds()))
-            .await
+        self.syntax(params.text_document.uri, |document| {
+            Ok(Some(document.folds().to_vec()))
+        })
+        .await
     }
 
     async fn selection_range(
@@ -1067,7 +1242,7 @@ impl LanguageServer for Backend {
         params: SelectionRangeParams,
     ) -> Result<Option<Vec<SelectionRange>>> {
         self.syntax(params.text_document.uri, move |document| {
-            document.selections(&params.positions)
+            document.selections(&params.positions).map(Some)
         })
         .await
     }
@@ -1076,24 +1251,31 @@ impl LanguageServer for Backend {
         &self,
         params: lsp::WorkspaceSymbolParams,
     ) -> Result<Option<lsp::WorkspaceSymbolResponse>> {
-        self.workspace_query(
-            workspace::Request::Symbols(params.query),
-            params.work_done_progress_params.work_done_token,
-        )
-        .await
+        let Response::Symbols(result) = self
+            .workspace_query(
+                workspace::Request::Symbols(params.query),
+                params.work_done_progress_params.work_done_token,
+            )
+            .await?
+        else {
+            return Err(error(&"unexpected workspace symbols response"));
+        };
+        Ok(Some(lsp::WorkspaceSymbolResponse::Flat(result)))
     }
 
     async fn will_rename_files(
         &self,
         params: lsp::RenameFilesParams,
     ) -> Result<Option<WorkspaceEdit>> {
-        let edit = self
+        let Response::Edit(edit) = self
             .workspace_query(
                 workspace::Request::Rename(Self::rename_paths(&params)?),
                 None,
             )
-            .await?;
-
+            .await?
+        else {
+            return Err(error(&"unexpected file rename response"));
+        };
         self.compatible_edit(edit).map(Some)
     }
 
@@ -1160,9 +1342,12 @@ impl LanguageServer for Backend {
 
         let (revision, document) = self.ready_document(&params.text_document.uri).await?;
 
-        let mut actions: lsp::CodeActionResponse = self
+        let Response::Actions(mut actions) = self
             .dispatch(revision, &document, Query::Actions(params.range))
-            .await?;
+            .await?
+        else {
+            return Err(error(&"unexpected code actions response"));
+        };
 
         for action in &mut actions {
             if let lsp::CodeActionOrCommand::CodeAction(action) = action
@@ -1181,17 +1366,22 @@ impl LanguageServer for Backend {
     ) -> Result<Option<Vec<lsp::InlayHint>>> {
         let (revision, document) = self.ready_document(&params.text_document.uri).await?;
 
-        self.dispatch(
-            revision,
-            &document,
-            Query::Hints(
-                params.range,
-                self.hint_types.load(Ordering::Acquire),
-                self.hint_parameters.load(Ordering::Acquire),
-                self.hint_requires.load(Ordering::Acquire),
-            ),
-        )
-        .await
+        let Response::Hints(result) = self
+            .dispatch(
+                revision,
+                &document,
+                Query::Hints(
+                    params.range,
+                    self.hint_types.load(Ordering::Acquire),
+                    self.hint_parameters.load(Ordering::Acquire),
+                    self.hint_requires.load(Ordering::Acquire),
+                ),
+            )
+            .await?
+        else {
+            return Err(error(&"unexpected inlay hints response"));
+        };
+        Ok(Some(result))
     }
 
     async fn document_color(
@@ -1226,11 +1416,16 @@ impl LanguageServer for Backend {
             .map(|item| (item.uri.to_string(), item.value))
             .collect();
 
-        self.workspace_query(
-            workspace::Request::Diagnostics(previous),
-            params.work_done_progress_params.work_done_token,
-        )
-        .await
+        let Response::Diagnostics(result) = self
+            .workspace_query(
+                workspace::Request::Diagnostics(previous),
+                params.work_done_progress_params.work_done_token,
+            )
+            .await?
+        else {
+            return Err(error(&"unexpected workspace diagnostics response"));
+        };
+        Ok(lsp::WorkspaceDiagnosticReportResult::Report(result))
     }
 
     async fn diagnostic(
@@ -1239,11 +1434,16 @@ impl LanguageServer for Backend {
     ) -> Result<lsp::DocumentDiagnosticReportResult> {
         let path = document::path(&params.text_document.uri).map_err(|failure| error(&failure))?;
 
-        self.workspace_query(
-            workspace::Request::Document(path, params.previous_result_id),
-            params.work_done_progress_params.work_done_token,
-        )
-        .await
+        let Response::Diagnostic(result) = self
+            .workspace_query(
+                workspace::Request::Document(path, params.previous_result_id),
+                params.work_done_progress_params.work_done_token,
+            )
+            .await?
+        else {
+            return Err(error(&"unexpected document diagnostics response"));
+        };
+        Ok(lsp::DocumentDiagnosticReportResult::Report(result))
     }
 }
 
@@ -1297,8 +1497,7 @@ impl Backend {
     )]
     fn cancel_progress(&self, params: lsp::WorkDoneProgressCancelParams) -> std::future::Ready<()> {
         if let Ok(requests) = self.progress_requests.lock()
-            && let Some(flag) =
-                requests.get(&serde_json::to_string(&params.token).unwrap_or_default())
+            && let Some(flag) = requests.get(&params.token)
         {
             flag.store(true, Ordering::Release);
         }
@@ -1306,18 +1505,23 @@ impl Backend {
         std::future::ready(())
     }
 
-    async fn workspace_query<T: DeserializeOwned>(
+    async fn progress(&self, token: &lsp::ProgressToken, value: lsp::WorkDoneProgress) {
+        self.client
+            .send_notification::<lsp::notification::Progress>(lsp::ProgressParams {
+                token: token.clone(),
+                value: lsp::ProgressParamsValue::WorkDone(value),
+            })
+            .await;
+    }
+
+    async fn workspace_query(
         &self,
         request: workspace::Request,
         token: Option<lsp::ProgressToken>,
-    ) -> Result<T> {
+    ) -> Result<Response> {
         let cancelled = Arc::new(AtomicBool::new(false));
 
-        let key = token
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()
-            .map_err(|failure| error(&failure))?;
+        let key = token.clone();
 
         if let Some(key) = &key {
             let mut requests = self
@@ -1344,7 +1548,16 @@ impl Backend {
         let (progress, mut updates) = tokio::sync::mpsc::unbounded_channel();
 
         if let Some(token) = &token {
-            self.client.send_notification::<lsp::notification::Progress>(decode(json!({"token": token, "value": {"kind": "begin", "title": "Instar workspace", "cancellable": true, "percentage": 0}}))?).await;
+            self.progress(
+                token,
+                lsp::WorkDoneProgress::Begin(lsp::WorkDoneProgressBegin {
+                    title: "Instar workspace".to_owned(),
+                    cancellable: Some(true),
+                    message: None,
+                    percentage: Some(0),
+                }),
+            )
+            .await;
         }
 
         self.workspace
@@ -1363,23 +1576,28 @@ impl Backend {
             tokio::select! {
                 result = &mut response => break result.map_err(|failure| error(&failure))?,
                 Some((done, total)) = updates.recv() => {
-                    let percentage = done.saturating_mul(100).checked_div(total).unwrap_or(0);
+                    let percentage = u32::try_from(done.saturating_mul(100).checked_div(total).unwrap_or(0))
+                        .unwrap_or(100);
                     if previous != Some(percentage) && percentage < 100 {
                         previous = Some(percentage);
                         if let Some(token) = &token {
-                            self.client.send_notification::<lsp::notification::Progress>(decode(json!({"token": token, "value": {"kind": "report", "cancellable": true, "percentage": percentage, "message": format!("{done}/{total} modules")}}))?).await;
+                            self.progress(token, lsp::WorkDoneProgress::Report(lsp::WorkDoneProgressReport {
+                                cancellable: Some(true),
+                                percentage: Some(percentage),
+                                message: Some(format!("{done}/{total} modules")),
+                            })).await;
                         }
                     }
                 }
             }
         };
 
-        if let Some(token) = token {
-            self.client
-                .send_notification::<lsp::notification::Progress>(decode(
-                    json!({"token": token, "value": {"kind": "end"}}),
-                )?)
-                .await;
+        if let Some(token) = &token {
+            self.progress(
+                token,
+                lsp::WorkDoneProgress::End(lsp::WorkDoneProgressEnd::default()),
+            )
+            .await;
         }
 
         let value = result.map_err(|failure| {
@@ -1394,7 +1612,7 @@ impl Backend {
             return Err(Error::content_modified());
         }
 
-        decode(value)
+        Ok(value)
     }
 
     fn compatible_edit(&self, mut edit: WorkspaceEdit) -> Result<WorkspaceEdit> {

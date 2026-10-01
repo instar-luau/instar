@@ -6,8 +6,8 @@ use std::{
 };
 
 use instar_core::analysis::Editor;
-use serde_json::{Value, json};
-use tower_lsp_server::ls_types::{CompletionItemTag, Diagnostic, DocumentHighlightKind};
+use serde_json::Value;
+use tower_lsp_server::ls_types::{self as lsp, Diagnostic};
 
 use crate::document::{Document, uri};
 
@@ -164,11 +164,14 @@ impl Worker {
         )?))
     }
 
-    fn target(&mut self, name: &str, range: [u32; 4]) -> io::Result<Value> {
+    fn target(&mut self, name: &str, range: [u32; 4]) -> io::Result<lsp::Location> {
         let path = self.editor.source_path(name)?;
         let document = self.document(&path)?;
 
-        Ok(json!({"uri": document.uri, "range": document.native_range(range)}))
+        Ok(lsp::Location {
+            uri: document.uri.clone(),
+            range: document.native_range(range),
+        })
     }
 
     fn editable(&self, path: &Path) -> bool {
@@ -289,7 +292,13 @@ impl Worker {
         Ok(selected)
     }
 
-    fn rename(&mut self, path: &Path, line: u32, column: u32, name: &str) -> io::Result<Value> {
+    fn rename(
+        &mut self,
+        path: &Path,
+        line: u32,
+        column: u32,
+        name: &str,
+    ) -> io::Result<lsp::WorkspaceEdit> {
         let (reference, uncertain) = self.reference_target(path, line, column)?;
 
         if uncertain {
@@ -370,7 +379,7 @@ impl Worker {
         ranges: BTreeMap<PathBuf, Vec<[u32; 4]>>,
         old_name: &str,
         new_name: &str,
-    ) -> io::Result<Value> {
+    ) -> io::Result<lsp::WorkspaceEdit> {
         let mut changes = Vec::new();
 
         for (path, mut ranges) in ranges {
@@ -413,15 +422,25 @@ impl Worker {
                     ));
                 };
 
-                edits.push(json!({"range": range, "newText": replacement}));
+                edits.push(lsp::OneOf::Left(lsp::TextEdit {
+                    range,
+                    new_text: replacement,
+                }));
             }
 
-            changes.push(
-                json!({"textDocument": {"uri": document.uri, "version": version}, "edits": edits}),
-            );
+            changes.push(lsp::TextDocumentEdit {
+                text_document: lsp::OptionalVersionedTextDocumentIdentifier {
+                    uri: document.uri.clone(),
+                    version,
+                },
+                edits,
+            });
         }
 
-        Ok(json!({"documentChanges": changes}))
+        Ok(lsp::WorkspaceEdit {
+            document_changes: Some(lsp::DocumentChanges::Edits(changes)),
+            ..lsp::WorkspaceEdit::default()
+        })
     }
 
     fn documentation(&mut self, path: &Path, symbol: &str) -> io::Result<Option<String>> {
@@ -488,7 +507,7 @@ impl Worker {
         Ok((!text.is_empty()).then_some(text))
     }
 
-    pub(crate) fn query(&mut self, path: &Path, query: &Query) -> io::Result<Value> {
+    pub(crate) fn query(&mut self, path: &Path, query: &Query) -> io::Result<crate::Response> {
         if matches!(query, Query::Implementation(..)) {
             self.index_workspace()?;
         }
@@ -496,46 +515,29 @@ impl Worker {
         let document = self.document(path)?;
 
         match *query {
-            Query::Hover(line, column) => self.hover(&document, line, column),
-            Query::Completion(line, column) => self.completion(&document, line, column),
+            Query::Hover(line, column) => self
+                .hover(&document, line, column)
+                .map(crate::Response::Hover),
+            Query::Completion(line, column) => self
+                .completion(&document, line, column)
+                .map(crate::Response::Completion),
 
-            Query::Hints(range, types, parameters, requires) => {
-                self.hints(&document, range, types, parameters, requires)
-            }
+            Query::Hints(range, types, parameters, requires) => self
+                .hints(&document, range, types, parameters, requires)
+                .map(crate::Response::Hints),
 
-            Query::Actions(range) => self.actions(&document, range),
+            Query::Actions(range) => self.actions(&document, range).map(crate::Response::Actions),
 
-            Query::Signature(line, column) => {
-                let result = self.editor.query(path, |checker, host, name| {
-                    checker.signature_help(host, name, line, column)
-                })?;
-
-                let Some(result) = result else {
-                    return Ok(Value::Null);
-                };
-
-                let mut signature = json!({"label": result.label, "parameters": result.parameters.into_iter().map(|label| json!({"label": label})).collect::<Vec<_>>()});
-
-                let offset =
-                    document.offset(document.native_range([line, column, line, column]).start)?;
-
-                if let Some(callee) = document.features().callee(offset) {
-                    let (line, column) = document.byte_position(document.position(callee))?;
-
-                    if let Some(docs) = self.source_documentation(path, line, column)? {
-                        signature["documentation"] = json!({"kind": "markdown", "value": docs});
-                    }
-                }
-
-                Ok(
-                    json!({"signatures": [signature], "activeSignature": 0, "activeParameter": result.active_parameter}),
-                )
-            }
+            Query::Signature(line, column) => self
+                .signature(&document, line, column)
+                .map(crate::Response::Signature),
 
             Query::Definition(line, column)
             | Query::Declaration(line, column)
             | Query::Implementation(line, column)
-            | Query::TypeDefinition(line, column) => self.navigation(path, query, line, column),
+            | Query::TypeDefinition(line, column) => self
+                .navigation(path, query, line, column)
+                .map(crate::Response::Locations),
 
             Query::References(line, column, include_declaration) => {
                 let (target, uncertain) = self.reference_target(path, line, column)?;
@@ -568,19 +570,32 @@ impl Worker {
                     }
                 }
 
-                targets.sort_by_key(Value::to_string);
+                targets.sort_unstable_by(|left, right| {
+                    (left.uri.as_str(), left.range.start, left.range.end).cmp(&(
+                        right.uri.as_str(),
+                        right.range.start,
+                        right.range.end,
+                    ))
+                });
                 targets.dedup();
 
-                Ok(json!(targets))
+                Ok(crate::Response::Locations(targets))
             }
 
             Query::Prepare(line, column) => {
                 let result = self.rename_target(path, line, column)?;
 
-                Ok(result.map_or(Value::Null, |(_, target)| json!({"range": document.native_range(target.selection), "placeholder": target.name})))
+                Ok(crate::Response::Prepare(result.map(|(_, target)| {
+                    lsp::PrepareRenameResponse::RangeWithPlaceholder {
+                        range: document.native_range(target.selection),
+                        placeholder: target.name,
+                    }
+                })))
             }
 
-            Query::Rename(line, column, ref name) => self.rename(path, line, column, name),
+            Query::Rename(line, column, ref name) => self
+                .rename(path, line, column, name)
+                .map(crate::Response::Edit),
 
             Query::Highlights(line, column) => {
                 let references = self.editor.query(path, |checker, host, name| {
@@ -595,15 +610,68 @@ impl Worker {
                         .source_path(&reference.path)
                         .is_ok_and(|target| target == path)
                     {
-                        highlights.push(
-                            json!({"range": document.native_range(reference.range), "kind": DocumentHighlightKind::TEXT}),
-                        );
+                        highlights.push(lsp::DocumentHighlight {
+                            range: document.native_range(reference.range),
+                            kind: Some(lsp::DocumentHighlightKind::TEXT),
+                        });
                     }
                 }
 
-                Ok(json!(highlights))
+                Ok(crate::Response::Highlights(highlights))
             }
         }
+    }
+
+    fn signature(
+        &mut self,
+        document: &Document,
+        line: u32,
+        column: u32,
+    ) -> io::Result<Option<lsp::SignatureHelp>> {
+        let path = &document.path;
+        let result = self.editor.query(path, |checker, host, name| {
+            checker.signature_help(host, name, line, column)
+        })?;
+
+        let Some(result) = result else {
+            return Ok(None);
+        };
+
+        let mut signature = lsp::SignatureInformation {
+            label: result.label,
+            parameters: Some(
+                result
+                    .parameters
+                    .into_iter()
+                    .map(|label| lsp::ParameterInformation {
+                        label: lsp::ParameterLabel::Simple(label),
+                        documentation: None,
+                    })
+                    .collect(),
+            ),
+            documentation: None,
+            active_parameter: None,
+        };
+
+        let offset = document.offset(document.native_range([line, column, line, column]).start)?;
+
+        if let Some(callee) = document.features().callee(offset) {
+            let (line, column) = document.byte_position(document.position(callee))?;
+
+            if let Some(docs) = self.source_documentation(path, line, column)? {
+                signature.documentation =
+                    Some(lsp::Documentation::MarkupContent(lsp::MarkupContent {
+                        kind: lsp::MarkupKind::Markdown,
+                        value: docs,
+                    }));
+            }
+        }
+
+        Ok(Some(lsp::SignatureHelp {
+            signatures: vec![signature],
+            active_signature: Some(0),
+            active_parameter: result.active_parameter,
+        }))
     }
 
     fn navigation(
@@ -612,7 +680,7 @@ impl Worker {
         query: &Query,
         line: u32,
         column: u32,
-    ) -> io::Result<Value> {
+    ) -> io::Result<Vec<lsp::Location>> {
         let results = self
             .editor
             .query_all(path, |checker, host, name| match query {
@@ -630,13 +698,24 @@ impl Worker {
             }
         }
 
-        targets.sort_by_key(Value::to_string);
+        targets.sort_unstable_by(|left, right| {
+            (left.uri.as_str(), left.range.start, left.range.end).cmp(&(
+                right.uri.as_str(),
+                right.range.start,
+                right.range.end,
+            ))
+        });
         targets.dedup();
 
-        Ok(json!(targets))
+        Ok(targets)
     }
 
-    fn hover(&mut self, document: &Document, line: u32, column: u32) -> io::Result<Value> {
+    fn hover(
+        &mut self,
+        document: &Document,
+        line: u32,
+        column: u32,
+    ) -> io::Result<Option<lsp::Hover>> {
         let path = &document.path;
 
         let result = self.editor.query(path, |checker, host, name| {
@@ -644,7 +723,7 @@ impl Worker {
         })?;
 
         let Some(result) = result else {
-            return Ok(Value::Null);
+            return Ok(None);
         };
 
         let label = if result.name.is_empty() {
@@ -667,16 +746,21 @@ impl Worker {
             text.push_str(&docs);
         }
 
-        let mut hover = json!({"contents": {"kind": "markdown", "value": text}});
-
-        if let Some(range) = result.range {
-            hover["range"] = json!(document.native_range(range));
-        }
-
-        Ok(hover)
+        Ok(Some(lsp::Hover {
+            contents: lsp::HoverContents::Markup(lsp::MarkupContent {
+                kind: lsp::MarkupKind::Markdown,
+                value: text,
+            }),
+            range: result.range.map(|range| document.native_range(range)),
+        }))
     }
 
-    fn completion(&mut self, document: &Document, line: u32, column: u32) -> io::Result<Value> {
+    fn completion(
+        &mut self,
+        document: &Document,
+        line: u32,
+        column: u32,
+    ) -> io::Result<lsp::CompletionResponse> {
         let path = &document.path;
 
         let results = self.editor.query(path, |checker, host, name| {
@@ -686,9 +770,40 @@ impl Worker {
         let mut items = Vec::new();
 
         for result in &results {
-            // The bridge completion enum is zero-based; LSP's corresponding enum starts at one.
-            let mut item = json!({"label": result.name, "detail": result.detail,
-                        "kind": result.kind as u32 + 1});
+            use instar_bridge::native::EditorCompletionKind as Kind;
+
+            let mut item = lsp::CompletionItem {
+                label: result.name.clone(),
+                detail: Some(result.detail.clone()),
+                kind: Some(match result.kind {
+                    Kind::CompletionText => lsp::CompletionItemKind::TEXT,
+                    Kind::CompletionMethod => lsp::CompletionItemKind::METHOD,
+                    Kind::CompletionFunction => lsp::CompletionItemKind::FUNCTION,
+                    Kind::CompletionConstructor => lsp::CompletionItemKind::CONSTRUCTOR,
+                    Kind::CompletionField => lsp::CompletionItemKind::FIELD,
+                    Kind::CompletionVariable => lsp::CompletionItemKind::VARIABLE,
+                    Kind::CompletionClass => lsp::CompletionItemKind::CLASS,
+                    Kind::CompletionInterface => lsp::CompletionItemKind::INTERFACE,
+                    Kind::CompletionModule => lsp::CompletionItemKind::MODULE,
+                    Kind::CompletionProperty => lsp::CompletionItemKind::PROPERTY,
+                    Kind::CompletionUnit => lsp::CompletionItemKind::UNIT,
+                    Kind::CompletionValue => lsp::CompletionItemKind::VALUE,
+                    Kind::CompletionEnum => lsp::CompletionItemKind::ENUM,
+                    Kind::CompletionKeyword => lsp::CompletionItemKind::KEYWORD,
+                    Kind::CompletionSnippet => lsp::CompletionItemKind::SNIPPET,
+                    Kind::CompletionColor => lsp::CompletionItemKind::COLOR,
+                    Kind::CompletionFile => lsp::CompletionItemKind::FILE,
+                    Kind::CompletionReference => lsp::CompletionItemKind::REFERENCE,
+                    Kind::CompletionFolder => lsp::CompletionItemKind::FOLDER,
+                    Kind::CompletionEnumMember => lsp::CompletionItemKind::ENUM_MEMBER,
+                    Kind::CompletionConstant => lsp::CompletionItemKind::CONSTANT,
+                    Kind::CompletionStruct => lsp::CompletionItemKind::STRUCT,
+                    Kind::CompletionEvent => lsp::CompletionItemKind::EVENT,
+                    Kind::CompletionOperator => lsp::CompletionItemKind::OPERATOR,
+                    Kind::CompletionTypeParameter => lsp::CompletionItemKind::TYPE_PARAMETER,
+                }),
+                ..lsp::CompletionItem::default()
+            };
 
             let docs = match self.documentation(path, &result.documentation_symbol)? {
                 Some(docs) => Some(docs),
@@ -700,11 +815,14 @@ impl Worker {
             };
 
             if let Some(docs) = docs {
-                item["documentation"] = json!({"kind": "markdown", "value": docs});
+                item.documentation = Some(lsp::Documentation::MarkupContent(lsp::MarkupContent {
+                    kind: lsp::MarkupKind::Markdown,
+                    value: docs,
+                }));
             }
 
             if result.deprecated {
-                item["tags"] = json!([CompletionItemTag::DEPRECATED]);
+                item.tags = Some(vec![lsp::CompletionItemTag::DEPRECATED]);
             }
 
             let insert = if result.insert.is_empty() {
@@ -714,10 +832,12 @@ impl Worker {
             };
 
             if let Some(range) = result.range {
-                item["textEdit"] =
-                    json!({"range": document.native_range(range), "newText": insert});
+                item.text_edit = Some(lsp::CompletionTextEdit::Edit(lsp::TextEdit {
+                    range: document.native_range(range),
+                    new_text: insert.to_owned(),
+                }));
             } else {
-                item["insertText"] = json!(insert);
+                item.insert_text = Some(insert.to_owned());
             }
 
             items.push(item);
@@ -735,7 +855,10 @@ impl Worker {
             })?);
         }
 
-        Ok(json!({"isIncomplete": incomplete, "items": items}))
+        Ok(lsp::CompletionResponse::List(lsp::CompletionList {
+            is_incomplete: incomplete,
+            items,
+        }))
     }
 
     fn declaration_documentation(
@@ -779,9 +902,9 @@ impl Worker {
         types: bool,
         parameters: bool,
         requires: bool,
-    ) -> io::Result<Value> {
+    ) -> io::Result<Vec<lsp::InlayHint>> {
         if !types && !parameters {
-            return Ok(json!([]));
+            return Ok(Vec::new());
         }
 
         let hints = self.editor.query(&document.path, |checker, host, name| {
@@ -835,17 +958,30 @@ impl Worker {
                 format!(": {}", hint.type_)
             };
 
-            result.push(json!({"position": position, "label": label, "kind": if parameter { 2 } else { 1 }, "paddingRight": parameter}));
+            result.push(lsp::InlayHint {
+                position,
+                label: lsp::InlayHintLabel::String(label),
+                kind: Some(if parameter {
+                    lsp::InlayHintKind::PARAMETER
+                } else {
+                    lsp::InlayHintKind::TYPE
+                }),
+                padding_right: Some(parameter),
+                padding_left: None,
+                text_edits: None,
+                tooltip: None,
+                data: None,
+            });
         }
 
-        Ok(json!(result))
+        Ok(result)
     }
 
     fn actions(
         &mut self,
         document: &Document,
         requested: tower_lsp_server::ls_types::Range,
-    ) -> io::Result<Value> {
+    ) -> io::Result<lsp::CodeActionResponse> {
         self.check_diagnostics(self.revision)?;
 
         let mut actions = Vec::new();
@@ -891,17 +1027,35 @@ impl Worker {
                 .workspace
                 .imports(document, site, &services, &|name| globals.contains(name))?
             {
-                if item["label"].as_str() != Some(name) {
+                if item.label != name {
                     continue;
                 }
 
-                let mut edits = item["additionalTextEdits"]
-                    .as_array()
-                    .cloned()
-                    .unwrap_or_default();
+                let Some(lsp::CompletionTextEdit::Edit(edit)) = item.text_edit else {
+                    continue;
+                };
 
-                edits.push(item["textEdit"].clone());
-                actions.push(json!({"title": format!("Import {name} from {}", item["detail"].as_str().unwrap_or("")), "kind": "quickfix", "diagnostics": [diagnostic], "edit": {"documentChanges": [{"textDocument": {"uri": document.uri, "version": document.version}, "edits": edits}]}}));
+                let mut edits = item.additional_text_edits.unwrap_or_default();
+                edits.push(edit);
+                let detail = item.detail.as_deref().unwrap_or("");
+                actions.push(lsp::CodeActionOrCommand::CodeAction(lsp::CodeAction {
+                    title: format!("Import {name} from {detail}"),
+                    kind: Some(lsp::CodeActionKind::QUICKFIX),
+                    diagnostics: Some(vec![diagnostic.clone()]),
+                    edit: Some(lsp::WorkspaceEdit {
+                        document_changes: Some(lsp::DocumentChanges::Edits(vec![
+                            lsp::TextDocumentEdit {
+                                text_document: lsp::OptionalVersionedTextDocumentIdentifier {
+                                    uri: document.uri.clone(),
+                                    version: Some(document.version),
+                                },
+                                edits: edits.into_iter().map(lsp::OneOf::Left).collect(),
+                            },
+                        ])),
+                        ..lsp::WorkspaceEdit::default()
+                    }),
+                    ..lsp::CodeAction::default()
+                }));
             }
         }
 
@@ -926,10 +1080,29 @@ impl Worker {
                 continue;
             }
 
-            actions.push(json!({"title": "Remove unused binding", "kind": "quickfix", "edit": {"documentChanges": [{"textDocument": {"uri": document.uri, "version": document.version}, "edits": [{"range": document.range(local.statement.start, local.statement.end), "newText": replacement}]}]}}));
+            actions.push(lsp::CodeActionOrCommand::CodeAction(lsp::CodeAction {
+                title: "Remove unused binding".into(),
+                kind: Some(lsp::CodeActionKind::QUICKFIX),
+                edit: Some(lsp::WorkspaceEdit {
+                    document_changes: Some(lsp::DocumentChanges::Edits(vec![
+                        lsp::TextDocumentEdit {
+                            text_document: lsp::OptionalVersionedTextDocumentIdentifier {
+                                uri: document.uri.clone(),
+                                version: Some(document.version),
+                            },
+                            edits: vec![lsp::OneOf::Left(lsp::TextEdit {
+                                range: document.range(local.statement.start, local.statement.end),
+                                new_text: replacement.clone(),
+                            })],
+                        },
+                    ])),
+                    ..lsp::WorkspaceEdit::default()
+                }),
+                ..lsp::CodeAction::default()
+            }));
         }
 
-        Ok(json!(actions))
+        Ok(actions)
     }
 }
 
@@ -1033,12 +1206,32 @@ mod tests {
         for diagnostics in [false, true] {
             let mut worker = Worker::default();
             worker.update(&snapshot, diagnostics).unwrap();
-            let actions = worker.query(&path, &Query::Actions(range)).unwrap();
-            assert!(actions.as_array().unwrap().iter().any(|action| {
-                action["title"]
-                    .as_str()
-                    .is_some_and(|title| title.starts_with("Import Widget from "))
-                    && action["edit"]["documentChanges"][0]["textDocument"]["version"] == 1
+            let crate::Response::Actions(actions) =
+                worker.query(&path, &Query::Actions(range)).unwrap()
+            else {
+                panic!("expected code actions");
+            };
+            assert!(actions.iter().any(|action| {
+                let lsp::CodeActionOrCommand::CodeAction(action) = action else {
+                    return false;
+                };
+                let Some(lsp::DocumentChanges::Edits(changes)) = action
+                    .edit
+                    .as_ref()
+                    .and_then(|edit| edit.document_changes.as_ref())
+                else {
+                    return false;
+                };
+                action.title.starts_with("Import Widget from ")
+                    && changes[0].text_document.version == Some(1)
+                    && changes[0].text_document.uri == uri(&path).unwrap()
+                    && changes[0].edits.iter().any(|edit| {
+                        matches!(edit, lsp::OneOf::Left(edit) if edit.new_text.contains("require("))
+                    })
+                    && changes[0].edits.iter().any(|edit| {
+                        matches!(edit, lsp::OneOf::Left(edit) if edit.range == range && edit.new_text == "Widget")
+                    })
+                    && action.diagnostics.as_ref().is_some_and(|items| !items.is_empty())
             }));
 
             if let Some(expected) = &expected {
@@ -1054,10 +1247,12 @@ mod tests {
                 Arc::new(Document::new(uri(&path).unwrap(), 2, "return 1\n".into()).unwrap()),
             );
             worker.update(&changed, false).unwrap();
-            assert_eq!(
-                worker.query(&path, &Query::Actions(range)).unwrap(),
-                json!([])
-            );
+            let crate::Response::Actions(actions) =
+                worker.query(&path, &Query::Actions(range)).unwrap()
+            else {
+                panic!("expected code actions");
+            };
+            assert_eq!(actions, lsp::CodeActionResponse::new());
         }
 
         std::fs::remove_dir_all(directory).unwrap();
