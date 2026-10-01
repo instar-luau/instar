@@ -98,6 +98,8 @@ struct Backend {
     state: Arc<Mutex<Snapshot>>,
     revision: Arc<AtomicU64>,
     queued: Arc<AtomicBool>,
+    pull_diagnostics: Arc<AtomicBool>,
+    diagnostic_refresh: Arc<AtomicBool>,
     commands: mpsc::Sender<Command>,
     imports: mpsc::Sender<Option<imports::Command>>,
     threads: std::sync::Mutex<Vec<thread::JoinHandle<()>>>,
@@ -128,10 +130,14 @@ impl Backend {
         let state = Arc::new(Mutex::new(Snapshot::default()));
         let revision = Arc::new(AtomicU64::new(0));
         let queued = Arc::new(AtomicBool::new(false));
+        let pull_diagnostics = Arc::new(AtomicBool::new(false));
+        let diagnostic_refresh = Arc::new(AtomicBool::new(false));
         let (commands, receiver) = mpsc::channel();
         let worker_state = Arc::clone(&state);
         let worker_revision = Arc::clone(&revision);
         let worker_queued = Arc::clone(&queued);
+        let worker_pull_diagnostics = Arc::clone(&pull_diagnostics);
+        let worker_diagnostic_refresh = Arc::clone(&diagnostic_refresh);
         let worker_client = client.clone();
         let runtime = tokio::runtime::Handle::current();
 
@@ -150,17 +156,15 @@ impl Backend {
 
                         Err(mpsc::RecvTimeoutError::Timeout) => {
                             diagnostic_deadline = None;
-                            let snapshot = worker_state.blocking_lock().clone();
-                            let checked = worker.update(&snapshot, true);
-                            let diagnostics = worker.diagnostics.clone();
 
-                            runtime.spawn(Self::publish(
+                            Self::update_diagnostics(
+                                &mut worker,
                                 worker_client.clone(),
-                                Arc::clone(&worker_state),
-                                snapshot,
-                                diagnostics,
-                                checked,
-                            ));
+                                &worker_state,
+                                &runtime,
+                                worker_pull_diagnostics.load(Ordering::Acquire),
+                                worker_diagnostic_refresh.load(Ordering::Acquire),
+                            );
 
                             continue;
                         }
@@ -225,6 +229,8 @@ impl Backend {
             state,
             revision,
             queued,
+            pull_diagnostics,
+            diagnostic_refresh,
             commands,
             imports,
             threads: std::sync::Mutex::new(vec![thread, import_thread, workspace_thread]),
@@ -291,6 +297,39 @@ impl Backend {
         Ok(())
     }
 
+    fn update_diagnostics(
+        worker: &mut Worker,
+        client: Client,
+        state: &Arc<Mutex<Snapshot>>,
+        runtime: &tokio::runtime::Handle,
+        pull: bool,
+        refresh: bool,
+    ) {
+        if pull {
+            if refresh {
+                runtime.spawn(async move {
+                    if let Err(failure) = client.workspace_diagnostic_refresh().await {
+                        client
+                            .log_message(MessageType::WARNING, failure.to_string())
+                            .await;
+                    }
+                });
+            }
+        } else {
+            let snapshot = state.blocking_lock().clone();
+            let checked = worker.update(&snapshot, true);
+            let diagnostics = worker.diagnostics.clone();
+
+            runtime.spawn(Self::publish(
+                client,
+                Arc::clone(state),
+                snapshot,
+                diagnostics,
+                checked,
+            ));
+        }
+    }
+
     async fn publish(
         client: Client,
         state: Arc<Mutex<Snapshot>>,
@@ -333,7 +372,10 @@ impl Backend {
         state.revision += 1;
         self.revision.store(state.revision, Ordering::Release);
 
-        if !self.queued.swap(true, Ordering::AcqRel) {
+        if (!self.pull_diagnostics.load(Ordering::Acquire)
+            || self.diagnostic_refresh.load(Ordering::Acquire))
+            && !self.queued.swap(true, Ordering::AcqRel)
+        {
             drop(self.commands.send(Command::Wake));
         }
     }
@@ -359,24 +401,37 @@ impl Backend {
 
     async fn ready_document(&self, uri: &Uri) -> Result<(u64, Arc<Document>)> {
         let path = document::path(uri).map_err(|failure| error(&failure))?;
+        let state = self.ready_state(Some(&path)).await;
 
+        let document = state
+            .documents
+            .get(&path)
+            .cloned()
+            .ok_or_else(|| Error::invalid_params("document is not open"))?;
+
+        Ok((state.revision, document))
+    }
+
+    async fn ready_state(
+        &self,
+        path: Option<&std::path::Path>,
+    ) -> tokio::sync::MutexGuard<'_, Snapshot> {
         loop {
             let state = self.state.lock().await;
+            let preparing = match path {
+                Some(path) => state.preparing.get(path),
+                None => state.preparing.values().next(),
+            }
+            .cloned();
 
-            if let Some(preparing) = state.preparing.get(&path).cloned() {
+            if let Some(preparing) = preparing {
                 let notified = preparing.notified();
                 tokio::pin!(notified);
                 notified.as_mut().enable();
                 drop(state);
                 notified.await;
             } else {
-                let document = state
-                    .documents
-                    .get(&path)
-                    .cloned()
-                    .ok_or_else(|| Error::invalid_params("document is not open"))?;
-
-                return Ok((state.revision, document));
+                return state;
             }
         }
     }
@@ -532,6 +587,21 @@ impl LanguageServer for Backend {
         let capabilities = &initialization["capabilities"];
         self.configure_hints(&initialization["initializationOptions"])?;
 
+        let pull_diagnostics = capabilities
+            .pointer("/textDocument/diagnostic")
+            .is_some_and(Value::is_object);
+
+        self.pull_diagnostics
+            .store(pull_diagnostics, Ordering::Release);
+
+        self.diagnostic_refresh.store(
+            capabilities
+                .pointer("/workspace/diagnostics/refreshSupport")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            Ordering::Release,
+        );
+
         self.versioned_edits.store(
             capabilities
                 .pointer("/workspace/workspaceEdit/documentChanges")
@@ -591,7 +661,7 @@ impl LanguageServer for Backend {
                 "workspaceSymbolProvider": true,
                 "codeActionProvider": {"codeActionKinds": ["quickfix"]},
                 "inlayHintProvider": true, "colorProvider": true,
-                "diagnosticProvider": {"identifier": "instar", "interFileDependencies": true, "workspaceDiagnostics": true, "workDoneProgress": true},
+                "diagnosticProvider": pull_diagnostics.then(|| json!({"identifier": "instar", "interFileDependencies": true, "workspaceDiagnostics": true, "workDoneProgress": true})),
                 "semanticTokensProvider": {"legend": {"tokenTypes": bindings::SemanticKind::LEGEND,
                     "tokenModifiers": bindings::MODIFIER_LEGEND}, "full": true}
             }}),
@@ -763,9 +833,11 @@ impl LanguageServer for Backend {
 
             self.changed(&mut state);
 
-            self.client
-                .publish_diagnostics(params.text_document.uri, Vec::new(), None)
-                .await;
+            if !self.pull_diagnostics.load(Ordering::Acquire) {
+                self.client
+                    .publish_diagnostics(params.text_document.uri, Vec::new(), None)
+                    .await;
+            }
         }
     }
 
@@ -1257,7 +1329,7 @@ impl Backend {
             requests: Arc::clone(&self.progress_requests),
         };
 
-        let snapshot = self.state.lock().await.clone();
+        let snapshot = self.ready_state(None).await.clone();
         let revision = snapshot.revision;
         let (reply, mut response) = oneshot::channel();
         let (progress, mut updates) = tokio::sync::mpsc::unbounded_channel();
