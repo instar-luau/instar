@@ -1,13 +1,16 @@
 //! Project configuration, module graphs, and source tooling.
 
 mod assets;
+mod session;
 
-pub mod analysis;
+pub mod check;
 pub mod config;
+pub mod diagnostic;
+pub mod editor;
 pub mod filter;
 pub mod format;
 pub mod graph;
-pub(crate) mod lint;
+pub mod lint;
 pub mod project;
 pub mod resolve;
 pub mod roblox;

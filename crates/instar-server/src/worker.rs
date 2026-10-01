@@ -5,7 +5,7 @@ use std::{
     sync::Arc,
 };
 
-use instar_core::analysis::Editor;
+use instar_core::editor::Editor;
 use serde_json::Value;
 use tower_lsp_server::ls_types::{self as lsp, Diagnostic};
 
@@ -114,7 +114,7 @@ impl Worker {
         }
 
         if !diagnostics {
-            self.editor.check_for_query()?;
+            self.editor.prepare()?;
             self.revision = snapshot.revision;
 
             return Ok(());
@@ -131,7 +131,7 @@ impl Worker {
             return Ok(());
         }
 
-        let mut findings = self.editor.check()?;
+        let mut findings = self.editor.diagnostics()?;
         findings.retain(|finding| self.documents.contains_key(&finding.location.module.source));
         self.diagnostics = crate::document::diagnostics(findings, |path| self.document(path))?;
         self.diagnostics_revision = revision;

@@ -48,10 +48,10 @@ pub(crate) fn uri(path: &Path) -> io::Result<Uri> {
 }
 
 pub(crate) fn diagnostics(
-    findings: impl IntoIterator<Item = instar_core::analysis::Diagnostic>,
+    findings: impl IntoIterator<Item = instar_core::diagnostic::Diagnostic>,
     mut document: impl FnMut(&Path) -> io::Result<Arc<Document>>,
 ) -> io::Result<BTreeMap<PathBuf, Vec<Diagnostic>>> {
-    use instar_core::analysis::Severity;
+    use instar_core::diagnostic::Severity;
 
     let mut reports: BTreeMap<PathBuf, Vec<Diagnostic>> = BTreeMap::new();
 
@@ -457,7 +457,7 @@ mod tests {
     use super::*;
 
     use instar_core::{
-        analysis::{Diagnostic as Finding, Location as SourceLocation, Severity},
+        diagnostic::{Diagnostic as Finding, Location as SourceLocation, Severity},
         resolve::Module,
     };
 

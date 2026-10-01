@@ -10,8 +10,8 @@ use crate::{absolute, config::Config, invalid};
 /// Service whose file selection is intersected with global rules.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Service {
-    /// Type analysis.
-    Analyze,
+    /// Syntax and type checking.
+    Check,
 
     /// Source formatting.
     Format,
@@ -144,11 +144,7 @@ impl Filters {
             .append(directory, &config.include, &config.exclude)?;
 
         for (service, include, exclude) in [
-            (
-                Service::Analyze,
-                &config.analyze.include,
-                &config.analyze.exclude,
-            ),
+            (Service::Check, &config.check.include, &config.check.exclude),
             (
                 Service::Format,
                 &config.format.include,
@@ -188,6 +184,43 @@ impl Filters {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn check_and_lint_selection_are_independent() {
+        let config: Config = toml::from_str(
+            r#"
+include = ["src/**"]
+exclude = ["src/shared/global-skip.luau"]
+
+[check]
+include = ["src/check/**", "src/shared/**"]
+exclude = ["src/shared/lint-only.luau"]
+
+[lint]
+include = ["src/lint/**", "src/shared/**"]
+exclude = ["src/shared/check-only.luau"]
+"#,
+        )
+        .unwrap();
+
+        let root = crate::absolute(Path::new("project")).unwrap();
+        let mut filters = Filters::default();
+        filters.append(&root, &config).unwrap();
+
+        for (path, check, lint) in [
+            ("src/check/only.luau", true, false),
+            ("src/lint/only.luau", false, true),
+            ("src/shared/check-only.luau", true, false),
+            ("src/shared/lint-only.luau", false, true),
+            ("src/shared/both.luau", true, true),
+            ("src/shared/global-skip.luau", false, false),
+            ("outside.luau", false, false),
+        ] {
+            let path = root.join(path);
+            assert_eq!(filters.includes(&path, Service::Check), check);
+            assert_eq!(filters.includes(&path, Service::Lint), lint);
+        }
+    }
 
     #[test]
     fn prunes_only_literal_recursive_exclusions() {

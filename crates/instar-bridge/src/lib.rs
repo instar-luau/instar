@@ -401,19 +401,6 @@ pub struct CheckerOptions {
 
     /// Configures the checker for autocomplete.
     pub for_autocomplete: u8,
-
-    /// Runs lint checks.
-    pub run_lint_checks: u8,
-}
-
-/// Options used when emitting checker results.
-#[derive(Default)]
-pub struct ResultOptions {
-    /// Accumulates nested module results.
-    pub accumulate_nested: bool,
-
-    /// Emits results for autocomplete.
-    pub for_autocomplete: bool,
 }
 
 /// Roblox class metadata supplied to the checker.
@@ -491,7 +478,6 @@ impl Checker {
         let native_options = native::FrontendOptions {
             retain_full_type_graphs: options.retain_full_type_graphs,
             for_autocomplete: options.for_autocomplete,
-            run_lint_checks: options.run_lint_checks,
         };
 
         let mut error = native::String::default();
@@ -676,11 +662,15 @@ impl Checker {
         Self::call(|error| unsafe { native::checker_clear_sources(self.handle, error) })
     }
 
-    /// Checks a module and returns the names of modules that timed out.
+    /// Prepares the semantic module graph without diagnostics and returns timeout module names.
     ///
     /// # Errors
-    /// Returns an error when checking fails.
-    pub fn check(&mut self, callbacks: &mut dyn Callbacks, path: &Path) -> io::Result<Vec<String>> {
+    /// Returns an error when semantic preparation fails.
+    pub fn prepare(
+        &mut self,
+        callbacks: &mut dyn Callbacks,
+        path: &Path,
+    ) -> io::Result<Vec<String>> {
         let name = path
             .to_str()
             .ok_or_else(|| io::Error::other("module identity requires UTF-8"))?;
@@ -690,7 +680,7 @@ impl Checker {
 
             Self::items(
                 |item, context, error| unsafe {
-                    native::checker_check(checker.handle, text(name), item, context, error)
+                    native::checker_prepare(checker.handle, text(name), item, context, error)
                 },
                 &mut |name| {
                     timeouts.push(name.to_owned());
@@ -703,55 +693,32 @@ impl Checker {
         })
     }
 
-    /// Emits cached diagnostics and returns their timeout module names.
+    /// Emits cached syntax and type diagnostics for one prepared module.
     ///
     /// # Errors
-    /// Returns an error when result emission fails.
-    pub fn result(
-        &mut self,
-        callbacks: &mut dyn Callbacks,
-        path: &Path,
-    ) -> io::Result<Vec<String>> {
-        self.result_with_options(callbacks, path, &ResultOptions::default())
-    }
-
-    /// Emits diagnostics with explicit options and returns their timeout module names.
-    ///
-    /// # Errors
-    /// Returns an error when result emission fails.
-    pub fn result_with_options(
-        &mut self,
-        callbacks: &mut dyn Callbacks,
-        path: &Path,
-        options: &ResultOptions,
-    ) -> io::Result<Vec<String>> {
+    /// Returns an error when the module is not prepared or diagnostic emission fails.
+    pub fn check(&mut self, callbacks: &mut dyn Callbacks, path: &Path) -> io::Result<()> {
         let name = path
             .to_str()
             .ok_or_else(|| io::Error::other("module identity requires UTF-8"))?;
 
         self.with_callbacks(callbacks, |checker| {
-            let mut timeouts = Vec::new();
+            Self::call(|error| unsafe { native::checker_check(checker.handle, text(name), error) })
+        })
+    }
 
-            Self::items(
-                |item, context, error| unsafe {
-                    native::checker_result(
-                        checker.handle,
-                        text(name),
-                        u8::from(options.accumulate_nested),
-                        u8::from(options.for_autocomplete),
-                        item,
-                        context,
-                        error,
-                    )
-                },
-                &mut |name| {
-                    timeouts.push(name.to_owned());
+    /// Runs native lint on one prepared module and emits only warnings.
+    /// Requires retained full type graphs; sources with parse errors are skipped.
+    ///
+    /// # Errors
+    /// Returns an error when preparation or retained types are unavailable, or emission fails.
+    pub fn lint(&mut self, callbacks: &mut dyn Callbacks, path: &Path) -> io::Result<()> {
+        let name = path
+            .to_str()
+            .ok_or_else(|| io::Error::other("module identity requires UTF-8"))?;
 
-                    Ok(())
-                },
-            )?;
-
-            Ok(timeouts)
+        self.with_callbacks(callbacks, |checker| {
+            Self::call(|error| unsafe { native::checker_lint(checker.handle, text(name), error) })
         })
     }
 
@@ -1750,7 +1717,8 @@ mod tests {
 
     struct TestHost {
         config: Configuration,
-        diagnostics: Vec<(String, String)>,
+        source: Vec<u8>,
+        diagnostics: Vec<(String, String, native::DiagnosticSeverity)>,
         diagnostic_error: Option<io::Error>,
     }
 
@@ -1761,7 +1729,7 @@ mod tests {
             }
 
             Ok(Source {
-                bytes: b"function f(t)\n    t.x.y.z = 441\nend\n",
+                bytes: &self.source,
                 kind: native::SourceKind::SourceModule,
             })
         }
@@ -1775,8 +1743,11 @@ mod tests {
         }
 
         fn diagnostic(&mut self, diagnostic: Diagnostic<'_>) -> io::Result<()> {
-            self.diagnostics
-                .push((diagnostic.path.into(), diagnostic.message.into()));
+            self.diagnostics.push((
+                diagnostic.path.into(),
+                diagnostic.message.into(),
+                diagnostic.severity,
+            ));
 
             if let Some(error) = self.diagnostic_error.take() {
                 return Err(error);
@@ -1792,6 +1763,7 @@ mod tests {
 
         let mut host = TestHost {
             config: Configuration::new(br#"{"languageMode":"strict"}"#).unwrap(),
+            source: Vec::new(),
             diagnostics: Vec::new(),
             diagnostic_error: None,
         };
@@ -1855,6 +1827,154 @@ mod tests {
         );
     }
 
+    fn assert_prepared_check_and_typed_lint_are_independent() {
+        use native::DiagnosticSeverity::{DiagnosticError, DiagnosticWarning};
+
+        let path = Path::new("main");
+        let source = b"local wrong: number = \"bad\"\nlocal value: string = \"text\"\nprint(value:match(\"[]\"))\nreturn wrong\n";
+        let warning_config = br#"{"languageMode":"strict","lint":{"*":false,"FormatString":true}}"#;
+
+        let mut checker = Checker::new(&CheckerOptions {
+            retain_full_type_graphs: 1,
+            ..CheckerOptions::default()
+        })
+        .unwrap();
+
+        checker.freeze().unwrap();
+
+        let mut host = TestHost {
+            config: Configuration::new(warning_config).unwrap(),
+            source: source.to_vec(),
+            diagnostics: Vec::new(),
+            diagnostic_error: None,
+        };
+
+        assert!(checker.check(&mut host, path).is_err());
+        assert!(checker.lint(&mut host, path).is_err());
+        assert_eq!(checker.prepare(&mut host, path).unwrap().len(), 0);
+        assert_eq!(checker.prepare(&mut host, path).unwrap().len(), 0);
+        assert_eq!(host.diagnostics.len(), 0);
+
+        checker.check(&mut host, path).unwrap();
+        assert_eq!(host.diagnostics.len(), 1, "{:?}", host.diagnostics);
+        let type_diagnostics = std::mem::take(&mut host.diagnostics);
+        assert_eq!(type_diagnostics[0].0, "main");
+
+        assert_eq!(type_diagnostics[0].2, DiagnosticError);
+
+        assert!(!type_diagnostics[0].1.starts_with("FormatString:"));
+
+        checker.lint(&mut host, path).unwrap();
+        assert_eq!(host.diagnostics.len(), 1, "{:?}", host.diagnostics);
+        assert_eq!(host.diagnostics[0].0, "main");
+
+        assert!(
+            host.diagnostics[0]
+                .1
+                .starts_with("FormatString: Invalid match pattern:")
+        );
+
+        assert_eq!(host.diagnostics[0].2, DiagnosticWarning);
+
+        host.diagnostics.clear();
+
+        checker.check(&mut host, path).unwrap();
+        assert_eq!(host.diagnostics, type_diagnostics);
+        host.diagnostics.clear();
+
+        assert_pass_callback_failures(&mut checker, &mut host, path);
+
+        host.config = Configuration::new(
+            br#"{"languageMode":"strict","lint":{"*":false,"FormatString":true},"lintErrors":true}"#,
+        )
+        .unwrap();
+
+        checker.prepare(&mut host, path).unwrap();
+        assert_eq!(host.diagnostics.len(), 0);
+        checker.lint(&mut host, path).unwrap();
+        assert_eq!(host.diagnostics.len(), 1);
+
+        assert_eq!(host.diagnostics[0].2, DiagnosticError);
+
+        assert!(host.diagnostics[0].1.starts_with("FormatString:"));
+        host.diagnostics.clear();
+
+        host.config =
+            Configuration::new(br#"{"languageMode":"strict","lint":{"*":false}}"#).unwrap();
+
+        checker.lint(&mut host, path).unwrap();
+        assert_eq!(host.diagnostics.len(), 0);
+
+        host.config = Configuration::new(warning_config).unwrap();
+        host.source = [b"--!nolint FormatString\n".as_slice(), source.as_slice()].concat();
+        checker.mark_dirty(path).unwrap();
+        assert!(checker.check(&mut host, path).is_err());
+        assert!(checker.lint(&mut host, path).is_err());
+        checker.prepare(&mut host, path).unwrap();
+        assert_eq!(host.diagnostics.len(), 0);
+        checker.lint(&mut host, path).unwrap();
+        assert_eq!(host.diagnostics.len(), 0);
+        checker.check(&mut host, path).unwrap();
+        assert_eq!(host.diagnostics, type_diagnostics);
+        host.diagnostics.clear();
+
+        host.source = [source.as_slice(), b"local broken =\n".as_slice()].concat();
+        checker.mark_dirty(path).unwrap();
+        checker.prepare(&mut host, path).unwrap();
+        assert_eq!(host.diagnostics.len(), 0);
+        checker.lint(&mut host, path).unwrap();
+        assert_eq!(host.diagnostics.len(), 0);
+        checker.check(&mut host, path).unwrap();
+
+        assert!(
+            host.diagnostics.len() > type_diagnostics.len(),
+            "{:?}",
+            host.diagnostics
+        );
+
+        assert!(host.diagnostics.iter().all(|(_, message, severity)| {
+            *severity == DiagnosticError && !message.starts_with("FormatString:")
+        }));
+
+        host.diagnostics.clear();
+
+        host.source = source.to_vec();
+        let mut without_graphs = Checker::new(&CheckerOptions::default()).unwrap();
+        without_graphs.freeze().unwrap();
+        without_graphs.prepare(&mut host, path).unwrap();
+        assert_eq!(host.diagnostics.len(), 0);
+
+        assert!(
+            without_graphs
+                .lint(&mut host, path)
+                .unwrap_err()
+                .to_string()
+                .contains("retained full type graphs")
+        );
+    }
+
+    fn assert_pass_callback_failures(checker: &mut Checker, host: &mut TestHost, path: &Path) {
+        host.diagnostic_error = Some(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "check callback",
+        ));
+
+        assert_eq!(
+            checker.check(host, path).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+
+        host.diagnostics.clear();
+        host.diagnostic_error = Some(io::Error::new(io::ErrorKind::BrokenPipe, "lint callback"));
+
+        assert_eq!(
+            checker.lint(host, path).unwrap_err().kind(),
+            io::ErrorKind::BrokenPipe
+        );
+
+        host.diagnostics.clear();
+    }
+
     #[test]
     fn native_flags_and_unnamed_complexity_error_owner() {
         let original = fast_flags().unwrap();
@@ -1862,7 +1982,7 @@ mod tests {
         assert_eq!(original.get(name), Some(&FastFlagValue::Int(10_000)));
 
         assert!(set_fast_flag(name, FastFlagValue::Bool(true)).is_err());
-        assert!(set_fast_flag("FIntInstarUnknownFlag", FastFlagValue::Int(1)).is_err());
+        assert!(set_fast_flag("FIntUnknownTestFlag", FastFlagValue::Int(1)).is_err());
         assert_eq!(fast_flags().unwrap().get(name), original.get(name));
 
         set_fast_flag(name, FastFlagValue::Int(12_345)).unwrap();
@@ -1881,12 +2001,13 @@ mod tests {
         let result = (|| -> io::Result<_> {
             let mut host = TestHost {
                 config: Configuration::new(br#"{"languageMode":"strict"}"#)?,
+                source: b"function f(t)\n    t.x.y.z = 441\nend\n".to_vec(),
                 diagnostics: Vec::new(),
                 diagnostic_error: None,
             };
 
+            checker.prepare(&mut host, Path::new("main"))?;
             checker.check(&mut host, Path::new("main"))?;
-            checker.result(&mut host, Path::new("main"))?;
 
             Ok(host.diagnostics)
         })();
@@ -1896,10 +2017,12 @@ mod tests {
         let diagnostics = result.unwrap();
 
         assert!(
-            diagnostics.iter().any(|(path, message)| {
+            diagnostics.iter().any(|(path, message, _)| {
                 path == "main" && message.to_ascii_lowercase().contains("complex")
             }),
             "{diagnostics:?}"
         );
+
+        assert_prepared_check_and_typed_lint_are_independent();
     }
 }

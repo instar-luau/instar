@@ -729,7 +729,7 @@ pub(crate) fn start(
 
     let thread = std::thread::spawn(move || {
         let mut workspace = Workspace::default();
-        let mut editor = instar_core::analysis::Editor::default();
+        let mut editor = instar_core::editor::Editor::default();
 
         while let Ok(Some(command)) = receiver.recv() {
             let cancelled = || {
@@ -848,7 +848,7 @@ pub(crate) fn start(
 impl Workspace {
     fn diagnostics(
         &mut self,
-        editor: &mut instar_core::analysis::Editor,
+        editor: &mut instar_core::editor::Editor,
         previous: &[(String, String)],
         only: Option<PathBuf>,
         cancelled: &impl Fn() -> bool,
@@ -859,7 +859,7 @@ impl Workspace {
             None => self.files(cancelled)?,
         };
 
-        let diagnostics = editor.check_workspace(&files, &mut |done, total| {
+        let diagnostics = editor.workspace_diagnostics(&files, &mut |done, total| {
             if cancelled() {
                 return false;
             }

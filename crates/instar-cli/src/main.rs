@@ -12,9 +12,16 @@ use std::{
 use clap::{Parser, Subcommand};
 use console::Style;
 use indicatif::{ProgressBar, ProgressStyle};
-use instar_core::{analysis, filter::Service, format, project::Project};
 
-/// Analyze Luau projects and serve editor requests.
+use instar_core::{
+    check,
+    diagnostic::{Diagnostic, Severity},
+    filter::Service,
+    format, lint,
+    project::Project,
+};
+
+/// Check, lint, and format Luau projects and serve editor requests.
 #[derive(Parser)]
 #[command(name = "instar", version)]
 struct Cli {
@@ -28,8 +35,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Check Luau source and its dependencies.
-    Analyze {
+    /// Check syntax and types in Luau source and its dependencies.
+    Check {
+        /// Source files or directories.
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+    },
+
+    /// Lint Luau source and its dependencies.
+    Lint {
         /// Source files or directories.
         #[arg(required = true)]
         paths: Vec<PathBuf>,
@@ -112,7 +126,25 @@ fn main() -> ExitCode {
 
     let result = match command {
         Command::Lsp => instar_server::run().map(|()| false),
-        Command::Analyze { paths } => run_analyze(paths, plain, stdout_color, stderr_color),
+
+        Command::Check { paths } => run_diagnostics(
+            paths,
+            Service::Check,
+            |project, paths, progress, report| check::run(project, paths, progress, report),
+            plain,
+            stdout_color,
+            stderr_color,
+        ),
+
+        Command::Lint { paths } => run_diagnostics(
+            paths,
+            Service::Lint,
+            |project, paths, progress, report| lint::run(project, paths, progress, report),
+            plain,
+            stdout_color,
+            stderr_color,
+        ),
+
         Command::Format { paths } => run_format(paths, plain, stderr_color),
     };
 
@@ -128,8 +160,15 @@ fn main() -> ExitCode {
     }
 }
 
-fn run_analyze(
+fn run_diagnostics(
     paths: Vec<PathBuf>,
+    service: Service,
+    execute: impl FnOnce(
+        &mut Project,
+        &[PathBuf],
+        &mut dyn FnMut(&Path),
+        &mut dyn FnMut(&[Diagnostic]) -> io::Result<()>,
+    ) -> io::Result<Vec<Diagnostic>>,
     plain: bool,
     stdout_color: bool,
     stderr_color: bool,
@@ -138,33 +177,42 @@ fn run_analyze(
     let progress = progress(plain, stderr_color);
     let mut project = Project::new();
 
-    let result = expand_paths(paths, &mut project, Service::Analyze).and_then(|paths| {
+    let (present, past) = match service {
+        Service::Check => ("Checking", "Checked"),
+        Service::Lint => ("Linting", "Linted"),
+
+        Service::Format | Service::Lsp => {
+            unreachable!("diagnostic command requires a diagnostic service")
+        }
+    };
+
+    let result = expand_paths(paths, &mut project, service).and_then(|paths| {
         let count = paths.len();
-        progress.set_message("Analyzing");
+        progress.set_message(present);
         project.prepare_fast_flags(&paths)?;
 
-        let diagnostics = if plain {
-            analysis::check(&mut project, &paths)?
-        } else {
-            analysis::check_streaming(
-                &mut project,
-                &paths,
-                |path| {
-                    if !progress.is_hidden() {
-                        progress.set_message(format!("Analyzing {}", path.display()));
-                    }
-                },
-                |batch| {
-                    progress.suspend(|| {
-                        for diagnostic in batch {
-                            print_diagnostic(diagnostic, stdout_color)?;
-                        }
+        let diagnostics = execute(
+            &mut project,
+            &paths,
+            &mut |path| {
+                if !progress.is_hidden() {
+                    progress.set_message(format!("{present} {}", path.display()));
+                }
+            },
+            &mut |batch| {
+                if plain {
+                    return Ok(());
+                }
 
-                        Ok(())
-                    })
-                },
-            )?
-        };
+                progress.suspend(|| {
+                    for diagnostic in batch {
+                        print_diagnostic(diagnostic, stdout_color)?;
+                    }
+
+                    Ok(())
+                })
+            },
+        )?;
 
         Ok((diagnostics, count))
     });
@@ -184,12 +232,12 @@ fn run_analyze(
 
         let errors = diagnostics
             .iter()
-            .filter(|diagnostic| diagnostic.severity == analysis::Severity::Error)
+            .filter(|diagnostic| diagnostic.severity == Severity::Error)
             .count();
 
         let warnings = diagnostics
             .iter()
-            .filter(|diagnostic| diagnostic.severity == analysis::Severity::Warning)
+            .filter(|diagnostic| diagnostic.severity == Severity::Warning)
             .count();
 
         let infos = diagnostics.len() - errors - warnings;
@@ -208,7 +256,7 @@ fn run_analyze(
 
         eprintln!(
             "{} {count} {}: {errors} errors, {warnings} warnings, {infos} infos in {:.2?}",
-            style.apply_to("Analyzed"),
+            style.apply_to(past),
             if count == 1 { "input" } else { "inputs" },
             started.elapsed()
         );
@@ -313,18 +361,18 @@ fn show_progress(progress: &ProgressBar, task: &'static str, count: usize, color
     progress.set_style(ProgressStyle::with_template(template).expect("static progress template"));
 }
 
-fn print_diagnostic(diagnostic: &analysis::Diagnostic, color: bool) -> io::Result<()> {
+fn print_diagnostic(diagnostic: &Diagnostic, color: bool) -> io::Result<()> {
     let severity = match diagnostic.severity {
-        analysis::Severity::Error => "error",
-        analysis::Severity::Warning => "warning",
-        analysis::Severity::Information => "info",
+        Severity::Error => "error",
+        Severity::Warning => "warning",
+        Severity::Information => "info",
     };
 
     let style = if color {
         match diagnostic.severity {
-            analysis::Severity::Error => Style::new().red().for_stdout(),
-            analysis::Severity::Warning => Style::new().yellow().for_stdout(),
-            analysis::Severity::Information => Style::new().cyan().for_stdout(),
+            Severity::Error => Style::new().red().for_stdout(),
+            Severity::Warning => Style::new().yellow().for_stdout(),
+            Severity::Information => Style::new().cyan().for_stdout(),
         }
     } else {
         Style::new()
