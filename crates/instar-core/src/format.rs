@@ -1007,7 +1007,7 @@ fn call_content_layout(
     function_arguments: &[(usize, Span)],
 ) -> (bool, usize) {
     let first = function_arguments.partition_point(|&(call, _)| call < tokens[start].start);
-    let last = function_arguments.partition_point(|&(call, _)| call <= tokens[start].start);
+    let last = function_arguments.partition_point(|&(call, _)| call <= tokens[end].start);
     let functions = &function_arguments[first..last];
     let mut multiline = false;
     let mut width_end = end;
@@ -2759,6 +2759,86 @@ mod tests {
         );
 
         assert_eq!(source(&wrapped, &options).unwrap(), wrapped);
+    }
+
+    #[test]
+    fn keeps_nested_callback_bodies_out_of_call_width() {
+        let mut options = FormatOptions {
+            indent_style: IndentStyle::Spaces,
+            width: 40,
+            ..FormatOptions::default()
+        };
+
+        let input = concat!(
+            "outer(\n",
+            "    inner(function()\n",
+            "        if ready and active then\n",
+            "            consume()\n",
+            "            advance()\n",
+            "        end\n",
+            "    end)\n",
+            ")\n",
+            "outer(\n",
+            "    inner(function(): boolean\n",
+            "        if ready and active then\n",
+            "            consume()\n",
+            "            return true\n",
+            "        end\n",
+            "        return false\n",
+            "    end)\n",
+            ")\n",
+        );
+        let expected = concat!(
+            "outer(inner(function()\n",
+            "    if ready and active then\n",
+            "        consume()\n",
+            "        advance()\n",
+            "    end\n",
+            "end))\n",
+            "outer(inner(function(): boolean\n",
+            "    if ready and active then\n",
+            "        consume()\n",
+            "        return true\n",
+            "    end\n",
+            "    return false\n",
+            "end))\n",
+        );
+
+        let output = source(input, &options).unwrap();
+        assert_eq!(output, expected);
+        assert_eq!(source(&output, &options).unwrap(), output);
+
+        options.calls.wrap = Wrap::Preserve;
+        assert_eq!(source(input, &options).unwrap(), input);
+    }
+
+    #[test]
+    fn wraps_nested_callbacks_only_past_the_opening_line_width() {
+        let opening = "    outer(inner(function(): boolean";
+        let input = format!("function run()\n{opening}\n        return true\n    end))\nend\n");
+        let mut options = FormatOptions {
+            indent_style: IndentStyle::Spaces,
+            width: opening.len(),
+            ..FormatOptions::default()
+        };
+
+        assert_eq!(source(&input, &options).unwrap(), input);
+
+        options.width -= 1;
+        let output = source(&input, &options).unwrap();
+        assert_eq!(
+            output,
+            concat!(
+                "function run()\n",
+                "    outer(\n",
+                "        inner(function(): boolean\n",
+                "            return true\n",
+                "        end)\n",
+                "    )\n",
+                "end\n",
+            )
+        );
+        assert_eq!(source(&output, &options).unwrap(), output);
     }
 
     #[test]
