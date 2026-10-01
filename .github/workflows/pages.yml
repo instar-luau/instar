@@ -4,12 +4,12 @@ on:
   push:
     branches: [main]
     paths:
-      - schemas/instar.schema.json
-      - scripts/roblox/**
-      - scripts/roblox.nu
-      - crates/instar-bridge/vendor/luau
-      - scripts/pages.nu
       - .github/workflows/pages.yml
+      - crates/instar-bridge/vendor/luau
+      - schemas/instar.schema.json
+      - scripts/pages.nu
+      - scripts/roblox.nu
+      - scripts/roblox/**
   repository_dispatch:
     types: [release-published]
   schedule:
