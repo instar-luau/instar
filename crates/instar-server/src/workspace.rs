@@ -6,7 +6,7 @@ use std::{
     sync::Arc,
 };
 
-use instar_core::{analysis::Severity, filter::Service, project::Project, resolve::Resolver};
+use instar_core::{filter::Service, project::Project, resolve::Resolver};
 use serde_json::{Value, json};
 use tower_lsp_server::ls_types::{CompletionItemKind, Range};
 
@@ -793,39 +793,19 @@ impl Workspace {
             progress.send((done, total)).is_ok()
         })?;
 
-        let mut reports: BTreeMap<PathBuf, Vec<Value>> = files
-            .iter()
-            .cloned()
-            .map(|path| (path, Vec::new()))
-            .collect();
-
-        for diagnostic in diagnostics {
+        let mut reports = crate::document::diagnostics(diagnostics, |path| {
             check_cancelled(cancelled)?;
-            let path = diagnostic.location.module.source;
-            let document = self.document(&path)?;
+            self.document(path)
+        })?;
 
-            let severity = match diagnostic.severity {
-                Severity::Error => 1,
-                Severity::Warning => 2,
-                Severity::Information => 3,
-            };
-
-            let mut item = json!({"range": document.native_range(diagnostic.location.range), "severity": severity, "source": "instar", "message": diagnostic.message});
-
-            if let Some((location, message)) = diagnostic.related {
-                let target = self.document(&location.module.source)?;
-                item["relatedInformation"] = json!([{"location": {"uri": target.uri, "range": target.native_range(location.range)}, "message": message}]);
-            }
-
-            reports.entry(path).or_default().push(item);
+        for path in files {
+            reports.entry(path).or_default();
         }
 
         let mut items = Vec::new();
 
-        for (path, mut diagnostics) in reports {
+        for (path, diagnostics) in reports {
             check_cancelled(cancelled)?;
-            diagnostics.sort_by_key(Value::to_string);
-            diagnostics.dedup();
             let uri = uri(&path)?;
             let encoded = serde_json::to_string(&diagnostics)?;
             let mut hash = std::collections::hash_map::DefaultHasher::new();

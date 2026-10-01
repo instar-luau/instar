@@ -5,9 +5,9 @@ use std::{
     sync::Arc,
 };
 
-use instar_core::analysis::{Editor, Severity};
+use instar_core::analysis::Editor;
 use serde_json::{Value, json};
-use tower_lsp_server::ls_types::{CompletionItemTag, DiagnosticSeverity, DocumentHighlightKind};
+use tower_lsp_server::ls_types::{CompletionItemTag, Diagnostic, DocumentHighlightKind};
 
 use crate::document::{Document, uri};
 
@@ -35,7 +35,7 @@ pub(crate) struct Worker {
     indexed: bool,
     pub(crate) revision: u64,
     diagnostics_revision: u64,
-    pub(crate) diagnostics: BTreeMap<PathBuf, Vec<Value>>,
+    pub(crate) diagnostics: BTreeMap<PathBuf, Vec<Diagnostic>>,
     workspace: crate::workspace::Workspace,
 }
 
@@ -116,39 +116,9 @@ impl Worker {
             return Ok(());
         }
 
-        let findings = self.editor.check()?;
-        self.diagnostics.clear();
-
-        for diagnostic in findings {
-            let path = &diagnostic.location.module.source;
-
-            let Some(document) = self.documents.get(path) else {
-                continue;
-            };
-
-            let severity = match diagnostic.severity {
-                Severity::Error => DiagnosticSeverity::ERROR,
-                Severity::Warning => DiagnosticSeverity::WARNING,
-                Severity::Information => DiagnosticSeverity::INFORMATION,
-            };
-
-            let mut item = json!({"range": document.native_range(diagnostic.location.range),
-                "severity": severity, "source": "instar", "message": diagnostic.message});
-
-            if let Some((related, message)) = diagnostic.related
-                && let Ok(target) = self.document(&related.module.source)
-            {
-                item["relatedInformation"] = json!([{"location": {"uri": target.uri,
-                    "range": target.native_range(related.range)}, "message": message}]);
-            }
-
-            self.diagnostics.entry(path.clone()).or_default().push(item);
-        }
-
-        for items in self.diagnostics.values_mut() {
-            items.sort_by_key(Value::to_string);
-            items.dedup();
-        }
+        let mut findings = self.editor.check()?;
+        findings.retain(|finding| self.documents.contains_key(&finding.location.module.source));
+        self.diagnostics = crate::document::diagnostics(findings, |path| self.document(path))?;
 
         self.diagnostics_revision = snapshot.revision;
         self.revision = snapshot.revision;
@@ -871,14 +841,11 @@ impl Worker {
             .cloned()
             .unwrap_or_default()
         {
-            let range: tower_lsp_server::ls_types::Range =
-                serde_json::from_value(diagnostic["range"].clone())?;
+            let range = diagnostic.range;
 
             if range.end < requested.start
                 || range.start > requested.end
-                || !diagnostic["message"]
-                    .as_str()
-                    .is_some_and(|message| message.contains("Unknown global"))
+                || !diagnostic.message.contains("Unknown global")
             {
                 continue;
             }
@@ -993,17 +960,16 @@ mod tests {
 
         worker.update(&snapshot, true).unwrap();
 
-        assert!(worker.diagnostics[&path].iter().any(|item| {
-            item["message"]
-                .as_str()
-                .unwrap()
-                .contains("length_as_condition")
-        }));
+        assert!(
+            worker.diagnostics[&path]
+                .iter()
+                .any(|item| item.message.contains("length_as_condition"))
+        );
 
         assert!(
             worker.diagnostics[&path]
                 .iter()
-                .any(|item| { item["message"].as_str().unwrap().contains("TableLiteral") })
+                .any(|item| item.message.contains("TableLiteral"))
         );
 
         snapshot.revision += 1;
