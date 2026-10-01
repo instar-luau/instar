@@ -43,6 +43,8 @@ extern "C" {
         StatusFailure = 1,
         /**A callback rejected the operation.*/
         StatusCallbackFailure = 2,
+        /**Rejected definition source.*/
+        StatusDefinitionFailure = 3,
     } Status;
 
     /**Kind of source returned by a source callback.*/

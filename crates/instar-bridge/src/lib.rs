@@ -9,6 +9,20 @@ pub mod native {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
 
+/// Rejected definition source.
+#[derive(Debug)]
+pub struct DefinitionFailure {
+    message: String,
+}
+
+impl std::fmt::Display for DefinitionFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for DefinitionFailure {}
+
 /// Current value of a supported compiled Luau fast flag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FastFlagValue {
@@ -505,6 +519,11 @@ impl Checker {
 
         if status == native::Status::StatusSuccess as i32 {
             Ok(())
+        } else if status == native::Status::StatusDefinitionFailure as i32 {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                DefinitionFailure { message },
+            ))
         } else if message.is_empty() {
             Err(io::Error::other("native checker operation failed"))
         } else {
@@ -1725,13 +1744,14 @@ mod tests {
     use std::{io, path::Path};
 
     use super::{
-        Callbacks, Checker, CheckerOptions, Configuration, Diagnostic, FastFlagValue,
-        ResolveRequest, Source, fast_flags, native, set_fast_flag,
+        Callbacks, Checker, CheckerOptions, Configuration, DefinitionFailure, Diagnostic,
+        FastFlagValue, ResolveRequest, Source, fast_flags, native, set_fast_flag,
     };
 
     struct TestHost {
         config: Configuration,
         diagnostics: Vec<(String, String)>,
+        diagnostic_error: Option<io::Error>,
     }
 
     impl Callbacks for TestHost {
@@ -1758,8 +1778,72 @@ mod tests {
             self.diagnostics
                 .push((diagnostic.path.into(), diagnostic.message.into()));
 
+            if let Some(error) = self.diagnostic_error.take() {
+                return Err(error);
+            }
+
             Ok(())
         }
+    }
+
+    #[test]
+    fn definition_rejection_is_distinct_from_operation_and_callback_failures() {
+        let mut checker = Checker::new(&CheckerOptions::default()).unwrap();
+        let mut host = TestHost {
+            config: Configuration::new(br#"{"languageMode":"strict"}"#).unwrap(),
+            diagnostics: Vec::new(),
+            diagnostic_error: None,
+        };
+        let malformed = b"declare function incomplete(";
+
+        let rejected = checker
+            .load_definition(&mut host, malformed, "rejected")
+            .unwrap_err();
+
+        assert_eq!(rejected.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            rejected
+                .get_ref()
+                .is_some_and(<dyn std::error::Error + Send + Sync>::is::<DefinitionFailure>)
+        );
+
+        let misleading_message = rejected.to_string();
+        host.diagnostic_error = Some(io::Error::new(
+            io::ErrorKind::InvalidData,
+            misleading_message.clone(),
+        ));
+        let callback = checker
+            .load_definition(&mut host, malformed, "callback")
+            .unwrap_err();
+
+        assert_eq!(callback.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(callback.to_string(), misleading_message);
+        assert!(
+            !callback
+                .get_ref()
+                .is_some_and(<dyn std::error::Error + Send + Sync>::is::<DefinitionFailure>)
+        );
+
+        let retried = checker
+            .load_definition(&mut host, malformed, "retried")
+            .unwrap_err();
+        assert!(
+            retried
+                .get_ref()
+                .is_some_and(<dyn std::error::Error + Send + Sync>::is::<DefinitionFailure>)
+        );
+
+        checker.freeze().unwrap();
+        let state = checker
+            .load_definition(&mut host, malformed, "frozen")
+            .unwrap_err();
+
+        assert_eq!(state.kind(), io::ErrorKind::Other);
+        assert!(
+            !state
+                .get_ref()
+                .is_some_and(<dyn std::error::Error + Send + Sync>::is::<DefinitionFailure>)
+        );
     }
 
     #[test]
@@ -1789,6 +1873,7 @@ mod tests {
             let mut host = TestHost {
                 config: Configuration::new(br#"{"languageMode":"strict"}"#)?,
                 diagnostics: Vec::new(),
+                diagnostic_error: None,
             };
 
             checker.check(&mut host, Path::new("main"))?;

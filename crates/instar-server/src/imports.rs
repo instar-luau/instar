@@ -30,7 +30,7 @@ pub(crate) struct Command {
     pub(crate) snapshot: Snapshot,
     pub(crate) document: Arc<Document>,
     pub(crate) request: Request,
-    pub(crate) reply: oneshot::Sender<Result<Value, String>>,
+    pub(crate) reply: oneshot::Sender<io::Result<Value>>,
 }
 
 pub(crate) fn start() -> (mpsc::Sender<Option<Command>>, thread::JoinHandle<()>) {
@@ -50,11 +50,7 @@ pub(crate) fn start() -> (mpsc::Sender<Option<Command>>, thread::JoinHandle<()>)
 
             previous = command.snapshot;
 
-            drop(
-                command
-                    .reply
-                    .send(result.map_err(|error| error.to_string())),
-            );
+            drop(command.reply.send(result));
         }
     });
 

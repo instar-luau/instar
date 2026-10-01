@@ -87,10 +87,15 @@ enum Command {
         revision: u64,
         path: PathBuf,
         query: Query,
-        reply: oneshot::Sender<std::result::Result<Value, String>>,
+        reply: oneshot::Sender<std::result::Result<Value, QueryFailure>>,
     },
 
     Stop,
+}
+
+enum QueryFailure {
+    ContentModified,
+    Operation(io::Error),
 }
 
 struct Backend {
@@ -197,7 +202,7 @@ impl Backend {
                         }
 
                         if revision != worker_revision.load(Ordering::Acquire) {
-                            drop(reply.send(Err("content modified".into())));
+                            drop(reply.send(Err(QueryFailure::ContentModified)));
                             continue;
                         }
 
@@ -206,13 +211,13 @@ impl Backend {
                         let result = worker
                             .update(&snapshot, false)
                             .and_then(|()| worker.query(&path, &query))
-                            .map_err(|failure| failure.to_string());
+                            .map_err(QueryFailure::Operation);
 
                         let result = if snapshot.revision == worker_revision.load(Ordering::Acquire)
                         {
                             result
                         } else {
-                            Err("content modified".into())
+                            Err(QueryFailure::ContentModified)
                         };
 
                         drop(reply.send(result));
@@ -450,13 +455,8 @@ impl Backend {
         match receiver.await.map_err(|failure| error(&failure))? {
             Ok(value) => decode(value),
 
-            Err(message) if message == "content modified" => Err(Error {
-                code: ErrorCode::ContentModified,
-                message: message.into(),
-                data: None,
-            }),
-
-            Err(message) => Err(error(&message)),
+            Err(QueryFailure::ContentModified) => Err(Error::content_modified()),
+            Err(QueryFailure::Operation(failure)) => Err(error(&failure)),
         }
     }
 
@@ -564,11 +564,7 @@ impl Backend {
             .get(&document.path)
             .is_none_or(|current| !Arc::ptr_eq(current, &document))
         {
-            return Err(Error {
-                code: ErrorCode::ContentModified,
-                message: "content modified".into(),
-                data: None,
-            });
+            return Err(Error::content_modified());
         }
 
         decode(value)

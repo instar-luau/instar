@@ -663,7 +663,11 @@ extern "C" {
             }
 
             if (!result.success) {
-                return failure(error, "definition loading failed");
+                if (error) {
+                    write(error, "definition loading failed");
+                }
+
+                return StatusDefinitionFailure;
             }
 
             checker->frontend.sourceModules[name] = std::make_shared<Luau::SourceModule>(std::move(result.sourceModule));

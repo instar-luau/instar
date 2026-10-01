@@ -613,7 +613,10 @@ fn load_entry_declarations(
             let before = host.diagnostics.len();
 
             if let Err(error) = checker.load_definition(host, source.as_bytes(), &name) {
-                if host.diagnostics.len() != before {
+                if error.get_ref().is_some_and(
+                    <dyn std::error::Error + Send + Sync>::is::<instar_bridge::DefinitionFailure>,
+                ) && host.diagnostics.len() != before
+                {
                     host.project.commit_declarations(definitions);
 
                     return Ok(Some(std::mem::take(&mut host.diagnostics)));
@@ -744,7 +747,10 @@ fn check_environment(
         if let Err(error) =
             checker.load_definition(&mut host, definition.source.as_bytes(), package)
         {
-            if host.diagnostics.len() != before {
+            if error.get_ref().is_some_and(
+                <dyn std::error::Error + Send + Sync>::is::<instar_bridge::DefinitionFailure>,
+            ) && host.diagnostics.len() != before
+            {
                 host.project.commit_declarations(&environment.definitions);
                 report(&host.diagnostics)?;
 
@@ -1151,7 +1157,11 @@ impl Editor {
                 if let Err(error) =
                     checker.load_definition(host, definition.source.as_bytes(), package)
                 {
-                    if error.to_string() == "definition loading failed"
+                    if error
+                        .get_ref()
+                        .is_some_and(<dyn std::error::Error + Send + Sync>::is::<
+                            instar_bridge::DefinitionFailure,
+                        >)
                         && host.diagnostics.len() > before
                     {
                         declaration_diagnostics.append(&mut host.diagnostics);
@@ -1173,7 +1183,11 @@ impl Editor {
                 let before = host.diagnostics.len();
 
                 if let Err(error) = checker.load_definition(host, source.as_bytes(), &name) {
-                    if error.to_string() == "definition loading failed"
+                    if error
+                        .get_ref()
+                        .is_some_and(<dyn std::error::Error + Send + Sync>::is::<
+                            instar_bridge::DefinitionFailure,
+                        >)
                         && host.diagnostics.len() > before
                     {
                         declaration_diagnostics.append(&mut host.diagnostics);
