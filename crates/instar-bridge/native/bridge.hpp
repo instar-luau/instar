@@ -63,8 +63,6 @@ extern "C" {
         uint8_t retain_full_type_graphs;
         /**Configure the checker for autocomplete.*/
         uint8_t for_autocomplete;
-        /**Run lint checks.*/
-        uint8_t run_lint_checks;
     } FrontendOptions;
 
     /**Options used when loading a definition source.*/
@@ -218,10 +216,12 @@ extern "C" {
     int32_t checker_parse(void *checker, Text name, String *error);
     /**Emits parse diagnostics for one module.*/
     int32_t checker_parse_diagnostics(void *checker, Text name, String *error);
-    /**Checks one module and emits its timeout module names.*/
-    int32_t checker_check(void *checker, Text name, ItemCallback timeout_callback, void *timeout_context, String *error);
-    /**Emits cached diagnostics and their timeout module names.*/
-    int32_t checker_result(void *checker, Text name, uint8_t accumulate_nested, uint8_t for_autocomplete, ItemCallback timeout_callback, void *timeout_context, String *error);
+    /**Prepares the semantic module graph without diagnostics and emits timeout module names.*/
+    int32_t checker_prepare(void *checker, Text name, ItemCallback timeout_callback, void *timeout_context, String *error);
+    /**Emits cached syntax and type diagnostics for one prepared module.*/
+    int32_t checker_check(void *checker, Text name, String *error);
+    /**Runs native lint on one prepared module with retained type graphs and emits warnings only.*/
+    int32_t checker_lint(void *checker, Text name, String *error);
     /**Enumerates global names known to the checker.*/
     int32_t checker_globals(void *checker, ItemCallback callback, void *context, String *error);
     /**Enumerates modules required by the checker.*/

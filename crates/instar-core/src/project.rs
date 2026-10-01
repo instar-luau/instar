@@ -1,7 +1,6 @@
 //! Project configuration discovery and source snapshots.
 
 use std::{
-    cell::OnceCell,
     collections::{BTreeMap, HashMap},
     fs, io,
     path::{Path, PathBuf},
@@ -62,7 +61,6 @@ pub struct EffectiveConfig {
     pub(crate) definition_order: Vec<String>,
 
     native: instar_bridge::Configuration,
-    without_lints: OnceCell<instar_bridge::Configuration>,
     filters: Filters,
 }
 
@@ -71,35 +69,6 @@ impl EffectiveConfig {
     #[must_use]
     pub const fn native(&self) -> &instar_bridge::Configuration {
         &self.native
-    }
-
-    pub(crate) fn analysis_native(
-        &self,
-        source: &Path,
-        service: Service,
-        lint: bool,
-    ) -> io::Result<&instar_bridge::Configuration> {
-        if lint
-            && self.filters.includes(source, service)
-            && self.filters.includes(source, Service::Lint)
-        {
-            return Ok(self.native());
-        }
-
-        if self.without_lints.get().is_none() {
-            let mut settings = self.settings.clone();
-            settings.lint = BTreeMap::from([("*".to_owned(), false)]);
-
-            let configuration =
-                instar_bridge::Configuration::new(settings.native_json()?.as_bytes())?;
-
-            drop(self.without_lints.set(configuration));
-        }
-
-        Ok(self
-            .without_lints
-            .get()
-            .expect("lint-free configuration initialized"))
     }
 }
 
@@ -128,7 +97,7 @@ struct Layers {
 }
 
 /// Cached project snapshot. Entry files may belong to unrelated filesystem roots.
-/// Overlay updates require invalidating resolver/checker caches; `analysis::Editor` owns that lifecycle.
+/// Overlay updates require invalidating resolver/checker caches; [`crate::editor::Editor`] owns that lifecycle.
 /// Create a new snapshot for external filesystem or configuration changes.
 #[derive(Default)]
 pub struct Project {
@@ -148,7 +117,7 @@ impl Project {
         Self::default()
     }
 
-    /// Applies the one process-wide Luau flag snapshot before analysis begins.
+    /// Applies the one process-wide Luau flag snapshot before semantic preparation begins.
     ///
     /// # Errors
     /// Returns configuration, cache, or native flag errors; conflicting projects require a restart.
@@ -697,7 +666,6 @@ impl Project {
             roblox,
             definition_order,
             native,
-            without_lints: OnceCell::new(),
             filters: layers.filters,
         });
 

@@ -437,8 +437,8 @@ pub struct Config {
     /// Global exclude globs; exclusions always win.
     pub exclude: Vec<String>,
 
-    /// Additional file selection for analysis.
-    pub analyze: FileFilter,
+    /// Additional file selection for syntax and type checking, independent of lint selection.
+    pub check: FileFilter,
 
     /// Formatting style and additional file selection.
     #[schemars(extend("default" = format_schema_default()))]
@@ -451,7 +451,7 @@ pub struct Config {
     /// Additional file selection for the language server.
     pub lsp: FileFilter,
 
-    /// Luau analysis, resolution, and process-global fast-flag settings.
+    /// Luau typechecking, resolution, and process-global fast-flag settings.
     pub luau: ManifestLuauConfig,
 
     /// Optional Roblox sourcemap configuration.
@@ -1511,5 +1511,23 @@ fn literal(node: View<'_, '_>, locals: &BTreeMap<String, Value>) -> io::Result<V
             "configuration must be declarative; unsupported expression at byte {}",
             node.span().start
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_selection_accepts_only_the_current_table_name() {
+        let config: Config =
+            toml::from_str("[check]\ninclude = [\"src/**\"]\nexclude = [\"src/generated/**\"]")
+                .unwrap();
+
+        assert_eq!(config.check.include, ["src/**"]);
+        assert_eq!(config.check.exclude, ["src/generated/**"]);
+
+        let error = toml::from_str::<Config>("[analyze]\ninclude = [\"src/**\"]").unwrap_err();
+        assert!(error.to_string().contains("unknown field"));
     }
 }

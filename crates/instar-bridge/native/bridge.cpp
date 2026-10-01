@@ -129,7 +129,6 @@ namespace {
                                                                                              Luau::FrontendOptions{
                                                                                                  options.retain_full_type_graphs != 0,
                                                                                                  options.for_autocomplete != 0,
-                                                                                                 options.run_lint_checks != 0,
                                                                                              }
                                                                                          ) {
             Luau::registerBuiltinGlobals(frontend, frontend.globals, options.for_autocomplete != 0);
@@ -178,38 +177,6 @@ namespace {
             const std::string message = std::string(Luau::LintWarning::getName(warning.code)) + ": " + warning.text;
 
             return diagnostic(path, warning.location, error ? DiagnosticError : DiagnosticWarning, message);
-        }
-
-        bool emit(const Luau::CheckResult &result, std::string_view path) {
-            for (const Luau::TypeError &error : result.errors) {
-                if (!emit(error, path)) {
-                    return false;
-                }
-            }
-
-            for (const Luau::LintWarning &warning : result.lintResult.errors) {
-                if (!emit(path, warning, true)) {
-                    return false;
-                }
-            }
-
-            for (const Luau::LintWarning &warning : result.lintResult.warnings) {
-                if (!emit(path, warning, false)) {
-                    return false;
-                }
-            }
-
-            return true;
-        }
-
-        static int32_t timeouts(const Luau::CheckResult &result, ItemCallback callback, void *context) {
-            for (const Luau::ModuleName &name : result.timeoutHits) {
-                if (!callback(context, text(name))) {
-                    return StatusCallbackFailure;
-                }
-            }
-
-            return StatusSuccess;
         }
 
         BridgeCallbacks callbacks;
@@ -735,7 +702,7 @@ extern "C" {
         }
     }
 
-    int32_t checker_check(void *handle, Text name, ItemCallback timeout_callback, void *timeout_context, String *error) {
+    int32_t checker_prepare(void *handle, Text name, ItemCallback timeout_callback, void *timeout_context, String *error) {
         try {
             if (error) {
                 *error = {};
@@ -745,23 +712,51 @@ extern "C" {
             const std::optional<std::string_view> value = view(name);
 
             if (!checker || !value || !timeout_callback) {
-                return failure(error, "invalid check request");
+                return failure(error, "invalid preparation request");
             }
 
-            if (checker->definition_names.count(std::string(*value))) {
+            const std::string path(*value);
+
+            if (checker->definition_names.count(path)) {
                 return StatusSuccess;
             }
 
-            const auto result = checker->frontend.check(std::string(*value));
+            checker->frontend.queueModuleCheck(path);
+            checker->frontend.checkQueuedModules();
 
-            return Checker::timeouts(result, timeout_callback, timeout_context);
+            std::vector<Luau::ModuleName> pending{path};
+            std::unordered_set<Luau::ModuleName> seen;
+
+            while (!pending.empty()) {
+                const Luau::ModuleName current = std::move(pending.back());
+                pending.pop_back();
+
+                if (!seen.insert(current).second) {
+                    continue;
+                }
+
+                const auto module = checker->frontend.moduleResolver.getModule(current);
+
+                if (module && module->timeout && !timeout_callback(timeout_context, text(current))) {
+                    return StatusCallbackFailure;
+                }
+
+                const auto node = checker->frontend.sourceNodes.find(current);
+
+                if (node != checker->frontend.sourceNodes.end()) {
+                    for (const Luau::ModuleName &dependency : node->second->requireSet) {
+                        pending.push_back(dependency);
+                    }
+                }
+            }
+
+            return StatusSuccess;
         } catch (...) {
             return exception_failure(error);
         }
     }
 
-    int32_t checker_result(void *handle, Text name, uint8_t accumulate_nested, uint8_t for_autocomplete, ItemCallback timeout_callback, void *timeout_context, String *error) {
-
+    int32_t checker_check(void *handle, Text name, String *error) {
         try {
             if (error) {
                 *error = {};
@@ -770,25 +765,109 @@ extern "C" {
             auto *checker = static_cast<Checker *>(handle);
             const std::optional<std::string_view> value = view(name);
 
-            if (!checker || !value || !timeout_callback) {
-                return failure(error, "invalid result request");
+            if (!checker || !value) {
+                return failure(error, "invalid check request");
             }
 
-            if (checker->definition_names.find(std::string(*value)) != checker->definition_names.end()) {
+            const std::string path(*value);
+
+            if (checker->definition_names.count(path)) {
                 return StatusSuccess;
             }
 
-            auto result = checker->frontend.getCheckResult(std::string(*value), accumulate_nested != 0, for_autocomplete != 0);
+            const auto module = checker->frontend.moduleResolver.getModule(path);
 
-            if (!result) {
-                return failure(error, "check result unavailable");
+            if (checker->frontend.isDirty(path) || !module || module->cancelled) {
+                return failure(error, "semantic preparation required before checking");
             }
 
-            if (!checker->emit(*result, *value)) {
-                return StatusCallbackFailure;
+            for (const Luau::TypeError &type_error : module->errors) {
+                if (!checker->emit(type_error, path)) {
+                    return StatusCallbackFailure;
+                }
             }
 
-            return Checker::timeouts(*result, timeout_callback, timeout_context);
+            return StatusSuccess;
+        } catch (...) {
+            return exception_failure(error);
+        }
+    }
+
+    int32_t checker_lint(void *handle, Text name, String *error) {
+        try {
+            if (error) {
+                *error = {};
+            }
+
+            auto *checker = static_cast<Checker *>(handle);
+            const std::optional<std::string_view> value = view(name);
+
+            if (!checker || !value) {
+                return failure(error, "invalid lint request");
+            }
+
+            const std::string path(*value);
+
+            if (checker->definition_names.count(path)) {
+                return StatusSuccess;
+            }
+
+            const Luau::SourceModule *source = checker->frontend.getSourceModule(path);
+            const auto module = checker->frontend.moduleResolver.getModule(path);
+
+            if (checker->frontend.isDirty(path) || !source || !module || module->cancelled) {
+                return failure(error, "semantic preparation required before linting");
+            }
+
+            if (!checker->frontend.options.retainFullTypeGraphs) {
+                return failure(error, "linting requires retained full type graphs");
+            }
+
+            if (!source->parseErrors.empty()) {
+                return StatusSuccess;
+            }
+
+            if (!source->root) {
+                return failure(error, "prepared syntax tree unavailable for linting");
+            }
+
+            const Luau::Config config = checker->configurations.getConfig(path, {});
+            const Luau::Mode mode = source->mode.value_or(config.mode);
+            // Match the frontend's lint filtering and module environment resolution.
+            Luau::LintOptions options = config.enabledLint;
+            options.warningMask &= ~Luau::LintWarning::parseMask(source->hotcomments);
+
+            if (mode != Luau::Mode::NoCheck) {
+                options.disableWarning(Luau::LintWarning::Code_UnknownGlobal);
+            }
+
+            if (mode == Luau::Mode::Strict) {
+                options.disableWarning(Luau::LintWarning::Code_ImplicitReturn);
+            }
+
+            Luau::ScopePtr environment = source->environmentName ? checker->frontend.getEnvironmentScope(*source->environmentName) : checker->frontend.globals.globalScope;
+
+            if (!config.globals.empty()) {
+                environment = std::make_shared<Luau::Scope>(environment);
+
+                for (const std::string &global : config.globals) {
+                    const Luau::AstName name = source->names->get(global.c_str());
+
+                    if (name.value) {
+                        environment->bindings[name].typeId = checker->frontend.builtinTypes->anyType;
+                    }
+                }
+            }
+
+            const auto warnings = Luau::lint(source->root, *source->names, environment, module.get(), source->hotcomments, options);
+
+            for (const Luau::LintWarning &warning : warnings) {
+                if (!checker->emit(path, warning, config.lintErrors || config.fatalLint.isEnabled(warning.code))) {
+                    return StatusCallbackFailure;
+                }
+            }
+
+            return StatusSuccess;
         } catch (...) {
             return exception_failure(error);
         }

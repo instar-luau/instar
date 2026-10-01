@@ -4,8 +4,8 @@
   "description": "Project manifest. Luau settings live in `[luau]`; formatting settings in `[format]`.",
   "type": "object",
   "properties": {
-    "analyze": {
-      "description": "Additional file selection for analysis.",
+    "check": {
+      "description": "Additional file selection for syntax and type checking, independent of lint selection.",
       "$ref": "#/$defs/FileFilter",
       "default": {
         "exclude": [],
@@ -133,7 +133,7 @@
       }
     },
     "luau": {
-      "description": "Luau analysis, resolution, and process-global fast-flag settings.",
+      "description": "Luau typechecking, resolution, and process-global fast-flag settings.",
       "$ref": "#/$defs/ManifestLuauConfig",
       "default": {
         "aliases": {},
