@@ -811,6 +811,7 @@ struct EditorSession {
     definitions: Vec<(String, String)>,
     map: Option<Rc<Sourcemap>>,
     declaration_paths: BTreeSet<PathBuf>,
+    declaration_diagnostics: Vec<Diagnostic>,
     checker: Checker,
     resolver: Resolver,
     identities: HashMap<Module, String>,
@@ -851,6 +852,8 @@ impl Editor {
     /// Returns invalid-path or native invalidation errors.
     pub fn set_source(&mut self, path: &Path, text: Option<&str>) -> io::Result<()> {
         let path = crate::absolute(path)?;
+        let topology_changed =
+            self.project.overlay_file(&path) != text.is_some() && !path.is_file();
         self.project.set_source(&path, text)?;
 
         if is_declaration_source(&path)
@@ -874,9 +877,15 @@ impl Editor {
             session.lint_cache.remove(&path);
             session.resolver = Resolver::new();
 
+            if topology_changed {
+                session.checker.clear_sources()?;
+            }
+
             for (name, state) in &mut session.modules {
                 if state.module.source == path {
-                    session.checker.mark_dirty(Path::new(name))?;
+                    if !topology_changed {
+                        session.checker.mark_dirty(Path::new(name))?;
+                    }
                     state.source = None;
                     state.expressions = None;
                     state.line_starts.clear();
@@ -1024,8 +1033,8 @@ impl Editor {
                     == environment.map.as_ref().map(|map| &map.path)
         });
 
-        let (index, mut diagnostics) = if let Some(index) = index {
-            (index, Vec::new())
+        let index = if let Some(index) = index {
+            index
         } else {
             self.create_session(
                 environment.settings.clone(),
@@ -1038,6 +1047,17 @@ impl Editor {
                     .cloned()
                     .collect(),
             )?
+        };
+
+        let mut diagnostics = if diagnostics_enabled {
+            self.sessions[index]
+                .declaration_diagnostics
+                .iter()
+                .filter(|diagnostic| self.open.contains(&diagnostic.location.module.source))
+                .cloned()
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
         };
 
         let found =
@@ -1105,7 +1125,7 @@ impl Editor {
         definitions: &[(String, String)],
         map: Option<Rc<Sourcemap>>,
         declaration_modules: Vec<Module>,
-    ) -> io::Result<(usize, Vec<Diagnostic>)> {
+    ) -> io::Result<usize> {
         let declarations = self.project.declarations(definitions)?;
         let mut declaration_diagnostics = Vec::new();
 
@@ -1119,6 +1139,7 @@ impl Editor {
             definitions: definitions.to_vec(),
             map,
             declaration_paths: declaration_paths.clone(),
+            declaration_diagnostics: Vec::new(),
             checker: Checker::new(&CheckerOptions {
                 retain_full_type_graphs: 1,
                 run_lint_checks: 1,
@@ -1209,9 +1230,10 @@ impl Editor {
         })?;
 
         self.project.commit_declarations(&session.definitions);
+        session.declaration_diagnostics = declaration_diagnostics;
         self.sessions.push(session);
 
-        Ok((self.sessions.len() - 1, declaration_diagnostics))
+        Ok(self.sessions.len() - 1)
     }
 
     /// Runs an editor query against a checked module in its first place context.
@@ -1383,6 +1405,147 @@ mod tests {
         diagnostics
             .iter()
             .any(|diagnostic| diagnostic.severity == Severity::Error)
+    }
+
+    fn errors(diagnostics: Vec<Diagnostic>) -> Vec<(PathBuf, [u32; 4], String)> {
+        let mut errors = diagnostics
+            .into_iter()
+            .filter(|diagnostic| diagnostic.severity == Severity::Error)
+            .map(|diagnostic| {
+                (
+                    diagnostic.location.module.source,
+                    diagnostic.location.range,
+                    diagnostic.message,
+                )
+            })
+            .collect::<Vec<_>>();
+        errors.sort();
+        errors
+    }
+
+    #[test]
+    fn editor_requires_follow_overlay_existence_and_content() {
+        let directory =
+            std::env::temp_dir().join(format!("instar-editor-overlays-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("instar.toml"), "[roblox]\nenabled = false\n").unwrap();
+        let source = directory.join("main.luau");
+        let dependency = directory.join("missing.luau");
+        let mut editor = Editor::default();
+        editor
+            .set_source(
+                &source,
+                Some("--!strict\nlocal value: number = require(\"./missing\")\nreturn value\n"),
+            )
+            .unwrap();
+
+        let missing = errors(editor.check().unwrap());
+        assert!(missing.iter().any(|(path, _, _)| path == &source));
+        assert_eq!(errors(editor.check().unwrap()), missing);
+
+        editor.set_source(&dependency, Some("return 1\n")).unwrap();
+        editor.check_for_query().unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                errors(editor.check().unwrap()),
+                Vec::<(PathBuf, [u32; 4], String)>::new()
+            );
+        }
+
+        editor
+            .set_source(&dependency, Some("return \"text\"\n"))
+            .unwrap();
+        let incompatible = errors(editor.check().unwrap());
+        assert!(incompatible.iter().any(|(path, _, _)| path == &source));
+        assert_eq!(errors(editor.check().unwrap()), incompatible);
+
+        editor.set_source(&dependency, Some("return 2\n")).unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                errors(editor.check().unwrap()),
+                Vec::<(PathBuf, [u32; 4], String)>::new()
+            );
+        }
+
+        editor.set_source(&dependency, None).unwrap();
+        editor.check_for_query().unwrap();
+        for _ in 0..2 {
+            assert_eq!(errors(editor.check().unwrap()), missing);
+        }
+
+        editor.set_source(&dependency, Some("return 1\n")).unwrap();
+        assert_eq!(
+            errors(editor.check().unwrap()),
+            Vec::<(PathBuf, [u32; 4], String)>::new()
+        );
+        std::fs::write(&dependency, "return 1\n").unwrap();
+        editor.set_source(&dependency, None).unwrap();
+        assert_eq!(
+            errors(editor.check().unwrap()),
+            Vec::<(PathBuf, [u32; 4], String)>::new()
+        );
+        editor
+            .set_source(&dependency, Some("return \"text\"\n"))
+            .unwrap();
+        assert_eq!(errors(editor.check().unwrap()), incompatible);
+        editor.set_source(&dependency, None).unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                errors(editor.check().unwrap()),
+                Vec::<(PathBuf, [u32; 4], String)>::new()
+            );
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn editor_declaration_diagnostics_survive_queries_and_repeated_checks() {
+        let directory = std::env::temp_dir().join(format!(
+            "instar-editor-declaration-errors-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("instar.toml"), "[roblox]\nenabled = false\n").unwrap();
+        let source = directory.join("main.luau");
+        let definitions = directory.join("types.d.luau");
+        let valid = "declare marker: string\n";
+        let invalid = "declare marker:\n";
+        std::fs::write(&definitions, valid).unwrap();
+        let mut editor = Editor::default();
+        editor.set_source(&source, Some("return 1\n")).unwrap();
+        editor.set_source(&definitions, Some(invalid)).unwrap();
+        editor.check_for_query().unwrap();
+
+        let expected = errors(editor.check().unwrap());
+        assert!(expected.iter().any(|(path, _, _)| path == &definitions));
+        for _ in 0..2 {
+            editor.check_for_query().unwrap();
+            assert_eq!(errors(editor.check().unwrap()), expected);
+        }
+        editor.refresh();
+        editor.check_for_query().unwrap();
+        assert_eq!(errors(editor.check().unwrap()), expected);
+
+        editor.set_source(&definitions, Some(valid)).unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                errors(editor.check().unwrap()),
+                Vec::<(PathBuf, [u32; 4], String)>::new()
+            );
+        }
+        editor.set_source(&definitions, Some(invalid)).unwrap();
+        assert_eq!(errors(editor.check().unwrap()), expected);
+        editor.set_source(&definitions, None).unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                errors(editor.check().unwrap()),
+                Vec::<(PathBuf, [u32; 4], String)>::new()
+            );
+        }
+        editor.set_source(&definitions, Some(invalid)).unwrap();
+        editor.check_for_query().unwrap();
+        assert_eq!(errors(editor.check().unwrap()), expected);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
