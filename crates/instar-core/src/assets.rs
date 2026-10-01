@@ -38,6 +38,17 @@ pub(crate) struct Definitions {
 }
 
 impl Definitions {
+    pub(crate) fn new(source: Rc<str>) -> io::Result<Self> {
+        if u64::try_from(source.len()).map_err(io::Error::other)? > LIMIT {
+            return Err(invalid("Roblox asset exceeds size limit"));
+        }
+
+        Ok(Self {
+            metadata: parse_metadata(&source)?,
+            source,
+        })
+    }
+
     pub(crate) fn services(&self) -> impl Iterator<Item = &str> {
         self.metadata
             .iter()
@@ -181,7 +192,6 @@ const STUDIO_FLAGS_REFRESH: Duration = Duration::from_hours(12);
 pub(crate) struct Assets {
     client: Option<Client>,
     loaded: HashMap<String, Result<Rc<str>, String>>,
-    definitions: HashMap<String, Rc<Definitions>>,
     documentation: HashMap<Vec<String>, Rc<serde_json::Value>>,
     pending: HashMap<String, Cached>,
     warnings: Vec<String>,
@@ -385,7 +395,6 @@ impl Assets {
 impl Assets {
     pub(crate) fn invalidate(&mut self) {
         self.loaded.clear();
-        self.definitions.clear();
         self.documentation.clear();
         self.pending.clear();
         self.warnings.clear();
@@ -419,22 +428,8 @@ impl Assets {
         std::mem::take(&mut self.warnings)
     }
 
-    pub(crate) fn declaration(&mut self, location: &str) -> io::Result<Rc<Definitions>> {
-        if let Some(definition) = self.definitions.get(location) {
-            return Ok(Rc::clone(definition));
-        }
-
-        let source = self.load(location, validate_definition_file, false)?;
-
-        let definition = Rc::new(Definitions {
-            metadata: parse_metadata(&source)?,
-            source,
-        });
-
-        self.definitions
-            .insert(location.to_owned(), Rc::clone(&definition));
-
-        Ok(definition)
+    pub(crate) fn declaration(&mut self, location: &str) -> io::Result<Rc<str>> {
+        self.load(location, validate_definition_file, false)
     }
 
     pub(crate) fn commit_declaration(&mut self, location: &str) {
@@ -620,6 +615,10 @@ impl Assets {
             body: read_limited(response, LIMIT)?,
         }))
     }
+}
+
+pub(crate) fn read_declaration(path: &Path) -> io::Result<String> {
+    read_limited(fs::File::open(path)?, LIMIT)
 }
 
 fn read_limited(reader: impl Read, limit: u64) -> io::Result<String> {
