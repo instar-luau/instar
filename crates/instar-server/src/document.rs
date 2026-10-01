@@ -1,11 +1,15 @@
 use std::{
+    collections::BTreeMap,
     io,
     path::{Path, PathBuf},
-    sync::OnceLock,
+    sync::{Arc, OnceLock},
 };
 
 use serde_json::{Value, json};
-use tower_lsp_server::ls_types::{Position, Range, SymbolKind, Uri};
+use tower_lsp_server::ls_types::{
+    Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Location, Position, Range,
+    SymbolKind, Uri,
+};
 use vermis::{Kind, Parts};
 
 use crate::bindings::Index;
@@ -40,6 +44,87 @@ pub(crate) fn uri(path: &Path) -> io::Result<Uri> {
         .as_str()
         .parse()
         .map_err(io::Error::other)
+}
+
+pub(crate) fn diagnostics(
+    findings: impl IntoIterator<Item = instar_core::analysis::Diagnostic>,
+    mut document: impl FnMut(&Path) -> io::Result<Arc<Document>>,
+) -> io::Result<BTreeMap<PathBuf, Vec<Diagnostic>>> {
+    use instar_core::analysis::Severity;
+
+    let mut reports: BTreeMap<PathBuf, Vec<Diagnostic>> = BTreeMap::new();
+
+    for finding in findings {
+        let path = finding.location.module.source;
+        let source = document(&path)?;
+        let related_information = match finding.related {
+            Some((location, message)) => {
+                let target = document(&location.module.source)?;
+                Some(vec![DiagnosticRelatedInformation {
+                    location: Location {
+                        uri: target.uri.clone(),
+                        range: target.native_range(location.range),
+                    },
+                    message,
+                }])
+            }
+            None => None,
+        };
+
+        reports.entry(path).or_default().push(Diagnostic {
+            range: source.native_range(finding.location.range),
+            severity: Some(match finding.severity {
+                Severity::Error => DiagnosticSeverity::ERROR,
+                Severity::Warning => DiagnosticSeverity::WARNING,
+                Severity::Information => DiagnosticSeverity::INFORMATION,
+            }),
+            source: Some("instar".into()),
+            message: finding.message,
+            related_information,
+            ..Diagnostic::default()
+        });
+    }
+
+    for items in reports.values_mut() {
+        items.sort_unstable_by(|left, right| {
+            (
+                left.range.start,
+                left.range.end,
+                left.severity,
+                &left.message,
+            )
+                .cmp(&(
+                    right.range.start,
+                    right.range.end,
+                    right.severity,
+                    &right.message,
+                ))
+                .then_with(|| {
+                    left.related_information
+                        .iter()
+                        .flatten()
+                        .map(|item| {
+                            (
+                                item.location.uri.as_str(),
+                                item.location.range.start,
+                                item.location.range.end,
+                                item.message.as_str(),
+                            )
+                        })
+                        .cmp(right.related_information.iter().flatten().map(|item| {
+                            (
+                                item.location.uri.as_str(),
+                                item.location.range.start,
+                                item.location.range.end,
+                                item.message.as_str(),
+                            )
+                        }))
+                })
+        });
+        items.dedup();
+    }
+
+    Ok(reports)
 }
 
 impl Document {
@@ -308,5 +393,113 @@ impl Document {
         }
 
         Ok(json!(selections))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use instar_core::{
+        analysis::{Diagnostic as Finding, Location as SourceLocation, Severity},
+        resolve::Module,
+    };
+
+    #[test]
+    fn diagnostic_batches_convert_sort_deduplicate_and_propagate_resolution_errors() {
+        let directory = std::env::temp_dir();
+        let source = uri(&directory.join("diagnostics.luau")).unwrap();
+        let source = Arc::new(Document::new(source, 1, "𐐀a\n".into()).unwrap());
+        let related = uri(&directory.join("related.luau")).unwrap();
+        let related = Arc::new(Document::new(related, 1, "prefix\n𐐀b\n".into()).unwrap());
+        let location = |document: &Document, range| SourceLocation {
+            module: Module {
+                path: document.path.clone(),
+                source: document.path.clone(),
+                instance: None,
+            },
+            range,
+        };
+        let finding = |severity, message: &str, related_message: &str| Finding {
+            location: location(&source, [0, 4, 0, 5]),
+            severity,
+            message: message.into(),
+            related: Some((location(&related, [1, 4, 1, 5]), related_message.into())),
+        };
+        let documents = BTreeMap::from([
+            (source.path.clone(), Arc::clone(&source)),
+            (related.path.clone(), Arc::clone(&related)),
+        ]);
+        let resolve = |path: &Path| {
+            documents
+                .get(path)
+                .cloned()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "diagnostic source missing"))
+        };
+        let findings = vec![
+            finding(Severity::Information, "information", "context"),
+            finding(Severity::Error, "error", "z"),
+            finding(Severity::Warning, "warning", "context"),
+            finding(Severity::Error, "error", "a"),
+            finding(Severity::Error, "error", "z"),
+        ];
+        let reports = diagnostics(findings.clone(), resolve).unwrap();
+        let items = &reports[&source.path];
+
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| (
+                    item.severity,
+                    item.message.as_str(),
+                    item.related_information.as_ref().unwrap()[0]
+                        .message
+                        .as_str(),
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (Some(DiagnosticSeverity::ERROR), "error", "a"),
+                (Some(DiagnosticSeverity::ERROR), "error", "z"),
+                (Some(DiagnosticSeverity::WARNING), "warning", "context"),
+                (
+                    Some(DiagnosticSeverity::INFORMATION),
+                    "information",
+                    "context"
+                ),
+            ]
+        );
+        for item in items {
+            assert_eq!(
+                item.range,
+                Range::new(Position::new(0, 2), Position::new(0, 3))
+            );
+            assert_eq!(item.source.as_deref(), Some("instar"));
+            let information = &item.related_information.as_ref().unwrap()[0];
+            assert_eq!(information.location.uri, related.uri);
+            assert_eq!(
+                information.location.range,
+                Range::new(Position::new(1, 2), Position::new(1, 3))
+            );
+        }
+        assert_eq!(
+            diagnostics(findings.clone().into_iter().rev(), resolve).unwrap(),
+            reports
+        );
+
+        let mut missing = finding(Severity::Error, "missing", "context");
+        missing.related.as_mut().unwrap().0.module.source = directory.join("missing.luau");
+        assert_eq!(
+            diagnostics([findings[0].clone(), missing], resolve)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+        let mut missing = findings[0].clone();
+        missing.location.module.source = directory.join("missing.luau");
+        assert_eq!(
+            diagnostics([missing], resolve).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!(diagnostics(findings, resolve).unwrap(), reports);
+        assert_eq!(diagnostics([], resolve).unwrap(), BTreeMap::new());
     }
 }

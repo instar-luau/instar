@@ -317,15 +317,15 @@ impl Backend {
             }
         } else {
             let snapshot = state.blocking_lock().clone();
-            let checked = worker.update(&snapshot, true);
-            let diagnostics = worker.diagnostics.clone();
+            let diagnostics = worker
+                .update(&snapshot, true)
+                .map(|()| worker.diagnostics.clone());
 
             runtime.spawn(Self::publish(
                 client,
                 Arc::clone(state),
                 snapshot,
                 diagnostics,
-                checked,
             ));
         }
     }
@@ -334,8 +334,7 @@ impl Backend {
         client: Client,
         state: Arc<Mutex<Snapshot>>,
         snapshot: Snapshot,
-        diagnostics: BTreeMap<PathBuf, Vec<Value>>,
-        checked: io::Result<()>,
+        diagnostics: io::Result<BTreeMap<PathBuf, Vec<lsp::Diagnostic>>>,
     ) {
         let current = state.lock().await;
 
@@ -343,28 +342,22 @@ impl Backend {
             return;
         }
 
-        if let Err(failure) = checked {
-            client
-                .log_message(MessageType::ERROR, failure.to_string())
-                .await;
-        }
+        let mut diagnostics = match diagnostics {
+            Ok(diagnostics) => diagnostics,
+            Err(failure) => {
+                client
+                    .log_message(MessageType::ERROR, failure.to_string())
+                    .await;
+                return;
+            }
+        };
 
         for (path, document) in &snapshot.documents {
-            let items = diagnostics.get(path).cloned().unwrap_or_default();
+            let items = diagnostics.remove(path).unwrap_or_default();
 
-            match serde_json::from_value(json!(items)) {
-                Ok(items) => {
-                    client
-                        .publish_diagnostics(document.uri.clone(), items, Some(document.version))
-                        .await;
-                }
-
-                Err(failure) => {
-                    client
-                        .log_message(MessageType::ERROR, failure.to_string())
-                        .await;
-                }
-            }
+            client
+                .publish_diagnostics(document.uri.clone(), items, Some(document.version))
+                .await;
         }
     }
 
