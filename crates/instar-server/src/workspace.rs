@@ -87,6 +87,10 @@ impl Workspace {
             while let Some(directory) = directories.pop() {
                 check_cancelled(cancelled)?;
 
+                if self.project.excludes_subtree(&directory, Service::Lsp)? {
+                    continue;
+                }
+
                 for entry in std::fs::read_dir(directory)? {
                     let entry = entry?;
                     let kind = entry.file_type()?;
@@ -884,4 +888,87 @@ fn fresh_name(document: &Document, name: &str, occupied: &impl Fn(&str) -> bool)
     }
 
     candidate
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn files_prune_excluded_subtrees_but_keep_selected_files_and_open_documents() {
+        let directory = std::env::temp_dir().join(format!("workspace{}", std::process::id()));
+
+        for child in [
+            "pruned/nested",
+            "service/nested",
+            "selected",
+            "wild/nested",
+            "other",
+        ] {
+            std::fs::create_dir_all(directory.join(child)).unwrap();
+        }
+
+        std::fs::write(
+            directory.join("instar.toml"),
+            "include = [\"selected/**/*.luau\", \"wild/**/*.luau\"]\nexclude = [\"pruned/**\", \"wild/*.luau\"]\n[lsp]\nexclude = [\"service/**\"]\n",
+        )
+        .unwrap();
+
+        for child in ["pruned/nested", "service/nested"] {
+            std::fs::write(directory.join(child).join("instar.toml"), "[").unwrap();
+            std::fs::write(directory.join(child).join("hidden.luau"), "return 1\n").unwrap();
+        }
+
+        for file in [
+            "selected/chosen.luau",
+            "selected/skipped.lua",
+            "wild/skipped.luau",
+            "wild/nested/chosen.luau",
+            "other/skipped.luau",
+        ] {
+            std::fs::write(directory.join(file), "return 1\n").unwrap();
+        }
+
+        let selected = directory.join("selected/chosen.luau");
+        let open = directory.join("pruned/nested/open.luau");
+        let documents = [selected.clone(), open.clone()]
+            .into_iter()
+            .map(|path| {
+                let document =
+                    Arc::new(Document::new(uri(&path).unwrap(), 1, "return 2\n".into()).unwrap());
+                (path, document)
+            })
+            .collect();
+        let snapshot = Snapshot {
+            folders: [directory.clone()].into(),
+            documents,
+            ..Snapshot::default()
+        };
+        let mut workspace = Workspace::default();
+        workspace.update(&snapshot).unwrap();
+
+        assert_eq!(
+            workspace
+                .files(&|| false)
+                .unwrap()
+                .into_iter()
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                selected.clone(),
+                open.clone(),
+                directory.join("wild/nested/chosen.luau"),
+            ]),
+        );
+        assert_eq!(workspace.document(&selected).unwrap().text, "return 2\n");
+        assert_eq!(workspace.document(&open).unwrap().text, "return 2\n");
+        assert_eq!(
+            workspace
+                .document(&directory.join("wild/skipped.luau"))
+                .unwrap()
+                .text,
+            "return 1\n",
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }
