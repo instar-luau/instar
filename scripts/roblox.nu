@@ -574,7 +574,6 @@ def main [
             | where ('Service' in ($it.Tags? | default []))
             | get Name
         )
-
         creatable_instances: (
             $classes
             | where ('NotCreatable' not-in ($it.Tags? | default []) and 'Service' not-in ($it.Tags? | default []))

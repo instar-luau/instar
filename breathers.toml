@@ -4,3 +4,4 @@ exclude = ["target", "**/vendor"]
 
 [nushell]
 match_arms = false
+record_fields = false
