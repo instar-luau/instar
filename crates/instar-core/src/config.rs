@@ -440,15 +440,9 @@ pub struct Config {
     /// Additional file selection for analysis.
     pub analyze: FileFilter,
 
-    /// Additional file selection for builds.
-    pub build: FileFilter,
-
     /// Formatting style and additional file selection.
     #[schemars(extend("default" = format_schema_default()))]
     pub format: FormatConfig,
-
-    /// Additional file selection for dependency installation.
-    pub graft: FileFilter,
 
     /// Lint rules, options, and additional file selection.
     #[schemars(extend("default" = lint_schema_default()))]
