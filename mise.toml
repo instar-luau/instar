@@ -1,6 +1,3 @@
-[tasks.roblox]
-run = "nu scripts/roblox.nu"
-
 [tools]
 "aqua:Kitware/CMake" = "latest"
 "aqua:ninja-build/ninja" = "latest"
