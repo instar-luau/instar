@@ -7,8 +7,8 @@ version = "0.5.1"
 edition = "2024"
 repository = "https://github.com/instar-luau/instar"
 license = "MIT"
-keywords = ["formatter", "linter", "luau", "luaux", "roblox"]
-categories = ["compilers", "development-tools"]
+keywords = ["formatter", "linter", "lsp", "luau", "roblox"]
+categories = ["development-tools"]
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
