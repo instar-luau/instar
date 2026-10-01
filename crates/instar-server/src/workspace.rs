@@ -7,8 +7,7 @@ use std::{
 };
 
 use instar_core::{filter::Service, project::Project, resolve::Resolver};
-use serde_json::{Value, json};
-use tower_lsp_server::ls_types::{CompletionItemKind, Range};
+use tower_lsp_server::ls_types::{self as lsp, CompletionItemKind, Range};
 
 use crate::{
     Snapshot,
@@ -221,11 +220,15 @@ impl Workspace {
         Ok(document)
     }
 
+    #[expect(
+        deprecated,
+        reason = "the LSP symbol struct still requires its legacy field"
+    )]
     pub(crate) fn symbols(
         &mut self,
         query: &str,
         cancelled: &impl Fn() -> bool,
-    ) -> io::Result<Value> {
+    ) -> io::Result<Vec<lsp::SymbolInformation>> {
         let mut result = Vec::new();
         let query = query.to_lowercase();
 
@@ -233,19 +236,24 @@ impl Workspace {
             check_cancelled(cancelled)?;
             let document = self.document(&path)?;
 
-            if let Some(symbols) = document.symbols().as_array() {
-                for symbol in symbols {
-                    if symbol["name"]
-                        .as_str()
-                        .is_some_and(|name| name.to_lowercase().contains(&query))
-                    {
-                        result.push(json!({"name": symbol["name"], "kind": symbol["kind"], "location": {"uri": document.uri, "range": symbol["selectionRange"]}}));
-                    }
+            for symbol in document.symbols() {
+                if symbol.name.to_lowercase().contains(&query) {
+                    result.push(lsp::SymbolInformation {
+                        name: symbol.name.clone(),
+                        kind: symbol.kind,
+                        tags: None,
+                        deprecated: None,
+                        location: lsp::Location {
+                            uri: document.uri.clone(),
+                            range: symbol.selection_range,
+                        },
+                        container_name: None,
+                    });
                 }
             }
         }
 
-        Ok(json!(result))
+        Ok(result)
     }
 
     pub(crate) fn imports(
@@ -254,7 +262,7 @@ impl Workspace {
         site: (usize, &str, Range),
         services: &[String],
         occupied: &impl Fn(&str) -> bool,
-    ) -> io::Result<Vec<Value>> {
+    ) -> io::Result<Vec<lsp::CompletionItem>> {
         let (offset, prefix, range) = site;
         let mut items = Vec::new();
         self.service_imports(document, site, &mut items, services, occupied)?;
@@ -361,7 +369,7 @@ impl Workspace {
         &mut self,
         document: &Document,
         site: (usize, &str, Range),
-        items: &mut Vec<Value>,
+        items: &mut Vec<lsp::CompletionItem>,
         services: &[String],
         occupied: &impl Fn(&str) -> bool,
     ) -> io::Result<()> {
@@ -444,8 +452,8 @@ impl Workspace {
                 insert_import(document, &mut item, range, &insertion, edit);
             }
 
-            item["filterText"] = json!(format!("{prefix} {service}"));
-            item["sortText"] = json!(format!("z{:05}{service}", u16::MAX - score));
+            item.filter_text = Some(format!("{prefix} {service}"));
+            item.sort_text = Some(format!("z{:05}{service}", u16::MAX - score));
             items.push(item);
         }
 
@@ -456,7 +464,7 @@ impl Workspace {
         &mut self,
         renames: &[(PathBuf, PathBuf)],
         cancelled: &impl Fn() -> bool,
-    ) -> io::Result<Value> {
+    ) -> io::Result<lsp::WorkspaceEdit> {
         let mut changes = Vec::new();
 
         for source in self.files(cancelled)? {
@@ -526,16 +534,32 @@ impl Workspace {
                 }
 
                 if let Some(replacement) = replacement {
-                    edits.push(json!({"range": document.range(span[0], span[1]), "newText": quote(&replacement, raw)?}));
+                    edits.push(lsp::OneOf::Left(lsp::TextEdit {
+                        range: document.range(span[0], span[1]),
+                        new_text: quote(&replacement, raw)?,
+                    }));
                 }
             }
 
             if !edits.is_empty() {
-                changes.push(json!({"textDocument": {"uri": document.uri, "version": self.snapshot.documents.get(&source).map(|document| document.version)}, "edits": edits}));
+                changes.push(lsp::TextDocumentEdit {
+                    text_document: lsp::OptionalVersionedTextDocumentIdentifier {
+                        uri: document.uri.clone(),
+                        version: self
+                            .snapshot
+                            .documents
+                            .get(&source)
+                            .map(|document| document.version),
+                    },
+                    edits,
+                });
             }
         }
 
-        Ok(json!({"documentChanges": changes}))
+        Ok(lsp::WorkspaceEdit {
+            document_changes: Some(lsp::DocumentChanges::Edits(changes)),
+            ..lsp::WorkspaceEdit::default()
+        })
     }
 }
 
@@ -558,9 +582,19 @@ fn import_item(
     statement: &str,
     detail: &str,
     kind: CompletionItemKind,
-) -> Value {
+) -> lsp::CompletionItem {
     let (offset, range) = site;
-    let mut item = json!({"label": label, "kind": kind, "detail": detail, "sortText": format!("z{label}"), "textEdit": {"range": range, "newText": insertion}});
+    let mut item = lsp::CompletionItem {
+        label: label.to_owned(),
+        kind: Some(kind),
+        detail: Some(detail.to_owned()),
+        sort_text: Some(format!("z{label}")),
+        text_edit: Some(lsp::CompletionTextEdit::Edit(lsp::TextEdit {
+            range,
+            new_text: insertion.to_owned(),
+        })),
+        ..lsp::CompletionItem::default()
+    };
 
     if !statement.is_empty() {
         let (position, prefix) = document.features().insertion(document, offset);
@@ -579,7 +613,7 @@ fn import_item(
 
 fn insert_import(
     document: &Document,
-    item: &mut Value,
+    item: &mut lsp::CompletionItem,
     range: Range,
     insertion: &str,
     edit: (usize, String),
@@ -587,10 +621,15 @@ fn insert_import(
     let (position, text) = edit;
 
     if document.position(position) == range.start {
-        item["textEdit"]["newText"] = json!(format!("{text}{insertion}"));
+        item.text_edit = Some(lsp::CompletionTextEdit::Edit(lsp::TextEdit {
+            range,
+            new_text: format!("{text}{insertion}"),
+        }));
     } else {
-        item["additionalTextEdits"] =
-            json!([{"range": document.range(position, position), "newText": text}]);
+        item.additional_text_edits = Some(vec![lsp::TextEdit {
+            range: document.range(position, position),
+            new_text: text,
+        }]);
     }
 }
 
@@ -675,7 +714,7 @@ pub(crate) struct Command {
     pub(crate) request: Request,
     pub(crate) cancelled: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) progress: tokio::sync::mpsc::UnboundedSender<(usize, usize)>,
-    pub(crate) reply: tokio::sync::oneshot::Sender<io::Result<Value>>,
+    pub(crate) reply: tokio::sync::oneshot::Sender<io::Result<crate::Response>>,
 }
 
 pub(crate) fn start(
@@ -731,16 +770,16 @@ pub(crate) fn start(
                 workspace.update(&command.snapshot)?;
 
                 match command.request {
-                    Request::Symbols(query) => workspace.symbols(&query, &cancelled),
-                    Request::Rename(renames) => workspace.rename_files(&renames, &cancelled),
+                    Request::Symbols(query) => workspace
+                        .symbols(&query, &cancelled)
+                        .map(crate::Response::Symbols),
+                    Request::Rename(renames) => workspace
+                        .rename_files(&renames, &cancelled)
+                        .map(crate::Response::Edit),
 
-                    Request::Diagnostics(previous) => workspace.diagnostics(
-                        &mut editor,
-                        &previous,
-                        None,
-                        &cancelled,
-                        &command.progress,
-                    ),
+                    Request::Diagnostics(previous) => workspace
+                        .diagnostics(&mut editor, &previous, None, &cancelled, &command.progress)
+                        .map(crate::Response::Diagnostics),
 
                     Request::Document(path, previous) => {
                         let document_uri = uri(&path)?.to_string();
@@ -758,15 +797,37 @@ pub(crate) fn start(
                             &command.progress,
                         )?;
 
-                        Ok(result["items"]
-                            .as_array()
-                            .and_then(|items| {
-                                items
-                                    .iter()
-                                    .find(|item| item["uri"].as_str() == Some(&document_uri))
-                            })
-                            .cloned()
-                            .unwrap_or_else(|| json!({"kind": "full", "items": []})))
+                        let report = result.items.into_iter().find_map(|item| match item {
+                            lsp::WorkspaceDocumentDiagnosticReport::Full(report)
+                                if report.uri.as_str() == document_uri =>
+                            {
+                                Some(lsp::DocumentDiagnosticReport::Full(
+                                    lsp::RelatedFullDocumentDiagnosticReport {
+                                        related_documents: None,
+                                        full_document_diagnostic_report: report
+                                            .full_document_diagnostic_report,
+                                    },
+                                ))
+                            }
+                            lsp::WorkspaceDocumentDiagnosticReport::Unchanged(report)
+                                if report.uri.as_str() == document_uri =>
+                            {
+                                Some(lsp::DocumentDiagnosticReport::Unchanged(
+                                    lsp::RelatedUnchangedDocumentDiagnosticReport {
+                                        related_documents: None,
+                                        unchanged_document_diagnostic_report: report
+                                            .unchanged_document_diagnostic_report,
+                                    },
+                                ))
+                            }
+                            _ => None,
+                        });
+
+                        Ok(crate::Response::Diagnostic(report.unwrap_or_else(|| {
+                            lsp::DocumentDiagnosticReport::Full(
+                                lsp::RelatedFullDocumentDiagnosticReport::default(),
+                            )
+                        })))
                     }
                 }
             })();
@@ -788,7 +849,7 @@ impl Workspace {
         only: Option<PathBuf>,
         cancelled: &impl Fn() -> bool,
         progress: &tokio::sync::mpsc::UnboundedSender<(usize, usize)>,
-    ) -> io::Result<Value> {
+    ) -> io::Result<lsp::WorkspaceDiagnosticReport> {
         let files = match only {
             Some(path) => vec![path],
             None => self.files(cancelled)?,
@@ -820,31 +881,61 @@ impl Workspace {
             let mut hash = std::collections::hash_map::DefaultHasher::new();
             encoded.hash(&mut hash);
             let result_id = format!("{:x}", hash.finish());
-            let mut report = json!({"uri": uri, "version": self.snapshot.documents.get(&path).map(|document| document.version), "resultId": result_id});
+            let version = self
+                .snapshot
+                .documents
+                .get(&path)
+                .map(|document| i64::from(document.version));
 
-            if previous
+            let report = if previous
                 .iter()
                 .any(|(old_uri, old_id)| old_uri == uri.as_str() && *old_id == result_id)
             {
-                report["kind"] = json!("unchanged");
+                lsp::WorkspaceDocumentDiagnosticReport::Unchanged(
+                    lsp::WorkspaceUnchangedDocumentDiagnosticReport {
+                        uri,
+                        version,
+                        unchanged_document_diagnostic_report:
+                            lsp::UnchangedDocumentDiagnosticReport { result_id },
+                    },
+                )
             } else {
-                report["kind"] = json!("full");
-                report["items"] = json!(diagnostics);
-            }
+                lsp::WorkspaceDocumentDiagnosticReport::Full(
+                    lsp::WorkspaceFullDocumentDiagnosticReport {
+                        uri,
+                        version,
+                        full_document_diagnostic_report: lsp::FullDocumentDiagnosticReport {
+                            result_id: Some(result_id),
+                            items: diagnostics,
+                        },
+                    },
+                )
+            };
 
             items.push(report);
         }
 
         for (old_uri, _) in previous {
-            if !items
-                .iter()
-                .any(|item| item["uri"].as_str() == Some(old_uri))
-            {
-                items.push(json!({"uri": old_uri, "version": null, "kind": "full", "items": []}));
+            if !items.iter().any(|item| {
+                let uri = match item {
+                    lsp::WorkspaceDocumentDiagnosticReport::Full(report) => &report.uri,
+                    lsp::WorkspaceDocumentDiagnosticReport::Unchanged(report) => &report.uri,
+                };
+
+                uri.as_str() == old_uri
+            }) {
+                items.push(lsp::WorkspaceDocumentDiagnosticReport::Full(
+                    lsp::WorkspaceFullDocumentDiagnosticReport {
+                        uri: old_uri.parse().map_err(io::Error::other)?,
+                        version: None,
+                        full_document_diagnostic_report: lsp::FullDocumentDiagnosticReport::default(
+                        ),
+                    },
+                ));
             }
         }
 
-        Ok(json!({"items": items}))
+        Ok(lsp::WorkspaceDiagnosticReport { items })
     }
 }
 

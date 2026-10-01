@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use serde_json::{Value, json};
+use tower_lsp_server::ls_types::{Color, ColorInformation, ColorPresentation, Range, TextEdit};
 use vermis::{Kind, Parts, Span, TokenKind, Tree, View};
 
 use crate::document::Document;
@@ -311,22 +311,41 @@ impl Syntax {
         (position, format!("{prefix}{statement}{separator}"))
     }
 
-    pub(crate) fn colors(&self, document: &Document) -> Value {
-        json!(self.colors.iter().map(|(span, color, _)| json!({"range": document.range(span.start, span.end), "color": {"red": color[0], "green": color[1], "blue": color[2], "alpha": 1.0}})).collect::<Vec<_>>())
+    pub(crate) fn colors(&self, document: &Document) -> Vec<ColorInformation> {
+        self.colors
+            .iter()
+            .map(|(span, color, _)| {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "LSP uses f32 channels; cached colors are finite in 0..=1"
+                )]
+                let [red, green, blue] = color.map(|value| value as f32);
+
+                ColorInformation {
+                    range: document.range(span.start, span.end),
+                    color: Color {
+                        red,
+                        green,
+                        blue,
+                        alpha: 1.0,
+                    },
+                }
+            })
+            .collect()
     }
 
     pub(crate) fn presentation(
         &self,
         document: &Document,
-        range: tower_lsp_server::ls_types::Range,
-        color: tower_lsp_server::ls_types::Color,
-    ) -> Value {
+        range: Range,
+        color: Color,
+    ) -> Vec<ColorPresentation> {
         let Some((_, _, format)) = self
             .colors
             .iter()
             .find(|(span, _, _)| document.range(span.start, span.end) == range)
         else {
-            return json!([]);
+            return Vec::new();
         };
 
         if !(1.0..=1.0).contains(&color.alpha)
@@ -334,7 +353,7 @@ impl Syntax {
                 .iter()
                 .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
         {
-            return json!([]);
+            return Vec::new();
         }
 
         let rgb = [
@@ -386,7 +405,14 @@ impl Syntax {
             )
         };
 
-        json!([{"label": label, "textEdit": {"range": range, "newText": label}}])
+        vec![ColorPresentation {
+            text_edit: Some(TextEdit {
+                range,
+                new_text: label.clone(),
+            }),
+            label,
+            additional_text_edits: None,
+        }]
     }
 }
 
@@ -689,4 +715,93 @@ fn exports(statements: &[View<'_, '_>]) -> BTreeSet<String> {
     }
 
     exports
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tower_lsp_server::ls_types::Position;
+
+    #[test]
+    fn typed_colors_and_presentations_keep_ranges_formats_and_validation() {
+        let document = Document::new(
+            crate::document::uri(&std::env::temp_dir().join("colors.luau")).unwrap(),
+            1,
+            "local first = Color3.fromHex('#ABC')\nlocal second = Color3.fromRGB(255, 0, 128)\n"
+                .into(),
+        )
+        .unwrap();
+        let syntax = document.features();
+        let colors = syntax.colors(&document);
+        assert_eq!(colors.len(), 2);
+        assert_eq!(
+            colors[0],
+            ColorInformation {
+                range: Range::new(Position::new(0, 14), Position::new(0, 36)),
+                color: Color {
+                    red: 170.0 / 255.0,
+                    green: 187.0 / 255.0,
+                    blue: 204.0 / 255.0,
+                    alpha: 1.0,
+                },
+            }
+        );
+        assert_eq!(
+            colors[1].color,
+            Color {
+                red: 1.0,
+                green: 0.0,
+                blue: 128.0 / 255.0,
+                alpha: 1.0
+            }
+        );
+        for (color, label) in colors
+            .iter()
+            .zip(["Color3.fromHex('#ABC')", "Color3.fromRGB(255, 0, 128)"])
+        {
+            assert_eq!(
+                syntax.presentation(&document, color.range, color.color),
+                vec![ColorPresentation {
+                    label: label.into(),
+                    text_edit: Some(TextEdit {
+                        range: color.range,
+                        new_text: label.into()
+                    }),
+                    additional_text_edits: None,
+                }]
+            );
+        }
+        for color in [
+            Color {
+                alpha: 0.5,
+                ..colors[0].color
+            },
+            Color {
+                alpha: f32::NAN,
+                ..colors[0].color
+            },
+            Color {
+                red: f32::INFINITY,
+                ..colors[0].color
+            },
+            Color {
+                green: -0.1,
+                ..colors[0].color
+            },
+            Color {
+                blue: 1.1,
+                ..colors[0].color
+            },
+        ] {
+            assert_eq!(
+                syntax.presentation(&document, colors[0].range, color),
+                Vec::<ColorPresentation>::new()
+            );
+        }
+        let missing = Range::new(Position::new(0, 0), Position::new(0, 1));
+        assert_eq!(
+            syntax.presentation(&document, missing, colors[0].color),
+            Vec::<ColorPresentation>::new()
+        );
+    }
 }

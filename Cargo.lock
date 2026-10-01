@@ -753,7 +753,6 @@ dependencies = [
  "instar-bridge",
  "instar-core",
  "nucleo-matcher",
- "serde",
  "serde_json",
  "tokio",
  "tower-lsp-server",

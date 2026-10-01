@@ -5,9 +5,8 @@ use std::{
 };
 
 use instar_core::project::Project;
-use serde_json::{Value, json};
 use tokio::sync::oneshot;
-use tower_lsp_server::ls_types::{CompletionItemKind, Range};
+use tower_lsp_server::ls_types::{self as lsp, CompletionItemKind, Range};
 
 use crate::{
     Snapshot,
@@ -30,7 +29,7 @@ pub(crate) struct Command {
     pub(crate) snapshot: Snapshot,
     pub(crate) document: Arc<Document>,
     pub(crate) request: Request,
-    pub(crate) reply: oneshot::Sender<io::Result<Value>>,
+    pub(crate) reply: oneshot::Sender<io::Result<crate::Response>>,
 }
 
 pub(crate) fn start() -> (mpsc::Sender<Option<Command>>, thread::JoinHandle<()>) {
@@ -197,23 +196,39 @@ fn recover_literal(document: &Document, offset: usize) -> Option<vermis::Span> {
     None
 }
 
-fn resolve(project: &mut Project, document: &Document, request: Request) -> io::Result<Value> {
+fn resolve(
+    project: &mut Project,
+    document: &Document,
+    request: Request,
+) -> io::Result<crate::Response> {
     match request {
-        Request::Links => {
-            Ok(
-                json!(project.links(&document.path)?.into_iter().map(|(span, target)| {
-            Ok(json!({"range": document.range(span[0], span[1]), "target": uri(&target)?}))
-        }).collect::<io::Result<Vec<_>>>()?),
-            )
-        }
+        Request::Links => Ok(crate::Response::Links(
+            project
+                .links(&document.path)?
+                .into_iter()
+                .map(|(span, target)| {
+                    Ok(lsp::DocumentLink {
+                        range: document.range(span[0], span[1]),
+                        target: Some(uri(&target)?),
+                        tooltip: None,
+                        data: None,
+                    })
+                })
+                .collect::<io::Result<Vec<_>>>()?,
+        )),
 
-        Request::Definition(offset) => Ok(json!(
+        Request::Definition(offset) => Ok(crate::Response::Locations(
             project
                 .links(&document.path)?
                 .into_iter()
                 .filter(|(span, _)| span[0] <= offset && offset <= span[1])
-                .map(|(_, target)| { Ok(json!({"uri": uri(&target)?, "range": Range::default()})) })
-                .collect::<io::Result<Vec<_>>>()?
+                .map(|(_, target)| {
+                    Ok(lsp::Location {
+                        uri: uri(&target)?,
+                        range: Range::default(),
+                    })
+                })
+                .collect::<io::Result<Vec<_>>>()?,
         )),
 
         Request::Completion {
@@ -241,11 +256,27 @@ fn resolve(project: &mut Project, document: &Document, request: Request) -> io::
                     candidate.clone()
                 };
 
-                items.push(json!({"label": candidate, "kind": if candidate.ends_with('/') { CompletionItemKind::FOLDER } else { CompletionItemKind::FILE },
-                    "textEdit": {"range": range, "newText": text}}));
+                items.push(lsp::CompletionItem {
+                    label: candidate.clone(),
+                    kind: Some(if candidate.ends_with('/') {
+                        CompletionItemKind::FOLDER
+                    } else {
+                        CompletionItemKind::FILE
+                    }),
+                    text_edit: Some(lsp::CompletionTextEdit::Edit(lsp::TextEdit {
+                        range,
+                        new_text: text,
+                    })),
+                    ..lsp::CompletionItem::default()
+                });
             }
 
-            Ok(json!({"isIncomplete": false, "items": items}))
+            Ok(crate::Response::Completion(lsp::CompletionResponse::List(
+                lsp::CompletionList {
+                    is_incomplete: false,
+                    items,
+                },
+            )))
         }
     }
 }

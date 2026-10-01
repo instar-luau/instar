@@ -5,9 +5,9 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use serde_json::{Value, json};
 use tower_lsp_server::ls_types::{
-    Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Location, Position, Range,
+    Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DocumentSymbol, FoldingRange,
+    FoldingRangeKind, Location, Position, Range, SelectionRange, SemanticToken, SemanticTokens,
     SymbolKind, Uri,
 };
 use vermis::{Kind, Parts};
@@ -25,8 +25,8 @@ pub(crate) struct Document {
 
 struct Syntax {
     spans: Vec<(usize, usize)>,
-    symbols: Vec<Value>,
-    folds: Vec<Value>,
+    symbols: Vec<DocumentSymbol>,
+    folds: Vec<FoldingRange>,
     bindings: Index,
     features: crate::features::Syntax,
 }
@@ -227,48 +227,97 @@ impl Document {
     fn syntax(&self) -> &Syntax {
         self.syntax.get_or_init(|| {
             let tree = vermis::parse(self.text.as_bytes());
-            let mut syntax = Syntax { spans: Vec::new(), symbols: Vec::new(), folds: Vec::new(), bindings: Index::new(&tree), features: crate::features::Syntax::new(&tree) };
+            let mut syntax = Syntax {
+                spans: Vec::new(),
+                symbols: Vec::new(),
+                folds: Vec::new(),
+                bindings: Index::new(&tree),
+                features: crate::features::Syntax::new(&tree),
+            };
 
             for (index, node) in tree.nodes.iter().enumerate() {
                 let span = node.span;
 
-                if span.end > self.text.len() || span.start > span.end { continue; }
+                if span.end > self.text.len() || span.start > span.end {
+                    continue;
+                }
 
                 syntax.spans.push((span.start, span.end));
                 let range = self.range(span.start, span.end);
 
-                if range.end.line > range.start.line && matches!(node.kind,
-                    Kind::Function | Kind::LocalFunction | Kind::If | Kind::While | Kind::Repeat |
-                    Kind::NumericFor | Kind::GenericFor | Kind::Do | Kind::Table | Kind::TypeTable |
-                    Kind::Class | Kind::String)
+                if range.end.line > range.start.line
+                    && matches!(
+                        node.kind,
+                        Kind::Function
+                            | Kind::LocalFunction
+                            | Kind::If
+                            | Kind::While
+                            | Kind::Repeat
+                            | Kind::NumericFor
+                            | Kind::GenericFor
+                            | Kind::Do
+                            | Kind::Table
+                            | Kind::TypeTable
+                            | Kind::Class
+                            | Kind::String
+                    )
                 {
-                    syntax.folds.push(json!({"startLine": range.start.line, "startCharacter": range.start.character,
-                        "endLine": range.end.line, "endCharacter": range.end.character, "kind": "region"}));
+                    syntax.folds.push(FoldingRange {
+                        start_line: range.start.line,
+                        start_character: Some(range.start.character),
+                        end_line: range.end.line,
+                        end_character: Some(range.end.character),
+                        kind: Some(FoldingRangeKind::Region),
+                        collapsed_text: None,
+                    });
                 }
 
+                #[expect(
+                    deprecated,
+                    reason = "the optional LSP compatibility field remains unset"
+                )]
                 let mut symbol = |name: vermis::View<'_, '_>, kind: SymbolKind| {
                     let selection = name.span();
 
-                    syntax.symbols.push(json!({"name": String::from_utf8_lossy(name.text()), "kind": kind,
-                        "range": range, "selectionRange": self.range(selection.start, selection.end)}));
+                    syntax.symbols.push(DocumentSymbol {
+                        name: String::from_utf8_lossy(name.text()).into_owned(),
+                        detail: None,
+                        kind,
+                        tags: None,
+                        deprecated: None,
+                        range,
+                        selection_range: self.range(selection.start, selection.end),
+                        children: None,
+                    });
                 };
 
                 match tree.view(index).and_then(vermis::View::parts) {
-                    Some(Parts::Function { name: Some(name), .. }) => symbol(name, SymbolKind::FUNCTION),
+                    Some(Parts::Function {
+                        name: Some(name), ..
+                    }) => symbol(name, SymbolKind::FUNCTION),
 
                     Some(Parts::Local { bindings, values }) => {
                         let values = values.collect::<Vec<_>>();
 
                         for (i, binding) in bindings.enumerate() {
                             if let Some(Parts::Binding { name, .. }) = binding.parts() {
-                                let kind = if values.get(i).is_some_and(|value| value.kind() == Kind::Function) { SymbolKind::FUNCTION } else { SymbolKind::VARIABLE };
+                                let kind = if values
+                                    .get(i)
+                                    .is_some_and(|value| value.kind() == Kind::Function)
+                                {
+                                    SymbolKind::FUNCTION
+                                } else {
+                                    SymbolKind::VARIABLE
+                                };
 
                                 symbol(name, kind);
                             }
                         }
                     }
 
-                    Some(Parts::TypeAlias { name, .. } | Parts::Class { name, .. }) => symbol(name, SymbolKind::CLASS),
+                    Some(Parts::TypeAlias { name, .. } | Parts::Class { name, .. }) => {
+                        symbol(name, SymbolKind::CLASS);
+                    }
                     _ => {}
                 }
             }
@@ -288,8 +337,8 @@ impl Document {
         &self.syntax().features
     }
 
-    pub(crate) fn tokens(&self) -> Value {
-        let mut data = Vec::<u32>::new();
+    pub(crate) fn tokens(&self) -> SemanticTokens {
+        let mut data = Vec::<SemanticToken>::new();
         let mut previous = (0, 0);
 
         for (span, kind, modifiers) in self.bindings().tokens() {
@@ -324,35 +373,38 @@ impl Document {
                 };
 
                 if end > start {
-                    data.extend([
-                        line - previous.0,
-                        if line == previous.0 {
+                    data.push(SemanticToken {
+                        delta_line: line - previous.0,
+                        delta_start: if line == previous.0 {
                             start - previous.1
                         } else {
                             start
                         },
-                        end - start,
-                        kind as u32,
-                        modifiers,
-                    ]);
+                        length: end - start,
+                        token_type: kind as u32,
+                        token_modifiers_bitset: modifiers,
+                    });
 
                     previous = (line, start);
                 }
             }
         }
 
-        json!({"data": data})
+        SemanticTokens {
+            result_id: None,
+            data,
+        }
     }
 
-    pub(crate) fn symbols(&self) -> Value {
-        json!(self.syntax().symbols)
+    pub(crate) fn symbols(&self) -> &[DocumentSymbol] {
+        &self.syntax().symbols
     }
 
-    pub(crate) fn folds(&self) -> Value {
-        json!(self.syntax().folds)
+    pub(crate) fn folds(&self) -> &[FoldingRange] {
+        &self.syntax().folds
     }
 
-    pub(crate) fn selections(&self, positions: &[Position]) -> io::Result<Value> {
+    pub(crate) fn selections(&self, positions: &[Position]) -> io::Result<Vec<SelectionRange>> {
         let mut selections = Vec::new();
 
         for position in positions {
@@ -367,7 +419,7 @@ impl Document {
                 .collect::<Vec<_>>();
 
             spans.sort_by_key(|&(start, end)| std::cmp::Reverse(end - start));
-            let mut parent = Value::Null;
+            let mut parent = None;
             let mut enclosing = (0, self.text.len());
 
             for (start, end) in spans {
@@ -375,24 +427,20 @@ impl Document {
                     continue;
                 }
 
-                let mut value = json!({"range": self.range(start, end)});
-
-                if !parent.is_null() {
-                    value["parent"] = parent;
-                }
-
-                parent = value;
+                parent = Some(SelectionRange {
+                    range: self.range(start, end),
+                    parent: parent.map(Box::new),
+                });
                 enclosing = (start, end);
             }
 
-            if parent.is_null() {
-                parent = json!({"range": self.range(offset, offset)});
-            }
-
-            selections.push(parent);
+            selections.push(parent.unwrap_or_else(|| SelectionRange {
+                range: self.range(offset, offset),
+                parent: None,
+            }));
         }
 
-        Ok(json!(selections))
+        Ok(selections)
     }
 }
 
@@ -403,6 +451,116 @@ mod tests {
         analysis::{Diagnostic as Finding, Location as SourceLocation, Severity},
         resolve::Module,
     };
+
+    #[test]
+    fn typed_tokens_preserve_utf16_and_multiline_deltas() {
+        let document = Document::new(
+            uri(&std::env::temp_dir().join("tokens.luau")).unwrap(),
+            1,
+            "local value = [[𐐀a\r\n\r\nb]]\r\nreturn value\n".into(),
+        )
+        .unwrap();
+        let tokens = document.tokens();
+        assert_eq!(tokens.result_id, None);
+        let strings = tokens
+            .data
+            .iter()
+            .filter(|token| token.token_type == crate::bindings::SemanticKind::String as u32)
+            .map(|token| {
+                (
+                    token.delta_line,
+                    token.delta_start,
+                    token.length,
+                    token.token_modifiers_bitset,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(strings, vec![(0, 8, 5, 0), (2, 0, 3, 0)]);
+        let mut position = Position::new(0, 0);
+        let mut ranges = Vec::new();
+        for token in tokens.data {
+            position.line += token.delta_line;
+            position.character = if token.delta_line == 0 {
+                position.character + token.delta_start
+            } else {
+                token.delta_start
+            };
+            ranges.push(Range::new(
+                position,
+                Position::new(position.line, position.character + token.length),
+            ));
+        }
+        assert!(ranges.contains(&Range::new(Position::new(3, 0), Position::new(3, 6))));
+        assert!(ranges.contains(&Range::new(Position::new(3, 7), Position::new(3, 12))));
+        assert!(document.selections(&[Position::new(0, 17)]).is_err());
+    }
+
+    #[test]
+    fn typed_syntax_ranges_keep_symbols_folds_and_selection_parents() {
+        let document = Document::new(
+            uri(&std::env::temp_dir().join("syntax.luau")).unwrap(),
+            1,
+            "local function outer()\n    local value = (1 + 2)\n    return value\nend\n".into(),
+        )
+        .unwrap();
+        let symbols = document.symbols();
+        let outer = symbols
+            .iter()
+            .find(|symbol| symbol.name == "outer")
+            .unwrap();
+        assert_eq!(outer.kind, SymbolKind::FUNCTION);
+        assert_eq!(
+            outer.selection_range,
+            Range::new(Position::new(0, 15), Position::new(0, 20))
+        );
+        let value = symbols
+            .iter()
+            .find(|symbol| symbol.name == "value")
+            .unwrap();
+        assert_eq!(value.kind, SymbolKind::VARIABLE);
+        assert_eq!(
+            value.selection_range,
+            Range::new(Position::new(1, 10), Position::new(1, 15))
+        );
+        assert!(document.folds().iter().any(|fold| {
+            fold.start_line == 0
+                && fold.end_line == 3
+                && fold.kind == Some(FoldingRangeKind::Region)
+        }));
+
+        let position = Position::new(1, 19);
+        let selections = document.selections(&[position]).unwrap();
+        assert_eq!(selections.len(), 1);
+        let mut selection = &selections[0];
+        assert_eq!(selection.range, Range::new(position, Position::new(1, 20)));
+        let group = Range::new(Position::new(1, 18), Position::new(1, 25));
+        let mut saw_group = false;
+        let mut saw_function = false;
+        while let Some(parent) = selection.parent.as_deref() {
+            assert!(parent.range.start <= selection.range.start);
+            assert!(parent.range.end >= selection.range.end);
+            assert_ne!(parent.range, selection.range);
+            saw_group |= parent.range == group;
+            saw_function |= parent.range == outer.range;
+            selection = parent;
+        }
+        assert!(saw_group);
+        assert!(saw_function);
+
+        let empty = Document::new(
+            uri(&std::env::temp_dir().join("empty.luau")).unwrap(),
+            1,
+            String::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            empty.selections(&[Position::new(0, 0)]).unwrap(),
+            vec![SelectionRange {
+                range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+                parent: None,
+            }]
+        );
+    }
 
     #[test]
     fn diagnostic_batches_convert_sort_deduplicate_and_propagate_resolution_errors() {
