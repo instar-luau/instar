@@ -418,6 +418,7 @@ impl Backend {
     ) -> tokio::sync::MutexGuard<'_, Snapshot> {
         loop {
             let state = self.state.lock().await;
+
             let preparing = match path {
                 Some(path) => state.preparing.get(path),
                 None => state.preparing.values().next(),
