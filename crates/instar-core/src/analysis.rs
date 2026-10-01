@@ -739,24 +739,11 @@ fn check_environment(
     let mut registered = false;
 
     for (package, definition) in &declarations {
-        let mut source = Rc::clone(&definition.source);
-
-        for (configured_package, location) in &environment.definitions {
-            if configured_package == package {
-                let path = crate::absolute(Path::new(location))?;
-
-                if entries
-                    .iter()
-                    .any(|name| host.modules[name].module.source == path)
-                {
-                    source = host.project.source(&path)?;
-                }
-            }
-        }
-
         let before = host.diagnostics.len();
 
-        if let Err(error) = checker.load_definition(&mut host, source.as_bytes(), package) {
+        if let Err(error) =
+            checker.load_definition(&mut host, definition.source.as_bytes(), package)
+        {
             if host.diagnostics.len() != before {
                 host.project.commit_declarations(&environment.definitions);
                 report(&host.diagnostics)?;
@@ -860,7 +847,14 @@ impl Editor {
         let path = crate::absolute(path)?;
         self.project.set_source(&path, text)?;
 
-        if is_declaration_source(&path) {
+        if is_declaration_source(&path)
+            || self.sessions.iter().any(|session| {
+                session
+                    .definitions
+                    .iter()
+                    .any(|(_, location)| Path::new(location) == path)
+            })
+        {
             self.sessions.clear();
         }
 
@@ -1152,22 +1146,11 @@ impl Editor {
             }
 
             for (package, definition) in &declarations {
-                let source = definitions
-                    .iter()
-                    .find(|(name, location)| {
-                        name == package
-                            && crate::absolute(Path::new(location))
-                                .is_ok_and(|path| declaration_paths.contains(&path))
-                    })
-                    .map(|(_, location)| crate::absolute(Path::new(location)))
-                    .transpose()?
-                    .map(|path| host.project.source(&path))
-                    .transpose()?
-                    .unwrap_or_else(|| Rc::clone(&definition.source));
-
                 let before = host.diagnostics.len();
 
-                if let Err(error) = checker.load_definition(host, source.as_bytes(), package) {
+                if let Err(error) =
+                    checker.load_definition(host, definition.source.as_bytes(), package)
+                {
                     if error.to_string() == "definition loading failed"
                         && host.diagnostics.len() > before
                     {
@@ -1350,6 +1333,104 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn declaration_fixture(name: &str, filename: &str) -> (PathBuf, PathBuf) {
+        let directory = std::env::temp_dir().join(format!("instar-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("instar.toml"),
+            format!(
+                "[roblox]\nenabled = true\nsourcemaps = []\n[luau.definitions]\n\"@roblox\" = \"{filename}\"\n"
+            ),
+        )
+        .unwrap();
+        let source = directory.join("main.luau");
+        std::fs::write(
+            &source,
+            "--!strict\nlocal item: Part = Instance.new(\"Part\")\nlocal value: string = marker\nreturn item, value\n",
+        )
+        .unwrap();
+
+        (source, directory.join(filename))
+    }
+
+    fn declaration(metadata: &str, marker: &str) -> String {
+        format!(
+            "--#METADATA#{metadata}\ndeclare extern type Instance with\nend\ndeclare extern type Part extends Instance with\nend\ndeclare Instance: {{ new: (className: string) -> Instance }}\ndeclare marker: {marker}\n"
+        )
+    }
+
+    fn has_errors(diagnostics: &[Diagnostic]) -> bool {
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == Severity::Error)
+    }
+
+    #[test]
+    fn editor_declarations_follow_effective_source_through_close_and_refresh() {
+        let (source, definitions) = declaration_fixture("editor-declarations", "types.luau");
+        let disk = declaration(r#"{"services":[],"creatable_instances":[]}"#, "number");
+        let overlay = declaration(
+            r#"{"services":["Part"],"creatable_instances":["Part"]}"#,
+            "string",
+        );
+        std::fs::write(&definitions, &disk).unwrap();
+        let mut editor = Editor::default();
+        editor
+            .set_source(&source, Some(&std::fs::read_to_string(&source).unwrap()))
+            .unwrap();
+
+        assert_eq!(editor.services(&source).unwrap(), Vec::<String>::new());
+        assert!(has_errors(&editor.check().unwrap()));
+
+        editor.set_source(&definitions, Some(&overlay)).unwrap();
+        for refresh in [false, false, true] {
+            if refresh {
+                editor.refresh();
+            }
+            assert_eq!(editor.services(&source).unwrap(), ["Part"]);
+            assert!(!has_errors(&editor.check().unwrap()));
+        }
+
+        let malformed = declaration(
+            r#"{"services":["Part","Part"],"creatable_instances":["Part"]}"#,
+            "string",
+        );
+        editor.set_source(&definitions, Some(&malformed)).unwrap();
+        assert!(editor.services(&source).is_err());
+        assert!(editor.check().is_err());
+        editor.set_source(&definitions, Some(&overlay)).unwrap();
+        assert_eq!(editor.services(&source).unwrap(), ["Part"]);
+        assert!(!has_errors(&editor.check().unwrap()));
+
+        editor.set_source(&definitions, None).unwrap();
+        assert_eq!(editor.services(&source).unwrap(), Vec::<String>::new());
+        assert!(has_errors(&editor.check().unwrap()));
+        std::fs::write(&definitions, &overlay).unwrap();
+        editor.refresh();
+        assert_eq!(editor.services(&source).unwrap(), ["Part"]);
+        assert!(!has_errors(&editor.check().unwrap()));
+        std::fs::remove_dir_all(source.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn batch_declarations_accept_overlay_only_files() {
+        let (source, definitions) = declaration_fixture("batch-declarations", "types.d.luau");
+        let overlay = declaration(
+            r#"{"services":["Part"],"creatable_instances":["Part"]}"#,
+            "string",
+        );
+        let mut project = Project::new();
+        project.set_source(&definitions, Some(&overlay)).unwrap();
+        assert_eq!(project.services(&source).unwrap(), ["Part"]);
+        assert!(!has_errors(
+            &check(&mut project, &[source.clone(), definitions.clone()]).unwrap()
+        ));
+
+        project.set_source(&definitions, None).unwrap();
+        assert!(check(&mut project, std::slice::from_ref(&source)).is_err());
+        std::fs::remove_dir_all(source.parent().unwrap()).unwrap();
+    }
 
     #[test]
     fn streaming_reports_each_diagnostic_once() {

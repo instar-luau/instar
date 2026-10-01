@@ -136,6 +136,7 @@ pub struct Project {
     configurations: HashMap<PathBuf, Rc<EffectiveConfig>>,
     sources: HashMap<PathBuf, Rc<str>>,
     overlays: HashMap<PathBuf, Rc<str>>,
+    definitions: HashMap<String, Rc<Definitions>>,
     sourcemaps: HashMap<PathBuf, Result<Rc<Sourcemap>, String>>,
     assets: Assets,
 }
@@ -258,6 +259,10 @@ impl Project {
         let path = absolute(path)?;
         self.sources.remove(&path);
 
+        if let Some(location) = path.to_str() {
+            self.definitions.remove(location);
+        }
+
         if let Some(text) = text {
             self.overlays.insert(path, Rc::from(text));
         } else {
@@ -369,6 +374,7 @@ impl Project {
         self.layers.clear();
         self.configurations.clear();
         self.sources.clear();
+        self.definitions.clear();
         self.sourcemaps.clear();
         self.assets.invalidate();
     }
@@ -421,6 +427,14 @@ impl Project {
     /// # Errors
     /// Returns filesystem errors or invalid source encoding.
     pub fn source(&mut self, path: &Path) -> io::Result<Rc<str>> {
+        self.source_with(path, |path| fs::read_to_string(path))
+    }
+
+    fn source_with(
+        &mut self,
+        path: &Path,
+        load: impl FnOnce(&Path) -> io::Result<String>,
+    ) -> io::Result<Rc<str>> {
         let path = absolute(path)?;
 
         if let Some(source) = self.overlays.get(&path) {
@@ -431,7 +445,7 @@ impl Project {
             return Ok(Rc::clone(source));
         }
 
-        let source: Rc<str> = fs::read_to_string(&path)?.into();
+        let source: Rc<str> = load(&path)?.into();
         self.sources.insert(path, Rc::clone(&source));
 
         Ok(source)
@@ -447,12 +461,7 @@ impl Project {
 
         if config.roblox.enabled {
             for location in config.settings.definitions.values() {
-                services.extend(
-                    self.assets
-                        .declaration(location)?
-                        .services()
-                        .map(str::to_owned),
-                );
+                services.extend(self.declaration(location)?.services().map(str::to_owned));
             }
         }
 
@@ -479,6 +488,28 @@ impl Project {
         self.assets.take_warnings()
     }
 
+    fn declaration(&mut self, location: &str) -> io::Result<Rc<Definitions>> {
+        let source = if location.starts_with("https://") {
+            self.assets.declaration(location)?
+        } else {
+            self.source_with(Path::new(location), assets::read_declaration)?
+        };
+
+        if let Some(definition) = self.definitions.get(location)
+            && Rc::ptr_eq(&source, &definition.source)
+        {
+            return Ok(Rc::clone(definition));
+        }
+
+        let definition = Rc::new(
+            Definitions::new(source).map_err(|error| invalid(format!("{location}: {error}")))?,
+        );
+        self.definitions
+            .insert(location.to_owned(), Rc::clone(&definition));
+
+        Ok(definition)
+    }
+
     pub(crate) fn declarations(
         &mut self,
         locations: &[(String, String)],
@@ -486,8 +517,7 @@ impl Project {
         locations
             .iter()
             .map(|(package, path)| {
-                self.assets
-                    .declaration(path)
+                self.declaration(path)
                     .map(|source| (package.clone(), source))
             })
             .collect()
