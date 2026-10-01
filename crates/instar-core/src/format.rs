@@ -1258,6 +1258,11 @@ fn format_tokens(
     syntax.return_values.sort_unstable();
 
     let mut output = String::new();
+    let newline = if options.line_ending == LineEnding::CrLf {
+        "\r\n"
+    } else {
+        "\n"
+    };
     let mut level = 0usize;
     let mut line_len = 0usize;
     let mut stack: Vec<(char, bool)> = Vec::new();
@@ -1700,7 +1705,7 @@ fn format_tokens(
         }
 
         if line_break && !output.is_empty() && !output.ends_with('\n') {
-            output.push('\n');
+            output.push_str(newline);
             line_len = 0;
         }
 
@@ -1721,10 +1726,10 @@ fn format_tokens(
 
             if preserve_gap {
                 if !output.ends_with('\n') {
-                    output.push('\n');
+                    output.push_str(newline);
                 }
 
-                output.push('\n');
+                output.push_str(newline);
                 line_len = 0;
             }
         }
@@ -1788,7 +1793,7 @@ fn format_tokens(
             }
 
             if !output.ends_with('\n') {
-                output.push('\n');
+                output.push_str(newline);
                 line_len = 0;
             }
         }
@@ -1819,39 +1824,20 @@ fn format_tokens(
         }
 
         if tokens[i].kind == Kind::Comment && !output.ends_with('\n') {
-            output.push('\n');
+            output.push_str(newline);
             line_len = 0;
         }
 
         previous = Some(i);
     }
 
-    let mut result = output.trim_end_matches([' ', '\t', '\n']).to_owned();
+    output.truncate(output.trim_end_matches([' ', '\t', '\r', '\n']).len());
 
-    if options.final_newline && !result.is_empty() {
-        result.push('\n');
+    if options.final_newline && !output.is_empty() {
+        output.push_str(newline);
     }
 
-    if result.contains("\r\n") {
-        let mut normalized = String::with_capacity(result.len());
-
-        for line in result.split_inclusive('\n') {
-            if let Some(line) = line.strip_suffix('\n') {
-                normalized.push_str(line.trim_end_matches('\r'));
-                normalized.push('\n');
-            } else {
-                normalized.push_str(line);
-            }
-        }
-
-        result = normalized;
-    }
-
-    if options.line_ending == LineEnding::CrLf {
-        result = result.replace('\n', "\r\n");
-    }
-
-    result
+    output
 }
 
 /// Formats Luau source according to the project format options.
@@ -1982,6 +1968,95 @@ pub fn source(input: &str, options: &FormatOptions) -> io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preserves_literal_line_endings_under_both_output_policies() {
+        let literals = [
+            "\"a\\\r\nb\\\nc\\\rd\"",
+            "'a\\\r\nb\\\nc\\\rd'",
+            "\"a\\z \r\n\tb\\z \n c\"",
+            "[[a\r\nb\nc\rd\r\r\ne]]",
+            "[==[\r\na\r\nb\nc\rd\r\r\ne]==]",
+            "`a\\\r\nb\\\nc\\\rd`",
+            "`a\\\r\n{count}b\\\n{count}c\\\rd`",
+        ];
+
+        for line_ending in [LineEnding::Lf, LineEnding::CrLf] {
+            let newline = if line_ending == LineEnding::CrLf {
+                "\r\n"
+            } else {
+                "\n"
+            };
+
+            for final_newline in [false, true] {
+                let options = FormatOptions {
+                    line_ending,
+                    final_newline,
+                    quote_style: QuoteStyle::Preserve,
+                    ..FormatOptions::default()
+                };
+
+                for literal in literals {
+                    let input = format!(" \tlocal text={literal} \t\r\n\n");
+                    let expected = format!(
+                        "local text = {literal}{}",
+                        if final_newline { newline } else { "" }
+                    );
+
+                    let output = source(&input, &options).unwrap();
+                    assert_eq!(output, expected);
+                    assert_eq!(source(&output, &options).unwrap(), output);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn applies_line_endings_to_surrounding_formatted_whitespace() {
+        let input = concat!(
+            "-- lead\r\n",
+            "local values={\r\n",
+            "[=[a\r\nb\nc]=],\n",
+            "}\r\n\r\n",
+            "local show=print\n",
+            "show(\"one\");(show)(\"two\")\r\n",
+            "-- tail \t\r\n\n",
+        );
+
+        for line_ending in [LineEnding::Lf, LineEnding::CrLf] {
+            let newline = if line_ending == LineEnding::CrLf {
+                "\r\n"
+            } else {
+                "\n"
+            };
+
+            for final_newline in [false, true] {
+                let options = FormatOptions {
+                    line_ending,
+                    final_newline,
+                    ..FormatOptions::default()
+                };
+
+                let expected = [
+                    "-- lead",
+                    "local values = {",
+                    "\t[=[a\r\nb\nc]=],",
+                    "}",
+                    "",
+                    "local show = print",
+                    "show(\"one\");",
+                    "(show)(\"two\")",
+                    "-- tail",
+                ]
+                .join(newline)
+                    + if final_newline { newline } else { "" };
+
+                let output = source(input, &options).unwrap();
+                assert_eq!(output, expected);
+                assert_eq!(source(&output, &options).unwrap(), output);
+            }
+        }
+    }
 
     #[test]
     fn preserves_require_comments_and_separators_across_reformatting() {
