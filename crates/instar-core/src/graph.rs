@@ -806,6 +806,7 @@ impl Writes {
     pub(crate) fn analyze(root: View<'_, '_>) -> Self {
         let mut writes = Self::new(Some(WriteDetails::default()));
         writes.visit(root);
+
         writes
     }
 
@@ -829,6 +830,7 @@ impl Writes {
 
     fn resolve(&self, name: View<'_, '_>) -> Option<usize> {
         let name = String::from_utf8_lossy(name.text());
+
         self.scopes
             .iter()
             .rev()
@@ -839,12 +841,15 @@ impl Writes {
         let Some(details) = &mut self.details else {
             return;
         };
+
         let Some(Parts::Function { parameters, .. }) = value.parts() else {
             return;
         };
+
         let Some(Parts::Parameters { parameters }) = parameters.parts() else {
             return;
         };
+
         let mut minimum = 0;
         let mut variadic = false;
 
@@ -865,9 +870,11 @@ impl Writes {
         if self.details.is_none() {
             return;
         }
+
         let Some(id) = self.resolve(name) else {
             return;
         };
+
         let details = self.details.as_mut().unwrap();
 
         if let Some(&arity) = details.functions.get(&id) {
@@ -879,6 +886,7 @@ impl Writes {
         if self.details.is_none() {
             return;
         }
+
         let Some(Parts::Field { receiver, .. } | Parts::Index { receiver, .. }) = target.parts()
         else {
             return;
@@ -995,6 +1003,7 @@ impl Writes {
                         String::from_utf8_lossy(name.text()).into_owned(),
                         name.span().start,
                     );
+
                     self.function_arity(name, node);
                 } else if name.kind() == Kind::Name {
                     self.write(name);
@@ -1147,6 +1156,7 @@ mod tests {
         for (source, expected) in cases {
             let extraction = extract(source, None, Ok(None));
             assert!(extraction.diagnostics.is_empty(), "{source}");
+
             let requests: Vec<_> = extraction
                 .sites
                 .iter()
@@ -1155,6 +1165,7 @@ mod tests {
                     _ => None,
                 })
                 .collect();
+
             assert_eq!(requests, [expected], "{source}");
         }
     }

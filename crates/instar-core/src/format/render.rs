@@ -35,6 +35,7 @@ pub(super) fn render(prepared: &Prepared, options: &FormatOptions) -> String {
         previous: None,
         blocks: Vec::new(),
     };
+
     let mut layout = Layout::new(prepared, options);
 
     for index in 0..prepared.tokens.len() {
@@ -43,6 +44,7 @@ pub(super) fn render(prepared: &Prepared, options: &FormatOptions) -> String {
         renderer.close_indentation(index, current_if_expression);
 
         let opening = layout.delimiter(index, renderer.previous, renderer.line_width);
+
         let line = layout.line(
             index,
             renderer.previous,
@@ -51,6 +53,7 @@ pub(super) fn render(prepared: &Prepared, options: &FormatOptions) -> String {
             opening.as_ref(),
             expression_start,
         );
+
         let open_wrapped = opening.as_ref().is_some_and(|delimiter| delimiter.wrapped);
 
         if let Some(opening) = opening {
@@ -76,6 +79,7 @@ pub(super) fn render(prepared: &Prepared, options: &FormatOptions) -> String {
 impl Renderer<'_> {
     fn close_indentation(&mut self, index: usize, current_if_expression: bool) {
         let text = self.prepared.tokens[index].text.as_str();
+
         let block_closer = matches!(text, "end" | "until")
             || (matches!(text, "else" | "elseif") && !current_if_expression);
 
@@ -109,6 +113,7 @@ impl Renderer<'_> {
             .delimiters
             .last()
             .is_some_and(|delimiter| delimiter.kind == '{');
+
         let block_edge = !current_if_expression
             && (self
                 .prepared
@@ -117,6 +122,7 @@ impl Renderer<'_> {
                 .binary_search(&token.start)
                 .is_ok()
                 || matches!(token.text.as_str(), "end" | "else" | "elseif" | "until"));
+
         let preserve_gap = if in_table {
             self.options.tables.blank_lines == crate::config::TableBlankLines::Preserve
         } else if block_edge {
@@ -179,6 +185,7 @@ impl Renderer<'_> {
 
             match self.options.indent_style {
                 IndentStyle::Tabs => self.output.extend(std::iter::repeat_n('\t', visual_level)),
+
                 IndentStyle::Spaces => self.output.extend(std::iter::repeat_n(
                     ' ',
                     visual_level.saturating_mul(self.options.indent_width),

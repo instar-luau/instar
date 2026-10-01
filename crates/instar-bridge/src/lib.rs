@@ -1789,11 +1789,13 @@ mod tests {
     #[test]
     fn definition_rejection_is_distinct_from_operation_and_callback_failures() {
         let mut checker = Checker::new(&CheckerOptions::default()).unwrap();
+
         let mut host = TestHost {
             config: Configuration::new(br#"{"languageMode":"strict"}"#).unwrap(),
             diagnostics: Vec::new(),
             diagnostic_error: None,
         };
+
         let malformed = b"declare function incomplete(";
 
         let rejected = checker
@@ -1801,6 +1803,7 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(rejected.kind(), io::ErrorKind::InvalidData);
+
         assert!(
             rejected
                 .get_ref()
@@ -1808,16 +1811,19 @@ mod tests {
         );
 
         let misleading_message = rejected.to_string();
+
         host.diagnostic_error = Some(io::Error::new(
             io::ErrorKind::InvalidData,
             misleading_message.clone(),
         ));
+
         let callback = checker
             .load_definition(&mut host, malformed, "callback")
             .unwrap_err();
 
         assert_eq!(callback.kind(), io::ErrorKind::InvalidData);
         assert_eq!(callback.to_string(), misleading_message);
+
         assert!(
             !callback
                 .get_ref()
@@ -1827,6 +1833,7 @@ mod tests {
         let retried = checker
             .load_definition(&mut host, malformed, "retried")
             .unwrap_err();
+
         assert!(
             retried
                 .get_ref()
@@ -1834,11 +1841,13 @@ mod tests {
         );
 
         checker.freeze().unwrap();
+
         let state = checker
             .load_definition(&mut host, malformed, "frozen")
             .unwrap_err();
 
         assert_eq!(state.kind(), io::ErrorKind::Other);
+
         assert!(
             !state
                 .get_ref()

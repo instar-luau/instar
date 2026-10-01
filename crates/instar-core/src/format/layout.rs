@@ -67,6 +67,7 @@ impl<'a> Layout<'a> {
         let tight_type = &self.prepared.tight_type;
         let text = tokens[index].text.as_str();
         let in_declaration = self.prepared.declared.get(index) == Some(&true);
+
         let opener = match text {
             "(" => Some('('),
             "{" => Some('{'),
@@ -187,11 +188,14 @@ impl<'a> Layout<'a> {
         let options = self.options;
         let text = tokens[index].text.as_str();
         let current_if_expression = expression_start.is_some();
+
         let hugged_argument = parent.is_some_and(|delimiter| {
             delimiter.call && !delimiter.wrapped && delimiter.hug_start == Some(index)
         });
+
         let block_closer = matches!(text, "end" | "until")
             || (matches!(text, "else" | "elseif") && !current_if_expression);
+
         let close_block = block_closer && !self.prepared.compact_ends[index];
         let close_delimiter = matches!(text, ")" | "}" | "]");
         let parent_wrapped = parent.is_some_and(|delimiter| delimiter.wrapped);
@@ -307,6 +311,7 @@ impl<'a> Layout<'a> {
         let options = self.options;
         let tight_type = &self.prepared.tight_type;
         let text = tokens[index].text.as_str();
+
         let expression_wrap = expression_start.is_some_and(|start| {
             *self.expression_wraps[start].get_or_insert_with(|| {
                 if_expression_wrap(tokens, start, line_width, options, syntax, tight_type)
@@ -394,6 +399,7 @@ impl<'a> Layout<'a> {
         let tokens = &self.prepared.tokens;
         let syntax = &self.prepared.syntax;
         let text = tokens[index].text.as_str();
+
         matches!(text, "|" | "&")
             && syntax
                 .type_operator_gaps
@@ -414,6 +420,7 @@ impl<'a> Layout<'a> {
         let options = self.options;
         let tight_type = &self.prepared.tight_type;
         let text = tokens[index].text.as_str();
+
         match options.types.operator_wrap {
             Wrap::Always => true,
             Wrap::Never => false,
@@ -478,6 +485,7 @@ impl<'a> Layout<'a> {
         let tokens = &self.prepared.tokens;
         let syntax = &self.prepared.syntax;
         let options = self.options;
+
         let interpolation = syntax
             .interpolation_expressions
             .iter()

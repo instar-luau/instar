@@ -731,9 +731,11 @@ mod tests {
                 .into(),
         )
         .unwrap();
+
         let syntax = document.features();
         let colors = syntax.colors(&document);
         assert_eq!(colors.len(), 2);
+
         assert_eq!(
             colors[0],
             ColorInformation {
@@ -746,6 +748,7 @@ mod tests {
                 },
             }
         );
+
         assert_eq!(
             colors[1].color,
             Color {
@@ -755,6 +758,7 @@ mod tests {
                 alpha: 1.0
             }
         );
+
         for (color, label) in colors
             .iter()
             .zip(["Color3.fromHex('#ABC')", "Color3.fromRGB(255, 0, 128)"])
@@ -771,6 +775,7 @@ mod tests {
                 }]
             );
         }
+
         for color in [
             Color {
                 alpha: 0.5,
@@ -798,7 +803,9 @@ mod tests {
                 Vec::<ColorPresentation>::new()
             );
         }
+
         let missing = Range::new(Position::new(0, 0), Position::new(0, 1));
+
         assert_eq!(
             syntax.presentation(&document, missing, colors[0].color),
             Vec::<ColorPresentation>::new()

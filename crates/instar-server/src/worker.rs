@@ -518,6 +518,7 @@ impl Worker {
             Query::Hover(line, column) => self
                 .hover(&document, line, column)
                 .map(crate::Response::Hover),
+
             Query::Completion(line, column) => self
                 .completion(&document, line, column)
                 .map(crate::Response::Completion),
@@ -577,6 +578,7 @@ impl Worker {
                         right.range.end,
                     ))
                 });
+
                 targets.dedup();
 
                 Ok(crate::Response::Locations(targets))
@@ -629,6 +631,7 @@ impl Worker {
         column: u32,
     ) -> io::Result<Option<lsp::SignatureHelp>> {
         let path = &document.path;
+
         let result = self.editor.query(path, |checker, host, name| {
             checker.signature_help(host, name, line, column)
         })?;
@@ -705,6 +708,7 @@ impl Worker {
                 right.range.end,
             ))
         });
+
         targets.dedup();
 
         Ok(targets)
@@ -1038,6 +1042,7 @@ impl Worker {
                 let mut edits = item.additional_text_edits.unwrap_or_default();
                 edits.push(edit);
                 let detail = item.detail.as_deref().unwrap_or("");
+
                 actions.push(lsp::CodeActionOrCommand::CodeAction(lsp::CodeAction {
                     title: format!("Import {name} from {detail}"),
                     kind: Some(lsp::CodeActionKind::QUICKFIX),
@@ -1185,32 +1190,39 @@ mod tests {
     fn import_actions_use_current_diagnostics_without_publication() {
         let directory =
             std::env::temp_dir().join(format!("instar-worker-actions-{}", std::process::id()));
+
         std::fs::create_dir_all(&directory).unwrap();
         std::fs::write(directory.join("Widget.luau"), "return {}\n").unwrap();
         let path = directory.join("main.luau");
+
         let document = Arc::new(
             Document::new(uri(&path).unwrap(), 1, "--!strict\nreturn Widget\n".into()).unwrap(),
         );
+
         let snapshot = crate::Snapshot {
             revision: 1,
             folders: [directory.clone()].into(),
             documents: BTreeMap::from([(path.clone(), document)]),
             ..crate::Snapshot::default()
         };
+
         let range = tower_lsp_server::ls_types::Range::new(
             tower_lsp_server::ls_types::Position::new(1, 7),
             tower_lsp_server::ls_types::Position::new(1, 13),
         );
+
         let mut expected = None;
 
         for diagnostics in [false, true] {
             let mut worker = Worker::default();
             worker.update(&snapshot, diagnostics).unwrap();
+
             let crate::Response::Actions(actions) =
                 worker.query(&path, &Query::Actions(range)).unwrap()
             else {
                 panic!("expected code actions");
             };
+
             assert!(actions.iter().any(|action| {
                 let lsp::CodeActionOrCommand::CodeAction(action) = action else {
                     return false;
@@ -1242,16 +1254,20 @@ mod tests {
 
             let mut changed = snapshot.clone();
             changed.revision += 1;
+
             changed.documents.insert(
                 path.clone(),
                 Arc::new(Document::new(uri(&path).unwrap(), 2, "return 1\n".into()).unwrap()),
             );
+
             worker.update(&changed, false).unwrap();
+
             let crate::Response::Actions(actions) =
                 worker.query(&path, &Query::Actions(range)).unwrap()
             else {
                 panic!("expected code actions");
             };
+
             assert_eq!(actions, lsp::CodeActionResponse::new());
         }
 

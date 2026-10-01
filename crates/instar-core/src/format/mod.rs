@@ -55,6 +55,7 @@ pub fn source(input: &str, options: &FormatOptions) -> io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::config::{
         BeforeFunctionParentheses, CallParentheses, IndentStyle, LineEnding, QuoteStyle,
         TrailingComma, Wrap,
@@ -89,6 +90,7 @@ mod tests {
 
                 for literal in literals {
                     let input = format!(" \tlocal text={literal} \t\r\n\n");
+
                     let expected = format!(
                         "local text = {literal}{}",
                         if final_newline { newline } else { "" }
@@ -879,6 +881,7 @@ mod tests {
             "    end)\n",
             ")\n",
         );
+
         let expected = concat!(
             "outer(inner(function()\n",
             "    if ready and active then\n",
@@ -907,6 +910,7 @@ mod tests {
     fn wraps_nested_callbacks_only_past_the_opening_line_width() {
         let opening = "    outer(inner(function(): boolean";
         let input = format!("function run()\n{opening}\n        return true\n    end))\nend\n");
+
         let mut options = FormatOptions {
             indent_style: IndentStyle::Spaces,
             width: opening.len(),
@@ -917,6 +921,7 @@ mod tests {
 
         options.width -= 1;
         let output = source(&input, &options).unwrap();
+
         assert_eq!(
             output,
             concat!(
@@ -929,6 +934,7 @@ mod tests {
                 "end\n",
             )
         );
+
         assert_eq!(source(&output, &options).unwrap(), output);
     }
 
