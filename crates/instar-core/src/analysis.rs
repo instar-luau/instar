@@ -852,8 +852,10 @@ impl Editor {
     /// Returns invalid-path or native invalidation errors.
     pub fn set_source(&mut self, path: &Path, text: Option<&str>) -> io::Result<()> {
         let path = crate::absolute(path)?;
+
         let topology_changed =
             self.project.overlay_file(&path) != text.is_some() && !path.is_file();
+
         self.project.set_source(&path, text)?;
 
         if is_declaration_source(&path)
@@ -886,6 +888,7 @@ impl Editor {
                     if !topology_changed {
                         session.checker.mark_dirty(Path::new(name))?;
                     }
+
                     state.source = None;
                     state.expressions = None;
                     state.line_starts.clear();
@@ -1378,6 +1381,7 @@ mod tests {
     fn declaration_fixture(name: &str, filename: &str) -> (PathBuf, PathBuf) {
         let directory = std::env::temp_dir().join(format!("instar-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
+
         std::fs::write(
             directory.join("instar.toml"),
             format!(
@@ -1385,7 +1389,9 @@ mod tests {
             ),
         )
         .unwrap();
+
         let source = directory.join("main.luau");
+
         std::fs::write(
             &source,
             "--!strict\nlocal item: Part = Instance.new(\"Part\")\nlocal value: string = marker\nreturn item, value\n",
@@ -1419,7 +1425,9 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
+
         errors.sort();
+
         errors
     }
 
@@ -1427,11 +1435,13 @@ mod tests {
     fn editor_requires_follow_overlay_existence_and_content() {
         let directory =
             std::env::temp_dir().join(format!("instar-editor-overlays-{}", std::process::id()));
+
         std::fs::create_dir_all(&directory).unwrap();
         std::fs::write(directory.join("instar.toml"), "[roblox]\nenabled = false\n").unwrap();
         let source = directory.join("main.luau");
         let dependency = directory.join("missing.luau");
         let mut editor = Editor::default();
+
         editor
             .set_source(
                 &source,
@@ -1445,6 +1455,7 @@ mod tests {
 
         editor.set_source(&dependency, Some("return 1\n")).unwrap();
         editor.check_for_query().unwrap();
+
         for _ in 0..2 {
             assert_eq!(
                 errors(editor.check().unwrap()),
@@ -1455,11 +1466,13 @@ mod tests {
         editor
             .set_source(&dependency, Some("return \"text\"\n"))
             .unwrap();
+
         let incompatible = errors(editor.check().unwrap());
         assert!(incompatible.iter().any(|(path, _, _)| path == &source));
         assert_eq!(errors(editor.check().unwrap()), incompatible);
 
         editor.set_source(&dependency, Some("return 2\n")).unwrap();
+
         for _ in 0..2 {
             assert_eq!(
                 errors(editor.check().unwrap()),
@@ -1469,32 +1482,40 @@ mod tests {
 
         editor.set_source(&dependency, None).unwrap();
         editor.check_for_query().unwrap();
+
         for _ in 0..2 {
             assert_eq!(errors(editor.check().unwrap()), missing);
         }
 
         editor.set_source(&dependency, Some("return 1\n")).unwrap();
+
         assert_eq!(
             errors(editor.check().unwrap()),
             Vec::<(PathBuf, [u32; 4], String)>::new()
         );
+
         std::fs::write(&dependency, "return 1\n").unwrap();
         editor.set_source(&dependency, None).unwrap();
+
         assert_eq!(
             errors(editor.check().unwrap()),
             Vec::<(PathBuf, [u32; 4], String)>::new()
         );
+
         editor
             .set_source(&dependency, Some("return \"text\"\n"))
             .unwrap();
+
         assert_eq!(errors(editor.check().unwrap()), incompatible);
         editor.set_source(&dependency, None).unwrap();
+
         for _ in 0..2 {
             assert_eq!(
                 errors(editor.check().unwrap()),
                 Vec::<(PathBuf, [u32; 4], String)>::new()
             );
         }
+
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -1504,6 +1525,7 @@ mod tests {
             "instar-editor-declaration-errors-{}",
             std::process::id()
         ));
+
         std::fs::create_dir_all(&directory).unwrap();
         std::fs::write(directory.join("instar.toml"), "[roblox]\nenabled = false\n").unwrap();
         let source = directory.join("main.luau");
@@ -1518,30 +1540,36 @@ mod tests {
 
         let expected = errors(editor.check().unwrap());
         assert!(expected.iter().any(|(path, _, _)| path == &definitions));
+
         for _ in 0..2 {
             editor.check_for_query().unwrap();
             assert_eq!(errors(editor.check().unwrap()), expected);
         }
+
         editor.refresh();
         editor.check_for_query().unwrap();
         assert_eq!(errors(editor.check().unwrap()), expected);
 
         editor.set_source(&definitions, Some(valid)).unwrap();
+
         for _ in 0..2 {
             assert_eq!(
                 errors(editor.check().unwrap()),
                 Vec::<(PathBuf, [u32; 4], String)>::new()
             );
         }
+
         editor.set_source(&definitions, Some(invalid)).unwrap();
         assert_eq!(errors(editor.check().unwrap()), expected);
         editor.set_source(&definitions, None).unwrap();
+
         for _ in 0..2 {
             assert_eq!(
                 errors(editor.check().unwrap()),
                 Vec::<(PathBuf, [u32; 4], String)>::new()
             );
         }
+
         editor.set_source(&definitions, Some(invalid)).unwrap();
         editor.check_for_query().unwrap();
         assert_eq!(errors(editor.check().unwrap()), expected);
@@ -1552,12 +1580,15 @@ mod tests {
     fn editor_declarations_follow_effective_source_through_close_and_refresh() {
         let (source, definitions) = declaration_fixture("editor-declarations", "types.luau");
         let disk = declaration(r#"{"services":[],"creatable_instances":[]}"#, "number");
+
         let overlay = declaration(
             r#"{"services":["Part"],"creatable_instances":["Part"]}"#,
             "string",
         );
+
         std::fs::write(&definitions, &disk).unwrap();
         let mut editor = Editor::default();
+
         editor
             .set_source(&source, Some(&std::fs::read_to_string(&source).unwrap()))
             .unwrap();
@@ -1566,10 +1597,12 @@ mod tests {
         assert!(has_errors(&editor.check().unwrap()));
 
         editor.set_source(&definitions, Some(&overlay)).unwrap();
+
         for refresh in [false, false, true] {
             if refresh {
                 editor.refresh();
             }
+
             assert_eq!(editor.services(&source).unwrap(), ["Part"]);
             assert!(!has_errors(&editor.check().unwrap()));
         }
@@ -1578,6 +1611,7 @@ mod tests {
             r#"{"services":["Part","Part"],"creatable_instances":["Part"]}"#,
             "string",
         );
+
         editor.set_source(&definitions, Some(&malformed)).unwrap();
         assert!(editor.services(&source).is_err());
         assert!(editor.check().is_err());
@@ -1598,13 +1632,16 @@ mod tests {
     #[test]
     fn batch_declarations_accept_overlay_only_files() {
         let (source, definitions) = declaration_fixture("batch-declarations", "types.d.luau");
+
         let overlay = declaration(
             r#"{"services":["Part"],"creatable_instances":["Part"]}"#,
             "string",
         );
+
         let mut project = Project::new();
         project.set_source(&definitions, Some(&overlay)).unwrap();
         assert_eq!(project.services(&source).unwrap(), ["Part"]);
+
         assert!(!has_errors(
             &check(&mut project, &[source.clone(), definitions.clone()]).unwrap()
         ));

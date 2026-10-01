@@ -584,6 +584,7 @@ fn import_item(
     kind: CompletionItemKind,
 ) -> lsp::CompletionItem {
     let (offset, range) = site;
+
     let mut item = lsp::CompletionItem {
         label: label.to_owned(),
         kind: Some(kind),
@@ -773,6 +774,7 @@ pub(crate) fn start(
                     Request::Symbols(query) => workspace
                         .symbols(&query, &cancelled)
                         .map(crate::Response::Symbols),
+
                     Request::Rename(renames) => workspace
                         .rename_files(&renames, &cancelled)
                         .map(crate::Response::Edit),
@@ -809,6 +811,7 @@ pub(crate) fn start(
                                     },
                                 ))
                             }
+
                             lsp::WorkspaceDocumentDiagnosticReport::Unchanged(report)
                                 if report.uri.as_str() == document_uri =>
                             {
@@ -820,6 +823,7 @@ pub(crate) fn start(
                                     },
                                 ))
                             }
+
                             _ => None,
                         });
 
@@ -865,6 +869,7 @@ impl Workspace {
 
         let mut reports = crate::document::diagnostics(diagnostics, |path| {
             check_cancelled(cancelled)?;
+
             self.document(path)
         })?;
 
@@ -881,6 +886,7 @@ impl Workspace {
             let mut hash = std::collections::hash_map::DefaultHasher::new();
             encoded.hash(&mut hash);
             let result_id = format!("{:x}", hash.finish());
+
             let version = self
                 .snapshot
                 .documents
@@ -1022,19 +1028,23 @@ mod tests {
 
         let selected = directory.join("selected/chosen.luau");
         let open = directory.join("pruned/nested/open.luau");
+
         let documents = [selected.clone(), open.clone()]
             .into_iter()
             .map(|path| {
                 let document =
                     Arc::new(Document::new(uri(&path).unwrap(), 1, "return 2\n".into()).unwrap());
+
                 (path, document)
             })
             .collect();
+
         let snapshot = Snapshot {
             folders: [directory.clone()].into(),
             documents,
             ..Snapshot::default()
         };
+
         let mut workspace = Workspace::default();
         workspace.update(&snapshot).unwrap();
 
@@ -1050,8 +1060,10 @@ mod tests {
                 directory.join("wild/nested/chosen.luau"),
             ]),
         );
+
         assert_eq!(workspace.document(&selected).unwrap().text, "return 2\n");
         assert_eq!(workspace.document(&open).unwrap().text, "return 2\n");
+
         assert_eq!(
             workspace
                 .document(&directory.join("wild/skipped.luau"))

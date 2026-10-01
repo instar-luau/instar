@@ -364,6 +364,7 @@ impl Backend {
         });
 
         let (imports, import_thread) = imports::start();
+
         let (workspace, workspace_thread) =
             workspace::start(client.clone(), tokio::runtime::Handle::current());
 
@@ -460,6 +461,7 @@ impl Backend {
             }
         } else {
             let snapshot = state.blocking_lock().clone();
+
             let diagnostics = worker
                 .update(&snapshot, true)
                 .map(|()| worker.diagnostics.clone());
@@ -489,10 +491,12 @@ impl Backend {
 
         let mut diagnostics = match diagnostics {
             Ok(diagnostics) => diagnostics,
+
             Err(failure) => {
                 client
                     .log_message(MessageType::ERROR, failure.to_string())
                     .await;
+
                 return;
             }
         };
@@ -720,6 +724,7 @@ impl LanguageServer for Backend {
             .text_document
             .as_ref()
             .is_some_and(|document| document.diagnostic.is_some());
+
         let workspace = params.capabilities.workspace.as_ref();
 
         self.pull_diagnostics
@@ -793,6 +798,7 @@ impl LanguageServer for Backend {
                     kind: Some(WatchKind::Create | WatchKind::Change | WatchKind::Delete),
                 }],
             };
+
             let registration = serde_json::to_value(options).map(|options| lsp::Registration {
                 id: "instar.files".to_owned(),
                 method: "workspace/didChangeWatchedFiles".to_owned(),
@@ -1078,6 +1084,7 @@ impl LanguageServer for Backend {
         else {
             return Err(error(&"unexpected hover response"));
         };
+
         Ok(result)
     }
 
@@ -1088,6 +1095,7 @@ impl LanguageServer for Backend {
         else {
             return Err(error(&"unexpected completion response"));
         };
+
         Ok(Some(result))
     }
 
@@ -1098,6 +1106,7 @@ impl LanguageServer for Backend {
         else {
             return Err(error(&"unexpected signature response"));
         };
+
         Ok(result)
     }
 
@@ -1111,6 +1120,7 @@ impl LanguageServer for Backend {
         else {
             return Err(error(&"unexpected definition response"));
         };
+
         Ok(Some(GotoDefinitionResponse::Array(result)))
     }
 
@@ -1124,6 +1134,7 @@ impl LanguageServer for Backend {
         else {
             return Err(error(&"unexpected declaration response"));
         };
+
         Ok(Some(GotoDefinitionResponse::Array(result)))
     }
 
@@ -1137,6 +1148,7 @@ impl LanguageServer for Backend {
         else {
             return Err(error(&"unexpected implementation response"));
         };
+
         Ok(Some(GotoDefinitionResponse::Array(result)))
     }
 
@@ -1150,6 +1162,7 @@ impl LanguageServer for Backend {
         else {
             return Err(error(&"unexpected type definition response"));
         };
+
         Ok(Some(GotoDefinitionResponse::Array(result)))
     }
 
@@ -1162,6 +1175,7 @@ impl LanguageServer for Backend {
         else {
             return Err(error(&"unexpected references response"));
         };
+
         Ok(Some(result))
     }
 
@@ -1172,6 +1186,7 @@ impl LanguageServer for Backend {
         let Response::Prepare(result) = self.query_at(params, Query::Prepare).await? else {
             return Err(error(&"unexpected prepare rename response"));
         };
+
         Ok(result)
     }
 
@@ -1184,6 +1199,7 @@ impl LanguageServer for Backend {
         else {
             return Err(error(&"unexpected rename response"));
         };
+
         self.compatible_edit(result).map(Some)
     }
 
@@ -1197,14 +1213,17 @@ impl LanguageServer for Backend {
         else {
             return Err(error(&"unexpected highlights response"));
         };
+
         Ok(Some(result))
     }
 
     async fn document_link(&self, params: DocumentLinkParams) -> Result<Option<Vec<DocumentLink>>> {
         let (_, document) = self.ready_document(&params.text_document.uri).await?;
+
         let Response::Links(result) = self.resolve(document, imports::Request::Links).await? else {
             return Err(error(&"unexpected links response"));
         };
+
         Ok(Some(result))
     }
 
@@ -1260,6 +1279,7 @@ impl LanguageServer for Backend {
         else {
             return Err(error(&"unexpected workspace symbols response"));
         };
+
         Ok(Some(lsp::WorkspaceSymbolResponse::Flat(result)))
     }
 
@@ -1276,6 +1296,7 @@ impl LanguageServer for Backend {
         else {
             return Err(error(&"unexpected file rename response"));
         };
+
         self.compatible_edit(edit).map(Some)
     }
 
@@ -1381,6 +1402,7 @@ impl LanguageServer for Backend {
         else {
             return Err(error(&"unexpected inlay hints response"));
         };
+
         Ok(Some(result))
     }
 
@@ -1425,6 +1447,7 @@ impl LanguageServer for Backend {
         else {
             return Err(error(&"unexpected workspace diagnostics response"));
         };
+
         Ok(lsp::WorkspaceDiagnosticReportResult::Report(result))
     }
 
@@ -1443,6 +1466,7 @@ impl LanguageServer for Backend {
         else {
             return Err(error(&"unexpected document diagnostics response"));
         };
+
         Ok(lsp::DocumentDiagnosticReportResult::Report(result))
     }
 }
@@ -1716,6 +1740,7 @@ mod tests {
                         for uri in [&uri, &other] {
                             let document =
                                 Document::new(uri.clone(), 1, "local value=1\n".into()).unwrap();
+
                             state
                                 .documents
                                 .insert(document.path.clone(), Arc::new(document));
@@ -1726,10 +1751,12 @@ mod tests {
 
                     let (release, blocked) = mpsc::channel::<()>();
                     let (started, ready) = oneshot::channel();
+
                     let blocking = tokio::task::spawn_blocking(move || {
                         started.send(()).unwrap();
                         let _ = blocked.recv();
                     });
+
                     ready.await.unwrap();
 
                     let formatting = backend.formatting(DocumentFormattingParams {
@@ -1741,7 +1768,9 @@ mod tests {
                         },
                         work_done_progress_params: lsp::WorkDoneProgressParams::default(),
                     });
+
                     tokio::pin!(formatting);
+
                     assert!(
                         poll_fn(|context| Poll::Ready(formatting.as_mut().poll(context)))
                             .await
@@ -1757,6 +1786,7 @@ mod tests {
                                 })
                                 .await;
                         }
+
                         Change::OtherDocument | Change::Document => {
                             backend
                                 .did_change(DidChangeTextDocumentParams {
@@ -1776,7 +1806,9 @@ mod tests {
                                 })
                                 .await;
                         }
+
                         Change::Configuration => backend.refresh().await,
+
                         Change::Close => {
                             backend
                                 .did_close(DidCloseTextDocumentParams {

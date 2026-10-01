@@ -504,6 +504,7 @@ impl Project {
         let definition = Rc::new(
             Definitions::new(source).map_err(|error| invalid(format!("{location}: {error}")))?,
         );
+
         self.definitions
             .insert(location.to_owned(), Rc::clone(&definition));
 

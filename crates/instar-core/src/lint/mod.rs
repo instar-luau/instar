@@ -390,15 +390,18 @@ mod tests {
                 .filter(|finding| finding.rule == "prefer_const")
                 .map(|finding| finding.span.start)
                 .collect();
+
             assert_eq!(starts, expected, "{source}");
         }
 
         let source = "local value=1\ndo local value=(function() value=2 return 3 end)() end";
+
         let starts: Vec<_> = check(source, &config, &[], false)
             .into_iter()
             .filter(|finding| finding.rule == "prefer_const")
             .map(|finding| finding.span.start)
             .collect();
+
         assert_eq!(starts, [source.rfind("local value").unwrap() + 6]);
 
         assert_cases(&[(
@@ -431,10 +434,12 @@ mod tests {
                 .filter(|finding| finding.rule == "prefer_const")
                 .map(|finding| finding.span.start)
                 .collect();
+
             assert_eq!(starts, expected, "{source}");
         }
 
         config.options.prefer_const.mutated_tables_stay_local = Some(false);
+
         assert!(
             check("local t={}\nt.field=1", &config, &[], false)
                 .iter()
@@ -445,6 +450,7 @@ mod tests {
     #[test]
     fn function_arity_follows_visible_binding() {
         let config = LintConfig::default();
+
         let cases = [
             (
                 "local function f(a,b) end\nlocal function g(f) f(1) end",
@@ -489,10 +495,12 @@ mod tests {
                 .filter(|finding| finding.rule == "mismatched_arg_count")
                 .map(|finding| finding.span.start)
                 .collect();
+
             let expected: Vec<_> = bad_call
                 .map(|call| source.find(call).unwrap())
                 .into_iter()
                 .collect();
+
             assert_eq!(starts, expected, "{source}");
         }
     }

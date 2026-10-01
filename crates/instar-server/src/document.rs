@@ -10,6 +10,7 @@ use tower_lsp_server::ls_types::{
     FoldingRangeKind, Location, Position, Range, SelectionRange, SemanticToken, SemanticTokens,
     SymbolKind, Uri,
 };
+
 use vermis::{Kind, Parts};
 
 use crate::bindings::Index;
@@ -57,9 +58,11 @@ pub(crate) fn diagnostics(
     for finding in findings {
         let path = finding.location.module.source;
         let source = document(&path)?;
+
         let related_information = match finding.related {
             Some((location, message)) => {
                 let target = document(&location.module.source)?;
+
                 Some(vec![DiagnosticRelatedInformation {
                     location: Location {
                         uri: target.uri.clone(),
@@ -68,6 +71,7 @@ pub(crate) fn diagnostics(
                     message,
                 }])
             }
+
             None => None,
         };
 
@@ -121,6 +125,7 @@ pub(crate) fn diagnostics(
                         }))
                 })
         });
+
         items.dedup();
     }
 
@@ -227,6 +232,7 @@ impl Document {
     fn syntax(&self) -> &Syntax {
         self.syntax.get_or_init(|| {
             let tree = vermis::parse(self.text.as_bytes());
+
             let mut syntax = Syntax {
                 spans: Vec::new(),
                 symbols: Vec::new(),
@@ -318,6 +324,7 @@ impl Document {
                     Some(Parts::TypeAlias { name, .. } | Parts::Class { name, .. }) => {
                         symbol(name, SymbolKind::CLASS);
                     }
+
                     _ => {}
                 }
             }
@@ -431,6 +438,7 @@ impl Document {
                     range: self.range(start, end),
                     parent: parent.map(Box::new),
                 });
+
                 enclosing = (start, end);
             }
 
@@ -447,6 +455,7 @@ impl Document {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use instar_core::{
         analysis::{Diagnostic as Finding, Location as SourceLocation, Severity},
         resolve::Module,
@@ -460,8 +469,10 @@ mod tests {
             "local value = [[𐐀a\r\n\r\nb]]\r\nreturn value\n".into(),
         )
         .unwrap();
+
         let tokens = document.tokens();
         assert_eq!(tokens.result_id, None);
+
         let strings = tokens
             .data
             .iter()
@@ -475,21 +486,26 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
+
         assert_eq!(strings, vec![(0, 8, 5, 0), (2, 0, 3, 0)]);
         let mut position = Position::new(0, 0);
         let mut ranges = Vec::new();
+
         for token in tokens.data {
             position.line += token.delta_line;
+
             position.character = if token.delta_line == 0 {
                 position.character + token.delta_start
             } else {
                 token.delta_start
             };
+
             ranges.push(Range::new(
                 position,
                 Position::new(position.line, position.character + token.length),
             ));
         }
+
         assert!(ranges.contains(&Range::new(Position::new(3, 0), Position::new(3, 6))));
         assert!(ranges.contains(&Range::new(Position::new(3, 7), Position::new(3, 12))));
         assert!(document.selections(&[Position::new(0, 17)]).is_err());
@@ -503,25 +519,33 @@ mod tests {
             "local function outer()\n    local value = (1 + 2)\n    return value\nend\n".into(),
         )
         .unwrap();
+
         let symbols = document.symbols();
+
         let outer = symbols
             .iter()
             .find(|symbol| symbol.name == "outer")
             .unwrap();
+
         assert_eq!(outer.kind, SymbolKind::FUNCTION);
+
         assert_eq!(
             outer.selection_range,
             Range::new(Position::new(0, 15), Position::new(0, 20))
         );
+
         let value = symbols
             .iter()
             .find(|symbol| symbol.name == "value")
             .unwrap();
+
         assert_eq!(value.kind, SymbolKind::VARIABLE);
+
         assert_eq!(
             value.selection_range,
             Range::new(Position::new(1, 10), Position::new(1, 15))
         );
+
         assert!(document.folds().iter().any(|fold| {
             fold.start_line == 0
                 && fold.end_line == 3
@@ -536,6 +560,7 @@ mod tests {
         let group = Range::new(Position::new(1, 18), Position::new(1, 25));
         let mut saw_group = false;
         let mut saw_function = false;
+
         while let Some(parent) = selection.parent.as_deref() {
             assert!(parent.range.start <= selection.range.start);
             assert!(parent.range.end >= selection.range.end);
@@ -544,6 +569,7 @@ mod tests {
             saw_function |= parent.range == outer.range;
             selection = parent;
         }
+
         assert!(saw_group);
         assert!(saw_function);
 
@@ -553,6 +579,7 @@ mod tests {
             String::new(),
         )
         .unwrap();
+
         assert_eq!(
             empty.selections(&[Position::new(0, 0)]).unwrap(),
             vec![SelectionRange {
@@ -569,6 +596,7 @@ mod tests {
         let source = Arc::new(Document::new(source, 1, "𐐀a\n".into()).unwrap());
         let related = uri(&directory.join("related.luau")).unwrap();
         let related = Arc::new(Document::new(related, 1, "prefix\n𐐀b\n".into()).unwrap());
+
         let location = |document: &Document, range| SourceLocation {
             module: Module {
                 path: document.path.clone(),
@@ -577,22 +605,26 @@ mod tests {
             },
             range,
         };
+
         let finding = |severity, message: &str, related_message: &str| Finding {
             location: location(&source, [0, 4, 0, 5]),
             severity,
             message: message.into(),
             related: Some((location(&related, [1, 4, 1, 5]), related_message.into())),
         };
+
         let documents = BTreeMap::from([
             (source.path.clone(), Arc::clone(&source)),
             (related.path.clone(), Arc::clone(&related)),
         ]);
+
         let resolve = |path: &Path| {
             documents
                 .get(path)
                 .cloned()
                 .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "diagnostic source missing"))
         };
+
         let findings = vec![
             finding(Severity::Information, "information", "context"),
             finding(Severity::Error, "error", "z"),
@@ -600,6 +632,7 @@ mod tests {
             finding(Severity::Error, "error", "a"),
             finding(Severity::Error, "error", "z"),
         ];
+
         let reports = diagnostics(findings.clone(), resolve).unwrap();
         let items = &reports[&source.path];
 
@@ -625,19 +658,23 @@ mod tests {
                 ),
             ]
         );
+
         for item in items {
             assert_eq!(
                 item.range,
                 Range::new(Position::new(0, 2), Position::new(0, 3))
             );
+
             assert_eq!(item.source.as_deref(), Some("instar"));
             let information = &item.related_information.as_ref().unwrap()[0];
             assert_eq!(information.location.uri, related.uri);
+
             assert_eq!(
                 information.location.range,
                 Range::new(Position::new(1, 2), Position::new(1, 3))
             );
         }
+
         assert_eq!(
             diagnostics(findings.clone().into_iter().rev(), resolve).unwrap(),
             reports
@@ -645,18 +682,22 @@ mod tests {
 
         let mut missing = finding(Severity::Error, "missing", "context");
         missing.related.as_mut().unwrap().0.module.source = directory.join("missing.luau");
+
         assert_eq!(
             diagnostics([findings[0].clone(), missing], resolve)
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::NotFound
         );
+
         let mut missing = findings[0].clone();
         missing.location.module.source = directory.join("missing.luau");
+
         assert_eq!(
             diagnostics([missing], resolve).unwrap_err().kind(),
             io::ErrorKind::NotFound
         );
+
         assert_eq!(diagnostics(findings, resolve).unwrap(), reports);
         assert_eq!(diagnostics([], resolve).unwrap(), BTreeMap::new());
     }
