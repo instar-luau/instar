@@ -135,11 +135,11 @@ fn check_call(
 
     if context.enabled("mismatched_arg_count")
         && callee.kind() == Kind::Name
-        && let Some(arity) = local_function_arity(callee, ancestors)
+        && let Some((minimum, variadic)) = context.writes.arity(callee)
     {
         let (actual, expands) = call_arity(arguments);
 
-        if actual > arity.minimum && !arity.variadic || actual < arity.minimum && !expands {
+        if actual > minimum && !variadic || actual < minimum && !expands {
             context.emit(
                 findings,
                 "mismatched_arg_count",
@@ -343,89 +343,6 @@ fn almost_swapped(
 
         previous = Some(statement);
     }
-}
-
-#[derive(Clone, Copy)]
-struct Arity {
-    minimum: usize,
-    variadic: bool,
-}
-
-fn parameter_arity(parameters: View<'_, '_>) -> Option<Arity> {
-    let Parts::Parameters { parameters } = parameters.parts()? else {
-        return None;
-    };
-
-    let mut arity = Arity {
-        minimum: 0,
-        variadic: false,
-    };
-
-    for parameter in parameters {
-        if parameter.kind() == Kind::Variadic {
-            arity.variadic = true;
-        } else {
-            arity.minimum += 1;
-        }
-    }
-
-    Some(arity)
-}
-
-fn local_function_arity(callee: View<'_, '_>, ancestors: &[View<'_, '_>]) -> Option<Arity> {
-    for ancestor in ancestors.iter().rev() {
-        let Some(Parts::Block { statements }) = ancestor.parts() else {
-            continue;
-        };
-
-        let mut declaration = None;
-
-        for statement in statements.filter(|statement| statement.span().start < callee.span().start)
-        {
-            match statement.parts() {
-                Some(Parts::Function {
-                    name: Some(name),
-                    parameters,
-                    ..
-                }) if statement.kind() == Kind::LocalFunction && name.text() == callee.text() => {
-                    declaration = Some(parameter_arity(parameters));
-                }
-
-                Some(Parts::Local { bindings, values }) => {
-                    for (binding, value) in bindings.zip(values) {
-                        if matches!(binding.parts(), Some(Parts::Binding { name, .. }) if name.text() == callee.text())
-                        {
-                            declaration = Some(match value.parts() {
-                                Some(Parts::Function { parameters, .. }) => {
-                                    parameter_arity(parameters)
-                                }
-
-                                _ => None,
-                            });
-                        }
-                    }
-                }
-
-                Some(Parts::Assignment { targets, .. }) => {
-                    if targets
-                        .into_iter()
-                        .any(|target| target.kind() == Kind::Name && target.text() == callee.text())
-                        && declaration.is_some()
-                    {
-                        declaration = Some(None);
-                    }
-                }
-
-                _ => {}
-            }
-        }
-
-        if let Some(arity) = declaration {
-            return arity;
-        }
-    }
-
-    None
 }
 
 fn call_arity(arguments: View<'_, '_>) -> (usize, bool) {

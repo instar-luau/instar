@@ -1,7 +1,10 @@
 use regex::Regex;
 use vermis::{Span, Token, View};
 
-use crate::config::{LintConfig, LintLevel};
+use crate::{
+    config::{LintConfig, LintLevel},
+    graph::Writes,
+};
 
 mod complexity;
 mod correctness;
@@ -23,6 +26,7 @@ pub(super) struct Context<'a> {
     pub(super) config: &'a LintConfig,
     pub(super) globals: &'a [String],
     ignore_pattern: Option<Regex>,
+    writes: Writes,
 }
 
 impl Context<'_> {
@@ -114,6 +118,7 @@ pub(crate) fn check(
         config,
         globals,
         ignore_pattern,
+        writes: Writes::analyze(root),
     };
 
     let mut findings = Vec::new();
@@ -354,6 +359,142 @@ mod tests {
         ];
 
         assert_cases(&cases);
+    }
+
+    #[test]
+    fn const_suggestions_follow_binding_writes() {
+        let mut config = LintConfig::default();
+        config.rules.insert("prefer_const".into(), LintLevel::Warn);
+
+        let cases: &[(&str, &[usize])] = &[
+            ("local x,y=1,2\nx,y=3,4", &[]),
+            ("local x,y=1,2\nprint(x,y)", &[6, 8]),
+            ("local value=1\ndo local value=2 value=3 end", &[6]),
+            (
+                "local value=1\nlocal function change(value) value=2 end",
+                &[6],
+            ),
+            ("local value=1\nlocal function change() value+=1 end", &[]),
+            ("local value=1\nfor value=1,2 do value+=1 end", &[6]),
+            ("local value=1\nif flag then value=2 end", &[]),
+            (
+                "repeat local value=1 until (function() value+=1 return true end)()",
+                &[],
+            ),
+            ("local value=function() end\nfunction value() end", &[]),
+        ];
+
+        for &(source, expected) in cases {
+            let starts: Vec<_> = check(source, &config, &[], false)
+                .into_iter()
+                .filter(|finding| finding.rule == "prefer_const")
+                .map(|finding| finding.span.start)
+                .collect();
+            assert_eq!(starts, expected, "{source}");
+        }
+
+        let source = "local value=1\ndo local value=(function() value=2 return 3 end)() end";
+        let starts: Vec<_> = check(source, &config, &[], false)
+            .into_iter()
+            .filter(|finding| finding.rule == "prefer_const")
+            .map(|finding| finding.span.start)
+            .collect();
+        assert_eq!(starts, [source.rfind("local value").unwrap() + 6]);
+
+        assert_cases(&[(
+            "non_const_require",
+            "local dep=require('./dep')\ndo local dep={} dep={} end",
+            "local dep,other=require('./dep'),1\ndep,other={},2",
+        )]);
+    }
+
+    #[test]
+    fn mutated_table_option_follows_binding_ownership() {
+        let mut config = LintConfig::default();
+        config.rules.insert("prefer_const".into(), LintLevel::Warn);
+        config.options.prefer_const.mutated_tables_stay_local = Some(true);
+
+        let cases: &[(&str, &[usize])] = &[
+            ("local t={}\nt.field=1", &[]),
+            ("local t={}\nprint(t[key])\nt.other=1", &[]),
+            ("local t={}\nt[key]+=1", &[]),
+            ("local t={}\nt.x,t.y=1,2", &[]),
+            ("local t={}\nlocal function change(t) t.field=1 end", &[6]),
+            ("local t={}\ndo local t={} t.field=1 end", &[6]),
+            ("local t={}\nother.t=1", &[6]),
+            ("local t={}\nfunction t.method() end", &[]),
+        ];
+
+        for &(source, expected) in cases {
+            let starts: Vec<_> = check(source, &config, &[], false)
+                .into_iter()
+                .filter(|finding| finding.rule == "prefer_const")
+                .map(|finding| finding.span.start)
+                .collect();
+            assert_eq!(starts, expected, "{source}");
+        }
+
+        config.options.prefer_const.mutated_tables_stay_local = Some(false);
+        assert!(
+            check("local t={}\nt.field=1", &config, &[], false)
+                .iter()
+                .any(|finding| finding.rule == "prefer_const" && finding.span.start == 6)
+        );
+    }
+
+    #[test]
+    fn function_arity_follows_visible_binding() {
+        let config = LintConfig::default();
+        let cases = [
+            (
+                "local function f(a,b) end\nlocal function g(f) f(1) end",
+                None,
+            ),
+            (
+                "local function f(a,b) end\nlocal function g() f(1) end",
+                Some("f(1)"),
+            ),
+            ("local f=function(a,b) end\nf(1)", Some("f(1)")),
+            ("local function f(a,b) end\ndo local f\nf(1) end", None),
+            (
+                "local function f(a,b) end\ndo local f=f(1) end",
+                Some("f(1)"),
+            ),
+            ("local function f(a,b) end\nfunction f() end\nf(1)", None),
+            (
+                "local function f(a,b) end\nf(1)\nf=callback\nf()",
+                Some("f(1)"),
+            ),
+            ("local function f(a,b) end\ndo f=callback end\nf()", None),
+            (
+                "local function f(a,b) end\ndo local f=callback f=other end\nf(1)",
+                Some("f(1)"),
+            ),
+            (
+                "local function f(a,b) end\nfor f in iterator do f(1) end",
+                None,
+            ),
+            (
+                "local function self(a,b) end\nfunction object:run() self(1) end",
+                None,
+            ),
+            ("local function f(a,b) f(1) end", Some("f(1)")),
+            ("local function f(a,...) end\nf(1,2,3)", None),
+            ("local function f(a,b) end\nf(1,2)", None),
+        ];
+
+        for (source, bad_call) in cases {
+            let starts: Vec<_> = check(source, &config, &[], false)
+                .into_iter()
+                .filter(|finding| finding.rule == "mismatched_arg_count")
+                .map(|finding| finding.span.start)
+                .collect();
+            let expected: Vec<_> = bad_call
+                .map(|call| source.find(call).unwrap())
+                .into_iter()
+                .collect();
+            assert_eq!(starts, expected, "{source}");
+        }
     }
 
     fn assert_cases(cases: &[(&str, &str, &str)]) {

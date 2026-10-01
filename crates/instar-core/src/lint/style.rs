@@ -1,4 +1,4 @@
-use vermis::{Kind, Parts, TokenKind, View};
+use vermis::{Kind, Parts, View};
 
 use super::{Context, Finding};
 
@@ -263,7 +263,7 @@ fn non_const_require(
 
         if is_require(value)
             && !super::suspicious::has_local(b"require", value.span().start, ancestors)
-            && !assigned_again(context, name)
+            && !context.writes.assigned(name)
         {
             context.emit(
                 findings,
@@ -289,7 +289,7 @@ fn prefer_const(node: View<'_, '_>, context: &Context<'_>, findings: &mut Vec<Fi
             continue;
         };
 
-        if assigned_again(context, name) {
+        if context.writes.assigned(name) {
             continue;
         }
 
@@ -299,7 +299,7 @@ fn prefer_const(node: View<'_, '_>, context: &Context<'_>, findings: &mut Vec<Fi
             .prefer_const
             .mutated_tables_stay_local()
             && value.kind() == Kind::Table
-            && mutated_table(context, name)
+            && context.writes.mutated(name)
         {
             continue;
         }
@@ -311,121 +311,6 @@ fn prefer_const(node: View<'_, '_>, context: &Context<'_>, findings: &mut Vec<Fi
             "unchanged valued local can be declared const",
         );
     }
-}
-
-fn significant(kind: TokenKind) -> bool {
-    !matches!(
-        kind,
-        TokenKind::Whitespace | TokenKind::Comment | TokenKind::BlockComment
-    )
-}
-
-fn next_token(context: &Context<'_>, after: usize) -> Option<vermis::Token> {
-    context
-        .tokens
-        .iter()
-        .copied()
-        .find(|token| token.span.start >= after && significant(token.kind))
-}
-
-fn assigned_again(context: &Context<'_>, name: View<'_, '_>) -> bool {
-    let mut previous = None;
-
-    for token in context
-        .tokens
-        .iter()
-        .copied()
-        .filter(|token| significant(token.kind))
-    {
-        if token.span.start <= name.span().start {
-            previous = Some(token.kind);
-            continue;
-        }
-
-        if token.bytes(context.source.as_bytes()) != name.text() {
-            previous = Some(token.kind);
-            continue;
-        }
-
-        if matches!(previous, Some(TokenKind::Keyword(vermis::Keyword::Local))) {
-            return true;
-        }
-
-        let next = next_token(context, token.span.end).map(|token| token.kind);
-
-        let assignment = matches!(
-            next,
-            Some(
-                TokenKind::Byte(b'=')
-                    | TokenKind::Operator(
-                        vermis::Operator::AddAssign
-                            | vermis::Operator::SubtractAssign
-                            | vermis::Operator::MultiplyAssign
-                            | vermis::Operator::DivideAssign
-                            | vermis::Operator::FloorDivideAssign
-                            | vermis::Operator::ModuloAssign
-                            | vermis::Operator::PowerAssign
-                            | vermis::Operator::ConcatAssign
-                    )
-            )
-        );
-
-        if assignment && !matches!(previous, Some(TokenKind::Byte(b'.' | b':'))) {
-            return true;
-        }
-
-        previous = Some(token.kind);
-    }
-
-    false
-}
-
-fn mutated_table(context: &Context<'_>, name: View<'_, '_>) -> bool {
-    for (index, token) in context.tokens.iter().enumerate() {
-        if token.span.start <= name.span().start
-            || token.kind != TokenKind::Name
-            || token.bytes(context.source.as_bytes()) != name.text()
-        {
-            continue;
-        }
-
-        let Some(access) = next_token(context, token.span.end) else {
-            continue;
-        };
-
-        if access.kind == TokenKind::Byte(b'.') {
-            if next_token(context, access.span.end)
-                .and_then(|field| next_token(context, field.span.end))
-                .is_some_and(|operator| operator.kind == TokenKind::Byte(b'='))
-            {
-                return true;
-            }
-        } else if access.kind == TokenKind::Byte(b'[') {
-            let mut depth = 0usize;
-
-            for candidate in context.tokens[index + 1..]
-                .iter()
-                .filter(|candidate| significant(candidate.kind))
-            {
-                match candidate.kind {
-                    TokenKind::Byte(b'[') => depth += 1,
-
-                    TokenKind::Byte(b']') => {
-                        depth -= 1;
-
-                        if depth == 0 {
-                            return next_token(context, candidate.span.end)
-                                .is_some_and(|next| next.kind == TokenKind::Byte(b'='));
-                        }
-                    }
-
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    false
 }
 
 fn is_require(node: View<'_, '_>) -> bool {
