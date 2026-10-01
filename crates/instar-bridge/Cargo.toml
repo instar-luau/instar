@@ -2,7 +2,7 @@
 name = "instar-bridge"
 version.workspace = true
 edition.workspace = true
-description = "Native Instar bridge"
+description = "Native Luau bridge"
 repository.workspace = true
 license.workspace = true
 keywords.workspace = true

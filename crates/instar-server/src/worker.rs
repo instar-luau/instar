@@ -1117,8 +1117,7 @@ mod tests {
 
     #[test]
     fn navigation_preparation_defers_lint_until_diagnostic_publication() {
-        let directory =
-            std::env::temp_dir().join(format!("instar-worker-lint-{}", std::process::id()));
+        let directory = std::env::temp_dir().join(format!("worker-lint-{}", std::process::id()));
 
         std::fs::create_dir_all(&directory).unwrap();
 
@@ -1188,8 +1187,7 @@ mod tests {
 
     #[test]
     fn import_actions_use_current_diagnostics_without_publication() {
-        let directory =
-            std::env::temp_dir().join(format!("instar-worker-actions-{}", std::process::id()));
+        let directory = std::env::temp_dir().join(format!("worker-actions-{}", std::process::id()));
 
         std::fs::create_dir_all(&directory).unwrap();
         std::fs::write(directory.join("Widget.luau"), "return {}\n").unwrap();

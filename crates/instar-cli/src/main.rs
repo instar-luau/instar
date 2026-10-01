@@ -1,4 +1,4 @@
-//! Command-line entry point for the Instar Luau toolchain.
+//! Command-line entry point for the Luau toolchain.
 
 use std::{
     collections::BTreeMap,

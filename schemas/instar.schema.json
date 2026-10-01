@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Config",
-  "description": "Instar project configuration. Luau settings live in `[luau]`; formatting settings in `[format]`.",
+  "description": "Project manifest. Luau settings live in `[luau]`; formatting settings in `[format]`.",
   "type": "object",
   "properties": {
     "analyze": {
@@ -417,7 +417,7 @@
           }
         },
         "groups": {
-          "description": "Instar group levels by name.",
+          "description": "Group levels by name.",
           "type": "object",
           "additionalProperties": {
             "$ref": "#/$defs/LintLevel"
@@ -446,7 +446,7 @@
           "default": {}
         },
         "options": {
-          "description": "Instar rule detection options.",
+          "description": "Rule detection options.",
           "$ref": "#/$defs/LintOptions",
           "default": {
             "deprecated": {
@@ -471,7 +471,7 @@
           }
         },
         "rules": {
-          "description": "Instar rule levels by name.",
+          "description": "Rule levels by name.",
           "type": "object",
           "additionalProperties": {
             "$ref": "#/$defs/LintLevel"
@@ -507,7 +507,7 @@
       ]
     },
     "LintOptions": {
-      "description": "Typed options for Instar-owned lint rules.",
+      "description": "Typed options for custom lint rules.",
       "type": "object",
       "properties": {
         "deprecated": {
@@ -560,7 +560,7 @@
       "additionalProperties": false
     },
     "LuauFlagsConfig": {
-      "description": "Process-global Luau flag settings shared across projects in one Instar process.",
+      "description": "Process-global Luau flag settings shared across projects in one process.",
       "type": "object",
       "properties": {
         "overrides": {

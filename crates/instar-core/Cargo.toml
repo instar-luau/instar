@@ -2,7 +2,7 @@
 name = "instar-core"
 version.workspace = true
 edition.workspace = true
-description = "Core library for the Instar Luau toolchain"
+description = "Core library for the Luau toolchain"
 repository.workspace = true
 license.workspace = true
 keywords.workspace = true

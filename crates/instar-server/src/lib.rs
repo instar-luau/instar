@@ -1575,7 +1575,7 @@ impl Backend {
             self.progress(
                 token,
                 lsp::WorkDoneProgress::Begin(lsp::WorkDoneProgressBegin {
-                    title: "Instar workspace".to_owned(),
+                    title: "Workspace diagnostics".to_owned(),
                     cancellable: Some(true),
                     message: None,
                     percentage: Some(0),
