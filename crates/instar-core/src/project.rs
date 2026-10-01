@@ -35,7 +35,7 @@ pub struct Alias {
 
 /// Effective configuration for a directory in a project snapshot.
 pub struct EffectiveConfig {
-    /// Merged settings, with Instar values taking precedence over legacy values.
+    /// Merged settings, with manifest values taking precedence over legacy formats.
     pub settings: LuauConfig,
 
     /// Effective formatting settings for the source directory.
@@ -116,9 +116,9 @@ pub struct RobloxSettings {
 #[derive(Clone, Default)]
 struct Layers {
     legacy: LuauConfig,
-    instar: LuauConfig,
+    manifest: LuauConfig,
     legacy_aliases: BTreeMap<String, Alias>,
-    instar_aliases: BTreeMap<String, Alias>,
+    manifest_aliases: BTreeMap<String, Alias>,
     inputs: Vec<PathBuf>,
     sourcemaps: Option<Vec<SourcemapLocation>>,
     roblox: RobloxConfig,
@@ -191,7 +191,7 @@ impl Project {
 
         if let Some(previous) = installed.as_ref() {
             if previous != &selected {
-                return Err(invalid("Luau FFlag changes require restarting Instar"));
+                return Err(invalid("Luau FFlag changes require restarting the process"));
             }
 
             return Ok(sync);
@@ -585,7 +585,7 @@ impl Project {
     }
 
     /// Loads inherited configuration at a directory, without a project-root cutoff.
-    /// Legacy layers merge ancestor-first, then Instar layers merge ancestor-first.
+    /// Legacy format layers merge ancestor-first, then manifest layers merge ancestor-first.
     ///
     /// # Errors
     /// Returns filesystem, configuration syntax, or native validation errors.
@@ -648,7 +648,7 @@ impl Project {
         };
 
         let mut settings = layers.legacy;
-        settings.merge(&layers.instar);
+        settings.merge(&layers.manifest);
 
         if let Some(lint_errors) = layers.lint.lint_errors {
             settings.lint_errors = Some(lint_errors);
@@ -682,7 +682,7 @@ impl Project {
         }
 
         let mut aliases = layers.legacy_aliases;
-        aliases.extend(layers.instar_aliases);
+        aliases.extend(layers.manifest_aliases);
         let json = settings.native_json()?;
         let native = instar_bridge::Configuration::new(json.as_bytes())?;
 
@@ -799,7 +799,7 @@ impl Project {
             }
 
             let (settings, aliases) = if name == "instar.toml" {
-                (&mut layers.instar, &mut layers.instar_aliases)
+                (&mut layers.manifest, &mut layers.manifest_aliases)
             } else {
                 (&mut layers.legacy, &mut layers.legacy_aliases)
             };

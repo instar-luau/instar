@@ -2,7 +2,7 @@ const ROOT = path self | path dirname | path dirname
 
 def main [
     destination: path # New directory for the public Pages assets.
-    instar: path # Released Instar executable used to format declarations.
+    instar: path # Released executable used to format declarations.
 ]: nothing -> nothing {
     if ($destination | path exists) {
         error make 'Publication directory already exists'
@@ -34,7 +34,7 @@ def "main install" [
     let actual = open --raw ($directory | path join $archive) | hash sha256
 
     if $actual != $expected {
-        error make 'Instar release checksum mismatch'
+        error make 'Release checksum mismatch'
     }
 
     tar -xzf ($directory | path join $archive) -C $directory

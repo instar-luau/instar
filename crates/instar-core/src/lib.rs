@@ -1,4 +1,4 @@
-//! Project configuration and module graphs for Instar.
+//! Project configuration, module graphs, and source tooling.
 
 mod assets;
 

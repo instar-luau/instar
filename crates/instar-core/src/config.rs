@@ -26,13 +26,13 @@ pub struct LintConfig {
     /// Native warning switches by Luau warning name.
     pub luau: BTreeMap<String, bool>,
 
-    /// Instar rule levels by name.
+    /// Rule levels by name.
     pub rules: BTreeMap<String, LintLevel>,
 
-    /// Instar group levels by name.
+    /// Group levels by name.
     pub groups: BTreeMap<String, LintLevel>,
 
-    /// Instar rule detection options.
+    /// Rule detection options.
     #[schemars(extend("default" = lint_schema_default().options))]
     pub options: LintOptions,
 }
@@ -55,7 +55,7 @@ pub enum LintLevel {
     Deny,
 }
 
-/// Typed options for Instar-owned lint rules.
+/// Typed options for custom lint rules.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct LintOptions {
@@ -293,7 +293,7 @@ impl LintConfig {
             .extend(layer.options.restricted_module_paths.paths.clone());
     }
 
-    /// Resolves the effective level for an Instar rule.
+    /// Resolves the effective level for a custom lint rule.
     #[must_use]
     pub fn level(&self, rule: &str) -> LintLevel {
         if let Some(level) = self.rules.get(rule) {
@@ -313,7 +313,7 @@ impl LintConfig {
         default
     }
 
-    /// Validates Instar rule names, groups, and option patterns.
+    /// Validates custom lint rule names, groups, and option patterns.
     ///
     /// # Errors
     /// Returns an error for unknown rules/groups or an invalid pattern.
@@ -426,7 +426,7 @@ const RULES: &[(&str, &str, LintLevel)] = &[
     ("roblox_suspicious_udim2_new", "roblox", LintLevel::Warn),
 ];
 
-/// Instar project configuration. Luau settings live in `[luau]`; formatting settings in `[format]`.
+/// Project manifest. Luau settings live in `[luau]`; formatting settings in `[format]`.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -1070,7 +1070,7 @@ impl Security {
     }
 }
 
-/// Process-global Luau flag settings shared across projects in one Instar process.
+/// Process-global Luau flag settings shared across projects in one process.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct LuauFlagsConfig {
@@ -1092,7 +1092,7 @@ pub enum FlagValue {
     Int(i32),
 }
 
-/// Luau settings in Instar's `snake_case` configuration format.
+/// Luau settings in the manifest's `snake_case` configuration format.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct LuauConfig {

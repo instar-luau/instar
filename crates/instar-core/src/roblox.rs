@@ -45,7 +45,7 @@ pub struct SourcemapLocation {
     /// Absolute path to the sourcemap JSON file.
     pub path: PathBuf,
 
-    /// Absolute path to the defining `instar.toml`, or the map itself when auto-discovered.
+    /// Absolute path to the defining manifest, or the map itself when auto-discovered.
     pub defined_in: PathBuf,
 }
 

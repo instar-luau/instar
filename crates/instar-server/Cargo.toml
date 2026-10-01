@@ -2,7 +2,7 @@
 name = "instar-server"
 version.workspace = true
 edition.workspace = true
-description = "Language server for the Instar Luau toolchain"
+description = "Language server for the Luau toolchain"
 repository.workspace = true
 license.workspace = true
 keywords.workspace = true
