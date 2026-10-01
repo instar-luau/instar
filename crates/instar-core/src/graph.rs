@@ -307,11 +307,7 @@ pub(crate) fn extract(
         })
         .collect();
 
-    let mut writes = Writes {
-        scopes: vec![HashMap::new()],
-        assigned: HashSet::new(),
-        global_assigned: HashSet::new(),
-    };
+    let mut writes = Writes::new(None);
 
     if let Some(root) = tree.view(tree.root) {
         writes.visit(root);
@@ -783,13 +779,118 @@ impl Extractor<'_> {
     }
 }
 
-struct Writes {
+pub(crate) struct Writes {
     scopes: Vec<HashMap<String, usize>>,
     assigned: HashSet<usize>,
     global_assigned: HashSet<String>,
+    details: Option<WriteDetails>,
+}
+
+#[derive(Default)]
+struct WriteDetails {
+    functions: HashMap<usize, (usize, bool)>,
+    arities: HashMap<usize, (usize, bool)>,
+    mutated: HashSet<usize>,
 }
 
 impl Writes {
+    fn new(details: Option<WriteDetails>) -> Self {
+        Self {
+            scopes: vec![HashMap::new()],
+            assigned: HashSet::new(),
+            global_assigned: HashSet::new(),
+            details,
+        }
+    }
+
+    pub(crate) fn analyze(root: View<'_, '_>) -> Self {
+        let mut writes = Self::new(Some(WriteDetails::default()));
+        writes.visit(root);
+        writes
+    }
+
+    pub(crate) fn assigned(&self, name: View<'_, '_>) -> bool {
+        self.assigned.contains(&name.span().start)
+    }
+
+    pub(crate) fn mutated(&self, name: View<'_, '_>) -> bool {
+        self.details
+            .as_ref()
+            .is_some_and(|details| details.mutated.contains(&name.span().start))
+    }
+
+    pub(crate) fn arity(&self, name: View<'_, '_>) -> Option<(usize, bool)> {
+        self.details
+            .as_ref()?
+            .arities
+            .get(&name.span().start)
+            .copied()
+    }
+
+    fn resolve(&self, name: View<'_, '_>) -> Option<usize> {
+        let name = String::from_utf8_lossy(name.text());
+        self.scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name.as_ref()).copied())
+    }
+
+    fn function_arity(&mut self, name: View<'_, '_>, value: View<'_, '_>) {
+        let Some(details) = &mut self.details else {
+            return;
+        };
+        let Some(Parts::Function { parameters, .. }) = value.parts() else {
+            return;
+        };
+        let Some(Parts::Parameters { parameters }) = parameters.parts() else {
+            return;
+        };
+        let mut minimum = 0;
+        let mut variadic = false;
+
+        for parameter in parameters {
+            if parameter.kind() == Kind::Variadic {
+                variadic = true;
+            } else {
+                minimum += 1;
+            }
+        }
+
+        details
+            .functions
+            .insert(name.span().start, (minimum, variadic));
+    }
+
+    fn read(&mut self, name: View<'_, '_>) {
+        if self.details.is_none() {
+            return;
+        }
+        let Some(id) = self.resolve(name) else {
+            return;
+        };
+        let details = self.details.as_mut().unwrap();
+
+        if let Some(&arity) = details.functions.get(&id) {
+            details.arities.insert(name.span().start, arity);
+        }
+    }
+
+    fn mutate(&mut self, target: View<'_, '_>) {
+        if self.details.is_none() {
+            return;
+        }
+        let Some(Parts::Field { receiver, .. } | Parts::Index { receiver, .. }) = target.parts()
+        else {
+            return;
+        };
+
+        if receiver.kind() == Kind::Name
+            && let Some(id) = self.resolve(receiver)
+        {
+            self.details.as_mut().unwrap().mutated.insert(id);
+        }
+    }
+
     fn bind(&mut self, node: View<'_, '_>) {
         if let Some(Parts::Binding { name, .. }) = node.parts() {
             self.scopes.last_mut().unwrap().insert(
@@ -800,16 +901,14 @@ impl Writes {
     }
 
     fn write(&mut self, name: View<'_, '_>) {
-        let name = String::from_utf8_lossy(name.text());
+        if let Some(id) = self.resolve(name) {
+            self.assigned.insert(id);
 
-        if let Some(id) = self
-            .scopes
-            .iter()
-            .rev()
-            .find_map(|scope| scope.get(name.as_ref()))
-        {
-            self.assigned.insert(*id);
+            if let Some(details) = &mut self.details {
+                details.functions.remove(&id);
+            }
         } else {
+            let name = String::from_utf8_lossy(name.text());
             self.global_assigned.insert(name.into_owned());
         }
     }
@@ -827,12 +926,20 @@ impl Writes {
 
         match node.parts() {
             Some(Parts::Local { bindings, values }) => {
-                for value in values {
+                for value in values.clone() {
                     self.visit(value);
                 }
 
+                let mut values = values;
+
                 for binding in bindings {
                     self.bind(binding);
+
+                    if let Some(value) = values.next()
+                        && let Some(Parts::Binding { name, .. }) = binding.parts()
+                    {
+                        self.function_arity(name, value);
+                    }
                 }
             }
 
@@ -840,6 +947,8 @@ impl Writes {
                 for target in targets {
                     if target.kind() == Kind::Name {
                         self.write(target);
+                    } else {
+                        self.mutate(target);
                     }
                 }
 
@@ -861,6 +970,8 @@ impl Writes {
             Some(Parts::Body { .. }) if node.kind() == Kind::Do => {
                 self.visit_scoped_control(node);
             }
+
+            _ if node.kind() == Kind::Name => self.read(node),
 
             _ => {
                 for child in node.children() {
@@ -884,12 +995,40 @@ impl Writes {
                         String::from_utf8_lossy(name.text()).into_owned(),
                         name.span().start,
                     );
+                    self.function_arity(name, node);
                 } else if name.kind() == Kind::Name {
                     self.write(name);
+                } else if self.details.is_some()
+                    && let Some(Parts::FunctionName { mut path, method }) = name.parts()
+                    && let Some(receiver) = path.next()
+                {
+                    let field = path.next();
+
+                    if field.is_none() && method.is_none() {
+                        self.write(receiver);
+                    } else if path.next().is_none()
+                        && (field.is_none() || method.is_none())
+                        && let Some(id) = self.resolve(receiver)
+                    {
+                        self.details.as_mut().unwrap().mutated.insert(id);
+                    }
                 }
             }
 
             self.scopes.push(HashMap::new());
+
+            if self.details.is_some()
+                && let Some(name) = name
+                && let Some(Parts::FunctionName {
+                    method: Some(method),
+                    ..
+                }) = name.parts()
+            {
+                self.scopes
+                    .last_mut()
+                    .unwrap()
+                    .insert("self".into(), method.span().start);
+            }
 
             for parameter in parameters.children() {
                 self.bind(parameter);
@@ -972,6 +1111,51 @@ impl Writes {
             Some(Parts::Body { body }) if node.kind() == Kind::Do => self.scoped(body),
 
             _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn require_values_keep_lexical_write_ownership() {
+        let cases = [
+            (
+                "local path,other='./a',1\npath,other='./b',2\nrequire(path)",
+                None,
+            ),
+            (
+                "local path='./a'\ndo local path='./b' path='./c' end\nrequire(path)",
+                Some("./a"),
+            ),
+            (
+                "local path='./a'\ndo local path=path require(path) end",
+                Some("./a"),
+            ),
+            (
+                "local path='./a'\nlocal function change(path) path='./b' end\nrequire(path)",
+                Some("./a"),
+            ),
+            (
+                "local path='./a'\nlocal function change() path..='b' end\nrequire(path)",
+                None,
+            ),
+        ];
+
+        for (source, expected) in cases {
+            let extraction = extract(source, None, Ok(None));
+            assert!(extraction.diagnostics.is_empty(), "{source}");
+            let requests: Vec<_> = extraction
+                .sites
+                .iter()
+                .map(|site| match &site.request {
+                    Some(Request::String(path)) => Some(path.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(requests, [expected], "{source}");
         }
     }
 }
