@@ -125,10 +125,16 @@
       }
     },
     "lsp": {
-      "description": "Additional file selection for the language server.",
-      "$ref": "#/$defs/FileFilter",
+      "description": "Language server file selection and autoimport settings.",
+      "$ref": "#/$defs/LspConfig",
       "default": {
         "exclude": [],
+        "imports": {
+          "binding": null,
+          "exclude": [],
+          "include": [],
+          "require": null
+        },
         "include": []
       }
     },
@@ -159,6 +165,21 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "BindingStyle": {
+      "description": "Binding style for generated autoimports.",
+      "oneOf": [
+        {
+          "description": "Generate local bindings.",
+          "type": "string",
+          "const": "local"
+        },
+        {
+          "description": "Generate constant bindings.",
+          "type": "string",
+          "const": "const"
+        }
+      ]
+    },
     "DeprecatedOptions": {
       "description": "Project-specific deprecation settings.",
       "type": "object",
@@ -404,6 +425,53 @@
       },
       "additionalProperties": false
     },
+    "ImportsConfig": {
+      "description": "Autoimport preferences and file selection, intersected with global selection.",
+      "type": "object",
+      "properties": {
+        "binding": {
+          "description": "Generated binding style; omission inherits or defaults to local bindings.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BindingStyle"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "exclude": {
+          "description": "Exclude globs relative to their manifest; exclusions always win.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "include": {
+          "description": "Include globs relative to their manifest; inherited lists append.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "require": {
+          "description": "Preferred require path style; omission inherits or defaults to instance paths.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequireStyle"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
     "LintConfig": {
       "description": "Lint configuration and file selection.",
       "type": "object",
@@ -554,6 +622,39 @@
             "ignore_pattern": "^_",
             "loop_variables": false,
             "parameters": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "LspConfig": {
+      "description": "Language server file selection and independent autoimport settings.",
+      "type": "object",
+      "properties": {
+        "exclude": {
+          "description": "Exclude globs relative to their manifest; exclusions always win.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "imports": {
+          "description": "Autoimport preferences and selection, independent of language server selection.",
+          "$ref": "#/$defs/ImportsConfig",
+          "default": {
+            "binding": null,
+            "exclude": [],
+            "include": [],
+            "require": null
+          }
+        },
+        "include": {
+          "description": "Include globs relative to their manifest; inherited lists append.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
           }
         }
       },
@@ -1009,6 +1110,21 @@
             "name",
             "patterns"
           ]
+        }
+      ]
+    },
+    "RequireStyle": {
+      "description": "Preferred path style for generated require calls.",
+      "oneOf": [
+        {
+          "description": "Prefer instance paths when available.",
+          "type": "string",
+          "const": "instance"
+        },
+        {
+          "description": "Prefer string paths.",
+          "type": "string",
+          "const": "string"
         }
       ]
     },

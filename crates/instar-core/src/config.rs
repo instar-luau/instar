@@ -448,8 +448,8 @@ pub struct Config {
     #[schemars(extend("default" = lint_schema_default()))]
     pub lint: LintConfig,
 
-    /// Additional file selection for the language server.
-    pub lsp: FileFilter,
+    /// Language server file selection and autoimport settings.
+    pub lsp: LspConfig,
 
     /// Luau typechecking, resolution, and process-global fast-flag settings.
     pub luau: ManifestLuauConfig,
@@ -468,6 +468,70 @@ pub struct FileFilter {
 
     /// Exclude globs relative to their manifest; exclusions always win.
     pub exclude: Vec<String>,
+}
+
+/// Language server file selection and independent autoimport settings.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct LspConfig {
+    /// Include globs relative to their manifest; inherited lists append.
+    pub include: Vec<String>,
+
+    /// Exclude globs relative to their manifest; exclusions always win.
+    pub exclude: Vec<String>,
+
+    /// Autoimport preferences and selection, independent of language server selection.
+    pub imports: ImportsConfig,
+}
+
+/// Autoimport preferences and file selection, intersected with global selection.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct ImportsConfig {
+    /// Preferred require path style; omission inherits or defaults to instance paths.
+    pub require: Option<RequireStyle>,
+
+    /// Generated binding style; omission inherits or defaults to local bindings.
+    pub binding: Option<BindingStyle>,
+
+    /// Include globs relative to their manifest; inherited lists append.
+    pub include: Vec<String>,
+
+    /// Exclude globs relative to their manifest; exclusions always win.
+    pub exclude: Vec<String>,
+}
+
+impl ImportsConfig {
+    pub(super) fn merge(&mut self, layer: &Self) {
+        self.require = layer.require.or(self.require);
+        self.binding = layer.binding.or(self.binding);
+        self.include.extend(layer.include.iter().cloned());
+        self.exclude.extend(layer.exclude.iter().cloned());
+    }
+}
+
+/// Preferred path style for generated require calls.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RequireStyle {
+    /// Prefer instance paths when available.
+    #[default]
+    Instance,
+
+    /// Prefer string paths.
+    String,
+}
+
+/// Binding style for generated autoimports.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum BindingStyle {
+    /// Generate local bindings.
+    #[default]
+    Local,
+
+    /// Generate constant bindings.
+    Const,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
@@ -1529,5 +1593,65 @@ mod tests {
 
         let error = toml::from_str::<Config>("[analyze]\ninclude = [\"src/**\"]").unwrap_err();
         assert!(error.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn import_preferences_parse_and_reject_unknown_values() {
+        for (require, binding, expected_require, expected_binding) in [
+            (
+                "instance",
+                "local",
+                RequireStyle::Instance,
+                BindingStyle::Local,
+            ),
+            ("string", "const", RequireStyle::String, BindingStyle::Const),
+        ] {
+            let config: Config = toml::from_str(&format!(
+                "[lsp]\ninclude = [\"src/**\"]\nexclude = [\"vendor/**\"]\n\
+                 [lsp.imports]\nrequire = \"{require}\"\nbinding = \"{binding}\""
+            ))
+            .unwrap();
+
+            assert_eq!(config.lsp.include, ["src/**"]);
+            assert_eq!(config.lsp.exclude, ["vendor/**"]);
+            assert_eq!(config.lsp.imports.require, Some(expected_require));
+            assert_eq!(config.lsp.imports.binding, Some(expected_binding));
+        }
+
+        for (key, value) in [("require", "relative"), ("binding", "global")] {
+            let error = toml::from_str::<Config>(&format!("[lsp.imports]\n{key} = \"{value}\""))
+                .unwrap_err();
+
+            assert!(error.to_string().contains("unknown variant"));
+        }
+    }
+
+    #[test]
+    fn import_defaults_and_omitted_preferences_inherit() {
+        let mut imports = Config::default().lsp.imports;
+        assert_eq!(imports.require.unwrap_or_default(), RequireStyle::Instance);
+        assert_eq!(imports.binding.unwrap_or_default(), BindingStyle::Local);
+
+        let parent: Config = toml::from_str(
+            "[lsp.imports]\nrequire = \"string\"\nbinding = \"const\"\n\
+             include = [\"modules/**\"]\nexclude = [\"modules/private/**\"]",
+        )
+        .unwrap();
+
+        imports.merge(&parent.lsp.imports);
+        imports.merge(&ImportsConfig::default());
+        assert_eq!(imports.require, Some(RequireStyle::String));
+        assert_eq!(imports.binding, Some(BindingStyle::Const));
+
+        let child: Config = toml::from_str(
+            "[lsp.imports]\nbinding = \"local\"\ninclude = []\nexclude = [\"generated/**\"]",
+        )
+        .unwrap();
+
+        imports.merge(&child.lsp.imports);
+        assert_eq!(imports.require, Some(RequireStyle::String));
+        assert_eq!(imports.binding, Some(BindingStyle::Local));
+        assert_eq!(imports.include, ["modules/**"]);
+        assert_eq!(imports.exclude, ["modules/private/**", "generated/**"]);
     }
 }

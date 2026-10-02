@@ -192,6 +192,24 @@ impl Sourcemap {
             .map(|&node| self.instance(node))
     }
 
+    pub(crate) fn modules(self: &Rc<Self>) -> impl Iterator<Item = Module> + '_ {
+        self.nodes.iter().enumerate().filter_map(|(index, _)| {
+            let instance = self.instance(index);
+            let module = instance.module(true).ok()?;
+            let mut node = instance;
+
+            while let Ok(parent) = node.parent() {
+                if parent.child(node.name()).ok()? != node {
+                    return None;
+                }
+
+                node = parent;
+            }
+
+            Some(module)
+        })
+    }
+
     pub(crate) fn find_source(self: &Rc<Self>, path: &Path) -> Result<Option<Instance>, Failure> {
         match self.sources.get(path).map_or(&[][..], Vec::as_slice) {
             [] => Ok(None),

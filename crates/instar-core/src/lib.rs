@@ -24,6 +24,41 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
+/// Whether a name is a non-keyword Luau identifier.
+#[must_use]
+pub fn identifier(value: &str) -> bool {
+    let mut bytes = value.bytes();
+
+    bytes
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        && !matches!(
+            value,
+            "and"
+                | "break"
+                | "do"
+                | "else"
+                | "elseif"
+                | "end"
+                | "false"
+                | "for"
+                | "function"
+                | "if"
+                | "in"
+                | "local"
+                | "nil"
+                | "not"
+                | "or"
+                | "repeat"
+                | "return"
+                | "then"
+                | "true"
+                | "until"
+                | "while"
+        )
+}
+
 /// Normalizes an absolute lexical path without resolving symlinks.
 ///
 /// # Errors

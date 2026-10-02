@@ -181,7 +181,7 @@ fn run_diagnostics(
         Service::Check => ("Checking", "Checked"),
         Service::Lint => ("Linting", "Linted"),
 
-        Service::Format | Service::Lsp => {
+        Service::Format | Service::Lsp | Service::Imports => {
             unreachable!("diagnostic command requires a diagnostic service")
         }
     };

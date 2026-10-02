@@ -5,7 +5,7 @@ use std::{
     sync::Arc,
 };
 
-use instar_core::editor::Editor;
+use instar_core::{editor::Editor, filter::Service};
 use serde_json::Value;
 use tower_lsp_server::ls_types::{self as lsp, Diagnostic};
 
@@ -144,7 +144,7 @@ impl Worker {
             return Ok(());
         }
 
-        let paths = self.workspace.files(&|| false)?;
+        let paths = self.workspace.files(Service::Lsp, &|| false)?;
 
         self.editor.index(&paths)?;
         self.indexed = true;
@@ -234,7 +234,7 @@ impl Worker {
 
         let workspace = self
             .workspace
-            .files(&|| false)?
+            .files(Service::Lsp, &|| false)?
             .into_iter()
             .collect::<std::collections::BTreeSet<_>>();
 
