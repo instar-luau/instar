@@ -132,10 +132,20 @@ impl Editor {
 
             diagnostics.extend(session.with_host(
                 &mut self.project,
-                Service::Lsp,
+                Some(Service::Check),
                 Some(&open),
                 |checker, host| {
                     check::collect(checker, host)?;
+
+                    Ok(std::mem::take(&mut host.diagnostics))
+                },
+            )?);
+
+            diagnostics.extend(session.with_host(
+                &mut self.project,
+                Some(Service::Lint),
+                Some(&open),
+                |checker, host| {
                     lint::collect(checker, host)?;
 
                     Ok(std::mem::take(&mut host.diagnostics))
@@ -172,7 +182,7 @@ impl Editor {
             .into_iter()
             .collect::<Vec<_>>();
 
-        let mut environments = session::environments(&mut self.project, &paths, Service::Lsp)?;
+        let mut environments = session::environments(&mut self.project, &paths, None)?;
 
         environments.sort_by(|a, b| {
             a.map
@@ -210,7 +220,6 @@ impl Editor {
                 self.sessions.push(Session::new(
                     &mut self.project,
                     &environment,
-                    Service::Lsp,
                     &CheckerOptions {
                         retain_full_type_graphs: 1,
                     },
@@ -219,21 +228,15 @@ impl Editor {
                 self.sessions.len() - 1
             };
 
-            self.sessions[index].prepare(
-                &mut self.project,
-                Service::Lsp,
-                Some(&self.open),
-                &environment.entries,
-                &mut |_| {
-                    if !progress(completed, total) {
-                        return Err(cancelled());
-                    }
+            self.sessions[index].prepare(&mut self.project, &environment.entries, &mut |_| {
+                if !progress(completed, total) {
+                    return Err(cancelled());
+                }
 
-                    completed += 1;
+                completed += 1;
 
-                    Ok(())
-                },
-            )?;
+                Ok(())
+            })?;
 
             if !progress(completed, total) {
                 return Err(cancelled());
@@ -266,7 +269,7 @@ impl Editor {
             if let Some(name) = name {
                 return session.with_host(
                     &mut self.project,
-                    Service::Lsp,
+                    None,
                     Some(&self.open),
                     |checker, host| operation(checker, host, &name),
                 );
@@ -302,7 +305,7 @@ impl Editor {
             for name in names {
                 results.push(session.with_host(
                     &mut self.project,
-                    Service::Lsp,
+                    None,
                     Some(&self.open),
                     |checker, host| operation(checker, host, &name),
                 )?);
@@ -457,7 +460,7 @@ mod tests {
             std::env::temp_dir().join(format!("diagnostic-modes-{}", std::process::id()));
 
         std::fs::create_dir_all(&directory).unwrap();
-        let configuration = "[roblox]\nenabled = false\n[lint.luau]\n\"*\" = false\nFormatString = true\n[lint.rules]\nempty_if = \"deny\"\n";
+        let configuration = "exclude = [\"**\"]\n[roblox]\nenabled = false\n[check]\nexclude = []\n[lint]\nexclude = []\n[lint.format_string]\nlevel = \"info\"\n[lint.empty_if]\nlevel = \"deny\"\n[lsp.index]\nexclude = [\"**\"]\n";
         std::fs::write(directory.join("instar.toml"), configuration).unwrap();
         let source = directory.join("main.luau");
         let dependency = directory.join("dependency.luau");
@@ -513,11 +516,10 @@ mod tests {
         assert_eq!(types[0].severity, Severity::Error);
         let lints = execute(true);
 
-        assert!(
-            lints
-                .iter()
-                .any(|diagnostic| diagnostic.message.starts_with("FormatString:"))
-        );
+        assert!(lints.iter().any(|diagnostic| {
+            diagnostic.message.starts_with("FormatString:")
+                && diagnostic.severity == Severity::Information
+        }));
 
         assert!(lints.iter().any(|diagnostic| {
             diagnostic.location.module.source == dependency
@@ -542,7 +544,10 @@ mod tests {
 
         std::fs::write(
             directory.join("instar.toml"),
-            format!("{configuration}\n[check]\nexclude = [\"main.luau\"]\n"),
+            configuration.replace(
+                "[check]\nexclude = []",
+                "[check]\nexclude = [\"main.luau\"]",
+            ),
         )
         .unwrap();
 
@@ -552,8 +557,8 @@ mod tests {
         std::fs::write(
             directory.join("instar.toml"),
             configuration.replace(
-                "[lint.luau]",
-                "[lint]\nexclude = [\"dependency.luau\"]\n[lint.luau]",
+                "[lint]\nexclude = []",
+                "[lint]\nexclude = [\"dependency.luau\"]",
             ),
         )
         .unwrap();
@@ -572,6 +577,48 @@ mod tests {
                 .any(|diagnostic| diagnostic.message.starts_with("FormatString:"))
         );
 
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn open_document_queries_are_independent_of_operation_and_index_selection() {
+        let directory =
+            std::env::temp_dir().join(format!("editor-selection-{}", std::process::id()));
+
+        std::fs::create_dir_all(&directory).unwrap();
+        let configuration = "exclude = [\"**\"]\n[roblox]\nenabled = false\n[lsp.index]\ninclude = [\"unopened/**\"]\n";
+        std::fs::write(directory.join("instar.toml"), configuration).unwrap();
+        let source = directory.join("main.luau");
+        let mut editor = Editor::default();
+
+        editor
+            .set_source(
+                &source,
+                Some("--!strict\nlocal value: number = \"text\"\nif true then end\nreturn value\n"),
+            )
+            .unwrap();
+
+        assert_eq!(editor.diagnostics().unwrap(), []);
+
+        let hover = editor
+            .query(&source, |checker, host, name| {
+                checker.hover(host, name, 1, 6)
+            })
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(hover.type_, "number");
+
+        std::fs::write(
+            directory.join("instar.toml"),
+            format!("{configuration}[check]\nexclude = []"),
+        )
+        .unwrap();
+
+        editor.refresh();
+        let diagnostics = editor.diagnostics().unwrap();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(diagnostics[0].severity, Severity::Error);
         std::fs::remove_dir_all(directory).unwrap();
     }
 

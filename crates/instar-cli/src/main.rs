@@ -72,10 +72,6 @@ fn expand_paths(
         let metadata = fs::metadata(&path)?;
 
         if metadata.is_dir() {
-            if project.excludes_subtree(&path, service)? {
-                continue;
-            }
-
             for entry in fs::read_dir(&path)? {
                 let entry = entry?;
                 let kind = entry.file_type()?;
@@ -111,7 +107,15 @@ fn expand_paths(
         ));
     }
 
-    Ok(files.into_values().collect())
+    let mut selected = Vec::new();
+
+    for (path, source) in files {
+        if project.includes(&path, service)? {
+            selected.push(source);
+        }
+    }
+
+    Ok(selected)
 }
 
 fn main() -> ExitCode {
@@ -181,7 +185,7 @@ fn run_diagnostics(
         Service::Check => ("Checking", "Checked"),
         Service::Lint => ("Linting", "Linted"),
 
-        Service::Format | Service::Lsp | Service::Imports => {
+        Service::Format | Service::Index | Service::Imports => {
             unreachable!("diagnostic command requires a diagnostic service")
         }
     };

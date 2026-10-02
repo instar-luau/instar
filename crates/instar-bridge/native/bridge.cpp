@@ -134,7 +134,7 @@ namespace {
         }
 
         bool diagnostic(
-            std::string_view path, const Luau::Location &location, DiagnosticSeverity severity, std::string_view message, std::string_view related_path = {}, const Luau::Location *related_location = nullptr,
+            std::string_view path, const Luau::Location &location, DiagnosticSeverity severity, std::string_view message, std::string_view rule = {}, std::string_view related_path = {}, const Luau::Location *related_location = nullptr,
             std::string_view related_message = {}
         ) {
             Diagnostic value{};
@@ -142,6 +142,7 @@ namespace {
             value.location = {location.begin.line, location.begin.column, location.end.line, location.end.column};
             value.severity = severity;
             value.message = text(message);
+            value.rule = text(rule);
             value.has_related = related_location != nullptr;
 
             if (related_location) {
@@ -166,7 +167,7 @@ namespace {
             const Luau::DuplicateTypeDefinition *duplicate = Luau::get<Luau::DuplicateTypeDefinition>(error);
 
             if (duplicate && duplicate->previousLocation) {
-                return diagnostic(owner, error.location, DiagnosticError, message, owner, &*duplicate->previousLocation, "previous definition");
+                return diagnostic(owner, error.location, DiagnosticError, message, {}, owner, &*duplicate->previousLocation, "previous definition");
             }
 
             return diagnostic(owner, error.location, DiagnosticError, message);
@@ -175,7 +176,7 @@ namespace {
         bool emit(std::string_view path, const Luau::LintWarning &warning, bool error) {
             const std::string message = std::string(Luau::LintWarning::getName(warning.code)) + ": " + warning.text;
 
-            return diagnostic(path, warning.location, error ? DiagnosticError : DiagnosticWarning, message);
+            return diagnostic(path, warning.location, error ? DiagnosticError : DiagnosticWarning, message, Luau::LintWarning::getName(warning.code));
         }
 
         BridgeCallbacks callbacks;

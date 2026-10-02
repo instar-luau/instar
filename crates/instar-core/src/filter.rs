@@ -7,7 +7,7 @@ use glob::{MatchOptions, Pattern};
 
 use crate::{absolute, config::Config, invalid};
 
-/// Service whose file selection is intersected with global rules.
+/// Operation whose file selection falls back to global fields.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Service {
     /// Syntax and type checking.
@@ -19,10 +19,10 @@ pub enum Service {
     /// Lint diagnostics.
     Lint,
 
-    /// Language server.
-    Lsp,
+    /// Language server workspace indexing.
+    Index,
 
-    /// Autoimport candidates, independent of language server file selection.
+    /// Autoimport candidates, independent of workspace indexing.
     Imports,
 }
 
@@ -52,48 +52,30 @@ impl Rule {
             },
         )
     }
-
-    fn excludes_subtree(&self, directory: &Path) -> bool {
-        let Some(base) = self.directory.as_deref() else {
-            return false;
-        };
-
-        let Some(prefix) = self.pattern.as_str().strip_suffix("/**").or_else(|| {
-            if cfg!(windows) {
-                self.pattern.as_str().strip_suffix("\\**")
-            } else {
-                None
-            }
-        }) else {
-            return false;
-        };
-
-        !prefix.is_empty()
-            && !prefix.bytes().any(|byte| {
-                matches!(byte, b'*' | b'?' | b'[' | b']') || (byte == b'\\' && !cfg!(windows))
-            })
-            && directory
-                .strip_prefix(base)
-                .is_ok_and(|relative| relative.starts_with(prefix))
-    }
 }
 
 #[derive(Clone, Default)]
 struct Scope {
-    include: Vec<Rc<Rule>>,
-    exclude: Vec<Rc<Rule>>,
+    include: Option<Vec<Rc<Rule>>>,
+    exclude: Option<Vec<Rc<Rule>>>,
 }
 
 impl Scope {
-    fn append(
+    fn merge(
         &mut self,
         directory: &Path,
-        include: &[String],
-        exclude: &[String],
+        include: Option<&[String]>,
+        exclude: Option<&[String]>,
     ) -> io::Result<()> {
         let directory: Rc<Path> = directory.into();
 
         for (rules, patterns) in [(&mut self.include, include), (&mut self.exclude, exclude)] {
+            let Some(patterns) = patterns else {
+                continue;
+            };
+
+            let mut compiled_rules = Vec::with_capacity(patterns.len());
+
             for pattern in patterns {
                 if pattern.is_empty() || pattern.contains('\0') {
                     return Err(invalid("file globs must be nonempty and contain no NUL"));
@@ -113,25 +95,24 @@ impl Scope {
                 let compiled = Pattern::new(text)
                     .map_err(|error| invalid(format!("invalid file glob {pattern:?}: {error}")))?;
 
-                rules.push(Rc::new(Rule {
+                compiled_rules.push(Rc::new(Rule {
                     directory: base,
                     pattern: compiled,
                 }));
             }
+
+            *rules = Some(compiled_rules);
         }
 
         Ok(())
     }
 
-    fn includes(&self, path: &Path) -> bool {
-        (self.include.is_empty() || self.include.iter().any(|rule| rule.matches(path)))
-            && !self.exclude.iter().any(|rule| rule.matches(path))
-    }
+    fn includes(&self, path: &Path, fallback: &Self) -> bool {
+        let include = self.include.as_ref().or(fallback.include.as_ref());
+        let exclude = self.exclude.as_ref().or(fallback.exclude.as_ref());
 
-    fn excludes_subtree(&self, directory: &Path) -> bool {
-        self.exclude
-            .iter()
-            .any(|rule| rule.excludes_subtree(directory))
+        include.is_none_or(|rules| rules.is_empty() || rules.iter().any(|rule| rule.matches(path)))
+            && exclude.is_none_or(|rules| !rules.iter().any(|rule| rule.matches(path)))
     }
 }
 
@@ -142,9 +123,12 @@ pub(crate) struct Filters {
 }
 
 impl Filters {
-    pub(crate) fn append(&mut self, directory: &Path, config: &Config) -> io::Result<()> {
-        self.global
-            .append(directory, &config.include, &config.exclude)?;
+    pub(crate) fn merge(&mut self, directory: &Path, config: &Config) -> io::Result<()> {
+        self.global.merge(
+            directory,
+            config.include.as_deref(),
+            config.exclude.as_deref(),
+        )?;
 
         for (service, include, exclude) in [
             (Service::Check, &config.check.include, &config.check.exclude),
@@ -154,18 +138,23 @@ impl Filters {
                 &config.format.exclude,
             ),
             (Service::Lint, &config.lint.include, &config.lint.exclude),
-            (Service::Lsp, &config.lsp.include, &config.lsp.exclude),
+            (
+                Service::Index,
+                &config.lsp.index.include,
+                &config.lsp.index.exclude,
+            ),
             (
                 Service::Imports,
                 &config.lsp.imports.include,
                 &config.lsp.imports.exclude,
             ),
         ] {
-            if !include.is_empty() || !exclude.is_empty() {
-                self.services
-                    .entry(service)
-                    .or_default()
-                    .append(directory, include, exclude)?;
+            if include.is_some() || exclude.is_some() {
+                self.services.entry(service).or_default().merge(
+                    directory,
+                    include.as_deref(),
+                    exclude.as_deref(),
+                )?;
             }
         }
 
@@ -173,19 +162,10 @@ impl Filters {
     }
 
     pub(crate) fn includes(&self, path: &Path, service: Service) -> bool {
-        self.global.includes(path)
-            && self
-                .services
-                .get(&service)
-                .is_none_or(|scope| scope.includes(path))
-    }
-
-    pub(crate) fn excludes_subtree(&self, directory: &Path, service: Service) -> bool {
-        self.global.excludes_subtree(directory)
-            || self
-                .services
-                .get(&service)
-                .is_some_and(|scope| scope.excludes_subtree(directory))
+        self.services
+            .get(&service)
+            .unwrap_or(&self.global)
+            .includes(path, &self.global)
     }
 }
 
@@ -194,131 +174,257 @@ mod tests {
     use super::*;
 
     #[test]
-    fn check_and_lint_selection_are_independent() {
-        let config: Config = toml::from_str(
+    fn omitted_fields_inherit_and_empty_lists_clear_independently() {
+        let root = absolute(Path::new("project")).unwrap();
+
+        let parent: Config = toml::from_str(
             r#"
 include = ["src/**"]
-exclude = ["src/shared/global-skip.luau"]
-
+exclude = ["src/private/**"]
 [check]
-include = ["src/check/**", "src/shared/**"]
-exclude = ["src/shared/lint-only.luau"]
-
-[lint]
-include = ["src/lint/**", "src/shared/**"]
-exclude = ["src/shared/check-only.luau"]
+include = ["selected/**"]
+exclude = ["selected/private/**"]
 "#,
         )
         .unwrap();
 
-        let root = crate::absolute(Path::new("project")).unwrap();
         let mut filters = Filters::default();
-        filters.append(&root, &config).unwrap();
+        filters.merge(&root, &parent).unwrap();
 
-        for (path, check, lint) in [
-            ("src/check/only.luau", true, false),
-            ("src/lint/only.luau", false, true),
-            ("src/shared/check-only.luau", true, false),
-            ("src/shared/lint-only.luau", false, true),
-            ("src/shared/both.luau", true, true),
-            ("src/shared/global-skip.luau", false, false),
-            ("outside.luau", false, false),
-        ] {
-            let path = root.join(path);
-            assert_eq!(filters.includes(&path, Service::Check), check);
-            assert_eq!(filters.includes(&path, Service::Lint), lint);
+        filters
+            .merge(&root.join("child"), &Config::default())
+            .unwrap();
+
+        assert!(filters.includes(&root.join("selected/main.luau"), Service::Check));
+        assert!(!filters.includes(&root.join("outside.luau"), Service::Check));
+        assert!(!filters.includes(&root.join("selected/private/init.luau"), Service::Check));
+
+        let child: Config = toml::from_str("[check]\ninclude = []").unwrap();
+        filters.merge(&root.join("child"), &child).unwrap();
+        assert!(filters.includes(&root.join("outside.luau"), Service::Check));
+        assert!(!filters.includes(&root.join("selected/private/init.luau"), Service::Check));
+
+        let child: Config = toml::from_str("[check]\nexclude = []").unwrap();
+        filters.merge(&root.join("child"), &child).unwrap();
+        assert!(filters.includes(&root.join("selected/private/init.luau"), Service::Check));
+
+        let child: Config = toml::from_str("include = []").unwrap();
+        filters.merge(&root.join("child"), &child).unwrap();
+        assert!(filters.includes(&root.join("outside.luau"), Service::Format));
+        assert!(!filters.includes(&root.join("src/private/init.luau"), Service::Format));
+
+        let child: Config = toml::from_str("exclude = []").unwrap();
+        filters.merge(&root.join("child"), &child).unwrap();
+        assert!(filters.includes(&root.join("src/private/init.luau"), Service::Format));
+    }
+
+    #[test]
+    fn service_filters_replace_global_fallback_without_affecting_other_services() {
+        let config: Config = toml::from_str(
+            r#"
+include = ["global/**"]
+exclude = ["**"]
+[check]
+include = ["check/**"]
+exclude = ["check/private/**"]
+[lint]
+include = ["lint/**"]
+exclude = ["lint/private/**"]
+[format]
+include = ["format/**"]
+exclude = ["format/private/**"]
+[lsp.index]
+include = ["index/**"]
+exclude = ["index/private/**"]
+[lsp.imports]
+include = ["imports/**"]
+exclude = ["imports/private/**"]
+"#,
+        )
+        .unwrap();
+
+        let root = absolute(Path::new("project")).unwrap();
+        let mut filters = Filters::default();
+        filters.merge(&root, &config).unwrap();
+
+        let services = [
+            (Service::Check, "check"),
+            (Service::Lint, "lint"),
+            (Service::Format, "format"),
+            (Service::Index, "index"),
+            (Service::Imports, "imports"),
+        ];
+
+        for (service, selected) in services {
+            for (_, directory) in services {
+                assert_eq!(
+                    filters.includes(&root.join(directory).join("main.luau"), service),
+                    selected == directory,
+                    "{service:?}: {directory}"
+                );
+
+                assert!(
+                    !filters.includes(&root.join(directory).join("private/init.luau"), service)
+                );
+            }
         }
     }
 
     #[test]
-    fn imports_use_global_rules_and_preserve_inherited_glob_origins() {
-        let root = crate::absolute(Path::new("project")).unwrap();
+    fn inherited_and_replaced_fields_keep_their_defining_glob_origins() {
+        let root = absolute(Path::new("project")).unwrap();
 
         let parent: Config = toml::from_str(
-            r#"
-include = ["modules/**", "place/**"]
-exclude = ["modules/global/**"]
-[check]
-exclude = ["modules/**"]
-[lint]
-exclude = ["modules/**"]
-[format]
-exclude = ["modules/**"]
-[lsp]
-exclude = ["modules/**"]
-[lsp.imports]
-include = ["modules/**"]
-exclude = ["modules/private/**"]
-"#,
+            "[check]\ninclude = [\"shared/**\", \"place/**\"]\nexclude = [\"shared/private/**\"]",
         )
         .unwrap();
 
-        let child: Config = toml::from_str(
-            "[lsp.imports]\ninclude = [\"extra/**\"]\nexclude = [\"extra/private/**\"]",
-        )
-        .unwrap();
+        let child: Config =
+            toml::from_str("[check]\ninclude = [\"../shared/**\", \"local/**\"]").unwrap();
 
         let mut filters = Filters::default();
-        filters.append(&root, &parent).unwrap();
-        filters.append(&root.join("place"), &child).unwrap();
+        filters.merge(&root, &parent).unwrap();
+        filters.merge(&root.join("place"), &child).unwrap();
 
-        let module = root.join("modules/public/init.luau");
-
-        for service in [Service::Check, Service::Lint, Service::Format, Service::Lsp] {
-            assert!(!filters.includes(&module, service));
-            assert!(filters.excludes_subtree(&root.join("modules"), service));
-        }
-
-        assert!(!filters.excludes_subtree(&root.join("modules"), Service::Imports));
-        assert!(filters.excludes_subtree(&root.join("modules/global"), Service::Imports));
-        assert!(filters.excludes_subtree(&root.join("modules/private"), Service::Imports));
+        filters
+            .merge(&root.join("place/nested"), &Config::default())
+            .unwrap();
 
         for (path, included) in [
-            ("modules/public/init.luau", true),
-            ("modules/global/init.luau", false),
-            ("modules/private/init.luau", false),
-            ("place/extra/init.luau", true),
-            ("place/extra/private/init.luau", false),
-            ("place/modules/init.luau", false),
-            ("extra/init.luau", false),
-            ("outside/init.luau", false),
+            ("shared/main.luau", true),
+            ("shared/private/init.luau", false),
+            ("place/local/main.luau", true),
+            ("place/main.luau", false),
+            ("place/nested/local/main.luau", false),
+            ("local/main.luau", false),
         ] {
             assert_eq!(
-                filters.includes(&root.join(path), Service::Imports),
+                filters.includes(&root.join(path), Service::Check),
                 included,
                 "{path}"
             );
         }
+
+        let descendant: Config =
+            toml::from_str("[check]\nexclude = [\"../../shared/child-private/**\"]").unwrap();
+
+        filters
+            .merge(&root.join("place/nested"), &descendant)
+            .unwrap();
+
+        assert!(filters.includes(&root.join("shared/private/init.luau"), Service::Check));
+        assert!(!filters.includes(&root.join("shared/child-private/init.luau"), Service::Check));
+        assert!(filters.includes(&root.join("place/local/main.luau"), Service::Check));
     }
 
     #[test]
-    fn prunes_only_literal_recursive_exclusions() {
-        let root: Rc<Path> = Rc::from(Path::new("project"));
+    fn descendant_globals_update_only_operation_fields_using_fallback() {
+        let root = absolute(Path::new("project")).unwrap();
 
-        let rule = Rule {
-            directory: Some(Rc::clone(&root)),
-            pattern: Pattern::new("packages/**").unwrap(),
-        };
+        let parent: Config = toml::from_str(
+            r#"
+include = ["src/**"]
+exclude = ["blocked/**"]
+[check]
+include = ["custom/**"]
+[lsp.imports]
+exclude = ["src/private/**", "place/lib/private/**"]
+"#,
+        )
+        .unwrap();
 
-        assert!(rule.excludes_subtree(Path::new("project/packages")));
-        assert!(rule.excludes_subtree(Path::new("project/packages/nested")));
-        assert!(!rule.excludes_subtree(Path::new("project/packages-extra")));
+        let child: Config =
+            toml::from_str("include = [\"lib/**\"]\nexclude = [\"../custom/private/**\"]").unwrap();
 
-        let wildcard = Rule {
-            directory: Some(root),
-            pattern: Pattern::new("packages/*/**").unwrap(),
-        };
-
-        assert!(!wildcard.excludes_subtree(Path::new("project/packages/module")));
         let mut filters = Filters::default();
+        filters.merge(&root, &parent).unwrap();
+        filters.merge(&root.join("place"), &child).unwrap();
 
-        let config = Config {
-            exclude: vec!["packages/**".to_owned()],
-            ..Config::default()
-        };
+        for service in [
+            Service::Format,
+            Service::Lint,
+            Service::Index,
+            Service::Imports,
+        ] {
+            assert!(filters.includes(&root.join("place/lib/main.luau"), service));
+            assert!(!filters.includes(&root.join("src/main.luau"), service));
+        }
 
-        let root = crate::absolute(Path::new("project")).unwrap();
-        filters.append(&root, &config).unwrap();
-        assert!(filters.excludes_subtree(&root.join("packages"), Service::Format));
+        assert!(filters.includes(&root.join("custom/main.luau"), Service::Check));
+        assert!(!filters.includes(&root.join("custom/private/init.luau"), Service::Check));
+        assert!(!filters.includes(&root.join("place/lib/private/init.luau"), Service::Imports));
+        assert!(filters.includes(&root.join("place/lib/private/init.luau"), Service::Index));
+
+        let child: Config = toml::from_str("include = []\nexclude = []").unwrap();
+        filters.merge(&root.join("place"), &child).unwrap();
+        assert!(filters.includes(&root.join("custom/private/init.luau"), Service::Check));
+        assert!(!filters.includes(&root.join("outside.luau"), Service::Check));
+        assert!(filters.includes(&root.join("outside.luau"), Service::Imports));
+        assert!(!filters.includes(&root.join("place/lib/private/init.luau"), Service::Imports));
+    }
+
+    #[test]
+    fn imports_resolve_their_own_fields_independently_of_indexing() {
+        let root = absolute(Path::new("project")).unwrap();
+
+        let parent: Config = toml::from_str(
+            r#"
+include = ["modules/**"]
+exclude = ["modules/global/**"]
+[lsp.index]
+include = ["workspace/**"]
+exclude = ["workspace/private/**"]
+"#,
+        )
+        .unwrap();
+
+        let mut filters = Filters::default();
+        filters.merge(&root, &parent).unwrap();
+        assert!(filters.includes(&root.join("modules/main.luau"), Service::Imports));
+        assert!(!filters.includes(&root.join("modules/main.luau"), Service::Index));
+        assert!(!filters.includes(&root.join("modules/global/init.luau"), Service::Imports));
+        assert!(filters.includes(&root.join("workspace/main.luau"), Service::Index));
+        assert!(!filters.includes(&root.join("workspace/main.luau"), Service::Imports));
+
+        let child: Config =
+            toml::from_str("[lsp.imports]\ninclude = [\"../modules/**\"]\nexclude = []").unwrap();
+
+        filters.merge(&root.join("place"), &child).unwrap();
+        assert!(filters.includes(&root.join("modules/global/init.luau"), Service::Imports));
+        assert!(!filters.includes(&root.join("modules/global/init.luau"), Service::Index));
+        assert!(!filters.includes(&root.join("workspace/private/init.luau"), Service::Index));
+
+        let child: Config = toml::from_str("[lsp.index]\ninclude = []\nexclude = []").unwrap();
+        filters.merge(&root.join("place"), &child).unwrap();
+        assert!(filters.includes(&root.join("workspace/private/init.luau"), Service::Index));
+        assert!(!filters.includes(&root.join("workspace/private/init.luau"), Service::Imports));
+        assert!(filters.includes(&root.join("modules/global/init.luau"), Service::Imports));
+    }
+
+    #[test]
+    fn invalid_globs_are_validated_in_every_filter_field() {
+        let root = absolute(Path::new("project")).unwrap();
+
+        for table in ["", "check", "format", "lint", "lsp.index", "lsp.imports"] {
+            for field in ["include", "exclude"] {
+                for pattern in ["", "\0", "["] {
+                    let mut value = serde_json::json!({});
+                    let mut object = &mut value;
+
+                    for part in table.split('.').filter(|part| !part.is_empty()) {
+                        object = object
+                            .as_object_mut()
+                            .unwrap()
+                            .entry(part.to_owned())
+                            .or_insert_with(|| serde_json::json!({}));
+                    }
+
+                    object[field] = serde_json::json!([pattern]);
+                    let config: Config = serde_json::from_value(value).unwrap();
+                    let error = Filters::default().merge(&root, &config).unwrap_err();
+                    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+                }
+            }
+        }
     }
 }

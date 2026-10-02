@@ -5,23 +5,19 @@
   "type": "object",
   "properties": {
     "check": {
-      "description": "Additional file selection for syntax and type checking, independent of lint selection.",
+      "description": "File selection for syntax and type checking, falling back to global fields.",
       "$ref": "#/$defs/FileFilter",
-      "default": {
-        "exclude": [],
-        "include": []
-      }
+      "default": {}
     },
     "exclude": {
-      "description": "Global exclude globs; exclusions always win.",
+      "description": "Global exclude globs. Omission inherits; an explicit list replaces,\nand `[]` clears exclusions.",
       "type": "array",
-      "default": [],
       "items": {
         "type": "string"
       }
     },
     "format": {
-      "description": "Formatting style and additional file selection.",
+      "description": "Formatting style and file selection, falling back to global fields.",
       "$ref": "#/$defs/FormatConfig",
       "default": {
         "blocks": {
@@ -37,14 +33,12 @@
           "layout": "method",
           "wrap": "auto"
         },
-        "exclude": [],
         "final_newline": true,
         "if_expressions": {
           "layout": "block",
           "placement": "same_line",
           "wrap": "auto"
         },
-        "include": [],
         "indent_style": "tabs",
         "indent_width": 4,
         "leading_zero": "add",
@@ -76,66 +70,258 @@
           "wrap": "preserve"
         },
         "types": {
-          "operator_wrap": "auto",
-          "table_separator": "comma",
-          "table_wrap": "auto"
+          "operators": {
+            "wrap": "auto"
+          },
+          "tables": {
+            "separator": "comma",
+            "wrap": "auto"
+          }
         },
         "width": 120
       }
     },
     "include": {
-      "description": "Global include globs, relative to this manifest; inherited lists append.\nAn empty effective list allows every path.",
+      "description": "Global include globs relative to this manifest. Omission inherits;\nan explicit list replaces, and `[]` allows every path.",
       "type": "array",
-      "default": [],
       "items": {
         "type": "string"
       }
     },
     "lint": {
-      "description": "Lint rules, options, and additional file selection.",
+      "description": "Lint rules, options, and file selection, falling back to global fields.",
       "$ref": "#/$defs/LintConfig",
       "default": {
-        "exclude": [],
-        "groups": {},
-        "include": [],
-        "lint_errors": false,
-        "luau": {},
-        "options": {
-          "deprecated": {
-            "additional": {},
-            "ambiguous_methods": false
-          },
-          "high_cyclomatic_complexity": {
-            "maximum_complexity": 40
-          },
-          "prefer_const": {
-            "mutated_tables_stay_local": false
-          },
-          "restricted_globals": {},
-          "restricted_module_paths": {
-            "paths": {}
-          },
-          "unused_variable": {
-            "ignore_pattern": "^_",
-            "loop_variables": false,
-            "parameters": false
-          }
+        "almost_swapped": {
+          "level": "warn"
         },
-        "rules": {}
+        "and_or_conditional": {
+          "level": "allow"
+        },
+        "bad_string_escape": {
+          "level": "warn"
+        },
+        "builtin_global_write": {
+          "level": "warn"
+        },
+        "collapsible_if": {
+          "level": "allow"
+        },
+        "comment_directive": {
+          "level": "warn"
+        },
+        "compare_nan": {
+          "level": "warn"
+        },
+        "comparison_precedence": {
+          "level": "warn"
+        },
+        "constant_condition": {
+          "level": "warn"
+        },
+        "constant_table_comparison": {
+          "level": "warn"
+        },
+        "deprecated": {
+          "ambiguous_methods": false,
+          "level": "warn",
+          "paths": {}
+        },
+        "deprecated_api": {
+          "level": "warn"
+        },
+        "deprecated_global": {
+          "level": "warn"
+        },
+        "divide_by_zero": {
+          "level": "warn"
+        },
+        "duplicate_condition": {
+          "level": "warn"
+        },
+        "duplicate_function": {
+          "level": "warn"
+        },
+        "duplicate_local": {
+          "level": "warn"
+        },
+        "else_after_return": {
+          "level": "allow"
+        },
+        "empty_if": {
+          "level": "warn"
+        },
+        "empty_loop": {
+          "level": "warn"
+        },
+        "for_range": {
+          "level": "warn"
+        },
+        "format_string": {
+          "level": "warn"
+        },
+        "function_unused": {
+          "level": "warn"
+        },
+        "global_usage": {
+          "level": "warn"
+        },
+        "global_used_as_local": {
+          "level": "warn"
+        },
+        "high_cyclomatic_complexity": {
+          "level": "allow",
+          "maximum_complexity": 40
+        },
+        "if_expression_assignment": {
+          "level": "allow"
+        },
+        "if_same_then_else": {
+          "level": "warn"
+        },
+        "ignored_pcall_result": {
+          "level": "warn"
+        },
+        "implicit_any_local": {
+          "level": "warn"
+        },
+        "implicit_any_parameter": {
+          "level": "allow"
+        },
+        "implicit_return": {
+          "level": "warn"
+        },
+        "import_unused": {
+          "level": "warn"
+        },
+        "integer_parsing": {
+          "level": "warn"
+        },
+        "length_as_condition": {
+          "level": "deny"
+        },
+        "local_shadow": {
+          "level": "warn"
+        },
+        "local_unused": {
+          "level": "warn"
+        },
+        "loop_invariant_call": {
+          "level": "warn"
+        },
+        "manual_table_clone": {
+          "level": "warn"
+        },
+        "misleading_and_or": {
+          "level": "warn"
+        },
+        "mismatched_arg_count": {
+          "level": "warn"
+        },
+        "mixed_table": {
+          "level": "warn"
+        },
+        "multi_line_statement": {
+          "level": "warn"
+        },
+        "must_use": {
+          "level": "warn"
+        },
+        "negated_condition": {
+          "level": "allow"
+        },
+        "non_const_require": {
+          "level": "allow"
+        },
+        "parenthese_conditions": {
+          "level": "warn"
+        },
+        "placeholder_read": {
+          "level": "warn"
+        },
+        "prefer_const": {
+          "level": "allow",
+          "mutated_tables_stay_local": false
+        },
+        "redundant_native_attribute": {
+          "level": "warn"
+        },
+        "restricted_globals": {
+          "level": "warn",
+          "names": {}
+        },
+        "restricted_module_paths": {
+          "level": "warn",
+          "paths": {}
+        },
+        "roblox_incorrect_color3_new_bounds": {
+          "level": "warn"
+        },
+        "roblox_manual_fromscale_or_fromoffset": {
+          "level": "warn"
+        },
+        "roblox_prefer_get_players": {
+          "level": "warn"
+        },
+        "roblox_suspicious_udim2_new": {
+          "level": "warn"
+        },
+        "same_line_statement": {
+          "level": "warn"
+        },
+        "self_assignment": {
+          "level": "warn"
+        },
+        "string_concat_in_loop": {
+          "level": "warn"
+        },
+        "table_literal": {
+          "level": "warn"
+        },
+        "table_operations": {
+          "level": "warn"
+        },
+        "type_check_inside_call": {
+          "level": "warn"
+        },
+        "unbalanced_assignment": {
+          "level": "warn"
+        },
+        "uninitialized_local": {
+          "level": "warn"
+        },
+        "unknown_global": {
+          "level": "warn"
+        },
+        "unknown_type": {
+          "level": "warn"
+        },
+        "unreachable_code": {
+          "level": "warn"
+        },
+        "unscoped_variables": {
+          "level": "warn"
+        },
+        "unused_variable": {
+          "ignore_pattern": "^_",
+          "level": "warn",
+          "loop_variables": false,
+          "parameters": false
+        },
+        "zero_step_loop": {
+          "level": "deny"
+        }
       }
     },
     "lsp": {
-      "description": "Language server file selection and autoimport settings.",
+      "description": "Workspace indexing and independent autoimport settings.",
       "$ref": "#/$defs/LspConfig",
       "default": {
-        "exclude": [],
         "imports": {
           "binding": null,
-          "exclude": [],
-          "include": [],
           "require": null
         },
-        "include": []
+        "index": {}
       }
     },
     "luau": {
@@ -145,10 +331,7 @@
         "aliases": {},
         "definitions": {},
         "documentation": [],
-        "fflags": {
-          "overrides": {},
-          "sync_roblox": null
-        },
+        "flags": {},
         "globals": null,
         "language_mode": null,
         "type_errors": null
@@ -159,7 +342,8 @@
       "$ref": "#/$defs/RobloxConfig",
       "default": {
         "enabled": null,
-        "security": null
+        "security": null,
+        "sync_flags": null
       }
     }
   },
@@ -184,30 +368,34 @@
       "description": "Project-specific deprecation settings.",
       "type": "object",
       "properties": {
-        "additional": {
-          "description": "Deprecated API path to replacement mappings.",
+        "ambiguous_methods": {
+          "description": "Report calls whose method name cannot be resolved uniquely.",
+          "type": "boolean",
+          "default": false
+        },
+        "level": {
+          "description": "Diagnostic severity; omitted values inherit.",
+          "$ref": "#/$defs/LintLevel",
+          "default": null
+        },
+        "paths": {
+          "description": "Deprecated API path to replacement mappings.\nChild keys override inherited keys; omission or an empty map preserves them.",
           "type": "object",
           "additionalProperties": {
             "type": "string"
           },
           "default": {}
-        },
-        "ambiguous_methods": {
-          "description": "Report calls whose method name cannot be resolved uniquely.",
-          "type": "boolean",
-          "default": false
         }
       },
       "additionalProperties": false
     },
     "FileFilter": {
-      "description": "Service-specific globs, intersected with global selection.\nLists append through inheritance; `[]` adds nothing.",
+      "description": "Service-specific globs, falling back to global fields.\nOmitted fields inherit; explicit lists replace, and `[]` clears a field.",
       "type": "object",
       "properties": {
         "exclude": {
-          "description": "Exclude globs relative to their manifest; exclusions always win.",
+          "description": "Exclude globs relative to their manifest; exclusions win over effective includes.",
           "type": "array",
-          "default": [],
           "items": {
             "type": "string"
           }
@@ -215,7 +403,6 @@
         "include": {
           "description": "Include globs relative to their manifest; an empty effective list allows every path.",
           "type": "array",
-          "default": [],
           "items": {
             "type": "string"
           }
@@ -267,9 +454,8 @@
           }
         },
         "exclude": {
-          "description": "Exclude globs for formatting.",
+          "description": "Exclude globs for formatting; omission inherits, an explicit list replaces.",
           "type": "array",
-          "default": [],
           "items": {
             "type": "string"
           }
@@ -289,9 +475,8 @@
           }
         },
         "include": {
-          "description": "Additional include globs for formatting.",
+          "description": "Include globs for formatting; omission inherits, an explicit list replaces.",
           "type": "array",
-          "default": [],
           "items": {
             "type": "string"
           }
@@ -396,9 +581,13 @@
           "description": "Type layout settings.",
           "$ref": "#/$defs/PartialTypesOptions",
           "default": {
-            "operator_wrap": "auto",
-            "table_separator": "comma",
-            "table_wrap": "auto"
+            "operators": {
+              "wrap": "auto"
+            },
+            "tables": {
+              "separator": "comma",
+              "wrap": "auto"
+            }
           }
         },
         "width": {
@@ -415,6 +604,11 @@
       "description": "Maximum cyclomatic complexity setting.",
       "type": "object",
       "properties": {
+        "level": {
+          "description": "Diagnostic severity; omitted values inherit.",
+          "$ref": "#/$defs/LintLevel",
+          "default": null
+        },
         "maximum_complexity": {
           "description": "Report function scores strictly above this limit.",
           "type": "integer",
@@ -426,7 +620,7 @@
       "additionalProperties": false
     },
     "ImportsConfig": {
-      "description": "Autoimport preferences and file selection, intersected with global selection.",
+      "description": "Autoimport preferences and file selection, falling back to global fields.",
       "type": "object",
       "properties": {
         "binding": {
@@ -442,17 +636,15 @@
           "default": null
         },
         "exclude": {
-          "description": "Exclude globs relative to their manifest; exclusions always win.",
+          "description": "Exclude globs relative to their manifest; omission inherits, an explicit list replaces.",
           "type": "array",
-          "default": [],
           "items": {
             "type": "string"
           }
         },
         "include": {
-          "description": "Include globs relative to their manifest; inherited lists append.",
+          "description": "Include globs relative to their manifest; omission inherits, an explicit list replaces.",
           "type": "array",
-          "default": [],
           "items": {
             "type": "string"
           }
@@ -476,75 +668,518 @@
       "description": "Lint configuration and file selection.",
       "type": "object",
       "properties": {
+        "almost_swapped": {
+          "description": "Settings for the `almost_swapped` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "and_or_conditional": {
+          "description": "Settings for the `and_or_conditional` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "allow"
+          }
+        },
+        "bad_string_escape": {
+          "description": "Settings for the `bad_string_escape` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "builtin_global_write": {
+          "description": "Settings for the native `BuiltinGlobalWrite` warning.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "collapsible_if": {
+          "description": "Settings for the `collapsible_if` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "allow"
+          }
+        },
+        "comment_directive": {
+          "description": "Settings for the native `CommentDirective` warning.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "compare_nan": {
+          "description": "Settings for the `compare_nan` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "comparison_precedence": {
+          "description": "Settings for the native `ComparisonPrecedence` warning.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "constant_condition": {
+          "description": "Settings for the `constant_condition` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "constant_table_comparison": {
+          "description": "Settings for the `constant_table_comparison` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "deprecated": {
+          "description": "Settings for the `deprecated` rule.",
+          "$ref": "#/$defs/DeprecatedOptions",
+          "default": {
+            "ambiguous_methods": false,
+            "level": "warn",
+            "paths": {}
+          }
+        },
+        "deprecated_api": {
+          "description": "Settings for the native `DeprecatedApi` warning.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "deprecated_global": {
+          "description": "Settings for the native `DeprecatedGlobal` warning.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "divide_by_zero": {
+          "description": "Settings for the `divide_by_zero` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "duplicate_condition": {
+          "description": "Settings for the native `DuplicateCondition` warning.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "duplicate_function": {
+          "description": "Settings for the native `DuplicateFunction` warning.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "duplicate_local": {
+          "description": "Settings for the native `DuplicateLocal` warning.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "else_after_return": {
+          "description": "Settings for the `else_after_return` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "allow"
+          }
+        },
+        "empty_if": {
+          "description": "Settings for the `empty_if` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "empty_loop": {
+          "description": "Settings for the `empty_loop` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
         "exclude": {
-          "description": "File exclude globs.",
+          "description": "Exclude globs; omission inherits, an explicit list replaces.",
           "type": "array",
-          "default": [],
           "items": {
             "type": "string"
           }
         },
-        "groups": {
-          "description": "Group levels by name.",
-          "type": "object",
-          "additionalProperties": {
-            "$ref": "#/$defs/LintLevel"
-          },
-          "default": {}
+        "for_range": {
+          "description": "Settings for the native `ForRange` warning.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "format_string": {
+          "description": "Settings for the native `FormatString` warning.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "function_unused": {
+          "description": "Settings for the native `FunctionUnused` warning.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "global_usage": {
+          "description": "Settings for the `global_usage` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "global_used_as_local": {
+          "description": "Settings for the native `GlobalUsedAsLocal` warning.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "high_cyclomatic_complexity": {
+          "description": "Settings for the `high_cyclomatic_complexity` rule.",
+          "$ref": "#/$defs/HighCyclomaticComplexityOptions",
+          "default": {
+            "level": "allow",
+            "maximum_complexity": 40
+          }
+        },
+        "if_expression_assignment": {
+          "description": "Settings for the `if_expression_assignment` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "allow"
+          }
+        },
+        "if_same_then_else": {
+          "description": "Settings for the `if_same_then_else` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "ignored_pcall_result": {
+          "description": "Settings for the `ignored_pcall_result` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "implicit_any_local": {
+          "description": "Settings for the `implicit_any_local` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "implicit_any_parameter": {
+          "description": "Settings for the `implicit_any_parameter` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "allow"
+          }
+        },
+        "implicit_return": {
+          "description": "Settings for the native `ImplicitReturn` warning.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "import_unused": {
+          "description": "Settings for the native `ImportUnused` warning.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
         },
         "include": {
-          "description": "File include globs.",
+          "description": "Include globs; omission inherits, an explicit list replaces.",
           "type": "array",
-          "default": [],
           "items": {
             "type": "string"
           }
         },
-        "lint_errors": {
-          "description": "Whether native warnings are promoted to errors.",
-          "type": "boolean",
-          "default": false
-        },
-        "luau": {
-          "description": "Native warning switches by Luau warning name.",
-          "type": "object",
-          "additionalProperties": {
-            "type": "boolean"
-          },
-          "default": {}
-        },
-        "options": {
-          "description": "Rule detection options.",
-          "$ref": "#/$defs/LintOptions",
+        "integer_parsing": {
+          "description": "Settings for the native `IntegerParsing` warning.",
+          "$ref": "#/$defs/RuleConfig",
           "default": {
-            "deprecated": {
-              "additional": {},
-              "ambiguous_methods": false
-            },
-            "high_cyclomatic_complexity": {
-              "maximum_complexity": 40
-            },
-            "prefer_const": {
-              "mutated_tables_stay_local": false
-            },
-            "restricted_globals": {},
-            "restricted_module_paths": {
-              "paths": {}
-            },
-            "unused_variable": {
-              "ignore_pattern": "^_",
-              "loop_variables": false,
-              "parameters": false
-            }
+            "level": "warn"
           }
         },
-        "rules": {
-          "description": "Rule levels by name.",
-          "type": "object",
-          "additionalProperties": {
-            "$ref": "#/$defs/LintLevel"
-          },
-          "default": {}
+        "length_as_condition": {
+          "description": "Settings for the `length_as_condition` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "deny"
+          }
+        },
+        "local_shadow": {
+          "description": "Settings for the native `LocalShadow` warning.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "local_unused": {
+          "description": "Settings for the native `LocalUnused` warning.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "loop_invariant_call": {
+          "description": "Settings for the `loop_invariant_call` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "manual_table_clone": {
+          "description": "Settings for the `manual_table_clone` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "misleading_and_or": {
+          "description": "Settings for the native `MisleadingAndOr` warning.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "mismatched_arg_count": {
+          "description": "Settings for the `mismatched_arg_count` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "mixed_table": {
+          "description": "Settings for the `mixed_table` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "multi_line_statement": {
+          "description": "Settings for the native `MultiLineStatement` warning.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "must_use": {
+          "description": "Settings for the `must_use` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "negated_condition": {
+          "description": "Settings for the `negated_condition` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "allow"
+          }
+        },
+        "non_const_require": {
+          "description": "Settings for the `non_const_require` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "allow"
+          }
+        },
+        "parenthese_conditions": {
+          "description": "Settings for the `parenthese_conditions` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "placeholder_read": {
+          "description": "Settings for the native `PlaceholderRead` warning.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "prefer_const": {
+          "description": "Settings for the `prefer_const` rule.",
+          "$ref": "#/$defs/PreferConstOptions",
+          "default": {
+            "level": "allow",
+            "mutated_tables_stay_local": false
+          }
+        },
+        "redundant_native_attribute": {
+          "description": "Settings for the native `RedundantNativeAttribute` warning.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "restricted_globals": {
+          "description": "Settings for the `restricted_globals` rule.",
+          "$ref": "#/$defs/RestrictedGlobalsOptions",
+          "default": {
+            "level": "warn",
+            "names": {}
+          }
+        },
+        "restricted_module_paths": {
+          "description": "Settings for the `restricted_module_paths` rule.",
+          "$ref": "#/$defs/RestrictedModulePathsOptions",
+          "default": {
+            "level": "warn",
+            "paths": {}
+          }
+        },
+        "roblox_incorrect_color3_new_bounds": {
+          "description": "Settings for the `roblox_incorrect_color3_new_bounds` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "roblox_manual_fromscale_or_fromoffset": {
+          "description": "Settings for the `roblox_manual_fromscale_or_fromoffset` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "roblox_prefer_get_players": {
+          "description": "Settings for the `roblox_prefer_get_players` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "roblox_suspicious_udim2_new": {
+          "description": "Settings for the `roblox_suspicious_udim2_new` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "same_line_statement": {
+          "description": "Settings for the native `SameLineStatement` warning.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "self_assignment": {
+          "description": "Settings for the `self_assignment` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "string_concat_in_loop": {
+          "description": "Settings for the `string_concat_in_loop` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "table_literal": {
+          "description": "Settings for the native `TableLiteral` warning.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "table_operations": {
+          "description": "Settings for the native `TableOperations` warning.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "type_check_inside_call": {
+          "description": "Settings for the `type_check_inside_call` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "unbalanced_assignment": {
+          "description": "Settings for the native `UnbalancedAssignment` warning.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "uninitialized_local": {
+          "description": "Settings for the native `UninitializedLocal` warning.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "unknown_global": {
+          "description": "Settings for the native `UnknownGlobal` warning.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "unknown_type": {
+          "description": "Settings for the native `UnknownType` warning.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "unreachable_code": {
+          "description": "Settings for the native `UnreachableCode` warning.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "unscoped_variables": {
+          "description": "Settings for the `unscoped_variables` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "warn"
+          }
+        },
+        "unused_variable": {
+          "description": "Settings for the `unused_variable` rule.",
+          "$ref": "#/$defs/UnusedVariableOptions",
+          "default": {
+            "ignore_pattern": "^_",
+            "level": "warn",
+            "loop_variables": false,
+            "parameters": false
+          }
+        },
+        "zero_step_loop": {
+          "description": "Settings for the `zero_step_loop` rule.",
+          "$ref": "#/$defs/RuleConfig",
+          "default": {
+            "level": "deny"
+          }
         }
       },
       "additionalProperties": false
@@ -574,117 +1209,28 @@
         }
       ]
     },
-    "LintOptions": {
-      "description": "Typed options for custom lint rules.",
-      "type": "object",
-      "properties": {
-        "deprecated": {
-          "description": "Project-specific deprecated API paths.",
-          "$ref": "#/$defs/DeprecatedOptions",
-          "default": {
-            "additional": {},
-            "ambiguous_methods": false
-          }
-        },
-        "high_cyclomatic_complexity": {
-          "description": "Maximum function branch score.",
-          "$ref": "#/$defs/HighCyclomaticComplexityOptions",
-          "default": {
-            "maximum_complexity": 40
-          }
-        },
-        "prefer_const": {
-          "description": "Constant-binding preferences.",
-          "$ref": "#/$defs/PreferConstOptions",
-          "default": {
-            "mutated_tables_stay_local": false
-          }
-        },
-        "restricted_globals": {
-          "description": "Forbidden global names and reasons.",
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          },
-          "default": {}
-        },
-        "restricted_module_paths": {
-          "description": "Forbidden literal require paths.",
-          "$ref": "#/$defs/RestrictedModulePathsOptions",
-          "default": {
-            "paths": {}
-          }
-        },
-        "unused_variable": {
-          "description": "Unused binding checks.",
-          "$ref": "#/$defs/UnusedVariableOptions",
-          "default": {
-            "ignore_pattern": "^_",
-            "loop_variables": false,
-            "parameters": false
-          }
-        }
-      },
-      "additionalProperties": false
-    },
     "LspConfig": {
-      "description": "Language server file selection and independent autoimport settings.",
+      "description": "Workspace indexing and independent autoimport settings.",
       "type": "object",
       "properties": {
-        "exclude": {
-          "description": "Exclude globs relative to their manifest; exclusions always win.",
-          "type": "array",
-          "default": [],
-          "items": {
-            "type": "string"
-          }
-        },
         "imports": {
-          "description": "Autoimport preferences and selection, independent of language server selection.",
+          "description": "Autoimport preferences and selection, independent of indexing.",
           "$ref": "#/$defs/ImportsConfig",
           "default": {
             "binding": null,
-            "exclude": [],
-            "include": [],
             "require": null
           }
         },
-        "include": {
-          "description": "Include globs relative to their manifest; inherited lists append.",
-          "type": "array",
-          "default": [],
-          "items": {
-            "type": "string"
-          }
-        }
-      },
-      "additionalProperties": false
-    },
-    "LuauFlagsConfig": {
-      "description": "Process-global Luau flag settings shared across projects in one process.",
-      "type": "object",
-      "properties": {
-        "overrides": {
-          "description": "Explicit bool or integer values applied after synced values.",
-          "type": "object",
-          "additionalProperties": {
-            "$ref": "#/$defs/FlagValue"
-          },
+        "index": {
+          "description": "Workspace file selection, independent of autoimport selection.",
+          "$ref": "#/$defs/FileFilter",
           "default": {}
-        },
-        "sync_roblox": {
-          "description": "Fetch supported values from Roblox Studio's `PCStudioApp` settings at startup.",
-          "type": [
-            "boolean",
-            "null"
-          ],
-          "default": null
         }
       },
       "additionalProperties": false
     },
     "ManifestLuauConfig": {
-      "description": "Manifest Luau settings; native lint switches belong under `[lint]`.",
+      "description": "Manifest Luau settings; lint rules belong under `[lint]`.",
       "type": "object",
       "properties": {
         "aliases": {
@@ -711,13 +1257,13 @@
             "type": "string"
           }
         },
-        "fflags": {
-          "description": "Process-global Luau flag settings.",
-          "$ref": "#/$defs/LuauFlagsConfig",
-          "default": {
-            "overrides": {},
-            "sync_roblox": null
-          }
+        "flags": {
+          "description": "Explicit process-global bool or integer Luau flag values applied after synced values.\nChild keys override inherited keys; values are shared across projects in one process.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/FlagValue"
+          },
+          "default": {}
         },
         "globals": {
           "description": "Additional Luau globals.",
@@ -1032,32 +1578,12 @@
       },
       "additionalProperties": false
     },
-    "PartialTypesOptions": {
-      "description": "Optional overrides for PartialTypesOptions.",
+    "PartialTypeOperatorsOptions": {
+      "description": "Optional type operator formatting overrides.",
       "type": "object",
       "properties": {
-        "operator_wrap": {
-          "description": "Override for `operator_wrap`.",
-          "type": "string",
-          "default": "auto",
-          "enum": [
-            "auto",
-            "preserve",
-            "always",
-            "never"
-          ]
-        },
-        "table_separator": {
-          "description": "Override for `table_separator`.",
-          "type": "string",
-          "default": "comma",
-          "enum": [
-            "comma",
-            "semicolon"
-          ]
-        },
-        "table_wrap": {
-          "description": "Override for `table_wrap`.",
+        "wrap": {
+          "description": "Union and intersection wrapping policy.",
           "type": "string",
           "default": "auto",
           "enum": [
@@ -1070,10 +1596,64 @@
       },
       "additionalProperties": false
     },
+    "PartialTypeTablesOptions": {
+      "description": "Optional type table formatting overrides.",
+      "type": "object",
+      "properties": {
+        "separator": {
+          "description": "Type table field separator.",
+          "type": "string",
+          "default": "comma",
+          "enum": [
+            "comma",
+            "semicolon"
+          ]
+        },
+        "wrap": {
+          "description": "Type table wrapping policy.",
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "preserve",
+            "always",
+            "never"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "PartialTypesOptions": {
+      "description": "Optional overrides for PartialTypesOptions.",
+      "type": "object",
+      "properties": {
+        "operators": {
+          "description": "Override for `operators`.",
+          "$ref": "#/$defs/PartialTypeOperatorsOptions",
+          "default": {
+            "wrap": "auto"
+          }
+        },
+        "tables": {
+          "description": "Override for `tables`.",
+          "$ref": "#/$defs/PartialTypeTablesOptions",
+          "default": {
+            "separator": "comma",
+            "wrap": "auto"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "PreferConstOptions": {
       "description": "Constant-binding detection settings.",
       "type": "object",
       "properties": {
+        "level": {
+          "description": "Diagnostic severity; omitted values inherit.",
+          "$ref": "#/$defs/LintLevel",
+          "default": null
+        },
         "mutated_tables_stay_local": {
           "description": "Exempt locally mutated tables from prefer-const checks.",
           "type": "boolean",
@@ -1128,10 +1708,35 @@
         }
       ]
     },
+    "RestrictedGlobalsOptions": {
+      "description": "Restricted global name settings.",
+      "type": "object",
+      "properties": {
+        "level": {
+          "description": "Diagnostic severity; omitted values inherit.",
+          "$ref": "#/$defs/LintLevel",
+          "default": null
+        },
+        "names": {
+          "description": "Forbidden global names and reasons.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        }
+      },
+      "additionalProperties": false
+    },
     "RestrictedModulePathsOptions": {
       "description": "Restricted module path settings.",
       "type": "object",
       "properties": {
+        "level": {
+          "description": "Diagnostic severity; omitted values inherit.",
+          "$ref": "#/$defs/LintLevel",
+          "default": null
+        },
         "paths": {
           "description": "Forbidden literal require paths and reasons.",
           "type": "object",
@@ -1176,6 +1781,26 @@
           "items": {
             "type": "string"
           }
+        },
+        "sync_flags": {
+          "description": "Fetch supported values from Roblox Studio's `PCStudioApp` settings at startup.\nOmission inherits, then defaults to whether Roblox is effectively enabled.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "RuleConfig": {
+      "description": "Rule settings without additional detection options.",
+      "type": "object",
+      "properties": {
+        "level": {
+          "description": "Diagnostic severity; omitted values inherit.",
+          "$ref": "#/$defs/LintLevel",
+          "default": null
         }
       },
       "additionalProperties": false
@@ -1213,6 +1838,11 @@
           "description": "Pattern for ignored binding names.",
           "type": "string",
           "default": "^_"
+        },
+        "level": {
+          "description": "Diagnostic severity; omitted values inherit.",
+          "$ref": "#/$defs/LintLevel",
+          "default": null
         },
         "loop_variables": {
           "description": "Check otherwise unused loop variables.",

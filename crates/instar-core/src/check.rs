@@ -26,29 +26,18 @@ pub fn run(
 ) -> io::Result<Vec<Diagnostic>> {
     let mut diagnostics = Vec::new();
 
-    for environment in session::environments(project, paths, Service::Check)? {
-        let mut session = Session::new(
-            project,
-            &environment,
-            Service::Check,
-            &CheckerOptions::default(),
-        )?;
+    for environment in session::environments(project, paths, Some(Service::Check))? {
+        let mut session = Session::new(project, &environment, &CheckerOptions::default())?;
 
         if session.declaration_diagnostics.is_empty() {
-            session.prepare(
-                project,
-                Service::Check,
-                None,
-                &environment.entries,
-                &mut |path| {
-                    progress(path);
+            session.prepare(project, &environment.entries, &mut |path| {
+                progress(path);
 
-                    Ok(())
-                },
-            )?;
+                Ok(())
+            })?;
         }
 
-        let found = session.with_host(project, Service::Check, None, |checker, host| {
+        let found = session.with_host(project, Some(Service::Check), None, |checker, host| {
             collect(checker, host)?;
 
             Ok(std::mem::take(&mut host.diagnostics))
@@ -65,14 +54,14 @@ pub fn run(
 
 pub(crate) fn collect(checker: &mut Checker, host: &mut Host<'_>) -> io::Result<()> {
     for diagnostic in host.declarations {
-        if host.includes(&diagnostic.location.module.source, Service::Check)? {
+        if host.includes(&diagnostic.location.module.source)? {
             host.diagnostics.push(diagnostic.clone());
         }
     }
 
-    for name in host.selected(Service::Check)? {
+    for name in host.selected()? {
         checker.check(host, Path::new(&name))?;
     }
 
-    host.report_timeouts(Service::Check)
+    host.report_timeouts()
 }

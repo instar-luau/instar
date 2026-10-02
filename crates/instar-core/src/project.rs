@@ -12,15 +12,21 @@ use crate::{
     absolute,
     assets::{self, Assets, Definitions},
     config::{
-        self, Config, FlagValue, FormatOptions, ImportsConfig, LintConfig, LuauConfig,
-        LuauFlagsConfig, RobloxConfig, Security,
+        self, Config, FlagValue, FormatOptions, ImportsConfig, LintConfig, LintLevel, LuauConfig,
+        RobloxConfig, Security,
     },
     filter::{Filters, Service},
     invalid,
     roblox::{Sourcemap, SourcemapLocation},
 };
 
-static INSTALLED_FLAGS: Mutex<Option<LuauFlagsConfig>> = Mutex::new(None);
+static INSTALLED_FLAGS: Mutex<Option<Flags>> = Mutex::new(None);
+
+#[derive(Default, PartialEq)]
+struct Flags {
+    synchronize: bool,
+    values: BTreeMap<String, FlagValue>,
+}
 
 /// An alias with the configuration file that defines its lookup scope.
 #[derive(Clone, Debug)]
@@ -83,6 +89,9 @@ pub struct RobloxSettings {
 
     /// Selected API security level.
     pub security: Security,
+
+    /// Whether to synchronize supported Studio flags before semantic preparation.
+    pub sync_flags: bool,
 }
 
 #[derive(Clone, Default)]
@@ -130,7 +139,7 @@ impl Project {
             return Ok(false);
         }
 
-        let mut selected: Option<LuauFlagsConfig> = None;
+        let mut selected: Option<Flags> = None;
 
         for path in paths {
             let directory = if path.is_dir() {
@@ -142,12 +151,14 @@ impl Project {
 
             let config = self.configuration_at(directory)?;
 
-            let mut flags = config.settings.fflags.clone();
-            flags.sync_roblox = Some(flags.sync_roblox.unwrap_or(false));
+            let flags = Flags {
+                synchronize: config.roblox.sync_flags,
+                values: config.settings.flags.clone(),
+            };
 
             if selected.as_ref().is_some_and(|previous| previous != &flags) {
                 return Err(invalid(
-                    "conflicting Luau FFlag settings across project roots",
+                    "conflicting process-wide Luau flag settings; roblox.sync_flags and luau.flags must agree across project roots",
                 ));
             }
 
@@ -155,8 +166,8 @@ impl Project {
         }
 
         let selected = selected.unwrap_or_default();
-        let sync = selected.sync_roblox == Some(true);
-        let enabled = sync || !selected.overrides.is_empty();
+        let sync = selected.synchronize;
+        let enabled = sync || !selected.values.is_empty();
 
         let mut installed = INSTALLED_FLAGS
             .lock()
@@ -164,7 +175,7 @@ impl Project {
 
         if let Some(previous) = installed.as_ref() {
             if previous != &selected {
-                return Err(invalid("Luau FFlag changes require restarting the process"));
+                return Err(invalid("Luau flag changes require restarting the process"));
             }
 
             return Ok(sync);
@@ -182,7 +193,7 @@ impl Project {
             BTreeMap::new()
         };
 
-        for (name, value) in &selected.overrides {
+        for (name, value) in &selected.values {
             let value = match (value, registry.get(name)) {
                 (FlagValue::Bool(value), Some(instar_bridge::FastFlagValue::Bool(_))) => {
                     instar_bridge::FastFlagValue::Bool(*value)
@@ -352,7 +363,7 @@ impl Project {
         self.assets.invalidate();
     }
 
-    /// Tests global and service selection for a source file, using its inherited configuration.
+    /// Tests effective operation selection for a source file.
     /// Excluded files may still be loaded as dependencies.
     ///
     /// # Errors
@@ -366,37 +377,17 @@ impl Project {
             .includes(&source, service))
     }
 
-    /// Tests a candidate against the caller's and target's global and autoimport selection.
-    /// Caller exclusions are checked before loading the target's configuration.
+    /// Tests an import candidate against the caller's effective import selection.
     ///
     /// # Errors
-    /// Returns filesystem, configuration, or invalid-glob errors.
+    /// Returns caller configuration or invalid-path errors.
     pub fn includes_import(&mut self, source: &Path, target: &Path) -> io::Result<bool> {
         let target = absolute(target)?;
 
-        if !self
+        Ok(self
             .configuration(source)?
             .filters
-            .includes(&target, Service::Imports)
-        {
-            return Ok(false);
-        }
-
-        self.includes(&target, Service::Imports)
-    }
-
-    /// Prunes a directory only when an inherited literal `directory/**` rule excludes its subtree.
-    ///
-    /// # Errors
-    /// Returns path or configuration errors.
-    pub fn excludes_subtree(&mut self, directory: &Path, service: Service) -> io::Result<bool> {
-        let directory = absolute(directory)?;
-        let parent = directory.parent().unwrap_or(&directory);
-
-        Ok(self
-            .load_layers(parent)?
-            .filters
-            .excludes_subtree(&directory, service))
+            .includes(&target, Service::Imports))
     }
 
     /// Returns inherited format options unless the path is filtered out.
@@ -633,24 +624,22 @@ impl Project {
         };
 
         let security = layers.roblox.security.unwrap_or_default();
+        let enabled = layers.roblox.enabled.unwrap_or(!sourcemaps.is_empty());
 
         let roblox = RobloxSettings {
-            enabled: layers.roblox.enabled.unwrap_or(!sourcemaps.is_empty()),
+            enabled,
             security,
+            sync_flags: layers.roblox.sync_flags.unwrap_or(enabled),
         };
 
         let mut settings = layers.legacy;
         settings.merge(&layers.manifest);
 
-        if let Some(lint_errors) = layers.lint.lint_errors {
-            settings.lint_errors = Some(lint_errors);
+        for (name, level) in layers.lint.native_overrides() {
+            settings
+                .lint
+                .insert(name.to_owned(), level != LintLevel::Allow);
         }
-
-        if layers.lint.luau.contains_key("*") {
-            settings.lint.clear();
-        }
-
-        settings.lint.extend(layers.lint.luau.clone());
 
         if roblox.enabled {
             settings
@@ -735,7 +724,7 @@ impl Project {
                         config.lint.validate()?;
                         layers.lint.merge(&config.lint);
                         layers.imports.merge(&config.lsp.imports);
-                        layers.filters.append(directory, &config)?;
+                        layers.filters.merge(directory, &config)?;
 
                         if let Some(enabled) = config.roblox.enabled {
                             layers.roblox.enabled = Some(enabled);
@@ -743,6 +732,10 @@ impl Project {
 
                         if let Some(security) = config.roblox.security {
                             layers.roblox.security = Some(security);
+                        }
+
+                        if let Some(sync_flags) = config.roblox.sync_flags {
+                            layers.roblox.sync_flags = Some(sync_flags);
                         }
 
                         if let Some(sourcemaps) = config.roblox.sourcemaps {
@@ -822,7 +815,137 @@ mod tests {
     use crate::config::{BindingStyle, RequireStyle};
 
     #[test]
-    fn imports_inherit_preferences_and_check_both_scopes_before_loading_excluded_targets() {
+    fn flag_synchronization_defaults_follow_detection_and_inherited_overrides() {
+        let root = std::env::temp_dir().join(format!("flags-detection-{}", std::process::id()));
+        let plain = root.join("plain");
+        let roblox = root.join("roblox");
+        fs::create_dir_all(&plain).unwrap();
+        fs::create_dir_all(&roblox).unwrap();
+        fs::write(root.join("instar.toml"), "").unwrap();
+
+        fs::write(
+            roblox.join("sourcemap.json"),
+            r#"{"name":"Place","className":"DataModel"}"#,
+        )
+        .unwrap();
+
+        for (directory, manifest, enabled, synchronize) in [
+            (&plain, "", false, false),
+            (&roblox, "", true, true),
+            (&plain, "[roblox]\nenabled = true", true, true),
+            (&roblox, "[roblox]\nenabled = false", false, false),
+            (&roblox, "[roblox]\nsync_flags = false", true, false),
+            (&plain, "[roblox]\nsync_flags = true", false, true),
+        ] {
+            fs::write(directory.join("instar.toml"), manifest).unwrap();
+            let configuration = Project::new().configuration_at(directory).unwrap();
+            assert_eq!(configuration.roblox.enabled, enabled, "{manifest}");
+            assert_eq!(configuration.roblox.sync_flags, synchronize, "{manifest}");
+            assert_eq!(configuration.roblox.security, Security::None);
+        }
+
+        fs::write(
+            root.join("instar.toml"),
+            "[roblox]\nsync_flags = false\n[luau.flags]\nFIntLuauTarjanChildLimit = 10000",
+        )
+        .unwrap();
+
+        fs::write(roblox.join("instar.toml"), "").unwrap();
+        let configuration = Project::new().configuration_at(&roblox).unwrap();
+        assert!(configuration.roblox.enabled);
+        assert!(!configuration.roblox.sync_flags);
+
+        assert_eq!(
+            configuration.settings.flags["FIntLuauTarjanChildLimit"],
+            FlagValue::Int(10000)
+        );
+
+        fs::write(
+            roblox.join("instar.toml"),
+            "[roblox]\nsync_flags = true\n[luau.flags]\nFIntLuauTarjanChildLimit = 12345",
+        )
+        .unwrap();
+
+        let configuration = Project::new().configuration_at(&roblox).unwrap();
+        assert!(configuration.roblox.sync_flags);
+
+        assert_eq!(
+            configuration.settings.flags["FIntLuauTarjanChildLimit"],
+            FlagValue::Int(12345)
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn flags_validate_values_and_preserve_process_wide_consistency() {
+        let root = std::env::temp_dir().join(format!("flags-process-{}", std::process::id()));
+        let plain = root.join("plain");
+        let roblox = root.join("roblox");
+        fs::create_dir_all(&plain).unwrap();
+        fs::create_dir_all(&roblox).unwrap();
+        fs::write(root.join("instar.toml"), "").unwrap();
+
+        fs::write(
+            roblox.join("sourcemap.json"),
+            r#"{"name":"Place","className":"DataModel"}"#,
+        )
+        .unwrap();
+
+        assert!(!Project::new().prepare_fast_flags(&[]).unwrap());
+        let paths = [plain, roblox];
+        let error = Project::new().prepare_fast_flags(&paths).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("must agree across project roots")
+        );
+
+        for (flag, value, message) in [
+            ("FIntUnknownTestFlag", "1", "unknown Luau fast flag"),
+            ("FIntLuauTarjanChildLimit", "true", "wrong value type"),
+        ] {
+            fs::write(
+                root.join("instar.toml"),
+                format!("[roblox]\nsync_flags = false\n[luau.flags]\n{flag} = {value}"),
+            )
+            .unwrap();
+
+            let error = Project::new().prepare_fast_flags(&paths).unwrap_err();
+            assert!(error.to_string().contains(message), "{error}");
+        }
+
+        let name = "FIntLuauTarjanChildLimit";
+        let original = instar_bridge::fast_flags().unwrap()[name];
+
+        let instar_bridge::FastFlagValue::Int(value) = original else {
+            panic!("expected an integer flag");
+        };
+
+        fs::write(
+            root.join("instar.toml"),
+            format!("[roblox]\nsync_flags = false\n[luau.flags]\n{name} = {value}"),
+        )
+        .unwrap();
+
+        assert!(!Project::new().prepare_fast_flags(&paths).unwrap());
+        assert!(!Project::new().prepare_fast_flags(&paths).unwrap());
+        assert_eq!(instar_bridge::fast_flags().unwrap()[name], original);
+
+        fs::write(
+            root.join("instar.toml"),
+            format!("[luau.flags]\n{name} = {value}"),
+        )
+        .unwrap();
+
+        let error = Project::new().prepare_fast_flags(&paths[1..]).unwrap_err();
+        assert!(error.to_string().contains("require restarting the process"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn imports_inherit_preferences_and_use_the_callers_selection() {
         let root = std::env::temp_dir().join(format!("import-selection-{}", std::process::id()));
         let caller = root.join("place/nested");
         let modules = root.join("modules");
@@ -834,10 +957,10 @@ mod tests {
         fs::write(
             root.join("instar.toml"),
             r#"
-exclude = ["blocked/**"]
+exclude = ["modules/**", "blocked/**"]
 [roblox]
 enabled = false
-[lsp]
+[lsp.index]
 exclude = ["modules/**"]
 [lsp.imports]
 require = "string"
@@ -848,7 +971,7 @@ binding = "const"
 
         fs::write(
             root.join("place/instar.toml"),
-            "[lsp.imports]\nrequire = \"instance\"\nexclude = [\"../modules/caller-skip.luau\"]",
+            "[lsp.imports]\nrequire = \"instance\"\nexclude = [\"../modules/caller-skip.luau\", \"../blocked/**\"]",
         )
         .unwrap();
 
@@ -874,7 +997,10 @@ binding = "const"
 
         assert_eq!(
             configuration.imports.exclude,
-            ["../modules/caller-skip.luau"]
+            Some(vec![
+                "../modules/caller-skip.luau".into(),
+                "../blocked/**".into()
+            ])
         );
 
         assert!(
@@ -885,15 +1011,15 @@ binding = "const"
 
         assert!(
             !project
-                .includes(&modules.join("public.luau"), Service::Lsp)
+                .includes(&modules.join("public.luau"), Service::Index)
                 .unwrap()
         );
 
         for (target, included) in [
             ("modules/public.luau", true),
             ("modules/caller-skip.luau", false),
-            ("modules/target-skip.luau", false),
-            ("modules/global-skip.luau", false),
+            ("modules/target-skip.luau", true),
+            ("modules/global-skip.luau", true),
             ("blocked/init.luau", false),
         ] {
             assert_eq!(

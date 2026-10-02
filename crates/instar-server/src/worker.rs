@@ -144,7 +144,7 @@ impl Worker {
             return Ok(());
         }
 
-        let paths = self.workspace.files(Service::Lsp, &|| false)?;
+        let paths = self.workspace.files(Service::Index, &|| false)?;
 
         self.editor.index(&paths)?;
         self.indexed = true;
@@ -234,7 +234,7 @@ impl Worker {
 
         let workspace = self
             .workspace
-            .files(Service::Lsp, &|| false)?
+            .files(Service::Index, &|| false)?
             .into_iter()
             .collect::<std::collections::BTreeSet<_>>();
 
@@ -1116,7 +1116,7 @@ mod tests {
 
         std::fs::write(
             directory.join("instar.toml"),
-            "[lint.luau]\nTableLiteral = true\n",
+            "[lint.table_literal]\nlevel = \"warn\"\n",
         )
         .unwrap();
 

@@ -45,7 +45,6 @@ pub(super) fn check(
 
     let maximum = context
         .config
-        .options
         .high_cyclomatic_complexity
         .maximum_complexity();
 

@@ -9,34 +9,6 @@ use vermis::{Kind, Parts, View};
 
 use crate::{invalid, string_value};
 
-/// Lint configuration and file selection.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
-#[serde(default, deny_unknown_fields)]
-pub struct LintConfig {
-    /// File include globs.
-    pub include: Vec<String>,
-
-    /// File exclude globs.
-    pub exclude: Vec<String>,
-
-    /// Whether native warnings are promoted to errors.
-    #[schemars(with = "bool", extend("default" = false))]
-    pub lint_errors: Option<bool>,
-
-    /// Native warning switches by Luau warning name.
-    pub luau: BTreeMap<String, bool>,
-
-    /// Rule levels by name.
-    pub rules: BTreeMap<String, LintLevel>,
-
-    /// Group levels by name.
-    pub groups: BTreeMap<String, LintLevel>,
-
-    /// Rule detection options.
-    #[schemars(extend("default" = lint_schema_default().options))]
-    pub options: LintOptions,
-}
-
 /// Diagnostic severity.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -55,37 +27,184 @@ pub enum LintLevel {
     Deny,
 }
 
-/// Typed options for custom lint rules.
+/// Rule settings without additional detection options.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
-pub struct LintOptions {
-    /// Unused binding checks.
-    #[schemars(extend("default" = lint_schema_default().options.unused_variable))]
-    pub unused_variable: UnusedVariableOptions,
+pub struct RuleConfig {
+    /// Diagnostic severity; omitted values inherit.
+    #[schemars(with = "LintLevel")]
+    pub level: Option<LintLevel>,
+}
 
-    /// Maximum function branch score.
-    #[schemars(extend("default" = lint_schema_default().options.high_cyclomatic_complexity))]
-    pub high_cyclomatic_complexity: HighCyclomaticComplexityOptions,
+macro_rules! lint_catalog {
+    (
+        native { $($native:ident => $warning:literal),+ $(,)? }
+        custom { $($rule:ident : $configuration:ident => $default:ident),+ $(,)? }
+    ) => {
+        /// Lint configuration and file selection.
+        #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+        #[serde(default, deny_unknown_fields)]
+        pub struct LintConfig {
+            /// Include globs; omission inherits, an explicit list replaces.
+            #[serde(skip_serializing_if = "Option::is_none")]
+            #[schemars(with = "Vec<String>")]
+            pub include: Option<Vec<String>>,
 
-    /// Constant-binding preferences.
-    #[schemars(extend("default" = lint_schema_default().options.prefer_const))]
-    pub prefer_const: PreferConstOptions,
+            /// Exclude globs; omission inherits, an explicit list replaces.
+            #[serde(skip_serializing_if = "Option::is_none")]
+            #[schemars(with = "Vec<String>")]
+            pub exclude: Option<Vec<String>>,
 
-    /// Project-specific deprecated API paths.
-    #[schemars(extend("default" = lint_schema_default().options.deprecated))]
-    pub deprecated: DeprecatedOptions,
+            $(#[doc = concat!("Settings for the native `", $warning, "` warning.")]
+              #[schemars(extend("default" = lint_schema_default().$native))]
+              pub $native: RuleConfig,)+
 
-    /// Forbidden global names and reasons.
-    pub restricted_globals: BTreeMap<String, String>,
+            $(#[doc = concat!("Settings for the `", stringify!($rule), "` rule.")]
+              #[schemars(extend("default" = lint_schema_default().$rule))]
+              pub $rule: $configuration,)+
+        }
 
-    /// Forbidden literal require paths.
-    pub restricted_module_paths: RestrictedModulePathsOptions,
+        impl LintConfig {
+            /// Merges an inherited lint layer, preserving explicit overrides.
+            pub fn merge(&mut self, layer: &Self) {
+                if layer.include.is_some() {
+                    self.include.clone_from(&layer.include);
+                }
+                if layer.exclude.is_some() {
+                    self.exclude.clone_from(&layer.exclude);
+                }
+                $(self.$native.level = layer.$native.level.or(self.$native.level);)+
+                $(self.$rule.level = layer.$rule.level.or(self.$rule.level);)+
+                self.merge_options(layer);
+            }
+
+            /// Resolves the effective level for a `snake_case` lint rule name.
+            #[must_use]
+            pub fn level(&self, rule: &str) -> LintLevel {
+                match rule {
+                    $(stringify!($native) => self.$native.level.unwrap_or(LintLevel::Warn),)+
+                    $(stringify!($rule) => self.$rule.level.unwrap_or(LintLevel::$default),)+
+                    _ => LintLevel::Allow,
+                }
+            }
+
+            /// Returns an explicit override for a native `PascalCase` warning name.
+            #[must_use]
+            pub fn native_level(&self, warning: &str) -> Option<LintLevel> {
+                match warning {
+                    $($warning => self.$native.level,)+
+                    _ => None,
+                }
+            }
+
+            /// Returns explicitly configured native warning levels.
+            pub fn native_overrides(&self) -> impl Iterator<Item = (&'static str, LintLevel)> {
+                [$(($warning, self.$native.level),)+]
+                    .into_iter()
+                    .filter_map(|(warning, level)| level.map(|level| (warning, level)))
+            }
+        }
+
+        fn lint_schema_default() -> LintConfig {
+            let mut config = LintConfig::default();
+            $(config.$native.level = Some(LintLevel::Warn);)+
+            $(config.$rule.level = Some(LintLevel::$default);)+
+            config.unused_variable.parameters = Some(false);
+            config.unused_variable.loop_variables = Some(false);
+            config.unused_variable.ignore_pattern = Some("^_".to_owned());
+            config.high_cyclomatic_complexity.maximum_complexity = Some(40);
+            config.prefer_const.mutated_tables_stay_local = Some(false);
+            config.deprecated.ambiguous_methods = Some(false);
+            config
+        }
+    };
+}
+
+lint_catalog! {
+    native {
+        unknown_global => "UnknownGlobal",
+        deprecated_global => "DeprecatedGlobal",
+        global_used_as_local => "GlobalUsedAsLocal",
+        local_shadow => "LocalShadow",
+        same_line_statement => "SameLineStatement",
+        multi_line_statement => "MultiLineStatement",
+        local_unused => "LocalUnused",
+        function_unused => "FunctionUnused",
+        import_unused => "ImportUnused",
+        builtin_global_write => "BuiltinGlobalWrite",
+        placeholder_read => "PlaceholderRead",
+        unreachable_code => "UnreachableCode",
+        unknown_type => "UnknownType",
+        for_range => "ForRange",
+        unbalanced_assignment => "UnbalancedAssignment",
+        implicit_return => "ImplicitReturn",
+        duplicate_local => "DuplicateLocal",
+        format_string => "FormatString",
+        table_literal => "TableLiteral",
+        uninitialized_local => "UninitializedLocal",
+        duplicate_function => "DuplicateFunction",
+        deprecated_api => "DeprecatedApi",
+        table_operations => "TableOperations",
+        duplicate_condition => "DuplicateCondition",
+        misleading_and_or => "MisleadingAndOr",
+        comment_directive => "CommentDirective",
+        integer_parsing => "IntegerParsing",
+        comparison_precedence => "ComparisonPrecedence",
+        redundant_native_attribute => "RedundantNativeAttribute",
+    }
+    custom {
+        almost_swapped: RuleConfig => Warn,
+        bad_string_escape: RuleConfig => Warn,
+        compare_nan: RuleConfig => Warn,
+        constant_condition: RuleConfig => Warn,
+        constant_table_comparison: RuleConfig => Warn,
+        length_as_condition: RuleConfig => Deny,
+        mismatched_arg_count: RuleConfig => Warn,
+        must_use: RuleConfig => Warn,
+        unused_variable: UnusedVariableOptions => Warn,
+        type_check_inside_call: RuleConfig => Warn,
+        zero_step_loop: RuleConfig => Deny,
+        divide_by_zero: RuleConfig => Warn,
+        empty_if: RuleConfig => Warn,
+        empty_loop: RuleConfig => Warn,
+        global_usage: RuleConfig => Warn,
+        if_same_then_else: RuleConfig => Warn,
+        ignored_pcall_result: RuleConfig => Warn,
+        implicit_any_local: RuleConfig => Warn,
+        implicit_any_parameter: RuleConfig => Allow,
+        mixed_table: RuleConfig => Warn,
+        self_assignment: RuleConfig => Warn,
+        unscoped_variables: RuleConfig => Warn,
+        and_or_conditional: RuleConfig => Allow,
+        collapsible_if: RuleConfig => Allow,
+        deprecated: DeprecatedOptions => Warn,
+        else_after_return: RuleConfig => Allow,
+        if_expression_assignment: RuleConfig => Allow,
+        negated_condition: RuleConfig => Allow,
+        non_const_require: RuleConfig => Allow,
+        parenthese_conditions: RuleConfig => Warn,
+        prefer_const: PreferConstOptions => Allow,
+        restricted_globals: RestrictedGlobalsOptions => Warn,
+        restricted_module_paths: RestrictedModulePathsOptions => Warn,
+        high_cyclomatic_complexity: HighCyclomaticComplexityOptions => Allow,
+        loop_invariant_call: RuleConfig => Warn,
+        manual_table_clone: RuleConfig => Warn,
+        string_concat_in_loop: RuleConfig => Warn,
+        roblox_incorrect_color3_new_bounds: RuleConfig => Warn,
+        roblox_manual_fromscale_or_fromoffset: RuleConfig => Warn,
+        roblox_prefer_get_players: RuleConfig => Warn,
+        roblox_suspicious_udim2_new: RuleConfig => Warn,
+    }
 }
 
 /// Optional unused-binding detection settings.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct UnusedVariableOptions {
+    /// Diagnostic severity; omitted values inherit.
+    #[schemars(with = "LintLevel")]
+    pub level: Option<LintLevel>,
+
     /// Check otherwise unused unannotated parameters.
     #[schemars(with = "bool", extend("default" = false))]
     pub parameters: Option<bool>,
@@ -123,6 +242,10 @@ impl UnusedVariableOptions {
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct HighCyclomaticComplexityOptions {
+    /// Diagnostic severity; omitted values inherit.
+    #[schemars(with = "LintLevel")]
+    pub level: Option<LintLevel>,
+
     /// Report function scores strictly above this limit.
     #[schemars(with = "usize", extend("default" = 40))]
     pub maximum_complexity: Option<usize>,
@@ -140,6 +263,10 @@ impl HighCyclomaticComplexityOptions {
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct PreferConstOptions {
+    /// Diagnostic severity; omitted values inherit.
+    #[schemars(with = "LintLevel")]
+    pub level: Option<LintLevel>,
+
     /// Exempt locally mutated tables from prefer-const checks.
     #[schemars(with = "bool", extend("default" = false))]
     pub mutated_tables_stay_local: Option<bool>,
@@ -157,8 +284,13 @@ impl PreferConstOptions {
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct DeprecatedOptions {
+    /// Diagnostic severity; omitted values inherit.
+    #[schemars(with = "LintLevel")]
+    pub level: Option<LintLevel>,
+
     /// Deprecated API path to replacement mappings.
-    pub additional: BTreeMap<String, String>,
+    /// Child keys override inherited keys; omission or an empty map preserves them.
+    pub paths: BTreeMap<String, String>,
 
     /// Report calls whose method name cannot be resolved uniquely.
     #[schemars(with = "bool", extend("default" = false))]
@@ -173,15 +305,31 @@ impl DeprecatedOptions {
     }
 }
 
+/// Restricted global name settings.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct RestrictedGlobalsOptions {
+    /// Diagnostic severity; omitted values inherit.
+    #[schemars(with = "LintLevel")]
+    pub level: Option<LintLevel>,
+
+    /// Forbidden global names and reasons.
+    pub names: BTreeMap<String, String>,
+}
+
 /// Restricted module path settings.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct RestrictedModulePathsOptions {
+    /// Diagnostic severity; omitted values inherit.
+    #[schemars(with = "LintLevel")]
+    pub level: Option<LintLevel>,
+
     /// Forbidden literal require paths and reasons.
     pub paths: BTreeMap<String, String>,
 }
 
-/// Manifest Luau settings; native lint switches belong under `[lint]`.
+/// Manifest Luau settings; lint rules belong under `[lint]`.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct ManifestLuauConfig {
@@ -203,8 +351,9 @@ pub struct ManifestLuauConfig {
     /// Documentation file paths and URLs.
     pub documentation: Vec<String>,
 
-    /// Process-global Luau flag settings.
-    pub fflags: LuauFlagsConfig,
+    /// Explicit process-global bool or integer Luau flag values applied after synced values.
+    /// Child keys override inherited keys; values are shared across projects in one process.
+    pub flags: BTreeMap<String, FlagValue>,
 }
 
 impl From<ManifestLuauConfig> for LuauConfig {
@@ -218,119 +367,61 @@ impl From<ManifestLuauConfig> for LuauConfig {
             aliases: config.aliases,
             definitions: config.definitions,
             documentation: config.documentation,
-            fflags: config.fflags,
+            flags: config.flags,
         }
     }
 }
 
 impl LintConfig {
-    /// Merges an inherited lint layer, preserving explicit scalar overrides.
-    pub fn merge(&mut self, layer: &Self) {
-        self.include.extend(layer.include.iter().cloned());
-        self.exclude.extend(layer.exclude.iter().cloned());
-
-        if layer.lint_errors.is_some() {
-            self.lint_errors = layer.lint_errors;
-        }
-
-        if layer.luau.contains_key("*") {
-            self.luau.clear();
-        }
-
-        self.luau.extend(layer.luau.clone());
-        self.rules.extend(layer.rules.clone());
-        self.groups.extend(layer.groups.clone());
-
-        self.options.unused_variable.parameters = layer
-            .options
+    fn merge_options(&mut self, layer: &Self) {
+        self.unused_variable.parameters = layer
             .unused_variable
             .parameters
-            .or(self.options.unused_variable.parameters);
+            .or(self.unused_variable.parameters);
 
-        self.options.unused_variable.loop_variables = layer
-            .options
+        self.unused_variable.loop_variables = layer
             .unused_variable
             .loop_variables
-            .or(self.options.unused_variable.loop_variables);
+            .or(self.unused_variable.loop_variables);
 
-        if layer.options.unused_variable.ignore_pattern.is_some() {
-            self.options
-                .unused_variable
+        if layer.unused_variable.ignore_pattern.is_some() {
+            self.unused_variable
                 .ignore_pattern
-                .clone_from(&layer.options.unused_variable.ignore_pattern);
+                .clone_from(&layer.unused_variable.ignore_pattern);
         }
 
-        self.options.high_cyclomatic_complexity.maximum_complexity = layer
-            .options
+        self.high_cyclomatic_complexity.maximum_complexity = layer
             .high_cyclomatic_complexity
             .maximum_complexity
-            .or(self.options.high_cyclomatic_complexity.maximum_complexity);
+            .or(self.high_cyclomatic_complexity.maximum_complexity);
 
-        self.options.prefer_const.mutated_tables_stay_local = layer
-            .options
+        self.prefer_const.mutated_tables_stay_local = layer
             .prefer_const
             .mutated_tables_stay_local
-            .or(self.options.prefer_const.mutated_tables_stay_local);
+            .or(self.prefer_const.mutated_tables_stay_local);
 
-        self.options
-            .deprecated
-            .additional
-            .extend(layer.options.deprecated.additional.clone());
+        self.deprecated.paths.extend(layer.deprecated.paths.clone());
 
-        self.options.deprecated.ambiguous_methods = layer
-            .options
+        self.deprecated.ambiguous_methods = layer
             .deprecated
             .ambiguous_methods
-            .or(self.options.deprecated.ambiguous_methods);
+            .or(self.deprecated.ambiguous_methods);
 
-        self.options
-            .restricted_globals
-            .extend(layer.options.restricted_globals.clone());
+        self.restricted_globals
+            .names
+            .extend(layer.restricted_globals.names.clone());
 
-        self.options
-            .restricted_module_paths
+        self.restricted_module_paths
             .paths
-            .extend(layer.options.restricted_module_paths.paths.clone());
+            .extend(layer.restricted_module_paths.paths.clone());
     }
 
-    /// Resolves the effective level for a custom lint rule.
-    #[must_use]
-    pub fn level(&self, rule: &str) -> LintLevel {
-        if let Some(level) = self.rules.get(rule) {
-            return *level;
-        }
-
-        let Some(&(_, group, default)) = RULES.iter().find(|(name, _, _)| *name == rule) else {
-            return LintLevel::Allow;
-        };
-
-        if default != LintLevel::Allow
-            && let Some(level) = self.groups.get(group)
-        {
-            return *level;
-        }
-
-        default
-    }
-
-    /// Validates custom lint rule names, groups, and option patterns.
+    /// Validates rule option patterns.
     ///
     /// # Errors
-    /// Returns an error for unknown rules/groups or an invalid pattern.
+    /// Returns an error for an invalid ignored-name regular expression.
     pub fn validate(&self) -> io::Result<()> {
-        for rule in self.rules.keys() {
-            if !RULES.iter().any(|(name, _, _)| name == rule) {
-                return Err(invalid(format!("unknown lint rule {rule:?}")));
-            }
-        }
-
-        for group in self.groups.keys() {
-            if !GROUPS.contains(&group.as_str()) {
-                return Err(invalid(format!("unknown lint group {group:?}")));
-            }
-        }
-
-        if let Some(pattern) = &self.options.unused_variable.ignore_pattern {
+        if let Some(pattern) = &self.unused_variable.ignore_pattern {
             regex::Regex::new(pattern).map_err(|error| {
                 invalid(format!("invalid unused_variable.ignore_pattern: {error}"))
             })?;
@@ -340,115 +431,34 @@ impl LintConfig {
     }
 }
 
-fn lint_schema_default() -> LintConfig {
-    LintConfig {
-        lint_errors: Some(false),
-        options: LintOptions {
-            unused_variable: UnusedVariableOptions {
-                parameters: Some(false),
-                loop_variables: Some(false),
-                ignore_pattern: Some("^_".to_owned()),
-            },
-            high_cyclomatic_complexity: HighCyclomaticComplexityOptions {
-                maximum_complexity: Some(40),
-            },
-            prefer_const: PreferConstOptions {
-                mutated_tables_stay_local: Some(false),
-            },
-            deprecated: DeprecatedOptions {
-                ambiguous_methods: Some(false),
-                ..DeprecatedOptions::default()
-            },
-            ..LintOptions::default()
-        },
-        ..LintConfig::default()
-    }
-}
-
-const GROUPS: &[&str] = &[
-    "correctness",
-    "suspicious",
-    "style",
-    "complexity",
-    "performance",
-    "roblox",
-];
-
-const RULES: &[(&str, &str, LintLevel)] = &[
-    ("almost_swapped", "correctness", LintLevel::Warn),
-    ("bad_string_escape", "correctness", LintLevel::Warn),
-    ("compare_nan", "correctness", LintLevel::Warn),
-    ("constant_condition", "correctness", LintLevel::Warn),
-    ("constant_table_comparison", "correctness", LintLevel::Warn),
-    ("length_as_condition", "correctness", LintLevel::Deny),
-    ("mismatched_arg_count", "correctness", LintLevel::Warn),
-    ("must_use", "correctness", LintLevel::Warn),
-    ("unused_variable", "correctness", LintLevel::Warn),
-    ("type_check_inside_call", "correctness", LintLevel::Warn),
-    ("zero_step_loop", "correctness", LintLevel::Deny),
-    ("divide_by_zero", "suspicious", LintLevel::Warn),
-    ("empty_if", "suspicious", LintLevel::Warn),
-    ("empty_loop", "suspicious", LintLevel::Warn),
-    ("global_usage", "suspicious", LintLevel::Warn),
-    ("if_same_then_else", "suspicious", LintLevel::Warn),
-    ("ignored_pcall_result", "suspicious", LintLevel::Warn),
-    ("implicit_any_local", "suspicious", LintLevel::Warn),
-    ("implicit_any_parameter", "suspicious", LintLevel::Allow),
-    ("mixed_table", "suspicious", LintLevel::Warn),
-    ("self_assignment", "suspicious", LintLevel::Warn),
-    ("unscoped_variables", "suspicious", LintLevel::Warn),
-    ("and_or_conditional", "style", LintLevel::Allow),
-    ("collapsible_if", "style", LintLevel::Allow),
-    ("deprecated", "style", LintLevel::Warn),
-    ("else_after_return", "style", LintLevel::Allow),
-    ("if_expression_assignment", "style", LintLevel::Allow),
-    ("negated_condition", "style", LintLevel::Allow),
-    ("non_const_require", "style", LintLevel::Allow),
-    ("parenthese_conditions", "style", LintLevel::Warn),
-    ("prefer_const", "style", LintLevel::Allow),
-    ("restricted_globals", "style", LintLevel::Warn),
-    ("restricted_module_paths", "style", LintLevel::Warn),
-    ("high_cyclomatic_complexity", "complexity", LintLevel::Allow),
-    ("loop_invariant_call", "performance", LintLevel::Warn),
-    ("manual_table_clone", "performance", LintLevel::Warn),
-    ("string_concat_in_loop", "performance", LintLevel::Warn),
-    (
-        "roblox_incorrect_color3_new_bounds",
-        "roblox",
-        LintLevel::Warn,
-    ),
-    (
-        "roblox_manual_fromscale_or_fromoffset",
-        "roblox",
-        LintLevel::Warn,
-    ),
-    ("roblox_prefer_get_players", "roblox", LintLevel::Warn),
-    ("roblox_suspicious_udim2_new", "roblox", LintLevel::Warn),
-];
-
 /// Project manifest. Luau settings live in `[luau]`; formatting settings in `[format]`.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
-    /// Global include globs, relative to this manifest; inherited lists append.
-    /// An empty effective list allows every path.
-    pub include: Vec<String>,
+    /// Global include globs relative to this manifest. Omission inherits;
+    /// an explicit list replaces, and `[]` allows every path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Vec<String>")]
+    pub include: Option<Vec<String>>,
 
-    /// Global exclude globs; exclusions always win.
-    pub exclude: Vec<String>,
+    /// Global exclude globs. Omission inherits; an explicit list replaces,
+    /// and `[]` clears exclusions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Vec<String>")]
+    pub exclude: Option<Vec<String>>,
 
-    /// Additional file selection for syntax and type checking, independent of lint selection.
+    /// File selection for syntax and type checking, falling back to global fields.
     pub check: FileFilter,
 
-    /// Formatting style and additional file selection.
+    /// Formatting style and file selection, falling back to global fields.
     #[schemars(extend("default" = format_schema_default()))]
     pub format: FormatConfig,
 
-    /// Lint rules, options, and additional file selection.
+    /// Lint rules, options, and file selection, falling back to global fields.
     #[schemars(extend("default" = lint_schema_default()))]
     pub lint: LintConfig,
 
-    /// Language server file selection and autoimport settings.
+    /// Workspace indexing and independent autoimport settings.
     pub lsp: LspConfig,
 
     /// Luau typechecking, resolution, and process-global fast-flag settings.
@@ -458,33 +468,34 @@ pub struct Config {
     pub roblox: RobloxConfig,
 }
 
-/// Service-specific globs, intersected with global selection.
-/// Lists append through inheritance; `[]` adds nothing.
+/// Service-specific globs, falling back to global fields.
+/// Omitted fields inherit; explicit lists replace, and `[]` clears a field.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct FileFilter {
     /// Include globs relative to their manifest; an empty effective list allows every path.
-    pub include: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Vec<String>")]
+    pub include: Option<Vec<String>>,
 
-    /// Exclude globs relative to their manifest; exclusions always win.
-    pub exclude: Vec<String>,
+    /// Exclude globs relative to their manifest; exclusions win over effective includes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Vec<String>")]
+    pub exclude: Option<Vec<String>>,
 }
 
-/// Language server file selection and independent autoimport settings.
+/// Workspace indexing and independent autoimport settings.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct LspConfig {
-    /// Include globs relative to their manifest; inherited lists append.
-    pub include: Vec<String>,
+    /// Workspace file selection, independent of autoimport selection.
+    pub index: FileFilter,
 
-    /// Exclude globs relative to their manifest; exclusions always win.
-    pub exclude: Vec<String>,
-
-    /// Autoimport preferences and selection, independent of language server selection.
+    /// Autoimport preferences and selection, independent of indexing.
     pub imports: ImportsConfig,
 }
 
-/// Autoimport preferences and file selection, intersected with global selection.
+/// Autoimport preferences and file selection, falling back to global fields.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct ImportsConfig {
@@ -494,19 +505,29 @@ pub struct ImportsConfig {
     /// Generated binding style; omission inherits or defaults to local bindings.
     pub binding: Option<BindingStyle>,
 
-    /// Include globs relative to their manifest; inherited lists append.
-    pub include: Vec<String>,
+    /// Include globs relative to their manifest; omission inherits, an explicit list replaces.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Vec<String>")]
+    pub include: Option<Vec<String>>,
 
-    /// Exclude globs relative to their manifest; exclusions always win.
-    pub exclude: Vec<String>,
+    /// Exclude globs relative to their manifest; omission inherits, an explicit list replaces.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Vec<String>")]
+    pub exclude: Option<Vec<String>>,
 }
 
 impl ImportsConfig {
     pub(super) fn merge(&mut self, layer: &Self) {
         self.require = layer.require.or(self.require);
         self.binding = layer.binding.or(self.binding);
-        self.include.extend(layer.include.iter().cloned());
-        self.exclude.extend(layer.exclude.iter().cloned());
+
+        if layer.include.is_some() {
+            self.include.clone_from(&layer.include);
+        }
+
+        if layer.exclude.is_some() {
+            self.exclude.clone_from(&layer.exclude);
+        }
     }
 }
 
@@ -539,11 +560,15 @@ pub enum BindingStyle {
 /// Optional formatting overrides and file selection. Omitted values inherit;
 /// schema defaults describe the root configuration.
 pub struct FormatConfig {
-    /// Additional include globs for formatting.
-    pub include: Vec<String>,
+    /// Include globs for formatting; omission inherits, an explicit list replaces.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Vec<String>")]
+    pub include: Option<Vec<String>>,
 
-    /// Exclude globs for formatting.
-    pub exclude: Vec<String>,
+    /// Exclude globs for formatting; omission inherits, an explicit list replaces.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Vec<String>")]
+    pub exclude: Option<Vec<String>>,
 
     /// Target line width.
     #[schemars(with = "usize", extend("default" = FormatOptions::default().width))]
@@ -684,10 +709,31 @@ partial!(PartialIfExpressionsOptions, if_expressions {
 });
 
 partial!(PartialTypesOptions, types {
-    table_wrap: Wrap => "Wrap",
-    operator_wrap: Wrap => "Wrap",
-    table_separator: TypeTableSeparator => "TypeTableSeparator"
+    tables: PartialTypeTablesOptions => "PartialTypeTablesOptions",
+    operators: PartialTypeOperatorsOptions => "PartialTypeOperatorsOptions"
 });
+
+/// Optional type table formatting overrides.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct PartialTypeTablesOptions {
+    /// Type table wrapping policy.
+    #[schemars(with = "Wrap", extend("default" = FormatOptions::default().types.tables.wrap))]
+    pub wrap: Option<Wrap>,
+
+    /// Type table field separator.
+    #[schemars(with = "TypeTableSeparator", extend("default" = FormatOptions::default().types.tables.separator))]
+    pub separator: Option<TypeTableSeparator>,
+}
+
+/// Optional type operator formatting overrides.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct PartialTypeOperatorsOptions {
+    /// Union and intersection wrapping policy.
+    #[schemars(with = "Wrap", extend("default" = FormatOptions::default().types.operators.wrap))]
+    pub wrap: Option<Wrap>,
+}
 
 partial!(PartialRequiresOptions, requires {
     order: RequireOrder => "RequireOrder",
@@ -805,9 +851,17 @@ options!(IfExpressionsOptions {
 });
 
 options!(TypesOptions {
-    table_wrap: Wrap = Wrap::Auto,
-    operator_wrap: Wrap = Wrap::Auto,
-    table_separator: TypeTableSeparator = TypeTableSeparator::Comma
+    tables: TypeTablesOptions = TypeTablesOptions::default(),
+    operators: TypeOperatorsOptions = TypeOperatorsOptions::default()
+});
+
+options!(TypeTablesOptions {
+    wrap: Wrap = Wrap::Auto,
+    separator: TypeTableSeparator = TypeTableSeparator::Comma
+});
+
+options!(TypeOperatorsOptions {
+    wrap: Wrap = Wrap::Auto
 });
 
 options!(RequiresOptions { order: RequireOrder = RequireOrder::Grouped, blank_lines: RequireBlankLines = RequireBlankLines::BetweenGroups, groups: Vec<RequireGroup> = vec![RequireGroup::Alias, RequireGroup::Relative, RequireGroup::Other] });
@@ -1023,9 +1077,14 @@ impl FormatOptions {
         }
 
         if let Some(v) = &layer.types {
-            set!(self.types.table_wrap, v.table_wrap);
-            set!(self.types.operator_wrap, v.operator_wrap);
-            set!(self.types.table_separator, v.table_separator);
+            if let Some(tables) = &v.tables {
+                set!(self.types.tables.wrap, tables.wrap);
+                set!(self.types.tables.separator, tables.separator);
+            }
+
+            if let Some(operators) = &v.operators {
+                set!(self.types.operators.wrap, operators.wrap);
+            }
         }
 
         if let Some(v) = &layer.requires {
@@ -1094,6 +1153,10 @@ pub struct RobloxConfig {
     /// Omission inherits or auto-detects Roblox from the effective sourcemaps.
     pub enabled: Option<bool>,
 
+    /// Fetch supported values from Roblox Studio's `PCStudioApp` settings at startup.
+    /// Omission inherits, then defaults to whether Roblox is effectively enabled.
+    pub sync_flags: Option<bool>,
+
     /// API security level; defaults to normal game-script permissions (`none`).
     pub security: Option<Security>,
 
@@ -1132,17 +1195,6 @@ impl Security {
             Self::Roblox => "roblox.d.luau",
         }
     }
-}
-
-/// Process-global Luau flag settings shared across projects in one process.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
-#[serde(default, deny_unknown_fields)]
-pub struct LuauFlagsConfig {
-    /// Fetch supported values from Roblox Studio's `PCStudioApp` settings at startup.
-    pub sync_roblox: Option<bool>,
-
-    /// Explicit bool or integer values applied after synced values.
-    pub overrides: BTreeMap<String, FlagValue>,
 }
 
 /// Supported native Luau flag value types.
@@ -1194,8 +1246,10 @@ pub struct LuauConfig {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub documentation: Vec<String>,
 
-    /// Process-global Luau flag settings.
-    pub fflags: LuauFlagsConfig,
+    /// Explicit process-global bool or integer Luau flag values applied after synced values.
+    /// Child keys override inherited keys; values are shared across projects in one process.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub flags: BTreeMap<String, FlagValue>,
 }
 
 /// Luau typechecking mode.
@@ -1238,11 +1292,7 @@ impl LuauConfig {
         self.aliases.extend(layer.aliases.clone());
         self.definitions.extend(layer.definitions.clone());
 
-        if let Some(sync) = layer.fflags.sync_roblox {
-            self.fflags.sync_roblox = Some(sync);
-        }
-
-        self.fflags.overrides.extend(layer.fflags.overrides.clone());
+        self.flags.extend(layer.flags.clone());
 
         self.documentation
             .extend(layer.documentation.iter().cloned());
@@ -1305,7 +1355,7 @@ impl LuauConfig {
         if let Value::Object(object) = &mut value {
             object.remove("definitions");
             object.remove("documentation");
-            object.remove("fflags");
+            object.remove("flags");
 
             for (from, to) in [
                 ("language_mode", "languageMode"),
@@ -1583,13 +1633,418 @@ mod tests {
     use super::*;
 
     #[test]
+    fn filter_fields_preserve_omission_and_explicit_empty_lists() {
+        for table in ["", "check", "format", "lint", "lsp.index", "lsp.imports"] {
+            let header = if table.is_empty() {
+                String::new()
+            } else {
+                format!("[{table}]\n")
+            };
+
+            for fields in [
+                "",
+                "include = []",
+                "exclude = []",
+                "include = []\nexclude = []",
+            ] {
+                let config: Config = toml::from_str(&format!("{header}{fields}")).unwrap();
+                let serialized = serde_json::to_value(&config).unwrap();
+                let restored: Config = serde_json::from_value(serialized.clone()).unwrap();
+                assert_eq!(serde_json::to_value(restored).unwrap(), serialized);
+                let mut selection = &serialized;
+
+                for part in table.split('.').filter(|part| !part.is_empty()) {
+                    selection = &selection[part];
+                }
+
+                for field in ["include", "exclude"] {
+                    if fields.contains(field) {
+                        assert_eq!(selection[field], serde_json::json!([]), "{table}.{field}");
+                    } else {
+                        assert!(selection.get(field).is_none(), "{table}.{field}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn filter_schema_describes_optional_arrays_without_clearing_defaults() {
+        for schema in [
+            schemars::schema_for!(Config),
+            schemars::schema_for!(FileFilter),
+            schemars::schema_for!(LintConfig),
+            schemars::schema_for!(FormatConfig),
+            schemars::schema_for!(ImportsConfig),
+        ] {
+            let schema = serde_json::to_value(schema).unwrap();
+
+            for field in ["include", "exclude"] {
+                assert_eq!(schema["properties"][field]["type"], "array");
+                assert!(schema["properties"][field].get("default").is_none());
+
+                assert!(
+                    schema["required"]
+                        .as_array()
+                        .is_none_or(|required| !required.iter().any(|name| name == field))
+                );
+            }
+        }
+
+        let defaults = format_schema_default();
+        let lint = serde_json::to_value(lint_schema_default()).unwrap();
+
+        for field in ["include", "exclude"] {
+            assert!(defaults.get(field).is_none());
+            assert!(lint.get(field).is_none());
+        }
+    }
+
+    #[test]
+    fn lint_filter_fields_merge_independently_and_clear_explicitly() {
+        let mut lint: LintConfig =
+            toml::from_str("include = [\"src/**\"]\nexclude = [\"vendor/**\"]").unwrap();
+
+        let child: LintConfig = toml::from_str("include = [\"tests/**\"]").unwrap();
+        lint.merge(&child);
+        lint.merge(&LintConfig::default());
+        assert_eq!(lint.include, Some(vec!["tests/**".to_owned()]));
+        assert_eq!(lint.exclude, Some(vec!["vendor/**".to_owned()]));
+
+        let child: LintConfig = toml::from_str("exclude = []").unwrap();
+        lint.merge(&child);
+        assert_eq!(lint.include, Some(vec!["tests/**".to_owned()]));
+        assert_eq!(lint.exclude, Some(Vec::new()));
+
+        let child: LintConfig = toml::from_str("include = []").unwrap();
+        lint.merge(&child);
+        assert_eq!(lint.include, Some(Vec::new()));
+        assert_eq!(lint.exclude, Some(Vec::new()));
+    }
+
+    #[test]
+    fn nested_type_formatting_partials_preserve_siblings() {
+        let parent: Config = toml::from_str(
+            r#"
+            [format.types.tables]
+            wrap = "always"
+            separator = "semicolon"
+            [format.types.operators]
+            wrap = "always"
+            "#,
+        )
+        .unwrap();
+
+        let mut options = FormatOptions::default();
+        options.merge(&parent.format).unwrap();
+        assert_eq!(options.types.tables.wrap, Wrap::Always);
+
+        assert_eq!(
+            options.types.tables.separator,
+            TypeTableSeparator::Semicolon
+        );
+
+        assert_eq!(options.types.operators.wrap, Wrap::Always);
+
+        let child: Config = toml::from_str("[format.types.tables]\nwrap = \"never\"").unwrap();
+
+        options.merge(&child.format).unwrap();
+        assert_eq!(options.types.tables.wrap, Wrap::Never);
+
+        assert_eq!(
+            options.types.tables.separator,
+            TypeTableSeparator::Semicolon
+        );
+
+        assert_eq!(options.types.operators.wrap, Wrap::Always);
+
+        let child: Config =
+            toml::from_str("[format.types.operators]\nwrap = \"preserve\"").unwrap();
+
+        options.merge(&child.format).unwrap();
+
+        let empty: Config =
+            toml::from_str("[format.types.tables]\n[format.types.operators]").unwrap();
+
+        options.merge(&empty.format).unwrap();
+        options.merge(&FormatConfig::default()).unwrap();
+        assert_eq!(options.types.tables.wrap, Wrap::Never);
+
+        assert_eq!(
+            options.types.tables.separator,
+            TypeTableSeparator::Semicolon
+        );
+
+        assert_eq!(options.types.operators.wrap, Wrap::Preserve);
+
+        let serialized = serde_json::to_value(&options).unwrap();
+        assert_eq!(serialized["types"]["tables"]["wrap"], "never");
+        assert_eq!(serialized["types"]["tables"]["separator"], "semicolon");
+        assert_eq!(serialized["types"]["operators"]["wrap"], "preserve");
+        let defaults = format_schema_default();
+        assert_eq!(defaults["types"]["tables"]["wrap"], "auto");
+        assert_eq!(defaults["types"]["tables"]["separator"], "comma");
+        assert_eq!(defaults["types"]["operators"]["wrap"], "auto");
+    }
+
+    #[test]
+    fn luau_flag_maps_convert_merge_and_serialize() {
+        let parent: Config = toml::from_str(
+            "[luau.flags]\nBoolean = true\nInteger = 42\n\
+             [roblox]\nsync_flags = false",
+        )
+        .unwrap();
+
+        assert_eq!(parent.roblox.sync_flags, Some(false));
+        assert_eq!(RobloxConfig::default().sync_flags, None);
+        let mut settings = LuauConfig::from(parent.luau);
+        assert_eq!(settings.flags["Boolean"], FlagValue::Bool(true));
+        assert_eq!(settings.flags["Integer"], FlagValue::Int(42));
+
+        let child: Config = toml::from_str("[luau.flags]\nBoolean = false\nAdded = -7").unwrap();
+
+        settings.merge(&LuauConfig::from(child.luau));
+        settings.merge(&LuauConfig::default());
+        assert_eq!(settings.flags.len(), 3);
+        assert_eq!(settings.flags["Boolean"], FlagValue::Bool(false));
+        assert_eq!(settings.flags["Integer"], FlagValue::Int(42));
+        assert_eq!(settings.flags["Added"], FlagValue::Int(-7));
+
+        let serialized = serde_json::to_value(&settings).unwrap();
+
+        assert_eq!(
+            serialized["flags"],
+            serde_json::json!({ "Boolean": false, "Integer": 42, "Added": -7 })
+        );
+
+        let restored: LuauConfig = serde_json::from_value(serialized).unwrap();
+        assert_eq!(restored.flags, settings.flags);
+        let native: Value = serde_json::from_str(&settings.native_json().unwrap()).unwrap();
+        assert!(native.get("flags").is_none());
+    }
+
+    #[test]
+    fn lint_defaults_and_rule_tables() {
+        let defaults = LintConfig::default();
+        assert_eq!(defaults.level("length_as_condition"), LintLevel::Deny);
+        assert_eq!(defaults.level("zero_step_loop"), LintLevel::Deny);
+        assert_eq!(defaults.level("unused_variable"), LintLevel::Warn);
+        assert_eq!(defaults.level("prefer_const"), LintLevel::Allow);
+        assert_eq!(defaults.level("implicit_any_parameter"), LintLevel::Allow);
+        assert_eq!(defaults.level("imaginary_rule"), LintLevel::Allow);
+        assert_eq!(defaults.native_level("ImaginaryWarning"), None);
+        assert_eq!(defaults.native_overrides().count(), 0);
+
+        let schema_defaults = lint_schema_default();
+        assert_eq!(schema_defaults.native_overrides().count(), 29);
+
+        for (warning, level) in schema_defaults.native_overrides() {
+            assert_eq!(level, LintLevel::Warn);
+            assert_eq!(defaults.native_level(warning), None);
+        }
+
+        let values = serde_json::to_value(&schema_defaults).unwrap();
+
+        for (rule, settings) in values.as_object().unwrap() {
+            let Some(level) = settings.get("level") else {
+                continue;
+            };
+
+            let level: LintLevel = serde_json::from_value(level.clone()).unwrap();
+            assert_eq!(defaults.level(rule), level, "{rule}");
+
+            let config: Config =
+                toml::from_str(&format!("[lint.{rule}]\nlevel = \"info\"")).unwrap();
+
+            assert_eq!(config.lint.level(rule), LintLevel::Info, "{rule}");
+        }
+
+        assert!(!defaults.unused_variable.parameters());
+        assert!(!defaults.unused_variable.loop_variables());
+        assert_eq!(defaults.unused_variable.ignore_pattern(), "^_");
+        assert_eq!(defaults.high_cyclomatic_complexity.maximum_complexity(), 40);
+        assert!(!defaults.prefer_const.mutated_tables_stay_local());
+        assert!(!defaults.deprecated.ambiguous_methods());
+
+        let schema = serde_json::to_value(schemars::schema_for!(Config)).unwrap();
+        assert_eq!(schema["properties"]["lint"]["default"], values);
+    }
+
+    #[test]
+    fn lint_rule_levels_and_options_inherit() {
+        let mut parent: Config = toml::from_str(
+            r#"
+            [lint]
+            include = ["src/**"]
+            exclude = ["vendor/**"]
+            [lint.local_unused]
+            level = "deny"
+            [lint.format_string]
+            level = "warn"
+            [lint.unused_variable]
+            level = "deny"
+            parameters = true
+            loop_variables = true
+            ignore_pattern = "^skip"
+            [lint.high_cyclomatic_complexity]
+            level = "warn"
+            maximum_complexity = 7
+            [lint.prefer_const]
+            level = "info"
+            mutated_tables_stay_local = true
+            [lint.deprecated]
+            ambiguous_methods = true
+            paths = { Old = "Original", Kept = "Replacement" }
+            [lint.restricted_globals]
+            level = "deny"
+            names = { debug = "Original", shared = "Inherited" }
+            [lint.restricted_module_paths]
+            paths = { "./private" = "Original", "./kept" = "Inherited" }
+            "#,
+        )
+        .unwrap();
+
+        let child: Config = toml::from_str(
+            r#"
+            [lint]
+            include = ["tests/**"]
+            exclude = ["generated/**"]
+            [lint.local_unused]
+            level = "allow"
+            [lint.multi_line_statement]
+            level = "info"
+            [lint.deprecated_api]
+            level = "deny"
+            [lint.unused_variable]
+            parameters = false
+            loop_variables = false
+            ignore_pattern = "^_"
+            [lint.high_cyclomatic_complexity]
+            maximum_complexity = 40
+            [lint.prefer_const]
+            level = "allow"
+            mutated_tables_stay_local = false
+            [lint.deprecated]
+            ambiguous_methods = false
+            paths = { Old = "Updated", Added = "New" }
+            [lint.restricted_globals]
+            names = { debug = "Updated", forbidden = "New" }
+            [lint.restricted_module_paths]
+            paths = { "./private" = "Updated", "./added" = "New" }
+            "#,
+        )
+        .unwrap();
+
+        parent.lint.merge(&child.lint);
+        parent.lint.merge(&LintConfig::default());
+        let lint = &parent.lint;
+        assert_eq!(lint.include, Some(vec!["tests/**".to_owned()]));
+        assert_eq!(lint.exclude, Some(vec!["generated/**".to_owned()]));
+        assert_eq!(lint.native_level("LocalUnused"), Some(LintLevel::Allow));
+        assert_eq!(lint.native_level("FormatString"), Some(LintLevel::Warn));
+
+        assert_eq!(
+            lint.native_level("MultiLineStatement"),
+            Some(LintLevel::Info)
+        );
+
+        assert_eq!(lint.native_level("DeprecatedApi"), Some(LintLevel::Deny));
+        assert_eq!(lint.native_overrides().count(), 4);
+        assert_eq!(lint.level("local_unused"), LintLevel::Allow);
+        assert_eq!(lint.level("unused_variable"), LintLevel::Deny);
+        assert_eq!(lint.level("high_cyclomatic_complexity"), LintLevel::Warn);
+        assert_eq!(lint.level("prefer_const"), LintLevel::Allow);
+        assert_eq!(lint.level("restricted_globals"), LintLevel::Deny);
+        assert!(!lint.unused_variable.parameters());
+        assert!(!lint.unused_variable.loop_variables());
+        assert_eq!(lint.unused_variable.ignore_pattern(), "^_");
+        assert_eq!(lint.high_cyclomatic_complexity.maximum_complexity(), 40);
+        assert!(!lint.prefer_const.mutated_tables_stay_local());
+        assert!(!lint.deprecated.ambiguous_methods());
+
+        for (actual, expected) in [
+            (
+                &lint.deprecated.paths,
+                [
+                    ("Old", "Updated"),
+                    ("Kept", "Replacement"),
+                    ("Added", "New"),
+                ],
+            ),
+            (
+                &lint.restricted_globals.names,
+                [
+                    ("debug", "Updated"),
+                    ("shared", "Inherited"),
+                    ("forbidden", "New"),
+                ],
+            ),
+            (
+                &lint.restricted_module_paths.paths,
+                [
+                    ("./private", "Updated"),
+                    ("./kept", "Inherited"),
+                    ("./added", "New"),
+                ],
+            ),
+        ] {
+            assert_eq!(
+                actual,
+                &expected
+                    .into_iter()
+                    .map(|(name, reason)| (name.to_owned(), reason.to_owned()))
+                    .collect::<BTreeMap<_, _>>()
+            );
+        }
+
+        lint.validate().unwrap();
+    }
+
+    #[test]
+    fn lint_rule_tables_validate_names_options_and_patterns() {
+        for source in [
+            "[lint.imaginary_rule]\nlevel = \"warn\"",
+            "[lint.empty_if]\nparameters = true",
+            "[lint.format_string]\nmaximum_complexity = 5",
+            "[lint.unused_variable]\nmaximum_complexity = 5",
+            "[lint.restricted_globals]\npaths = {}",
+        ] {
+            let error = toml::from_str::<Config>(source).unwrap_err();
+            assert!(error.to_string().contains("unknown field"), "{error}");
+        }
+
+        assert!(
+            toml::from_str::<Config>("[lint.empty_if]\nlevel = \"fatal\"")
+                .unwrap_err()
+                .to_string()
+                .contains("unknown variant")
+        );
+
+        let config: Config =
+            toml::from_str("[lint.unused_variable]\nignore_pattern = \"[\"").unwrap();
+
+        assert!(
+            config
+                .lint
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("invalid unused_variable.ignore_pattern")
+        );
+    }
+
+    #[test]
     fn check_selection_parses_filters() {
         let config: Config =
             toml::from_str("[check]\ninclude = [\"src/**\"]\nexclude = [\"src/generated/**\"]")
                 .unwrap();
 
-        assert_eq!(config.check.include, ["src/**"]);
-        assert_eq!(config.check.exclude, ["src/generated/**"]);
+        assert_eq!(config.check.include, Some(vec!["src/**".to_owned()]));
+
+        assert_eq!(
+            config.check.exclude,
+            Some(vec!["src/generated/**".to_owned()])
+        );
     }
 
     #[test]
@@ -1604,13 +2059,13 @@ mod tests {
             ("string", "const", RequireStyle::String, BindingStyle::Const),
         ] {
             let config: Config = toml::from_str(&format!(
-                "[lsp]\ninclude = [\"src/**\"]\nexclude = [\"vendor/**\"]\n\
+                "[lsp.index]\ninclude = [\"src/**\"]\nexclude = [\"vendor/**\"]\n\
                  [lsp.imports]\nrequire = \"{require}\"\nbinding = \"{binding}\""
             ))
             .unwrap();
 
-            assert_eq!(config.lsp.include, ["src/**"]);
-            assert_eq!(config.lsp.exclude, ["vendor/**"]);
+            assert_eq!(config.lsp.index.include, Some(vec!["src/**".to_owned()]));
+            assert_eq!(config.lsp.index.exclude, Some(vec!["vendor/**".to_owned()]));
             assert_eq!(config.lsp.imports.require, Some(expected_require));
             assert_eq!(config.lsp.imports.binding, Some(expected_binding));
         }
@@ -1639,6 +2094,15 @@ mod tests {
         imports.merge(&ImportsConfig::default());
         assert_eq!(imports.require, Some(RequireStyle::String));
         assert_eq!(imports.binding, Some(BindingStyle::Const));
+        assert_eq!(imports.include, Some(vec!["modules/**".to_owned()]));
+        assert_eq!(imports.exclude, Some(vec!["modules/private/**".to_owned()]));
+
+        let include_only: Config =
+            toml::from_str("[lsp.imports]\ninclude = [\"extra/**\"]").unwrap();
+
+        imports.merge(&include_only.lsp.imports);
+        assert_eq!(imports.include, Some(vec!["extra/**".to_owned()]));
+        assert_eq!(imports.exclude, Some(vec!["modules/private/**".to_owned()]));
 
         let child: Config = toml::from_str(
             "[lsp.imports]\nbinding = \"local\"\ninclude = []\nexclude = [\"generated/**\"]",
@@ -1648,7 +2112,15 @@ mod tests {
         imports.merge(&child.lsp.imports);
         assert_eq!(imports.require, Some(RequireStyle::String));
         assert_eq!(imports.binding, Some(BindingStyle::Local));
-        assert_eq!(imports.include, ["modules/**"]);
-        assert_eq!(imports.exclude, ["modules/private/**", "generated/**"]);
+        assert_eq!(imports.include, Some(Vec::new()));
+        assert_eq!(imports.exclude, Some(vec!["generated/**".to_owned()]));
+
+        let exclude_only: Config = toml::from_str("[lsp.imports]\nexclude = []").unwrap();
+        imports.merge(&exclude_only.lsp.imports);
+        imports.merge(&ImportsConfig::default());
+        assert_eq!(imports.include, Some(Vec::new()));
+        assert_eq!(imports.exclude, Some(Vec::new()));
+        assert_eq!(imports.require, Some(RequireStyle::String));
+        assert_eq!(imports.binding, Some(BindingStyle::Local));
     }
 }

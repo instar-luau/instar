@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn never_wrap_collapses_type_operators_and_named_calls() {
         let mut options = FormatOptions::default();
-        options.types.operator_wrap = Wrap::Never;
+        options.types.operators.wrap = Wrap::Never;
         options.chains.wrap = Wrap::Never;
         let input = "type Either = Left\n | Right\nlocal result = object:first()\n:second()\n";
         let output = source(input, &options).unwrap();
@@ -341,7 +341,7 @@ mod tests {
     #[test]
     fn keeps_value_table_separators_distinct_from_type_table_separators() {
         let mut options = FormatOptions::default();
-        options.types.table_separator = crate::config::TypeTableSeparator::Semicolon;
+        options.types.tables.separator = crate::config::TypeTableSeparator::Semicolon;
 
         let input =
             "type Named = { a: number, b: number }\nlocal value: Named = { a = 1, b = 2 }\n";
@@ -1106,7 +1106,7 @@ mod tests {
         };
 
         options.tables.wrap = Wrap::Auto;
-        options.types.table_wrap = Wrap::Auto;
+        options.types.tables.wrap = Wrap::Auto;
 
         let value = "local settings = { active = true, }\n";
         let expanded_value = "local settings = {\n    active = true,\n}\n";
@@ -1123,7 +1123,7 @@ mod tests {
         assert_eq!(source(value, &options).unwrap(), without_comma);
         assert_eq!(source(without_comma, &options).unwrap(), without_comma);
 
-        options.types.table_separator = crate::config::TypeTableSeparator::Semicolon;
+        options.types.tables.separator = crate::config::TypeTableSeparator::Semicolon;
         let with_semicolon = "type Shape = {\n    active: boolean;\n}\n";
         assert_eq!(source(ty, &options).unwrap(), with_semicolon);
         assert_eq!(source(with_semicolon, &options).unwrap(), with_semicolon);

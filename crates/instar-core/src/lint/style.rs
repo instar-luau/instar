@@ -293,11 +293,7 @@ fn prefer_const(node: View<'_, '_>, context: &Context<'_>, findings: &mut Vec<Fi
             continue;
         }
 
-        if context
-            .config
-            .options
-            .prefer_const
-            .mutated_tables_stay_local()
+        if context.config.prefer_const.mutated_tables_stay_local()
             && value.kind() == Kind::Table
             && context.writes.mutated(name)
         {
@@ -322,14 +318,14 @@ fn deprecated(node: View<'_, '_>, context: &Context<'_>, findings: &mut Vec<Find
         return;
     }
 
-    let options = &context.config.options.deprecated;
+    let options = &context.config.deprecated;
 
-    if options.additional.is_empty() {
+    if options.paths.is_empty() {
         return;
     }
 
     if let Some(path) = call_path(node)
-        && let Some(replacement) = options.additional.get(&path)
+        && let Some(replacement) = options.paths.get(&path)
     {
         context.emit(
             findings,
@@ -344,7 +340,7 @@ fn deprecated(node: View<'_, '_>, context: &Context<'_>, findings: &mut Vec<Find
     if options.ambiguous_methods()
         && let Some(method) = method_name(node)
     {
-        for (path, replacement) in &options.additional {
+        for (path, replacement) in &options.paths {
             if path.rsplit('.').next() == Some(method.as_str()) {
                 context.emit(
                     findings,
@@ -403,7 +399,7 @@ fn restricted_global(
     context: &Context<'_>,
     findings: &mut Vec<Finding>,
 ) {
-    let restricted = &context.config.options.restricted_globals;
+    let restricted = &context.config.restricted_globals.names;
 
     if !context.enabled("restricted_globals") || restricted.is_empty() {
         return;
@@ -452,7 +448,7 @@ fn restricted_module_path(
     context: &Context<'_>,
     findings: &mut Vec<Finding>,
 ) {
-    let paths = &context.config.options.restricted_module_paths.paths;
+    let paths = &context.config.restricted_module_paths.paths;
 
     if !context.enabled("restricted_module_paths")
         || paths.is_empty()
