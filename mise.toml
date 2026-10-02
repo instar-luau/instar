@@ -1,9 +1,0 @@
-[tools]
-"aqua:Kitware/CMake" = "latest"
-"aqua:ninja-build/ninja" = "latest"
-"aqua:tombi-toml/tombi" = "latest"
-"github:0hirume/breathers" = "latest"
-"github:blankspruce/gersemi" = "latest"
-"github:llvm/llvm-project" = { version = "latest", matching_regex = '(?i)^(clang\+llvm-|LLVM-).*\.tar\.xz$' }
-"npm:oxfmt" = "latest"
-rust = { version = "nightly", profile = "minimal", components = ["rust-analyzer", "rustfmt", "clippy"] }
