@@ -27,7 +27,6 @@ install(
     TARGETS
         Instar
         Luau.Analysis
-        Luau.CLI.lib
         Luau.Config
         Luau.Compiler
         Luau.Bytecode

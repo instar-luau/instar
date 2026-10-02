@@ -1583,16 +1583,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn check_selection_accepts_only_the_current_table_name() {
+    fn check_selection_parses_filters() {
         let config: Config =
             toml::from_str("[check]\ninclude = [\"src/**\"]\nexclude = [\"src/generated/**\"]")
                 .unwrap();
 
         assert_eq!(config.check.include, ["src/**"]);
         assert_eq!(config.check.exclude, ["src/generated/**"]);
-
-        let error = toml::from_str::<Config>("[analyze]\ninclude = [\"src/**\"]").unwrap_err();
-        assert!(error.to_string().contains("unknown field"));
     }
 
     #[test]

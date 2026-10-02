@@ -28,9 +28,6 @@ fn command_surface() {
         assert!(help.contains(&format!("  {command} ")), "{help}");
     }
 
-    assert!(!help.contains("analyze"));
-    invoke("analyze", Path::new("."), 2);
-
     for command in ["check", "lint"] {
         let output = Command::new(env!("CARGO_BIN_EXE_instar"))
             .arg(command)

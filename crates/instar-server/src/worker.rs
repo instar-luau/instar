@@ -835,14 +835,7 @@ impl Worker {
                 &result.insert
             };
 
-            if let Some(range) = result.range {
-                item.text_edit = Some(lsp::CompletionTextEdit::Edit(lsp::TextEdit {
-                    range: document.native_range(range),
-                    new_text: insert.to_owned(),
-                }));
-            } else {
-                item.insert_text = Some(insert.to_owned());
-            }
+            item.insert_text = Some(insert.to_owned());
 
             items.push(item);
         }

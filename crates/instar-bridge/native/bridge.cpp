@@ -128,10 +128,9 @@ namespace {
                                                                                              Luau::SolverMode::New, &files, &configurations,
                                                                                              Luau::FrontendOptions{
                                                                                                  options.retain_full_type_graphs != 0,
-                                                                                                 options.for_autocomplete != 0,
                                                                                              }
                                                                                          ) {
-            Luau::registerBuiltinGlobals(frontend, frontend.globals, options.for_autocomplete != 0);
+            Luau::registerBuiltinGlobals(frontend, frontend.globals);
         }
 
         bool diagnostic(
@@ -611,9 +610,7 @@ extern "C" {
                 return failure(error, "definition changes require a new checker");
             }
 
-            Luau::LoadDefinitionFileResult result =
-                checker->frontend
-                    .loadDefinitionFile(checker->frontend.globals, checker->frontend.globals.globalScope, *source_view, name, options->capture_comments != 0, options->type_check_for_autocomplete != 0);
+            Luau::LoadDefinitionFileResult result = checker->frontend.loadDefinitionFile(checker->frontend.globals, checker->frontend.globals.globalScope, *source_view, name, options->capture_comments != 0);
 
             for (const Luau::ParseError &parse_error : result.parseResult.errors) {
                 if (!checker->diagnostic(name, parse_error.getLocation(), DiagnosticError, parse_error.getMessage())) {
@@ -638,8 +635,7 @@ extern "C" {
             }
 
             checker->frontend.sourceModules[name] = std::make_shared<Luau::SourceModule>(std::move(result.sourceModule));
-            checker->frontend.moduleResolver.setModule(name, result.module);
-            checker->frontend.moduleResolverForAutocomplete.setModule(name, std::move(result.module));
+            checker->frontend.moduleResolver.setModule(name, std::move(result.module));
             checker->definition_names.insert(name);
 
             return StatusSuccess;

@@ -1136,10 +1136,6 @@ namespace instar {
 
             return result;
         }
-
-        int32_t no_result() {
-            return StatusSuccess;
-        }
     } // namespace
 
     int32_t editor_hover(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, HoverCallback callback, void *context) {
@@ -1204,7 +1200,7 @@ namespace instar {
         return callback(context, &result) ? StatusSuccess : StatusCallbackFailure;
     }
 
-    int32_t emit_completion_items(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, CompletionCallback callback, void *context) {
+    int32_t editor_completion(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, CompletionCallback callback, void *context) {
 
         if (!callback) {
             return StatusFailure;
@@ -1286,9 +1282,6 @@ namespace instar {
                 detail_text,
                 documentation,
                 insert,
-                0,
-                {},
-                candidate.kind == Luau::AutocompleteEntryKind::RequirePath ? CompletionRequirePath : CompletionNormal,
                 completion_kind(candidate.kind),
                 uint8_t(candidate.deprecated),
                 definition_module && definition ? text(*definition_module) : Text{},
@@ -1301,10 +1294,6 @@ namespace instar {
         }
 
         return StatusSuccess;
-    }
-
-    int32_t editor_completion(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, CompletionCallback callback, void *context) {
-        return emit_completion_items(frontend, name, line, column, callback, context);
     }
 
     int32_t editor_signature_help(Luau::Frontend &frontend, Text name, uint32_t line, uint32_t column, SignatureCallback callback, void *context) {

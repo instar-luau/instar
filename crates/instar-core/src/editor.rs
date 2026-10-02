@@ -213,7 +213,6 @@ impl Editor {
                     Service::Lsp,
                     &CheckerOptions {
                         retain_full_type_graphs: 1,
-                        ..CheckerOptions::default()
                     },
                 )?);
 
