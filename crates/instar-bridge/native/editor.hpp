@@ -26,16 +26,6 @@ extern "C" {
         uint8_t is_type;
     } EditorHover;
 
-    /**Completion source mode.*/
-    typedef enum EditorCompletionMode {
-        /**Normal expression completion.*/
-        CompletionNormal = 0,
-        /**Import completion.*/
-        CompletionImport = 1,
-        /**Require-path completion.*/
-        CompletionRequirePath = 2,
-    } EditorCompletionMode;
-
     /**Completion item kind.*/
     typedef enum EditorCompletionKind {
         /**Plain text completion.*/
@@ -112,12 +102,6 @@ extern "C" {
         Text documentation;
         /**Completion insertion text.*/
         Text insert;
-        /**Whether a range is present.*/
-        uint8_t has_range;
-        /**Completion range when present.*/
-        Location range;
-        /**Completion source mode.*/
-        EditorCompletionMode mode;
         /**Completion item kind.*/
         EditorCompletionKind kind;
         /**Whether the item is deprecated.*/

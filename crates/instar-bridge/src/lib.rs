@@ -398,9 +398,6 @@ const CALLBACKS: native::BridgeCallbacks = native::BridgeCallbacks {
 pub struct CheckerOptions {
     /// Retains complete type graphs or annotation data.
     pub retain_full_type_graphs: u8,
-
-    /// Configures the checker for autocomplete.
-    pub for_autocomplete: u8,
 }
 
 /// Roblox class metadata supplied to the checker.
@@ -477,7 +474,6 @@ impl Checker {
     pub fn new(options: &CheckerOptions) -> io::Result<Self> {
         let native_options = native::FrontendOptions {
             retain_full_type_graphs: options.retain_full_type_graphs,
-            for_autocomplete: options.for_autocomplete,
         };
 
         let mut error = native::String::default();
@@ -561,7 +557,6 @@ impl Checker {
         self.with_callbacks(callbacks, |session| {
             let options = native::DefinitionOptions {
                 capture_comments: 0,
-                type_check_for_autocomplete: 0,
             };
 
             Self::call(|error| unsafe {
@@ -1254,12 +1249,6 @@ pub struct Completion {
     /// Completion insertion text.
     pub insert: String,
 
-    /// Completion range when present.
-    pub range: Option<[u32; 4]>,
-
-    /// Completion source mode.
-    pub mode: native::EditorCompletionMode,
-
     /// Completion item kind.
     pub kind: native::EditorCompletionKind,
 
@@ -1484,8 +1473,6 @@ unsafe extern "C" fn completion_callback(
             detail: read_text(value.detail)?,
             documentation_symbol: read_text(value.documentation)?,
             insert: read_text(value.insert)?,
-            range: (value.has_range != 0).then(|| range(value.range)),
-            mode: value.mode,
             kind: value.kind,
             deprecated: value.deprecated != 0,
             definition: if value.definition_module.length == 0 {
@@ -1757,6 +1744,35 @@ mod tests {
         }
     }
 
+    fn assert_completion_uses_loaded_definitions() {
+        let mut checker = Checker::new(&CheckerOptions {
+            retain_full_type_graphs: 1,
+        })
+        .unwrap();
+
+        let mut host = TestHost {
+            config: Configuration::new(br#"{"languageMode":"strict"}"#).unwrap(),
+            source: b"return Widget.value\n".to_vec(),
+            diagnostics: Vec::new(),
+            diagnostic_error: None,
+        };
+
+        checker
+            .load_definition(&mut host, b"declare Widget: { value: number }\n", "@test")
+            .unwrap_or_else(|error| panic!("{error}: {:?}", host.diagnostics));
+
+        checker.freeze().unwrap();
+        checker.prepare(&mut host, Path::new("main")).unwrap();
+        let items = checker.completion(&mut host, "main", 0, 14).unwrap();
+        let property = items.iter().find(|item| item.name == "value").unwrap();
+        assert_eq!(property.detail, "number");
+
+        assert_eq!(
+            property.kind,
+            native::EditorCompletionKind::CompletionProperty
+        );
+    }
+
     #[test]
     fn definition_rejection_is_distinct_from_operation_and_callback_failures() {
         let mut checker = Checker::new(&CheckerOptions::default()).unwrap();
@@ -1836,7 +1852,6 @@ mod tests {
 
         let mut checker = Checker::new(&CheckerOptions {
             retain_full_type_graphs: 1,
-            ..CheckerOptions::default()
         })
         .unwrap();
 
@@ -2024,5 +2039,6 @@ mod tests {
         );
 
         assert_prepared_check_and_typed_lint_are_independent();
+        assert_completion_uses_loaded_definitions();
     }
 }

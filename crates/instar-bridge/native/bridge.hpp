@@ -61,16 +61,12 @@ extern "C" {
     typedef struct FrontendOptions {
         /**Retain complete type graphs.*/
         uint8_t retain_full_type_graphs;
-        /**Configure the checker for autocomplete.*/
-        uint8_t for_autocomplete;
     } FrontendOptions;
 
     /**Options used when loading a definition source.*/
     typedef struct DefinitionOptions {
         /**Capture comments while loading definitions.*/
         uint8_t capture_comments;
-        /**Type-check definitions for autocomplete.*/
-        uint8_t type_check_for_autocomplete;
     } DefinitionOptions;
 
     /**Additional source location associated with a diagnostic.*/

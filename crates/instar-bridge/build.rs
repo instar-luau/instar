@@ -62,7 +62,6 @@ fn main() {
 
     for library in [
         "Luau.Analysis",
-        "Luau.CLI.lib",
         "Luau.Config",
         "Luau.Compiler",
         "Luau.Bytecode",
