@@ -21,6 +21,9 @@ pub enum Service {
 
     /// Language server.
     Lsp,
+
+    /// Autoimport candidates, independent of language server file selection.
+    Imports,
 }
 
 #[derive(Clone)]
@@ -152,6 +155,11 @@ impl Filters {
             ),
             (Service::Lint, &config.lint.include, &config.lint.exclude),
             (Service::Lsp, &config.lsp.include, &config.lsp.exclude),
+            (
+                Service::Imports,
+                &config.lsp.imports.include,
+                &config.lsp.imports.exclude,
+            ),
         ] {
             if !include.is_empty() || !exclude.is_empty() {
                 self.services
@@ -219,6 +227,67 @@ exclude = ["src/shared/check-only.luau"]
             let path = root.join(path);
             assert_eq!(filters.includes(&path, Service::Check), check);
             assert_eq!(filters.includes(&path, Service::Lint), lint);
+        }
+    }
+
+    #[test]
+    fn imports_use_global_rules_and_preserve_inherited_glob_origins() {
+        let root = crate::absolute(Path::new("project")).unwrap();
+
+        let parent: Config = toml::from_str(
+            r#"
+include = ["modules/**", "place/**"]
+exclude = ["modules/global/**"]
+[check]
+exclude = ["modules/**"]
+[lint]
+exclude = ["modules/**"]
+[format]
+exclude = ["modules/**"]
+[lsp]
+exclude = ["modules/**"]
+[lsp.imports]
+include = ["modules/**"]
+exclude = ["modules/private/**"]
+"#,
+        )
+        .unwrap();
+
+        let child: Config = toml::from_str(
+            "[lsp.imports]\ninclude = [\"extra/**\"]\nexclude = [\"extra/private/**\"]",
+        )
+        .unwrap();
+
+        let mut filters = Filters::default();
+        filters.append(&root, &parent).unwrap();
+        filters.append(&root.join("place"), &child).unwrap();
+
+        let module = root.join("modules/public/init.luau");
+
+        for service in [Service::Check, Service::Lint, Service::Format, Service::Lsp] {
+            assert!(!filters.includes(&module, service));
+            assert!(filters.excludes_subtree(&root.join("modules"), service));
+        }
+
+        assert!(!filters.excludes_subtree(&root.join("modules"), Service::Imports));
+        assert!(filters.excludes_subtree(&root.join("modules/global"), Service::Imports));
+        assert!(filters.excludes_subtree(&root.join("modules/private"), Service::Imports));
+
+        for (path, included) in [
+            ("modules/public/init.luau", true),
+            ("modules/global/init.luau", false),
+            ("modules/private/init.luau", false),
+            ("place/extra/init.luau", true),
+            ("place/extra/private/init.luau", false),
+            ("place/modules/init.luau", false),
+            ("extra/init.luau", false),
+            ("outside/init.luau", false),
+        ] {
+            assert_eq!(
+                filters.includes(&root.join(path), Service::Imports),
+                included,
+                "{path}"
+            );
         }
     }
 

@@ -12,8 +12,8 @@ use crate::{
     absolute,
     assets::{self, Assets, Definitions},
     config::{
-        self, Config, FlagValue, FormatOptions, LintConfig, LuauConfig, LuauFlagsConfig,
-        RobloxConfig, Security,
+        self, Config, FlagValue, FormatOptions, ImportsConfig, LintConfig, LuauConfig,
+        LuauFlagsConfig, RobloxConfig, Security,
     },
     filter::{Filters, Service},
     invalid,
@@ -42,6 +42,9 @@ pub struct EffectiveConfig {
 
     /// Merged lint settings for this source directory.
     pub lint: LintConfig,
+
+    /// Merged autoimport preferences and selection for this source directory.
+    pub imports: ImportsConfig,
 
     /// Alias definitions, indexed by lowercase name.
     pub aliases: BTreeMap<String, Alias>,
@@ -93,6 +96,7 @@ struct Layers {
     roblox: RobloxConfig,
     format_options: FormatOptions,
     lint: LintConfig,
+    imports: ImportsConfig,
     filters: Filters,
 }
 
@@ -360,6 +364,25 @@ impl Project {
             .configuration(&source)?
             .filters
             .includes(&source, service))
+    }
+
+    /// Tests a candidate against the caller's and target's global and autoimport selection.
+    /// Caller exclusions are checked before loading the target's configuration.
+    ///
+    /// # Errors
+    /// Returns filesystem, configuration, or invalid-glob errors.
+    pub fn includes_import(&mut self, source: &Path, target: &Path) -> io::Result<bool> {
+        let target = absolute(target)?;
+
+        if !self
+            .configuration(source)?
+            .filters
+            .includes(&target, Service::Imports)
+        {
+            return Ok(false);
+        }
+
+        self.includes(&target, Service::Imports)
     }
 
     /// Prunes a directory only when an inherited literal `directory/**` rule excludes its subtree.
@@ -659,6 +682,7 @@ impl Project {
             settings,
             format_options: layers.format_options,
             lint: layers.lint,
+            imports: layers.imports,
             aliases,
             json,
             inputs: layers.inputs,
@@ -710,6 +734,7 @@ impl Project {
                     .and_then(|config| {
                         config.lint.validate()?;
                         layers.lint.merge(&config.lint);
+                        layers.imports.merge(&config.lsp.imports);
                         layers.filters.append(directory, &config)?;
 
                         if let Some(enabled) = config.roblox.enabled {
@@ -788,5 +813,99 @@ impl Project {
         self.layers.insert(directory.to_owned(), layers.clone());
 
         Ok(layers)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{BindingStyle, RequireStyle};
+
+    #[test]
+    fn imports_inherit_preferences_and_check_both_scopes_before_loading_excluded_targets() {
+        let root = std::env::temp_dir().join(format!("import-selection-{}", std::process::id()));
+        let caller = root.join("place/nested");
+        let modules = root.join("modules");
+        let blocked = root.join("blocked");
+        fs::create_dir_all(&caller).unwrap();
+        fs::create_dir_all(&modules).unwrap();
+        fs::create_dir_all(&blocked).unwrap();
+
+        fs::write(
+            root.join("instar.toml"),
+            r#"
+exclude = ["blocked/**"]
+[roblox]
+enabled = false
+[lsp]
+exclude = ["modules/**"]
+[lsp.imports]
+require = "string"
+binding = "const"
+"#,
+        )
+        .unwrap();
+
+        fs::write(
+            root.join("place/instar.toml"),
+            "[lsp.imports]\nrequire = \"instance\"\nexclude = [\"../modules/caller-skip.luau\"]",
+        )
+        .unwrap();
+
+        fs::write(caller.join("instar.toml"), "[lsp.imports]\ninclude = []").unwrap();
+
+        fs::write(
+            modules.join("instar.toml"),
+            "exclude = [\"global-skip.luau\"]\n[lsp.imports]\nexclude = [\"target-skip.luau\"]",
+        )
+        .unwrap();
+
+        fs::write(
+            blocked.join("instar.toml"),
+            "[lsp.imports]\nrequire = \"invalid\"",
+        )
+        .unwrap();
+
+        let source = caller.join("main.luau");
+        let mut project = Project::new();
+        let configuration = project.configuration(&source).unwrap();
+        assert_eq!(configuration.imports.require, Some(RequireStyle::Instance));
+        assert_eq!(configuration.imports.binding, Some(BindingStyle::Const));
+
+        assert_eq!(
+            configuration.imports.exclude,
+            ["../modules/caller-skip.luau"]
+        );
+
+        assert!(
+            project
+                .includes(&modules.join("public.luau"), Service::Imports)
+                .unwrap()
+        );
+
+        assert!(
+            !project
+                .includes(&modules.join("public.luau"), Service::Lsp)
+                .unwrap()
+        );
+
+        for (target, included) in [
+            ("modules/public.luau", true),
+            ("modules/caller-skip.luau", false),
+            ("modules/target-skip.luau", false),
+            ("modules/global-skip.luau", false),
+            ("blocked/init.luau", false),
+        ] {
+            assert_eq!(
+                project
+                    .includes_import(&source, &root.join(target))
+                    .unwrap(),
+                included,
+                "{target}"
+            );
+        }
+
+        assert!(project.configuration(&blocked.join("init.luau")).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 }

@@ -6,7 +6,7 @@ use std::{
     sync::Arc,
 };
 
-use instar_core::{filter::Service, project::Project, resolve::Resolver};
+use instar_core::{config::BindingStyle, filter::Service, project::Project, resolve::Resolver};
 use tower_lsp_server::ls_types::{self as lsp, CompletionItemKind, Range};
 
 use crate::{
@@ -20,7 +20,7 @@ pub(crate) struct Workspace {
     pub(crate) project: Project,
     documents: BTreeMap<PathBuf, Arc<Document>>,
     snapshot: Snapshot,
-    files: Option<Vec<PathBuf>>,
+    files: BTreeMap<Service, Vec<PathBuf>>,
     syntax_candidates: BTreeMap<PathBuf, SyntaxCandidates>,
     resolver: Resolver,
     matcher: nucleo_matcher::Matcher,
@@ -43,7 +43,7 @@ impl Workspace {
         if reset {
             self.project = Project::default();
             self.documents.clear();
-            self.files = None;
+            self.files.clear();
             self.syntax_candidates.clear();
         }
 
@@ -78,15 +78,19 @@ impl Workspace {
         Ok(())
     }
 
-    pub(crate) fn files(&mut self, cancelled: &impl Fn() -> bool) -> io::Result<Vec<PathBuf>> {
-        if self.files.is_none() {
+    pub(crate) fn files(
+        &mut self,
+        service: Service,
+        cancelled: &impl Fn() -> bool,
+    ) -> io::Result<Vec<PathBuf>> {
+        if !self.files.contains_key(&service) {
             let mut directories: Vec<_> = self.snapshot.folders.iter().cloned().collect();
             let mut paths = BTreeSet::new();
 
             while let Some(directory) = directories.pop() {
                 check_cancelled(cancelled)?;
 
-                if self.project.excludes_subtree(&directory, Service::Lsp)? {
+                if self.project.excludes_subtree(&directory, service)? {
                     continue;
                 }
 
@@ -96,16 +100,16 @@ impl Workspace {
 
                     if kind.is_dir() && entry.file_name() != ".git" {
                         directories.push(entry.path());
-                    } else if kind.is_file() && self.include(&entry.path())? {
+                    } else if kind.is_file() && self.include(&entry.path(), service)? {
                         paths.insert(entry.path());
                     }
                 }
             }
 
-            self.files = Some(paths.into_iter().collect());
+            self.files.insert(service, paths.into_iter().collect());
         }
 
-        let mut files: BTreeSet<_> = self.files.iter().flatten().cloned().collect();
+        let mut files: BTreeSet<_> = self.files[&service].iter().cloned().collect();
 
         for path in self.snapshot.documents.keys() {
             files.insert(path.clone());
@@ -122,7 +126,7 @@ impl Workspace {
     ) -> io::Result<Vec<PathBuf>> {
         let mut candidates = Vec::new();
 
-        for path in self.files(cancelled)? {
+        for path in self.files(Service::Lsp, cancelled)? {
             check_cancelled(cancelled)?;
 
             if !self.syntax_candidates.contains_key(&path) {
@@ -179,11 +183,11 @@ impl Workspace {
         Ok(candidates)
     }
 
-    fn include(&mut self, path: &Path) -> io::Result<bool> {
+    fn include(&mut self, path: &Path, service: Service) -> io::Result<bool> {
         if !matches!(
             path.extension().and_then(|value| value.to_str()),
             Some("lua" | "luau")
-        ) || !self.project.includes(path, Service::Lsp)?
+        ) || !self.project.includes(path, service)?
         {
             return Ok(false);
         }
@@ -232,7 +236,7 @@ impl Workspace {
         let mut result = Vec::new();
         let query = query.to_lowercase();
 
-        for path in self.files(cancelled)? {
+        for path in self.files(Service::Lsp, cancelled)? {
             check_cancelled(cancelled)?;
             let document = self.document(&path)?;
 
@@ -256,6 +260,53 @@ impl Workspace {
         Ok(result)
     }
 
+    fn import_candidates(&mut self, source: &Path) -> io::Result<Vec<(PathBuf, String)>> {
+        let mut candidates = BTreeSet::new();
+
+        if let Some(modules) = self
+            .resolver
+            .import_candidates(&mut self.project, source)
+            .map_err(io::Error::other)?
+        {
+            for module in modules {
+                if let Some(instance) = module.instance {
+                    candidates.insert((module.source, instance.name().to_owned()));
+                }
+            }
+        } else {
+            for path in self.files(Service::Imports, &|| false)? {
+                let stem = path
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("");
+
+                let name = if stem == "init" {
+                    path.parent()
+                        .and_then(Path::file_name)
+                        .and_then(|value| value.to_str())
+                        .unwrap_or(stem)
+                } else {
+                    stem
+                };
+
+                candidates.insert((path.clone(), name.to_owned()));
+            }
+        }
+
+        let mut selected = Vec::new();
+
+        for (path, name) in candidates {
+            if path != source
+                && self.project.includes_import(source, &path)?
+                && let Some(binding) = binding_name(&name)
+            {
+                selected.push((path, binding));
+            }
+        }
+
+        Ok(selected)
+    }
+
     pub(crate) fn imports(
         &mut self,
         document: &Document,
@@ -265,7 +316,14 @@ impl Workspace {
     ) -> io::Result<Vec<lsp::CompletionItem>> {
         let (offset, prefix, range) = site;
         let mut items = Vec::new();
-        self.service_imports(document, site, &mut items, services, occupied)?;
+        let config = self.project.configuration(&document.path)?;
+
+        let keyword = match config.imports.binding.unwrap_or_default() {
+            BindingStyle::Local => "local",
+            BindingStyle::Const => "const",
+        };
+
+        self.service_imports(document, site, &mut items, services, keyword, occupied)?;
 
         if document.features().names.contains("require") {
             return Ok(items);
@@ -273,31 +331,8 @@ impl Workspace {
 
         let links = self.project.links(&document.path)?;
 
-        for target in self.files(&|| false)? {
-            if target == document.path {
-                continue;
-            }
-
+        for (target, module) in self.import_candidates(&document.path)? {
             let target_document = self.document(&target)?;
-
-            let stem = target
-                .file_stem()
-                .and_then(|value| value.to_str())
-                .unwrap_or("");
-
-            let stem = if stem == "init" {
-                target
-                    .parent()
-                    .and_then(Path::file_name)
-                    .and_then(|name| name.to_str())
-                    .unwrap_or(stem)
-            } else {
-                stem
-            };
-
-            let Some(module) = binding_name(stem) else {
-                continue;
-            };
 
             let exports = &target_document.features().exports;
 
@@ -319,18 +354,26 @@ impl Workspace {
             } else {
                 let Some(argument) = self
                     .resolver
-                    .import_argument(&mut self.project, &document.path, &target)
+                    .import_argument(
+                        &mut self.project,
+                        &document.path,
+                        &target,
+                        config.imports.require.unwrap_or_default(),
+                        services,
+                    )
                     .map_err(io::Error::other)?
                 else {
                     continue;
                 };
 
-                if argument.starts_with("game") && document.features().names.contains("game") {
+                if ["game", "script"].iter().any(|root| {
+                    argument.starts_with(root) && document.features().names.contains(*root)
+                }) {
                     continue;
                 }
 
                 let binding = fresh_name(document, &module, occupied);
-                let statement = format!("local {binding} = require({argument})\n");
+                let statement = format!("{keyword} {binding} = require({argument})\n");
 
                 (binding, statement)
             };
@@ -371,6 +414,7 @@ impl Workspace {
         site: (usize, &str, Range),
         items: &mut Vec<lsp::CompletionItem>,
         services: &[String],
+        keyword: &str,
         occupied: &impl Fn(&str) -> bool,
     ) -> io::Result<()> {
         let (offset, prefix, range) = site;
@@ -429,7 +473,7 @@ impl Workspace {
 
                 let argument = serde_json::to_string(service)?;
                 let name = fresh_name(document, service, occupied);
-                let statement = format!("local {name} = game:GetService({argument})\n");
+                let statement = format!("{keyword} {name} = game:GetService({argument})\n");
 
                 (name, statement)
             };
@@ -467,7 +511,7 @@ impl Workspace {
     ) -> io::Result<lsp::WorkspaceEdit> {
         let mut changes = Vec::new();
 
-        for source in self.files(cancelled)? {
+        for source in self.files(Service::Lsp, cancelled)? {
             check_cancelled(cancelled)?;
             let document = self.document(&source)?;
             let new_source = remap(&source, renames);
@@ -856,7 +900,7 @@ impl Workspace {
     ) -> io::Result<lsp::WorkspaceDiagnosticReport> {
         let files = match only {
             Some(path) => vec![path],
-            None => self.files(cancelled)?,
+            None => self.files(Service::Lsp, cancelled)?,
         };
 
         let diagnostics = editor.workspace_diagnostics(&files, &mut |done, total| {
@@ -991,6 +1035,181 @@ fn fresh_name(document: &Document, name: &str, occupied: &impl Fn(&str) -> bool)
 mod tests {
     use super::*;
 
+    fn import_items(
+        directory: &Path,
+        source: &Path,
+        text: &str,
+    ) -> (Workspace, Vec<lsp::CompletionItem>) {
+        let document = Arc::new(Document::new(uri(source).unwrap(), 1, text.into()).unwrap());
+
+        let snapshot = Snapshot {
+            folders: [directory.to_owned()].into(),
+            documents: [(source.to_owned(), Arc::clone(&document))].into(),
+            ..Snapshot::default()
+        };
+
+        let mut workspace = Workspace::default();
+        workspace.update(&snapshot).unwrap();
+        let site = import_site(&document, text.len()).unwrap();
+
+        let items = workspace
+            .imports(
+                &document,
+                site,
+                &["Players".into(), "ReplicatedStorage".into()],
+                &|_| false,
+            )
+            .unwrap();
+
+        (workspace, items)
+    }
+
+    #[test]
+    fn mapped_imports_use_place_names_independent_filters_and_configured_syntax() {
+        let directory = std::env::temp_dir().join(format!("imports{}", std::process::id()));
+
+        for child in ["earth", "moon", "vendor"] {
+            std::fs::create_dir_all(directory.join(child)).unwrap();
+        }
+
+        let source = directory.join("earth/main.luau");
+        let library = directory.join("vendor/library.luau");
+        std::fs::write(&source, "return jecs\n").unwrap();
+        std::fs::write(&library, "return { exported = true }\n").unwrap();
+        std::fs::write(directory.join("moon/foreign.luau"), "return {}\n").unwrap();
+
+        for (place, module, file) in [
+            ("earth", "jecs", "../vendor/library.luau"),
+            ("moon", "jecsForeign", "foreign.luau"),
+        ] {
+            let map = serde_json::json!({
+                "name": place, "className": "DataModel",
+                "children": [
+                    {"name": "Main", "className": "LocalScript", "filePaths": ["main.luau"]},
+                    {"name": "ReplicatedStorage", "className": "ReplicatedStorage",
+                     "children": [{"name": "packages", "className": "Folder",
+                         "children": [{"name": module, "className": "ModuleScript", "filePaths": [file]}]}]}
+                ]
+            });
+
+            std::fs::write(
+                directory.join(place).join("sourcemap.json"),
+                map.to_string(),
+            )
+            .unwrap();
+        }
+
+        let filters = "[check]\nexclude = [\"vendor/**\"]\n[lint]\nexclude = [\"vendor/**\"]\n[format]\nexclude = [\"vendor/**\"]\n[lsp]\nexclude = [\"vendor/**\"]\n";
+
+        for require in ["string", "instance"] {
+            for binding in ["const", "local"] {
+                std::fs::write(
+                    directory.join("instar.toml"),
+                    format!(
+                        "{filters}[lsp.imports]\nrequire = \"{require}\"\nbinding = \"{binding}\"\n"
+                    ),
+                )
+                .unwrap();
+
+                let (mut workspace, items) = import_items(&directory, &source, "return jecs");
+
+                assert!(
+                    !workspace
+                        .files(Service::Lsp, &|| false)
+                        .unwrap()
+                        .contains(&library)
+                );
+
+                let names: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+                assert_eq!(names, ["jecs"]);
+                let statement = &items[0].additional_text_edits.as_ref().unwrap()[0].new_text;
+
+                assert!(
+                    statement.starts_with(&format!("{binding} jecs = require(")),
+                    "{statement}"
+                );
+
+                if require == "string" {
+                    assert!(
+                        statement.contains("\"@game/ReplicatedStorage/packages/jecs\""),
+                        "{statement}"
+                    );
+                } else {
+                    assert_eq!(
+                        statement,
+                        &format!(
+                            "{binding} jecs = require(game:GetService(\"ReplicatedStorage\").packages.jecs)\n"
+                        )
+                    );
+                }
+
+                workspace
+                    .project
+                    .set_source(&source, Some(&format!("{statement}return jecs")))
+                    .unwrap();
+
+                let links = workspace.project.links(&source).unwrap();
+                assert_eq!(links.len(), 1);
+                assert_eq!(links[0].1, library);
+                let (_, services) = import_items(&directory, &source, "return Players");
+
+                let service = services
+                    .iter()
+                    .find(|item| item.label == "Players")
+                    .unwrap();
+
+                assert!(
+                    service.additional_text_edits.as_ref().unwrap()[0]
+                        .new_text
+                        .starts_with(&format!("{binding} Players = game:GetService("))
+                );
+            }
+        }
+
+        for configuration in [
+            "exclude = [\"vendor/**\"]\n[lsp.imports]\ninclude = [\"vendor/**\"]\n",
+            "[lsp.imports]\nexclude = [\"vendor/**\"]\n",
+            "[lsp.imports]\ninclude = [\"earth/**\"]\n",
+        ] {
+            std::fs::write(directory.join("instar.toml"), configuration).unwrap();
+            let (_, items) = import_items(&directory, &source, "return jecs");
+            assert_eq!(items.len(), 0, "{configuration}");
+        }
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn filesystem_import_selection_is_independent_of_workspace_indexing() {
+        let directory =
+            std::env::temp_dir().join(format!("filesystemimports{}", std::process::id()));
+
+        std::fs::create_dir_all(directory.join("vendor")).unwrap();
+        let source = directory.join("main.luau");
+        std::fs::write(&source, "return package\n").unwrap();
+        let target = directory.join("vendor/package.luau");
+        std::fs::write(&target, "return {}\n").unwrap();
+        std::fs::write(directory.join("instar.toml"), "[roblox]\nenabled = false\n[lsp]\nexclude = [\"vendor/**\"]\n[lsp.imports]\nbinding = \"const\"\n").unwrap();
+        let (mut workspace, items) = import_items(&directory, &source, "return package");
+
+        assert!(
+            !workspace
+                .files(Service::Lsp, &|| false)
+                .unwrap()
+                .contains(&target)
+        );
+
+        assert_eq!(items.len(), 1);
+
+        assert!(
+            items[0].additional_text_edits.as_ref().unwrap()[0]
+                .new_text
+                .contains("const package = require(\"./vendor/package\")")
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     fn files_prune_excluded_subtrees_but_keep_selected_files_and_open_documents() {
         let directory = std::env::temp_dir().join(format!("workspace{}", std::process::id()));
@@ -1050,7 +1269,7 @@ mod tests {
 
         assert_eq!(
             workspace
-                .files(&|| false)
+                .files(Service::Lsp, &|| false)
                 .unwrap()
                 .into_iter()
                 .collect::<BTreeSet<_>>(),

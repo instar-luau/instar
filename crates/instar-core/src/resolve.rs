@@ -4,11 +4,18 @@ use std::{
     collections::{BTreeSet, HashMap},
     fs, io,
     path::{Path, PathBuf},
+    rc::Rc,
 };
 
 use serde::Serialize;
 
-use crate::{absolute, project::Project, roblox::Instance};
+use crate::{
+    absolute,
+    config::RequireStyle,
+    identifier,
+    project::Project,
+    roblox::{Instance, Sourcemap},
+};
 
 /// A module's navigation identity and its separate backing source file.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
@@ -119,6 +126,49 @@ impl Resolver {
         Self::default()
     }
 
+    /// Returns mapped `ModuleScript` instances in the caller's active place contexts.
+    /// `None` means no sourcemap exists; an empty list means no safe mapped candidates.
+    ///
+    /// # Errors
+    /// Returns configuration or filesystem errors without parsing module sources.
+    pub fn import_candidates(
+        &mut self,
+        project: &mut Project,
+        source: &Path,
+    ) -> Result<Option<Vec<Module>>, Failure> {
+        let source = absolute(source).map_err(|error| Failure::Io(error.to_string()))?;
+
+        let Some(maps) = import_maps(project, &source)? else {
+            return Ok(None);
+        };
+
+        let mut modules = Vec::new();
+
+        for map in maps {
+            for module in map.modules() {
+                if project.overlay_file(&module.source) {
+                    modules.push(module);
+                    continue;
+                }
+
+                match fs::metadata(&module.source) {
+                    Ok(metadata) if metadata.is_file() => modules.push(module),
+                    Ok(_) => {}
+
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                        ) => {}
+
+                    Err(error) => return Err(Failure::Io(error.to_string())),
+                }
+            }
+        }
+
+        Ok(Some(modules))
+    }
+
     /// Returns an import argument that resolves to the target in every source context.
     ///
     /// # Errors
@@ -128,23 +178,43 @@ impl Resolver {
         project: &mut Project,
         source: &Path,
         target: &Path,
+        style: RequireStyle,
+        services: &[String],
     ) -> Result<Option<String>, Failure> {
-        let origins = self.entries(project, source)?;
-        let mut targets = self.entries(project, target)?;
+        let source = absolute(source).map_err(|error| Failure::Io(error.to_string()))?;
+        let target = absolute(target).map_err(|error| Failure::Io(error.to_string()))?;
+        let origins = self.entries(project, &source)?;
+        let maps = import_maps(project, &source)?.unwrap_or_default();
+        let mut mapped = false;
+        let mut targets = Vec::new();
 
-        for map in project
-            .sourcemaps_for(source)
-            .map_err(|error| Failure::Configuration(error.to_string()))?
-        {
-            for instance in map.instances_for_source(target) {
-                if instance.class_name() == "ModuleScript" {
-                    targets.push(instance.module(true)?);
+        for map in &maps {
+            for instance in map.instances_for_source(&target) {
+                mapped = true;
+
+                if let Ok(module) = instance.module(true) {
+                    targets.push(module);
                 }
             }
         }
 
+        if mapped && targets.is_empty() {
+            return Ok(None);
+        }
+
+        if !mapped {
+            targets = self.entries(project, &target)?;
+        }
+
+        if style == RequireStyle::Instance && targets.iter().any(|target| target.instance.is_some())
+        {
+            return Ok(import_instance_argument(
+                &origins, &targets, &maps, services,
+            ));
+        }
+
         let config = project
-            .configuration(source)
+            .configuration(&source)
             .map_err(|error| Failure::Configuration(error.to_string()))?;
 
         let mut candidates = BTreeSet::new();
@@ -172,7 +242,7 @@ impl Resolver {
 
                 for destination in &targets {
                     let relative = match (&base, &destination.instance) {
-                        (Navigation::File(base), None) => relative_path(base, &destination.path),
+                        (Navigation::File(base), _) => relative_path(base, &destination.path),
 
                         (Navigation::Instance(base), Some(instance)) => {
                             relative_instance(base, instance)
@@ -213,26 +283,7 @@ impl Resolver {
                     .result
                     .is_ok_and(|module| module.source == target)
             }) {
-                if let Some(tail) = request.strip_prefix("@game/") {
-                    let mut expression = "game".to_owned();
-
-                    for component in tail.split('/') {
-                        expression.push('[');
-
-                        expression.push_str(
-                            &serde_json::to_string(component)
-                                .map_err(|error| Failure::Invalid(error.to_string()))?,
-                        );
-
-                        expression.push(']');
-                    }
-
-                    return Ok(Some(expression));
-                }
-
-                return serde_json::to_string(&request)
-                    .map(Some)
-                    .map_err(|error| Failure::Invalid(error.to_string()));
+                return Ok(Some(string_literal(&request)));
             }
         }
 
@@ -794,6 +845,199 @@ impl Resolver {
     }
 }
 
+fn import_maps(
+    project: &mut Project,
+    source: &Path,
+) -> Result<Option<Vec<Rc<Sourcemap>>>, Failure> {
+    let maps = project
+        .sourcemaps_for(source)
+        .map_err(|error| Failure::Configuration(error.to_string()))?;
+
+    if maps.is_empty() {
+        return Ok(None);
+    }
+
+    let matching: Vec<_> = maps
+        .iter()
+        .filter(|map| map.instances_for_source(source).next().is_some())
+        .cloned()
+        .collect();
+
+    Ok(Some(if !matching.is_empty() {
+        matching
+    } else if maps.len() == 1 {
+        maps
+    } else {
+        Vec::new()
+    }))
+}
+
+fn import_instance_argument(
+    origins: &[Module],
+    targets: &[Module],
+    maps: &[Rc<Sourcemap>],
+    services: &[String],
+) -> Option<String> {
+    let mut common: Option<BTreeSet<String>> = None;
+
+    for origin in origins {
+        let map = origin
+            .instance
+            .as_ref()
+            .map(|instance| &instance.map)
+            .or_else(|| (maps.len() == 1).then(|| &maps[0]))?;
+
+        let mut expressions = BTreeSet::new();
+
+        for target in targets {
+            let Some(instance) = &target.instance else {
+                continue;
+            };
+
+            if !Rc::ptr_eq(&instance.map, map) {
+                continue;
+            }
+
+            if let Ok(game) = map.game()
+                && let Some(expression) = instance_expression(&game, instance, "game", services)
+            {
+                expressions.insert(expression);
+            }
+
+            if let Some(script) = &origin.instance
+                && let Some(expression) = instance_expression(script, instance, "script", services)
+            {
+                expressions.insert(expression);
+            }
+        }
+
+        // Only expressions known to reach this physical target in every caller survive.
+        common = Some(match common {
+            None => expressions,
+            Some(previous) => previous.intersection(&expressions).cloned().collect(),
+        });
+    }
+
+    common?.into_iter().min_by_key(|expression| {
+        (
+            !expression.starts_with("game"),
+            expression.len(),
+            expression.clone(),
+        )
+    })
+}
+
+fn string_literal(value: &str) -> String {
+    let mut literal = String::from("\"");
+
+    for character in value.chars() {
+        match character {
+            '"' => literal.push_str("\\\""),
+            '\\' => literal.push_str("\\\\"),
+            '\n' => literal.push_str("\\n"),
+            '\r' => literal.push_str("\\r"),
+            '\t' => literal.push_str("\\t"),
+            character if character.is_control() => literal.extend(character.escape_unicode()),
+            character => literal.push(character),
+        }
+    }
+
+    literal.push('"');
+
+    literal
+}
+
+fn instance_expression(
+    base: &Instance,
+    target: &Instance,
+    root: &str,
+    services: &[String],
+) -> Option<String> {
+    let (up, children) = instance_path(base, target)?;
+    let mut expression = root.to_owned();
+
+    for _ in 0..up {
+        expression.push_str(".Parent");
+    }
+
+    for child in children {
+        let name = child.name();
+
+        if expression == "game" && services.iter().any(|service| service == child.class_name()) {
+            if base.service(child.class_name()).ok()? != child {
+                return None;
+            }
+
+            expression.push_str(":GetService(");
+            expression.push_str(&string_literal(child.class_name()));
+            expression.push(')');
+            continue;
+        }
+
+        // ponytail: inherited members only; consult class metadata for class-specific collisions.
+        if !identifier(name)
+            || matches!(
+                name,
+                "Parent"
+                    | "Name"
+                    | "ClassName"
+                    | "Archivable"
+                    | "RobloxLocked"
+                    | "UniqueId"
+                    | "Capabilities"
+                    | "DefinesCapabilities"
+                    | "Sandboxed"
+                    | "AncestryChanged"
+                    | "AttributeChanged"
+                    | "Changed"
+                    | "ChildAdded"
+                    | "ChildRemoved"
+                    | "DescendantAdded"
+                    | "DescendantRemoving"
+                    | "Destroying"
+                    | "AddTag"
+                    | "ClearAllChildren"
+                    | "Clone"
+                    | "Destroy"
+                    | "FindFirstAncestor"
+                    | "FindFirstAncestorOfClass"
+                    | "FindFirstAncestorWhichIsA"
+                    | "FindFirstChild"
+                    | "FindFirstChildOfClass"
+                    | "FindFirstChildWhichIsA"
+                    | "FindFirstDescendant"
+                    | "GetActor"
+                    | "GetAttribute"
+                    | "GetAttributes"
+                    | "GetAttributeChangedSignal"
+                    | "GetChildren"
+                    | "GetDebugId"
+                    | "GetDescendants"
+                    | "GetFullName"
+                    | "GetPropertyChangedSignal"
+                    | "GetService"
+                    | "GetTags"
+                    | "HasTag"
+                    | "IsA"
+                    | "IsAncestorOf"
+                    | "IsDescendantOf"
+                    | "RemoveTag"
+                    | "SetAttribute"
+                    | "WaitForChild"
+            )
+        {
+            expression.push_str(":WaitForChild(");
+            expression.push_str(&string_literal(name));
+            expression.push(')');
+        } else {
+            expression.push('.');
+            expression.push_str(name);
+        }
+    }
+
+    Some(expression)
+}
+
 fn relative_path(base: &Path, target: &Path) -> Option<String> {
     let base: Vec<_> = base.components().collect();
     let target: Vec<_> = target.components().collect();
@@ -820,6 +1064,27 @@ fn relative_path(base: &Path, target: &Path) -> Option<String> {
 }
 
 fn relative_instance(base: &Instance, target: &Instance) -> Option<String> {
+    let (up, children) = instance_path(base, target)?;
+    let mut parts: Vec<_> = std::iter::repeat_n("..".to_owned(), up).collect();
+
+    for child in children {
+        let name = child.name();
+
+        if matches!(name, "" | "." | "..") || name.contains(['/', '\\']) {
+            return None;
+        }
+
+        parts.push(name.to_owned());
+    }
+
+    Some(if parts.is_empty() {
+        ".".to_owned()
+    } else {
+        parts.join("/")
+    })
+}
+
+fn instance_path(base: &Instance, target: &Instance) -> Option<(usize, Vec<Instance>)> {
     let mut ancestors = Vec::new();
     let mut node = base.clone();
 
@@ -831,30 +1096,24 @@ fn relative_instance(base: &Instance, target: &Instance) -> Option<String> {
         node = parent;
     }
 
-    let mut names = Vec::new();
+    let mut children = Vec::new();
     let mut node = target.clone();
 
     loop {
         if let Some(index) = ancestors.iter().position(|ancestor| *ancestor == node) {
-            names.reverse();
+            children.reverse();
 
-            let parts: Vec<_> = std::iter::repeat_n("..".to_owned(), index)
-                .chain(names)
-                .collect();
-
-            return Some(if parts.is_empty() {
-                ".".to_owned()
-            } else {
-                parts.join("/")
-            });
+            return Some((index, children));
         }
 
-        if node.name().contains('/') {
+        let parent = node.parent().ok()?;
+
+        if parent.child(node.name()).ok()? != node {
             return None;
         }
 
-        names.push(node.name().to_owned());
-        node = node.parent().ok()?;
+        children.push(node);
+        node = parent;
     }
 }
 
@@ -922,5 +1181,384 @@ pub(crate) fn module_path(source: &Path) -> PathBuf {
         source.with_extension("")
     } else {
         source.to_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn fixture(name: &str, maps: &[&str]) -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("resolve-imports-{name}-{}", std::process::id()));
+
+        fs::create_dir_all(root.join("place")).unwrap();
+
+        fs::write(
+            root.join("instar.toml"),
+            format!(
+                "[roblox]\nsourcemaps = {}\n",
+                serde_json::to_string(maps).unwrap()
+            ),
+        )
+        .unwrap();
+
+        root
+    }
+
+    fn write_map(root: &Path, name: &str, children: &serde_json::Value) {
+        fs::write(
+            root.join(name),
+            json!({
+                "name": "Place", "className": "DataModel", "children": children,
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn instance_imports_use_service_classes_and_preserve_other_paths() {
+        let root = fixture("services", &["place/a.json"]);
+        let source = root.join("source.luau");
+        let target = root.join("module.luau");
+        let services = ["ReplicatedStorage".into()];
+
+        for (class, name, expected) in [
+            (
+                "ReplicatedStorage",
+                "ReplicatedStorage",
+                "game:GetService(\"ReplicatedStorage\").packages.Module",
+            ),
+            (
+                "ReplicatedStorage",
+                "Renamed",
+                "game:GetService(\"ReplicatedStorage\").packages.Module",
+            ),
+            (
+                "Folder",
+                "ReplicatedStorage",
+                "game.ReplicatedStorage.packages.Module",
+            ),
+        ] {
+            write_map(
+                &root,
+                "place/a.json",
+                &json!([
+                    {"name": "Caller", "className": "Script", "filePaths": ["../source.luau"]},
+                    {"name": name, "className": class, "children": [
+                        {"name": "packages", "className": "Folder", "children": [
+                            {"name": "Module", "className": "ModuleScript", "filePaths": ["../module.luau"]}
+                        ]}
+                    ]}
+                ]),
+            );
+
+            let mut project = Project::new();
+            project.set_source(&source, Some("return 1")).unwrap();
+            project.set_source(&target, Some("return {}")).unwrap();
+            let mut resolver = Resolver::new();
+
+            let argument = resolver
+                .import_argument(
+                    &mut project,
+                    &source,
+                    &target,
+                    RequireStyle::Instance,
+                    &services,
+                )
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(argument, expected);
+
+            assert_eq!(
+                resolver
+                    .import_argument(
+                        &mut project,
+                        &source,
+                        &target,
+                        RequireStyle::String,
+                        &services
+                    )
+                    .unwrap(),
+                Some(format!("\"@game/{name}/packages/Module\""))
+            );
+
+            project
+                .set_source(&source, Some(&format!("return require({argument})")))
+                .unwrap();
+
+            let links = project.links(&source).unwrap();
+            assert_eq!(links.len(), 1);
+            assert_eq!(links[0].1, target);
+        }
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mapped_candidates_and_arguments_handle_names_without_parsing_sources() {
+        let root = fixture("names", &["place/a.json", "place/b.json"]);
+        let source = root.join("shared/source.luau");
+        let mut project = Project::new();
+        project.set_source(&source, Some("return 1")).unwrap();
+
+        let mut children = vec![json!({
+            "name": "Caller", "className": "Script", "filePaths": ["../shared/source.luau"]
+        })];
+
+        let names = [
+            "Util",
+            "end",
+            "bad-name",
+            "a/b",
+            "a\\b",
+            ".",
+            "",
+            "Name",
+            "Clone",
+            "Destroy",
+            "Archivable",
+            "a\"\n\u{1}",
+        ];
+
+        for (index, name) in names.iter().enumerate() {
+            let file = format!("../shared/module{index}.luau");
+
+            project
+                .set_source(&root.join("place").join(&file), Some("not valid Luau !!!"))
+                .unwrap();
+
+            children.push(json!({"name": name, "className": "ModuleScript", "filePaths": [file]}));
+        }
+
+        children.extend([
+            json!({"name": "Missing", "className": "ModuleScript", "filePaths": ["missing.luau"]}),
+            json!({"name": "NoSource", "className": "ModuleScript"}),
+            json!({"name": "ManySources", "className": "ModuleScript", "filePaths": ["a.luau", "b.luau"]}),
+            json!({"name": "Duplicate", "className": "ModuleScript", "filePaths": ["../shared/module0.luau"]}),
+            json!({"name": "Duplicate", "className": "Folder"}),
+        ]);
+
+        write_map(&root, "place/a.json", &json!(children));
+
+        write_map(
+            &root,
+            "place/b.json",
+            &json!([
+                {"name": "Foreign", "className": "ModuleScript", "filePaths": ["../shared/module0.luau"]}
+            ]),
+        );
+
+        let mut resolver = Resolver::new();
+
+        let candidates = resolver
+            .import_candidates(&mut project, &source)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(candidates.len(), names.len());
+
+        assert!(
+            candidates
+                .iter()
+                .all(|module| module.instance.as_ref().unwrap().sourcemap_path()
+                    == root.join("place/a.json"))
+        );
+
+        assert_eq!(
+            resolver
+                .import_candidates(&mut project, &root.join("unmapped.luau"))
+                .unwrap()
+                .unwrap(),
+            []
+        );
+
+        for (index, name) in names.iter().enumerate() {
+            let target = root.join(format!("shared/module{index}.luau"));
+
+            let expression = resolver
+                .import_argument(&mut project, &source, &target, RequireStyle::Instance, &[])
+                .unwrap()
+                .unwrap();
+
+            if *name == "Util" {
+                assert_eq!(expression, "game.Util");
+
+                assert_eq!(
+                    resolver
+                        .import_argument(&mut project, &source, &target, RequireStyle::String, &[])
+                        .unwrap(),
+                    Some("\"@game/Util\"".into())
+                );
+            } else {
+                assert!(expression.starts_with("game:WaitForChild("), "{expression}");
+            }
+
+            project
+                .set_source(&source, Some(&format!("return require({expression})")))
+                .unwrap();
+
+            let mut graph = crate::graph::Graph::new();
+
+            graph
+                .add_entries(&mut project, std::slice::from_ref(&source))
+                .unwrap();
+
+            let entry = &graph.nodes[*graph.entries.first().unwrap()];
+            assert!(entry.requires[0].failure.is_none(), "{expression}");
+
+            assert_eq!(
+                graph.nodes[entry.requires[0].target.unwrap()].module.source,
+                target
+            );
+        }
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn shared_caller_requires_one_safe_argument_across_places() {
+        let root = fixture("shared", &["place/a.json", "place/b.json"]);
+        let source = root.join("shared/source.luau");
+        let target = root.join("shared/module.luau");
+        let only_first = root.join("shared/only-first.luau");
+        let mut project = Project::new();
+
+        for path in [&source, &target, &only_first] {
+            project.set_source(path, Some("return 1")).unwrap();
+        }
+
+        for (map, folder) in [("place/a.json", "A"), ("place/b.json", "B")] {
+            let mut children = vec![
+                json!({"name": "Caller", "className": "Script", "filePaths": ["../shared/source.luau"]}),
+                json!({"name": "Util", "className": "ModuleScript", "filePaths": ["../shared/module.luau"]}),
+            ];
+
+            if folder == "A" {
+                children.push(json!({"name": "OnlyFirst", "className": "ModuleScript", "filePaths": ["../shared/only-first.luau"]}));
+            }
+
+            write_map(
+                &root,
+                map,
+                &json!([{"name": folder, "className": "Folder", "children": children}]),
+            );
+        }
+
+        let mut resolver = Resolver::new();
+
+        assert_eq!(
+            resolver
+                .import_candidates(&mut project, &source)
+                .unwrap()
+                .unwrap()
+                .len(),
+            3
+        );
+
+        assert_eq!(
+            resolver
+                .import_argument(&mut project, &source, &target, RequireStyle::Instance, &[])
+                .unwrap(),
+            Some("script.Parent.Util".into())
+        );
+
+        assert_eq!(
+            resolver
+                .import_argument(&mut project, &source, &target, RequireStyle::String, &[])
+                .unwrap(),
+            Some("\"./Util\"".into())
+        );
+
+        for style in [RequireStyle::Instance, RequireStyle::String] {
+            assert_eq!(
+                resolver
+                    .import_argument(&mut project, &source, &only_first, style, &[])
+                    .unwrap(),
+                None
+            );
+        }
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn filesystem_imports_stay_strings_and_a_single_map_supports_unmapped_callers() {
+        let root = fixture("filesystem", &[]);
+        let source = root.join("source.luau");
+        let target = root.join("module.luau");
+        let mut project = Project::new();
+
+        for path in [&source, &target] {
+            project.set_source(path, Some("return 1")).unwrap();
+        }
+
+        let mut resolver = Resolver::new();
+
+        assert!(
+            resolver
+                .import_candidates(&mut project, &source)
+                .unwrap()
+                .is_none()
+        );
+
+        for style in [RequireStyle::Instance, RequireStyle::String] {
+            assert_eq!(
+                resolver
+                    .import_argument(&mut project, &source, &target, style, &[])
+                    .unwrap(),
+                Some("\"./module\"".into())
+            );
+        }
+
+        write_map(
+            &root,
+            "place/a.json",
+            &json!([
+                {"name": "Util", "className": "ModuleScript", "filePaths": ["../module.luau"]}
+            ]),
+        );
+
+        fs::write(
+            root.join("instar.toml"),
+            "[roblox]\nsourcemaps = [\"place/a.json\"]\n[luau.aliases]\nu = \"@game/Util\"\n",
+        )
+        .unwrap();
+
+        let mut mapped = Project::new();
+
+        for path in [&source, &target] {
+            mapped.set_source(path, Some("return 1")).unwrap();
+        }
+
+        let mut resolver = Resolver::new();
+
+        assert_eq!(
+            resolver
+                .import_candidates(&mut mapped, &source)
+                .unwrap()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        assert_eq!(
+            resolver
+                .import_argument(&mut mapped, &source, &target, RequireStyle::Instance, &[])
+                .unwrap(),
+            Some("game.Util".into())
+        );
+
+        assert_eq!(
+            resolver
+                .import_argument(&mut mapped, &source, &target, RequireStyle::String, &[])
+                .unwrap(),
+            Some("\"@u\"".into())
+        );
+
+        fs::remove_dir_all(root).unwrap();
     }
 }

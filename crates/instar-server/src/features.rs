@@ -35,41 +35,8 @@ fn text(node: View<'_, '_>) -> String {
     String::from_utf8_lossy(node.text()).into_owned()
 }
 
-fn identifier(value: &str) -> bool {
-    let mut bytes = value.bytes();
-
-    bytes
-        .next()
-        .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
-        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-        && !matches!(
-            value,
-            "and"
-                | "break"
-                | "do"
-                | "else"
-                | "elseif"
-                | "end"
-                | "false"
-                | "for"
-                | "function"
-                | "if"
-                | "in"
-                | "local"
-                | "nil"
-                | "not"
-                | "or"
-                | "repeat"
-                | "return"
-                | "then"
-                | "true"
-                | "until"
-                | "while"
-        )
-}
-
 pub(crate) fn binding_name(value: &str) -> Option<String> {
-    identifier(value).then(|| value.to_owned())
+    instar_core::identifier(value).then(|| value.to_owned())
 }
 
 fn top_level<'tree, 'source>(tree: &'tree Tree<'source>) -> Vec<View<'tree, 'source>> {
