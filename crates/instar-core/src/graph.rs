@@ -289,6 +289,7 @@ pub(crate) struct Extraction {
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) expressions: HashMap<[usize; 2], Request>,
     pub(crate) line_starts: Vec<usize>,
+    pub(crate) reexport: Option<[usize; 2]>,
 }
 
 pub(crate) fn extract(
@@ -359,7 +360,40 @@ pub(crate) fn extract(
         diagnostics,
         expressions,
         line_starts: extractor.line_starts,
+        reexport: reexport(&tree),
     }
+}
+
+fn reexport(tree: &vermis::Tree<'_>) -> Option<[usize; 2]> {
+    if !tree.diagnostics.is_empty() {
+        return None;
+    }
+
+    let Parts::Root { block } = tree.view(tree.root)?.parts()? else {
+        return None;
+    };
+
+    let mut statements = block.children();
+
+    let Parts::Return { mut values } = statements.next()?.parts()? else {
+        return None;
+    };
+
+    let Parts::Call { callee, arguments } = values.next()?.parts()? else {
+        return None;
+    };
+
+    if statements.next().is_some() || values.next().is_some() || callee.text() != b"require" {
+        return None;
+    }
+
+    let mut arguments = arguments.children();
+    let argument = arguments.next()?.span();
+
+    arguments
+        .next()
+        .is_none()
+        .then_some([argument.start, argument.end])
 }
 
 impl Extractor<'_> {
