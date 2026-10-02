@@ -1068,19 +1068,19 @@ mod tests {
     fn mapped_imports_use_place_names_independent_filters_and_configured_syntax() {
         let directory = std::env::temp_dir().join(format!("imports{}", std::process::id()));
 
-        for child in ["earth", "moon", "vendor"] {
+        for child in ["primary", "secondary", "vendor"] {
             std::fs::create_dir_all(directory.join(child)).unwrap();
         }
 
-        let source = directory.join("earth/main.luau");
+        let source = directory.join("primary/main.luau");
         let library = directory.join("vendor/library.luau");
-        std::fs::write(&source, "return jecs\n").unwrap();
+        std::fs::write(&source, "return package\n").unwrap();
         std::fs::write(&library, "return { exported = true }\n").unwrap();
-        std::fs::write(directory.join("moon/foreign.luau"), "return {}\n").unwrap();
+        std::fs::write(directory.join("secondary/foreign.luau"), "return {}\n").unwrap();
 
         for (place, module, file) in [
-            ("earth", "jecs", "../vendor/library.luau"),
-            ("moon", "jecsForeign", "foreign.luau"),
+            ("primary", "package", "../vendor/library.luau"),
+            ("secondary", "packageForeign", "foreign.luau"),
         ] {
             let map = serde_json::json!({
                 "name": place, "className": "DataModel",
@@ -1111,7 +1111,7 @@ mod tests {
                 )
                 .unwrap();
 
-                let (mut workspace, items) = import_items(&directory, &source, "return jecs");
+                let (mut workspace, items) = import_items(&directory, &source, "return package");
 
                 assert!(
                     !workspace
@@ -1121,31 +1121,31 @@ mod tests {
                 );
 
                 let names: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
-                assert_eq!(names, ["jecs"]);
+                assert_eq!(names, ["package"]);
                 let statement = &items[0].additional_text_edits.as_ref().unwrap()[0].new_text;
 
                 assert!(
-                    statement.starts_with(&format!("{binding} jecs = require(")),
+                    statement.starts_with(&format!("{binding} package = require(")),
                     "{statement}"
                 );
 
                 if require == "string" {
                     assert!(
-                        statement.contains("\"@game/ReplicatedStorage/packages/jecs\""),
+                        statement.contains("\"@game/ReplicatedStorage/packages/package\""),
                         "{statement}"
                     );
                 } else {
                     assert_eq!(
                         statement,
                         &format!(
-                            "{binding} jecs = require(game:GetService(\"ReplicatedStorage\").packages.jecs)\n"
+                            "{binding} package = require(game:GetService(\"ReplicatedStorage\").packages.package)\n"
                         )
                     );
                 }
 
                 workspace
                     .project
-                    .set_source(&source, Some(&format!("{statement}return jecs")))
+                    .set_source(&source, Some(&format!("{statement}return package")))
                     .unwrap();
 
                 let links = workspace.project.links(&source).unwrap();
@@ -1169,10 +1169,10 @@ mod tests {
         for configuration in [
             "exclude = [\"vendor/**\"]\n[lsp.imports]\ninclude = [\"vendor/**\"]\n",
             "[lsp.imports]\nexclude = [\"vendor/**\"]\n",
-            "[lsp.imports]\ninclude = [\"earth/**\"]\n",
+            "[lsp.imports]\ninclude = [\"primary/**\"]\n",
         ] {
             std::fs::write(directory.join("instar.toml"), configuration).unwrap();
-            let (_, items) = import_items(&directory, &source, "return jecs");
+            let (_, items) = import_items(&directory, &source, "return package");
             assert_eq!(items.len(), 0, "{configuration}");
         }
 
