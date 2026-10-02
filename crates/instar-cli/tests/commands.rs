@@ -55,16 +55,23 @@ fn diagnostic_separation_and_severities() {
     fs::write(&warnings, "local unused = 1\nif true then end\nreturn 1\n").unwrap();
     fs::write(&syntax, "local =\n").unwrap();
 
-    for (native_errors, level, expected) in [
-        (false, "allow", 0),
-        (false, "info", 0),
-        (false, "warn", 0),
-        (false, "deny", 1),
-        (true, "allow", 1),
+    fs::write(
+        directory.join(".luaurc"),
+        r#"{"lint":{"*":false},"lintErrors":true}"#,
+    )
+    .unwrap();
+
+    for (native_level, level, expected) in [
+        ("warn", "allow", 0),
+        ("info", "info", 0),
+        ("allow", "warn", 0),
+        ("warn", "deny", 1),
+        ("deny", "allow", 1),
+        ("allow", "allow", 0),
     ] {
         fs::write(
             directory.join("instar.toml"),
-            format!("[roblox]\nenabled = false\n[lint]\nlint_errors = {native_errors}\n[lint.luau]\n\"*\" = false\nLocalUnused = true\n[lint.rules]\nempty_if = \"{level}\"\n"),
+            format!("[roblox]\nenabled = false\n[lint.local_unused]\nlevel = \"{native_level}\"\n[lint.empty_if]\nlevel = \"{level}\"\n"),
         ).unwrap();
 
         let checked = invoke("check", &types, 1);
@@ -74,26 +81,18 @@ fn diagnostic_separation_and_severities() {
         assert_eq!(invoke("check", &warnings, 0), "");
         let linted = invoke("lint", &warnings, expected);
 
-        let severity = if native_errors { "error" } else { "warning" };
+        for (rule, level) in [("LocalUnused", native_level), ("empty_if", level)] {
+            if level == "allow" {
+                assert!(!linted.contains(&format!("{rule}:")), "{linted}");
+            } else {
+                let severity = match level {
+                    "info" => "info",
+                    "warn" => "warning",
+                    _ => "error",
+                };
 
-        assert!(
-            linted.contains(&format!("{severity}: LocalUnused:")),
-            "{linted}"
-        );
-
-        if level == "allow" {
-            assert!(!linted.contains("empty_if:"));
-        } else {
-            let severity = match level {
-                "info" => "info",
-                "warn" => "warning",
-                _ => "error",
-            };
-
-            assert!(
-                linted.contains(&format!("{severity}: empty_if:")),
-                "{linted}"
-            );
+                assert!(linted.contains(&format!("{severity}: {rule}:")), "{linted}");
+            }
         }
     }
 
@@ -121,6 +120,54 @@ fn diagnostic_separation_and_severities() {
     for command in ["check", "lint"] {
         invoke(command, &types, 2);
     }
+
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn operations_resolve_nested_filter_overrides() {
+    let directory = std::env::temp_dir().join(format!("command-filters-{}", std::process::id()));
+    let selected = directory.join("selected");
+    fs::create_dir_all(&selected).unwrap();
+
+    fs::write(
+        directory.join("instar.toml"),
+        "include = [\"selected/**\"]\nexclude = [\"selected/**\"]\n[roblox]\nenabled = false\n[lsp.index]\nexclude = [\"**\"]\n",
+    )
+    .unwrap();
+
+    fs::write(
+        selected.join("instar.toml"),
+        "[check]\nexclude = []\n[lint]\nexclude = []\n[lint.empty_if]\nlevel = \"deny\"\n[format]\nexclude = []\n",
+    )
+    .unwrap();
+
+    fs::write(
+        selected.join("checked.luau"),
+        "--!strict\nlocal value:number=\"text\"\nreturn value\n",
+    )
+    .unwrap();
+
+    fs::write(selected.join("linted.luau"), "if true then end\n").unwrap();
+    fs::write(directory.join("hidden.luau"), "local =\n").unwrap();
+
+    let checked = invoke("check", &directory, 1);
+    assert!(checked.contains("checked.luau"), "{checked}");
+    assert!(!checked.contains("empty_if:") && !checked.contains("hidden.luau"));
+    let linted = invoke("lint", &directory, 1);
+    assert!(linted.contains("error: empty_if:"), "{linted}");
+    assert!(!linted.contains("hidden.luau"));
+    invoke("format", &directory, 0);
+
+    assert_eq!(
+        fs::read_to_string(selected.join("checked.luau")).unwrap(),
+        "--!strict\nlocal value: number = \"text\"\nreturn value\n"
+    );
+
+    assert_eq!(
+        fs::read_to_string(directory.join("hidden.luau")).unwrap(),
+        "local =\n"
+    );
 
     fs::remove_dir_all(directory).unwrap();
 }

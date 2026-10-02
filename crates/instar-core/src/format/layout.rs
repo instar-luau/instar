@@ -88,7 +88,7 @@ impl<'a> Layout<'a> {
 
         let mode = if open == '{' {
             if table_type {
-                options.types.table_wrap
+                options.types.tables.wrap
             } else {
                 options.tables.wrap
             }
@@ -211,7 +211,7 @@ impl<'a> Layout<'a> {
                 if current_if_expression {
                     matches!(options.if_expressions.wrap, Wrap::Preserve | Wrap::Always)
                 } else if type_operator {
-                    matches!(options.types.operator_wrap, Wrap::Preserve | Wrap::Always)
+                    matches!(options.types.operators.wrap, Wrap::Preserve | Wrap::Always)
                 } else if chain {
                     matches!(options.chains.wrap, Wrap::Preserve | Wrap::Always)
                 } else {
@@ -421,7 +421,7 @@ impl<'a> Layout<'a> {
         let tight_type = &self.prepared.tight_type;
         let text = tokens[index].text.as_str();
 
-        match options.types.operator_wrap {
+        match options.types.operators.wrap {
             Wrap::Always => true,
             Wrap::Never => false,
             Wrap::Preserve => explicit_break,

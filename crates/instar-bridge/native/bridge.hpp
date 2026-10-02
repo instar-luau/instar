@@ -99,6 +99,8 @@ extern "C" {
         DiagnosticSeverity severity;
         /**Diagnostic message.*/
         Text message;
+        /**Native lint rule name, empty for other diagnostics.*/
+        Text rule;
         /**Whether a related diagnostic is present.*/
         uint8_t has_related;
         /**Related diagnostic when present.*/

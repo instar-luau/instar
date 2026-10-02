@@ -26,13 +26,13 @@ pub(super) fn check(
                 );
             }
 
-            if context.config.options.unused_variable.loop_variables() {
+            if context.config.unused_variable.loop_variables() {
                 unused_binding(binding, body, context, findings);
             }
         }
 
         Some(Parts::GenericFor { bindings, body, .. }) => {
-            if context.config.options.unused_variable.loop_variables() {
+            if context.config.unused_variable.loop_variables() {
                 for binding in bindings {
                     unused_binding(binding, body, context, findings);
                 }
@@ -44,7 +44,7 @@ pub(super) fn check(
             body: Some(body),
             ..
         }) => {
-            if context.config.options.unused_variable.parameters()
+            if context.config.unused_variable.parameters()
                 && let Some(Parts::Parameters { parameters }) = parameters.parts()
             {
                 for binding in parameters {

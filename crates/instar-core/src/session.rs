@@ -11,6 +11,7 @@ use instar_bridge::{
 };
 
 use crate::{
+    config::LintLevel,
     diagnostic::{Diagnostic, Location, Severity},
     filter::Service,
     graph::{self, Request},
@@ -30,7 +31,7 @@ pub(crate) struct LoadedModule {
 
 pub(crate) struct Host<'project> {
     pub(crate) project: &'project mut Project,
-    service: Service,
+    service: Option<Service>,
     resolver: Resolver,
     identities: HashMap<Module, String>,
     pub(crate) modules: HashMap<String, LoadedModule>,
@@ -110,13 +111,18 @@ impl Host<'_> {
         })
     }
 
-    pub(crate) fn includes(&mut self, path: &Path, service: Service) -> io::Result<bool> {
-        Ok(self.open.is_none_or(|open| open.contains(path))
-            && self.project.includes(path, self.service)?
-            && self.project.includes(path, service)?)
+    pub(crate) fn includes(&mut self, path: &Path) -> io::Result<bool> {
+        if self.open.is_some_and(|open| !open.contains(path)) {
+            return Ok(false);
+        }
+
+        match self.service {
+            Some(service) => self.project.includes(path, service),
+            None => Ok(true),
+        }
     }
 
-    pub(crate) fn selected(&mut self, service: Service) -> io::Result<Vec<String>> {
+    pub(crate) fn selected(&mut self) -> io::Result<Vec<String>> {
         let candidates = self
             .modules
             .iter()
@@ -129,7 +135,7 @@ impl Host<'_> {
         let mut selected = Vec::new();
 
         for (name, path) in candidates {
-            if self.includes(&path, service)? {
+            if self.includes(&path)? {
                 selected.push(name);
             }
         }
@@ -139,11 +145,11 @@ impl Host<'_> {
         Ok(selected)
     }
 
-    pub(crate) fn report_timeouts(&mut self, service: Service) -> io::Result<()> {
+    pub(crate) fn report_timeouts(&mut self) -> io::Result<()> {
         for name in self.timeouts {
             let location = self.location(name, [0; 4])?;
 
-            if self.includes(&location.module.source, service)? {
+            if self.includes(&location.module.source)? {
                 self.diagnostics.push(Diagnostic {
                     location,
                     severity: Severity::Error,
@@ -287,19 +293,26 @@ impl Callbacks for Host<'_> {
 
         let location = self.location(diagnostic.path, diagnostic.location)?;
 
-        if self
-            .open
-            .is_some_and(|open| !open.contains(&location.module.source))
-        {
+        if !self.includes(&location.module.source)? {
             return Ok(());
         }
 
-        if !self
-            .project
-            .includes(&location.module.source, self.service)?
+        let severity = match self
+            .modules
+            .get(diagnostic.path)
+            .and_then(|state| state.configuration.lint.native_level(diagnostic.rule))
         {
-            return Ok(());
-        }
+            Some(LintLevel::Allow) => return Ok(()),
+            Some(LintLevel::Info) => Severity::Information,
+            Some(LintLevel::Warn) => Severity::Warning,
+            Some(LintLevel::Deny) => Severity::Error,
+
+            None => match diagnostic.severity {
+                DiagnosticSeverity::DiagnosticError => Severity::Error,
+                DiagnosticSeverity::DiagnosticInformation => Severity::Information,
+                DiagnosticSeverity::DiagnosticWarning => Severity::Warning,
+            },
+        };
 
         let related = diagnostic
             .related
@@ -311,11 +324,7 @@ impl Callbacks for Host<'_> {
 
         self.diagnostics.push(Diagnostic {
             location,
-            severity: if diagnostic.severity == DiagnosticSeverity::DiagnosticError {
-                Severity::Error
-            } else {
-                Severity::Warning
-            },
+            severity,
             message: diagnostic.message.to_owned(),
             related,
         });
@@ -334,13 +343,15 @@ pub(crate) struct Environment {
 pub(crate) fn environments(
     project: &mut Project,
     paths: &[PathBuf],
-    service: Service,
+    service: Option<Service>,
 ) -> io::Result<Vec<Environment>> {
     let mut resolver = Resolver::new();
     let mut environments = HashMap::<_, Environment>::new();
 
     for path in paths {
-        if !project.includes(path, service)? {
+        if let Some(service) = service
+            && !project.includes(path, service)?
+        {
             continue;
         }
 
@@ -433,7 +444,6 @@ impl Session {
     pub(crate) fn new(
         project: &mut Project,
         environment: &Environment,
-        service: Service,
         options: &CheckerOptions,
     ) -> io::Result<Self> {
         let declarations = project.declarations(&environment.definitions)?;
@@ -467,7 +477,7 @@ impl Session {
 
         let mut diagnostics = Vec::new();
 
-        session.with_host(project, service, None, |checker, host| {
+        session.with_host(project, None, None, |checker, host| {
             for (package, location) in &environment.definitions {
                 let path = crate::absolute(Path::new(location))?;
 
@@ -551,7 +561,7 @@ impl Session {
     pub(crate) fn with_host<T>(
         &mut self,
         project: &mut Project,
-        service: Service,
+        service: Option<Service>,
         open: Option<&BTreeSet<PathBuf>>,
         operation: impl FnOnce(&mut Checker, &mut Host<'_>) -> io::Result<T>,
     ) -> io::Result<T> {
@@ -579,14 +589,12 @@ impl Session {
     pub(crate) fn prepare(
         &mut self,
         project: &mut Project,
-        service: Service,
-        open: Option<&BTreeSet<PathBuf>>,
         entries: &[Module],
         progress: &mut dyn FnMut(&Path) -> io::Result<()>,
     ) -> io::Result<()> {
         self.entries = entries.iter().map(|module| module.source.clone()).collect();
 
-        self.timeouts = self.with_host(project, service, open, |checker, host| {
+        self.timeouts = self.with_host(project, None, None, |checker, host| {
             let mut timeouts = BTreeSet::new();
             let mut seen = BTreeSet::new();
 

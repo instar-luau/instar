@@ -20,7 +20,7 @@ pub(crate) struct Workspace {
     pub(crate) project: Project,
     documents: BTreeMap<PathBuf, Arc<Document>>,
     snapshot: Snapshot,
-    files: BTreeMap<Service, Vec<PathBuf>>,
+    paths: Option<Vec<PathBuf>>,
     syntax_candidates: BTreeMap<PathBuf, SyntaxCandidates>,
     resolver: Resolver,
     matcher: nucleo_matcher::Matcher,
@@ -43,7 +43,7 @@ impl Workspace {
         if reset {
             self.project = Project::default();
             self.documents.clear();
-            self.files.clear();
+            self.paths = None;
             self.syntax_candidates.clear();
         }
 
@@ -78,21 +78,13 @@ impl Workspace {
         Ok(())
     }
 
-    pub(crate) fn files(
-        &mut self,
-        service: Service,
-        cancelled: &impl Fn() -> bool,
-    ) -> io::Result<Vec<PathBuf>> {
-        if !self.files.contains_key(&service) {
+    fn paths(&mut self, cancelled: &impl Fn() -> bool) -> io::Result<Vec<PathBuf>> {
+        if self.paths.is_none() {
             let mut directories: Vec<_> = self.snapshot.folders.iter().cloned().collect();
             let mut paths = BTreeSet::new();
 
             while let Some(directory) = directories.pop() {
                 check_cancelled(cancelled)?;
-
-                if self.project.excludes_subtree(&directory, service)? {
-                    continue;
-                }
 
                 for entry in std::fs::read_dir(directory)? {
                     let entry = entry?;
@@ -100,22 +92,45 @@ impl Workspace {
 
                     if kind.is_dir() && entry.file_name() != ".git" {
                         directories.push(entry.path());
-                    } else if kind.is_file() && self.include(&entry.path(), service)? {
+                    } else if kind.is_file()
+                        && matches!(
+                            entry.path().extension().and_then(|value| value.to_str()),
+                            Some("lua" | "luau")
+                        )
+                    {
                         paths.insert(entry.path());
                     }
                 }
             }
 
-            self.files.insert(service, paths.into_iter().collect());
+            self.paths = Some(paths.into_iter().collect());
         }
 
-        let mut files: BTreeSet<_> = self.files[&service].iter().cloned().collect();
+        let mut files: BTreeSet<_> = self.paths.iter().flatten().cloned().collect();
 
         for path in self.snapshot.documents.keys() {
             files.insert(path.clone());
         }
 
         Ok(files.into_iter().collect())
+    }
+
+    pub(crate) fn files(
+        &mut self,
+        service: Service,
+        cancelled: &impl Fn() -> bool,
+    ) -> io::Result<Vec<PathBuf>> {
+        let mut files = Vec::new();
+
+        for path in self.paths(cancelled)? {
+            check_cancelled(cancelled)?;
+
+            if self.snapshot.documents.contains_key(&path) || self.include(&path, service)? {
+                files.push(path);
+            }
+        }
+
+        Ok(files)
     }
 
     pub(crate) fn syntax_candidates(
@@ -126,7 +141,7 @@ impl Workspace {
     ) -> io::Result<Vec<PathBuf>> {
         let mut candidates = Vec::new();
 
-        for path in self.files(Service::Lsp, cancelled)? {
+        for path in self.files(Service::Index, cancelled)? {
             check_cancelled(cancelled)?;
 
             if !self.syntax_candidates.contains_key(&path) {
@@ -192,6 +207,10 @@ impl Workspace {
             return Ok(false);
         }
 
+        self.source_file(path)
+    }
+
+    fn source_file(&mut self, path: &Path) -> io::Result<bool> {
         let declaration = path
             .file_name()
             .and_then(|name| name.to_str())
@@ -236,7 +255,7 @@ impl Workspace {
         let mut result = Vec::new();
         let query = query.to_lowercase();
 
-        for path in self.files(Service::Lsp, cancelled)? {
+        for path in self.files(Service::Index, cancelled)? {
             check_cancelled(cancelled)?;
             let document = self.document(&path)?;
 
@@ -274,7 +293,7 @@ impl Workspace {
                 }
             }
         } else {
-            for path in self.files(Service::Imports, &|| false)? {
+            for path in self.paths(&|| false)? {
                 let stem = path
                     .file_stem()
                     .and_then(|value| value.to_str())
@@ -299,6 +318,7 @@ impl Workspace {
             if path != source
                 && self.project.includes_import(source, &path)?
                 && let Some(binding) = binding_name(&name)
+                && self.source_file(&path)?
             {
                 selected.push((path, binding));
             }
@@ -511,7 +531,7 @@ impl Workspace {
     ) -> io::Result<lsp::WorkspaceEdit> {
         let mut changes = Vec::new();
 
-        for source in self.files(Service::Lsp, cancelled)? {
+        for source in self.files(Service::Index, cancelled)? {
             check_cancelled(cancelled)?;
             let document = self.document(&source)?;
             let new_source = remap(&source, renames);
@@ -898,9 +918,15 @@ impl Workspace {
         cancelled: &impl Fn() -> bool,
         progress: &tokio::sync::mpsc::UnboundedSender<(usize, usize)>,
     ) -> io::Result<lsp::WorkspaceDiagnosticReport> {
-        let files = match only {
-            Some(path) => vec![path],
-            None => self.files(Service::Lsp, cancelled)?,
+        let files = if let Some(path) = only {
+            vec![path]
+        } else {
+            let mut files: BTreeSet<_> =
+                self.files(Service::Check, cancelled)?.into_iter().collect();
+
+            files.extend(self.files(Service::Lint, cancelled)?);
+
+            files.into_iter().collect()
         };
 
         let diagnostics = editor.workspace_diagnostics(&files, &mut |done, total| {
@@ -1077,6 +1103,7 @@ mod tests {
         std::fs::write(&source, "return package\n").unwrap();
         std::fs::write(&library, "return { exported = true }\n").unwrap();
         std::fs::write(directory.join("secondary/foreign.luau"), "return {}\n").unwrap();
+        std::fs::write(directory.join("primary/utility.luau"), "return {}\n").unwrap();
 
         for (place, module, file) in [
             ("primary", "package", "../vendor/library.luau"),
@@ -1087,8 +1114,11 @@ mod tests {
                 "children": [
                     {"name": "Main", "className": "LocalScript", "filePaths": ["main.luau"]},
                     {"name": "ReplicatedStorage", "className": "ReplicatedStorage",
-                     "children": [{"name": "packages", "className": "Folder",
-                         "children": [{"name": module, "className": "ModuleScript", "filePaths": [file]}]}]}
+                     "children": [
+                         {"name": "utility", "className": "ModuleScript", "filePaths": ["utility.luau"]},
+                         {"name": "packages", "className": "Folder",
+                          "children": [{"name": module, "className": "ModuleScript", "filePaths": [file]}]}
+                     ]}
                 ]
             });
 
@@ -1099,14 +1129,15 @@ mod tests {
             .unwrap();
         }
 
-        let filters = "[check]\nexclude = [\"vendor/**\"]\n[lint]\nexclude = [\"vendor/**\"]\n[format]\nexclude = [\"vendor/**\"]\n[lsp]\nexclude = [\"vendor/**\"]\n";
+        let filters =
+            "exclude = [\"vendor/**\", \"**/utility.luau\"]\n[lsp.index]\nexclude = [\"**\"]\n";
 
         for require in ["string", "instance"] {
             for binding in ["const", "local"] {
                 std::fs::write(
                     directory.join("instar.toml"),
                     format!(
-                        "{filters}[lsp.imports]\nrequire = \"{require}\"\nbinding = \"{binding}\"\n"
+                        "{filters}[lsp.imports]\nexclude = []\nrequire = \"{require}\"\nbinding = \"{binding}\"\n"
                     ),
                 )
                 .unwrap();
@@ -1115,7 +1146,7 @@ mod tests {
 
                 assert!(
                     !workspace
-                        .files(Service::Lsp, &|| false)
+                        .files(Service::Index, &|| false)
                         .unwrap()
                         .contains(&library)
                 );
@@ -1163,6 +1194,10 @@ mod tests {
                         .new_text
                         .starts_with(&format!("{binding} Players = game:GetService("))
                 );
+
+                let (_, utility) = import_items(&directory, &source, "return utility");
+                assert_eq!(utility.len(), 1);
+                assert_eq!(utility[0].label, "utility");
             }
         }
 
@@ -1185,37 +1220,137 @@ mod tests {
             std::env::temp_dir().join(format!("filesystemimports{}", std::process::id()));
 
         std::fs::create_dir_all(directory.join("vendor")).unwrap();
-        let source = directory.join("main.luau");
+        std::fs::create_dir_all(directory.join("caller")).unwrap();
+        let source = directory.join("caller/main.luau");
         std::fs::write(&source, "return package\n").unwrap();
         let target = directory.join("vendor/package.luau");
         std::fs::write(&target, "return {}\n").unwrap();
-        std::fs::write(directory.join("instar.toml"), "[roblox]\nenabled = false\n[lsp]\nexclude = [\"vendor/**\"]\n[lsp.imports]\nbinding = \"const\"\n").unwrap();
+        let utility = directory.join("utility.luau");
+        std::fs::write(&utility, "return {}\n").unwrap();
+
+        std::fs::write(
+            directory.join("instar.toml"),
+            "exclude = [\"vendor/**\", \"utility.luau\"]\n[roblox]\nenabled = false\n",
+        )
+        .unwrap();
+
+        std::fs::write(
+            directory.join("caller/instar.toml"),
+            "[lsp.imports]\nexclude = []\nbinding = \"const\"\n",
+        )
+        .unwrap();
+
         let (mut workspace, items) = import_items(&directory, &source, "return package");
 
-        assert!(
-            !workspace
-                .files(Service::Lsp, &|| false)
-                .unwrap()
-                .contains(&target)
-        );
+        for service in [
+            Service::Index,
+            Service::Check,
+            Service::Lint,
+            Service::Format,
+        ] {
+            let files = workspace.files(service, &|| false).unwrap();
+            assert!(!files.contains(&target));
+            assert!(!files.contains(&utility));
+        }
 
         assert_eq!(items.len(), 1);
 
         assert!(
             items[0].additional_text_edits.as_ref().unwrap()[0]
                 .new_text
-                .contains("const package = require(\"./vendor/package\")")
+                .contains("const package = require(\"../vendor/package\")")
+        );
+
+        let (_, items) = import_items(&directory, &source, "return utility");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].label, "utility");
+
+        assert!(
+            items[0].additional_text_edits.as_ref().unwrap()[0]
+                .new_text
+                .contains("const utility = require(\"../utility\")")
         );
 
         std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
-    fn files_prune_excluded_subtrees_but_keep_selected_files_and_open_documents() {
+    fn workspace_diagnostics_use_operation_selection_independently_of_indexing() {
+        let directory =
+            std::env::temp_dir().join(format!("workspace-diagnostics-{}", std::process::id()));
+
+        std::fs::create_dir_all(&directory).unwrap();
+
+        std::fs::write(
+            directory.join("instar.toml"),
+            "exclude = [\"**\"]\n[roblox]\nenabled = false\n[check]\ninclude = [\"checked.luau\"]\nexclude = []\n[lint]\ninclude = [\"linted.luau\"]\nexclude = []\n",
+        )
+        .unwrap();
+
+        std::fs::write(
+            directory.join("checked.luau"),
+            "--!strict\nlocal value: number = \"text\"\nreturn value\n",
+        )
+        .unwrap();
+
+        std::fs::write(directory.join("linted.luau"), "if true then end\n").unwrap();
+        std::fs::write(directory.join("hidden.luau"), "local =\n").unwrap();
+
+        let snapshot = Snapshot {
+            folders: [directory.clone()].into(),
+            ..Snapshot::default()
+        };
+
+        let mut workspace = Workspace::default();
+        workspace.update(&snapshot).unwrap();
+
+        assert_eq!(
+            workspace.files(Service::Index, &|| false).unwrap(),
+            [] as [PathBuf; 0]
+        );
+
+        let (progress, _receiver) = tokio::sync::mpsc::unbounded_channel();
+
+        let report = workspace
+            .diagnostics(
+                &mut instar_core::editor::Editor::default(),
+                &[],
+                None,
+                &|| false,
+                &progress,
+            )
+            .unwrap();
+
+        assert_eq!(report.items.len(), 2);
+
+        for item in report.items {
+            let lsp::WorkspaceDocumentDiagnosticReport::Full(report) = item else {
+                panic!("expected a full diagnostic report");
+            };
+
+            assert_ne!(
+                report.full_document_diagnostic_report.items,
+                [] as [lsp::Diagnostic; 0]
+            );
+
+            assert!(
+                [
+                    uri(&directory.join("checked.luau")).unwrap(),
+                    uri(&directory.join("linted.luau")).unwrap()
+                ]
+                .contains(&report.uri)
+            );
+        }
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn files_resolve_nested_index_overrides_and_keep_open_documents() {
         let directory = std::env::temp_dir().join(format!("workspace{}", std::process::id()));
 
         for child in [
-            "pruned/nested",
+            "hidden/nested",
             "service/nested",
             "selected",
             "wild/nested",
@@ -1226,12 +1361,18 @@ mod tests {
 
         std::fs::write(
             directory.join("instar.toml"),
-            "include = [\"selected/**/*.luau\", \"wild/**/*.luau\"]\nexclude = [\"pruned/**\", \"wild/*.luau\"]\n[lsp]\nexclude = [\"service/**\"]\n",
+            "include = [\"selected/**/*.luau\", \"wild/**/*.luau\"]\nexclude = [\"hidden/**\", \"wild/*.luau\"]\n",
         )
         .unwrap();
 
-        for child in ["pruned/nested", "service/nested"] {
-            std::fs::write(directory.join(child).join("instar.toml"), "[").unwrap();
+        for (child, configuration) in [
+            ("hidden/nested", "[lsp.index]\ninclude = []\nexclude = []"),
+            (
+                "service/nested",
+                "[lsp.index]\ninclude = []\nexclude = [\"**\"]",
+            ),
+        ] {
+            std::fs::write(directory.join(child).join("instar.toml"), configuration).unwrap();
             std::fs::write(directory.join(child).join("hidden.luau"), "return 1\n").unwrap();
         }
 
@@ -1246,7 +1387,7 @@ mod tests {
         }
 
         let selected = directory.join("selected/chosen.luau");
-        let open = directory.join("pruned/nested/open.luau");
+        let open = directory.join("other/open.luau");
 
         let documents = [selected.clone(), open.clone()]
             .into_iter()
@@ -1269,7 +1410,7 @@ mod tests {
 
         assert_eq!(
             workspace
-                .files(Service::Lsp, &|| false)
+                .files(Service::Index, &|| false)
                 .unwrap()
                 .into_iter()
                 .collect::<BTreeSet<_>>(),
@@ -1277,6 +1418,7 @@ mod tests {
                 selected.clone(),
                 open.clone(),
                 directory.join("wild/nested/chosen.luau"),
+                directory.join("hidden/nested/hidden.luau"),
             ]),
         );
 

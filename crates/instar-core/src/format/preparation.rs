@@ -917,7 +917,7 @@ pub(super) fn prepare(tree: &vermis::Tree<'_>, options: &FormatOptions) -> io::R
             && enclosing_brace(&tokens, index)
                 .is_some_and(|start| type_table(&syntax, &tokens[start]))
         {
-            tokens[index].text = match (tokens[index].text.as_str(), options.types.table_separator)
+            tokens[index].text = match (tokens[index].text.as_str(), options.types.tables.separator)
             {
                 (",", crate::config::TypeTableSeparator::Semicolon) => ";".to_owned(),
                 (";", crate::config::TypeTableSeparator::Comma) => ",".to_owned(),

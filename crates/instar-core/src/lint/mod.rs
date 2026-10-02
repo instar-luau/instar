@@ -42,11 +42,10 @@ pub fn run(
 ) -> io::Result<Vec<Diagnostic>> {
     let mut diagnostics = Vec::new();
 
-    for environment in session::environments(project, paths, Service::Lint)? {
+    for environment in session::environments(project, paths, Some(Service::Lint))? {
         let mut session = Session::new(
             project,
             &environment,
-            Service::Lint,
             &CheckerOptions {
                 retain_full_type_graphs: 1,
             },
@@ -56,19 +55,13 @@ pub fn run(
             return Err(invalid("declaration loading failed"));
         }
 
-        session.prepare(
-            project,
-            Service::Lint,
-            None,
-            &environment.entries,
-            &mut |path| {
-                progress(path);
+        session.prepare(project, &environment.entries, &mut |path| {
+            progress(path);
 
-                Ok(())
-            },
-        )?;
+            Ok(())
+        })?;
 
-        let found = session.with_host(project, Service::Lint, None, |checker, host| {
+        let found = session.with_host(project, Some(Service::Lint), None, |checker, host| {
             collect(checker, host)?;
 
             Ok(std::mem::take(&mut host.diagnostics))
@@ -88,7 +81,7 @@ pub(crate) fn collect(checker: &mut Checker, host: &mut Host<'_>) -> io::Result<
         return Ok(());
     }
 
-    let selected = host.selected(Service::Lint)?;
+    let selected = host.selected()?;
 
     for name in &selected {
         checker.parse_diagnostics(host, Path::new(name))?;
@@ -97,7 +90,7 @@ pub(crate) fn collect(checker: &mut Checker, host: &mut Host<'_>) -> io::Result<
 
     collect_rules(host, &selected)?;
 
-    host.report_timeouts(Service::Lint)
+    host.report_timeouts()
 }
 
 fn collect_rules(host: &mut Host<'_>, selected: &[String]) -> io::Result<()> {
@@ -280,7 +273,7 @@ fn rules(
         return Vec::new();
     };
 
-    let options = &config.options.unused_variable;
+    let options = &config.unused_variable;
 
     let ignore_pattern =
         if (options.parameters() || options.loop_variables()) && options.ignore_pattern() != "^_" {
@@ -541,7 +534,7 @@ mod tests {
     #[test]
     fn const_suggestions_follow_binding_writes() {
         let mut config = LintConfig::default();
-        config.rules.insert("prefer_const".into(), LintLevel::Warn);
+        config.prefer_const.level = Some(LintLevel::Warn);
 
         let cases: &[(&str, &[usize])] = &[
             ("local x,y=1,2\nx,y=3,4", &[]),
@@ -591,8 +584,8 @@ mod tests {
     #[test]
     fn mutated_table_option_follows_binding_ownership() {
         let mut config = LintConfig::default();
-        config.rules.insert("prefer_const".into(), LintLevel::Warn);
-        config.options.prefer_const.mutated_tables_stay_local = Some(true);
+        config.prefer_const.level = Some(LintLevel::Warn);
+        config.prefer_const.mutated_tables_stay_local = Some(true);
 
         let cases: &[(&str, &[usize])] = &[
             ("local t={}\nt.field=1", &[]),
@@ -615,7 +608,7 @@ mod tests {
             assert_eq!(starts, expected, "{source}");
         }
 
-        config.options.prefer_const.mutated_tables_stay_local = Some(false);
+        config.prefer_const.mutated_tables_stay_local = Some(false);
 
         assert!(
             rules("local t={}\nt.field=1", &config, &[], false)
@@ -684,34 +677,32 @@ mod tests {
 
     fn assert_cases(cases: &[(&str, &str, &str)]) {
         for &(rule, positive, negative) in cases {
-            let mut config = LintConfig::default();
-            config.rules.insert(rule.to_owned(), LintLevel::Warn);
+            let mut config: LintConfig =
+                toml::from_str(&format!("[{rule}]\nlevel = \"warn\"\n")).unwrap();
 
             match rule {
-                "unused_variable" => config.options.unused_variable.parameters = Some(true),
+                "unused_variable" => config.unused_variable.parameters = Some(true),
 
                 "high_cyclomatic_complexity" => {
-                    config.options.high_cyclomatic_complexity.maximum_complexity = Some(2);
+                    config.high_cyclomatic_complexity.maximum_complexity = Some(2);
                 }
 
                 "deprecated" => {
                     config
-                        .options
                         .deprecated
-                        .additional
+                        .paths
                         .insert("old.api".into(), "new.api".into());
                 }
 
                 "restricted_globals" => {
                     config
-                        .options
                         .restricted_globals
+                        .names
                         .insert("print".into(), "use logging".into());
                 }
 
                 "restricted_module_paths" => {
                     config
-                        .options
                         .restricted_module_paths
                         .paths
                         .insert("./dep".into(), "blocked".into());
@@ -739,33 +730,10 @@ mod tests {
     }
 
     #[test]
-    fn explicit_defaults_override_inherited_option_values() {
-        let mut parent: LintConfig = toml::from_str(
-            "[options.unused_variable]\nparameters = true\nignore_pattern = \"^skip\"\n[options.high_cyclomatic_complexity]\nmaximum_complexity = 7"
-        ).unwrap();
-
-        let child: LintConfig = toml::from_str(
-            "[options.unused_variable]\nparameters = false\nignore_pattern = \"^_\"\n[options.high_cyclomatic_complexity]\nmaximum_complexity = 40"
-        ).unwrap();
-
-        parent.merge(&child);
-        assert!(!parent.options.unused_variable.parameters());
-        assert_eq!(parent.options.unused_variable.ignore_pattern(), "^_");
-
-        assert_eq!(
-            parent
-                .options
-                .high_cyclomatic_complexity
-                .maximum_complexity(),
-            40
-        );
-    }
-
-    #[test]
-    fn rule_levels_override_groups_without_enabling_opt_in_rules() {
+    fn rule_levels_control_severity_without_enabling_other_rules() {
         let source = "while running do require(\"./dep\") end";
         let mut config = LintConfig::default();
-        config.groups.insert("performance".into(), LintLevel::Info);
+        config.loop_invariant_call.level = Some(LintLevel::Info);
 
         assert_eq!(
             rules(source, &config, &[], false)
@@ -775,9 +743,7 @@ mod tests {
             Some(LintLevel::Info),
         );
 
-        config
-            .rules
-            .insert("loop_invariant_call".into(), LintLevel::Deny);
+        config.loop_invariant_call.level = Some(LintLevel::Deny);
 
         assert_eq!(
             rules(source, &config, &[], false)
@@ -787,17 +753,13 @@ mod tests {
             Some(LintLevel::Deny),
         );
 
-        config
-            .rules
-            .insert("loop_invariant_call".into(), LintLevel::Allow);
+        config.loop_invariant_call.level = Some(LintLevel::Allow);
 
         assert!(
             !rules(source, &config, &[], false)
                 .iter()
                 .any(|finding| finding.rule == "loop_invariant_call")
         );
-
-        config.groups.insert("style".into(), LintLevel::Warn);
 
         assert!(
             !rules("local x=flag and 1 or 2", &config, &[], false)
@@ -809,8 +771,8 @@ mod tests {
     #[test]
     fn ignored_loop_names_obey_configured_regex() {
         let mut config = LintConfig::default();
-        config.options.unused_variable.loop_variables = Some(true);
-        config.options.unused_variable.ignore_pattern = Some("^skip".into());
+        config.unused_variable.loop_variables = Some(true);
+        config.unused_variable.ignore_pattern = Some("^skip".into());
 
         let findings = rules(
             "for skipItem, kept in pairs(items) do print(1) end",

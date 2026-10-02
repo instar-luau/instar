@@ -165,6 +165,9 @@ pub struct Diagnostic<'diagnostic> {
     /// Diagnostic message.
     pub message: &'diagnostic str,
 
+    /// Native lint rule name, empty for other diagnostics.
+    pub rule: &'diagnostic str,
+
     /// Related diagnostic.
     pub related: Option<RelatedDiagnostic<'diagnostic>>,
 }
@@ -373,6 +376,7 @@ unsafe extern "C" fn diagnostic_callback(
             location: range(value.location),
             severity: value.severity,
             message,
+            rule: unsafe { borrow_text(value.rule)? },
             related: (value.has_related != 0).then_some(RelatedDiagnostic {
                 path: related_path,
                 location: range(value.related.location),
