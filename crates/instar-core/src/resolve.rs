@@ -12,7 +12,6 @@ use serde::Serialize;
 use crate::{
     absolute,
     config::RequireStyle,
-    identifier,
     project::Project,
     roblox::{Instance, Sourcemap},
 };
@@ -974,65 +973,9 @@ fn instance_expression(
             continue;
         }
 
-        // ponytail: inherited members only; consult class metadata for class-specific collisions.
-        if !identifier(name)
-            || matches!(
-                name,
-                "Parent"
-                    | "Name"
-                    | "ClassName"
-                    | "Archivable"
-                    | "RobloxLocked"
-                    | "UniqueId"
-                    | "Capabilities"
-                    | "DefinesCapabilities"
-                    | "Sandboxed"
-                    | "AncestryChanged"
-                    | "AttributeChanged"
-                    | "Changed"
-                    | "ChildAdded"
-                    | "ChildRemoved"
-                    | "DescendantAdded"
-                    | "DescendantRemoving"
-                    | "Destroying"
-                    | "AddTag"
-                    | "ClearAllChildren"
-                    | "Clone"
-                    | "Destroy"
-                    | "FindFirstAncestor"
-                    | "FindFirstAncestorOfClass"
-                    | "FindFirstAncestorWhichIsA"
-                    | "FindFirstChild"
-                    | "FindFirstChildOfClass"
-                    | "FindFirstChildWhichIsA"
-                    | "FindFirstDescendant"
-                    | "GetActor"
-                    | "GetAttribute"
-                    | "GetAttributes"
-                    | "GetAttributeChangedSignal"
-                    | "GetChildren"
-                    | "GetDebugId"
-                    | "GetDescendants"
-                    | "GetFullName"
-                    | "GetPropertyChangedSignal"
-                    | "GetService"
-                    | "GetTags"
-                    | "HasTag"
-                    | "IsA"
-                    | "IsAncestorOf"
-                    | "IsDescendantOf"
-                    | "RemoveTag"
-                    | "SetAttribute"
-                    | "WaitForChild"
-            )
-        {
-            expression.push_str(":WaitForChild(");
-            expression.push_str(&string_literal(name));
-            expression.push(')');
-        } else {
-            expression.push('.');
-            expression.push_str(name);
-        }
+        expression.push_str(":WaitForChild(");
+        expression.push_str(&string_literal(name));
+        expression.push(')');
     }
 
     Some(expression)
@@ -1229,17 +1172,17 @@ mod tests {
             (
                 "ReplicatedStorage",
                 "ReplicatedStorage",
-                "game:GetService(\"ReplicatedStorage\").packages.Module",
+                "game:GetService(\"ReplicatedStorage\"):WaitForChild(\"packages\"):WaitForChild(\"Module\")",
             ),
             (
                 "ReplicatedStorage",
                 "Renamed",
-                "game:GetService(\"ReplicatedStorage\").packages.Module",
+                "game:GetService(\"ReplicatedStorage\"):WaitForChild(\"packages\"):WaitForChild(\"Module\")",
             ),
             (
                 "Folder",
                 "ReplicatedStorage",
-                "game.ReplicatedStorage.packages.Module",
+                "game:WaitForChild(\"ReplicatedStorage\"):WaitForChild(\"packages\"):WaitForChild(\"Module\")",
             ),
         ] {
             write_map(
@@ -1318,6 +1261,9 @@ mod tests {
             ".",
             "",
             "Name",
+            "Parent",
+            "Position",
+            ".hidden",
             "Clone",
             "Destroy",
             "Archivable",
@@ -1384,17 +1330,15 @@ mod tests {
                 .unwrap()
                 .unwrap();
 
-            if *name == "Util" {
-                assert_eq!(expression, "game.Util");
+            assert!(expression.starts_with("game:WaitForChild("), "{expression}");
 
+            if *name == "Util" {
                 assert_eq!(
                     resolver
                         .import_argument(&mut project, &source, &target, RequireStyle::String, &[])
                         .unwrap(),
                     Some("\"@game/Util\"".into())
                 );
-            } else {
-                assert!(expression.starts_with("game:WaitForChild("), "{expression}");
             }
 
             project
@@ -1463,7 +1407,7 @@ mod tests {
             resolver
                 .import_argument(&mut project, &source, &target, RequireStyle::Instance, &[])
                 .unwrap(),
-            Some("script.Parent.Util".into())
+            Some("script.Parent:WaitForChild(\"Util\")".into())
         );
 
         assert_eq!(
@@ -1549,7 +1493,7 @@ mod tests {
             resolver
                 .import_argument(&mut mapped, &source, &target, RequireStyle::Instance, &[])
                 .unwrap(),
-            Some("game.Util".into())
+            Some("game:WaitForChild(\"Util\")".into())
         );
 
         assert_eq!(

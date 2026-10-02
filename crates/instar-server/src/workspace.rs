@@ -1169,7 +1169,7 @@ mod tests {
                     assert_eq!(
                         statement,
                         &format!(
-                            "{binding} package = require(game:GetService(\"ReplicatedStorage\").packages.package)\n"
+                            "{binding} package = require(game:GetService(\"ReplicatedStorage\"):WaitForChild(\"packages\"):WaitForChild(\"package\"))\n"
                         )
                     );
                 }
