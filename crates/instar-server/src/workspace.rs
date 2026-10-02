@@ -1,12 +1,18 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     hash::{Hash, Hasher},
     io,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
-use instar_core::{config::BindingStyle, filter::Service, project::Project, resolve::Resolver};
+use instar_core::{
+    config::BindingStyle,
+    filter::Service,
+    project::Project,
+    resolve::{Module, Resolver},
+};
+
 use tower_lsp_server::ls_types::{self as lsp, CompletionItemKind, Range};
 
 use crate::{
@@ -327,6 +333,46 @@ impl Workspace {
         Ok(selected)
     }
 
+    fn import_identity(&mut self, path: &Path) -> Option<Vec<Module>> {
+        let mut identities = self.resolver.entries(&mut self.project, path).ok()?;
+
+        for module in &mut identities {
+            let mut seen = HashSet::new();
+
+            loop {
+                if !seen.insert(module.clone()) {
+                    return None;
+                }
+
+                let Some(target) = self.resolver.reexport(&mut self.project, module) else {
+                    break;
+                };
+
+                *module = target;
+            }
+        }
+
+        Some(identities)
+    }
+
+    fn import_rank(&self, path: &Path) -> (usize, usize, PathBuf) {
+        let relative = self
+            .snapshot
+            .folders
+            .iter()
+            .filter_map(|root| path.strip_prefix(root).ok())
+            .min_by_key(|relative| relative.components().count())
+            .unwrap_or(path);
+
+        // ponytail: path shape approximates public entry points; explicit priorities if this falls short.
+        let hidden = relative
+            .components()
+            .filter(|part| part.as_os_str().to_string_lossy().starts_with('.'))
+            .count();
+
+        (hidden, relative.components().count(), path.to_owned())
+    }
+
     pub(crate) fn imports(
         &mut self,
         document: &Document,
@@ -351,7 +397,25 @@ impl Workspace {
 
         let links = self.project.links(&document.path)?;
 
-        for (target, module) in self.import_candidates(&document.path)? {
+        let existing = |target: &Path| {
+            document.features().dependencies.iter().find(|dependency| {
+                dependency.end < offset
+                    && dependency.service.is_none()
+                    && links
+                        .iter()
+                        .any(|(span, path)| span[0] == dependency.argument.start && path == target)
+                    && unique_binding(document, &dependency.name)
+            })
+        };
+
+        let service_count = items.len();
+        let mut seen = HashSet::new();
+        let mut candidates = self.import_candidates(&document.path)?;
+
+        candidates
+            .sort_by_cached_key(|(path, _)| (existing(path).is_none(), self.import_rank(path)));
+
+        for (target, module) in candidates {
             let target_document = self.document(&target)?;
 
             let exports = &target_document.features().exports;
@@ -360,16 +424,7 @@ impl Workspace {
                 continue;
             }
 
-            let existing = document.features().dependencies.iter().find(|dependency| {
-                dependency.end < offset
-                    && dependency.service.is_none()
-                    && links
-                        .iter()
-                        .any(|(span, path)| span[0] == dependency.argument.start && *path == target)
-                    && unique_binding(document, &dependency.name)
-            });
-
-            let (binding, statement) = if let Some(existing) = existing {
+            let (binding, statement) = if let Some(existing) = existing(&target) {
                 (existing.name.clone(), String::new())
             } else {
                 let Some(argument) = self
@@ -398,7 +453,13 @@ impl Workspace {
                 (binding, statement)
             };
 
-            if module.starts_with(prefix) {
+            let identity = self.import_identity(&target);
+
+            if module.starts_with(prefix)
+                && identity
+                    .as_ref()
+                    .is_none_or(|identity| seen.insert((identity.clone(), module.clone(), false)))
+            {
                 items.push(import_item(
                     document,
                     (offset, range),
@@ -411,7 +472,11 @@ impl Workspace {
             }
 
             for export in exports.iter().filter(|name| name.starts_with(prefix)) {
-                if binding_name(export).is_some() {
+                if binding_name(export).is_some()
+                    && identity.as_ref().is_none_or(|identity| {
+                        seen.insert((identity.clone(), export.clone(), true))
+                    })
+                {
                     items.push(import_item(
                         document,
                         (offset, range),
@@ -423,6 +488,10 @@ impl Workspace {
                     ));
                 }
             }
+        }
+
+        for (rank, item) in items[service_count..].iter_mut().enumerate() {
+            item.sort_text = Some(format!("z{}{rank:010}", item.label));
         }
 
         Ok(items)
@@ -1088,6 +1157,186 @@ mod tests {
             .unwrap();
 
         (workspace, items)
+    }
+
+    #[test]
+    fn imports_group_only_proven_forwarders_and_rank_public_paths() {
+        let directory = std::env::temp_dir().join(format!("forwarding{}", std::process::id()));
+        let configuration = "[roblox]\nenabled = false\n";
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("instar.toml"), configuration).unwrap();
+
+        for (path, text) in [
+            (".cache/package.luau", "return { exported = true }"),
+            ("package.luau", "return require(\"./.cache/package\")"),
+            (
+                "public/package.luau",
+                "return require(\"../.cache/package\")",
+            ),
+            (
+                "nested/forward/package.luau",
+                "return require(\"../../public/package\")",
+            ),
+            (
+                "nested/chain/package.luau",
+                "return require(\"../forward/package\")",
+            ),
+            ("copies/package.luau", "return { exported = true }"),
+            (
+                "effects/package.luau",
+                "print(\"effect\")\nreturn require(\"../.cache/package\")",
+            ),
+            ("missing/package.luau", "return require(\"../absent\")"),
+            ("dynamic/package.luau", "return require(resolve())"),
+            (
+                "cycle/first/package.luau",
+                "return require(\"../second/package\")",
+            ),
+            (
+                "cycle/second/package.luau",
+                "return require(\"../first/package\")",
+            ),
+        ] {
+            let path = directory.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+
+        let source = directory.join("main.luau");
+        let (_, items) = import_items(&directory, &source, "return package");
+        assert_eq!(items.len(), 7, "{items:?}");
+
+        assert_eq!(
+            items[0].detail.as_deref().map(Path::new),
+            Some(directory.join("package.luau").as_path())
+        );
+
+        for path in [
+            "copies",
+            "effects",
+            "missing",
+            "dynamic",
+            "cycle/first",
+            "cycle/second",
+        ] {
+            assert!(
+                items
+                    .iter()
+                    .any(|item| item.detail.as_deref().map(Path::new)
+                        == Some(directory.join(path).join("package.luau").as_path())),
+                "{path}"
+            );
+        }
+
+        assert!(
+            items
+                .windows(2)
+                .all(|pair| pair[0].sort_text < pair[1].sort_text)
+        );
+
+        let (_, items) = import_items(
+            &directory,
+            &source,
+            "local existing = require(\"./nested/chain/package\")\nreturn package",
+        );
+
+        assert_eq!(items.len(), 7);
+
+        assert_eq!(
+            items[0].detail.as_deref().map(Path::new),
+            Some(directory.join("nested/chain/package.luau").as_path())
+        );
+
+        assert!(items[0].additional_text_edits.is_none());
+
+        let Some(lsp::CompletionTextEdit::Edit(edit)) = &items[0].text_edit else {
+            panic!("expected a completion edit");
+        };
+
+        assert_eq!(edit.new_text, "existing");
+
+        std::fs::write(
+            directory.join("instar.toml"),
+            format!("{configuration}[lsp.imports]\nexclude = [\"package.luau\"]"),
+        )
+        .unwrap();
+
+        let (_, items) = import_items(&directory, &source, "return package");
+        assert_eq!(items.len(), 7);
+
+        assert!(
+            items
+                .iter()
+                .any(|item| item.detail.as_deref().map(Path::new)
+                    == Some(directory.join("public/package.luau").as_path()))
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn imports_preserve_distinct_instance_identities_with_shared_source() {
+        let directory = std::env::temp_dir().join(format!("identities{}", std::process::id()));
+
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("instar.toml"), "").unwrap();
+        let source = directory.join("main.luau");
+        std::fs::write(&source, "return package").unwrap();
+        std::fs::write(directory.join("shared.luau"), "return {}").unwrap();
+        let mut children = Vec::new();
+
+        for name in ["primary", "secondary"] {
+            std::fs::create_dir_all(directory.join(name)).unwrap();
+
+            std::fs::write(
+                directory.join(name).join("package.luau"),
+                "return require(script.Parent.Implementation)",
+            )
+            .unwrap();
+
+            children.push(serde_json::json!({
+                "name": name, "className": "Folder",
+                "children": [
+                    {"name": "package", "className": "ModuleScript", "filePaths": [format!("{name}/package.luau")]},
+                    {"name": "Implementation", "className": "ModuleScript", "filePaths": ["shared.luau"]}
+                ]
+            }));
+        }
+
+        let map = serde_json::json!({
+            "name": "Place", "className": "DataModel",
+            "children": [
+                {"name": "Main", "className": "LocalScript", "filePaths": ["main.luau"]},
+                {"name": "ReplicatedStorage", "className": "ReplicatedStorage", "children": children}
+            ]
+        });
+
+        std::fs::write(directory.join("sourcemap.json"), map.to_string()).unwrap();
+        let (mut workspace, items) = import_items(&directory, &source, "return package");
+        assert_eq!(items.len(), 2, "{items:?}");
+
+        for (name, item) in ["primary", "secondary"].into_iter().zip(items) {
+            let statement = &item.additional_text_edits.as_ref().unwrap()[0].new_text;
+
+            assert!(
+                statement.contains(&format!(
+                    ":WaitForChild(\"{name}\"):WaitForChild(\"package\")"
+                )),
+                "{statement}"
+            );
+
+            workspace
+                .project
+                .set_source(&source, Some(&format!("{statement}return package")))
+                .unwrap();
+
+            assert_eq!(
+                workspace.project.links(&source).unwrap()[0].1,
+                directory.join(name).join("package.luau")
+            );
+        }
+
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

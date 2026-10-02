@@ -116,6 +116,7 @@ enum Navigation {
 pub struct Resolver {
     entries: HashMap<PathBuf, Lookup>,
     resolutions: HashMap<(Module, String), Resolution>,
+    reexports: HashMap<Module, Option<Module>>,
 }
 
 impl Resolver {
@@ -123,6 +124,49 @@ impl Resolver {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Resolves an otherwise empty module's `return require(...)` using the Rust graph.
+    /// Unresolved or nontrivial modules are not treated as interchangeable.
+    pub fn reexport(&mut self, project: &mut Project, module: &Module) -> Option<Module> {
+        if let Some(target) = self.reexports.get(module) {
+            return target.clone();
+        }
+
+        let target = (|| {
+            let source = project.source(&module.source).ok()?;
+
+            let map = module.instance.as_ref().map_or_else(
+                || {
+                    project
+                        .sourcemap(&module.source)
+                        .map_err(|error| Failure::Configuration(error.to_string()))
+                },
+                |instance| Ok(Some(Rc::clone(&instance.map))),
+            );
+
+            let extracted = crate::graph::extract(&source, module.instance.clone(), map);
+            let range = extracted.reexport?;
+
+            let site = extracted
+                .sites
+                .into_iter()
+                .find(|site| site.range == range)?;
+
+            match site.request? {
+                crate::graph::Request::String(request) => {
+                    self.resolve(project, module, &request).result.ok()
+                }
+
+                crate::graph::Request::Instance(instance) => {
+                    Self::resolve_instance(&instance).result.ok()
+                }
+            }
+        })();
+
+        self.reexports.insert(module.clone(), target.clone());
+
+        target
     }
 
     /// Returns mapped `ModuleScript` instances in the caller's active place contexts.
