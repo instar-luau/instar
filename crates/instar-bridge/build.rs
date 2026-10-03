@@ -3,13 +3,29 @@
 use std::{env, path::PathBuf};
 
 fn main() {
+    let output = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo output directory"));
+
+    #[cfg(windows)]
+    {
+        let normalized: PathBuf = output.components().collect();
+
+        if output.as_os_str() != normalized.as_os_str() {
+            let status = std::process::Command::new(
+                env::current_exe().expect("Cargo build script executable"),
+            )
+            .env("OUT_DIR", normalized)
+            .status()
+            .expect("Build with normalized Windows paths");
+
+            std::process::exit(status.code().unwrap_or(1));
+        }
+    }
+
     let root = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("Cargo manifest directory"));
 
     for path in ["CMakeLists.txt", "src/bridge.rs", "native", "vendor/luau"] {
         println!("cargo:rerun-if-changed={path}");
     }
-
-    let output = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo output directory"));
 
     let mut configuration = cmake::Config::new(&root);
 
