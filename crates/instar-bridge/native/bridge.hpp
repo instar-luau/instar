@@ -1,233 +1,98 @@
 #ifndef BRIDGE_HPP
 #define BRIDGE_HPP
 
-#include <stddef.h>
-#include <stdint.h>
+#include "Luau/Config.h"
+#include "Luau/FileResolver.h"
+#include "Luau/Frontend.h"
+#include "rust/cxx.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-    /**Borrowed UTF-8 byte sequence passed across the native ABI.*/
-    typedef struct Text {
-        /**Pointer to UTF-8 bytes.*/
-        const uint8_t *data;
-        /**Number of bytes.*/
-        size_t length;
-    } Text;
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <unordered_set>
 
-    /**Owned UTF-8 byte sequence returned by the native ABI.*/
-    typedef struct String {
-        /**Pointer to owned UTF-8 bytes.*/
-        uint8_t *data;
-        /**Number of bytes.*/
-        size_t length;
-    } String;
+namespace instar {
+    struct Host;
+    struct Items;
+    struct Failure;
+    struct FastFlag;
+    struct RobloxClass;
+    struct RobloxNode;
+    enum class DiagnosticSeverity : uint32_t;
+    class Operation;
+    struct Checker;
 
-    /**Half-open source range using zero-based line and column coordinates.*/
-    typedef struct Location {
-        /**Inclusive start line.*/
-        uint32_t begin_line;
-        /**Inclusive start column.*/
-        uint32_t begin_column;
-        /**Exclusive end line.*/
-        uint32_t end_line;
-        /**Exclusive end column.*/
-        uint32_t end_column;
-    } Location;
+    struct Configuration {
+        Luau::Config value;
+    };
 
-    /**Result code returned by native operations.*/
-    typedef enum Status {
-        /**Operation succeeded.*/
-        StatusSuccess = 0,
-        /**Operation failed.*/
-        StatusFailure = 1,
-        /**A callback rejected the operation.*/
-        StatusCallbackFailure = 2,
-        /**Rejected definition source.*/
-        StatusDefinitionFailure = 3,
-    } Status;
+    struct FileResolver final : Luau::FileResolver {
+        explicit FileResolver(Checker *checker) : checker(checker) {}
 
-    /**Kind of source returned by a source callback.*/
-    typedef enum SourceKind {
-        /**Source kind is unknown.*/
-        SourceUnknown = 0,
-        /**Source is a module.*/
-        SourceModule = 1,
-        /**Source is a script.*/
-        SourceScript = 2,
-    } SourceKind;
+        std::optional<Luau::SourceCode> readSource(const Luau::ModuleName &name) override;
+        std::optional<Luau::ModuleInfo> resolveModule(const Luau::ModuleInfo *context, Luau::AstExpr *expression, const Luau::TypeCheckLimits &) override;
+        std::string getHumanReadableModuleName(const Luau::ModuleName &name) const override { return name; }
+        std::optional<std::string> getEnvironmentForModule(const Luau::ModuleName &name) const override;
 
-    /**Options used when constructing a checker.*/
-    typedef struct FrontendOptions {
-        /**Retain complete type graphs.*/
-        uint8_t retain_full_type_graphs;
-    } FrontendOptions;
+        Checker *checker;
+        std::string origin;
+    };
 
-    /**Options used when loading a definition source.*/
-    typedef struct DefinitionOptions {
-        /**Capture comments while loading definitions.*/
-        uint8_t capture_comments;
-    } DefinitionOptions;
+    struct ConfigurationResolver final : Luau::ConfigResolver {
+        explicit ConfigurationResolver(Checker *checker) : checker(checker) {}
 
-    /**Additional source location associated with a diagnostic.*/
-    typedef struct RelatedDiagnostic {
-        /**Related source path.*/
-        Text path;
-        /**Related source range.*/
-        Location location;
-        /**Related diagnostic message.*/
-        Text message;
-    } RelatedDiagnostic;
+        const Luau::Config &getConfig(const Luau::ModuleName &name, const Luau::TypeCheckLimits &) const override;
 
-    /**Severity assigned to a diagnostic.*/
-    typedef enum DiagnosticSeverity {
-        /**Error diagnostic.*/
-        DiagnosticError = 0,
-        /**Warning diagnostic.*/
-        DiagnosticWarning = 1,
-        /**Informational diagnostic.*/
-        DiagnosticInformation = 2,
-    } DiagnosticSeverity;
+        Checker *checker;
+    };
 
-    /**Diagnostic emitted by parsing, checking, or linting.*/
-    typedef struct Diagnostic {
-        /**Diagnostic source path.*/
-        Text path;
-        /**Diagnostic source range.*/
-        Location location;
-        /**Diagnostic severity.*/
-        DiagnosticSeverity severity;
-        /**Diagnostic message.*/
-        Text message;
-        /**Native lint rule name, empty for other diagnostics.*/
-        Text rule;
-        /**Whether a related diagnostic is present.*/
-        uint8_t has_related;
-        /**Related diagnostic when present.*/
-        RelatedDiagnostic related;
-    } Diagnostic;
+    struct Checker {
+        explicit Checker(bool retain);
 
-    /**Source location of a module-resolution expression.*/
-    typedef struct ResolveRequest {
-        /**Original source module being traced.*/
-        Text from;
-        /**Result of the preceding navigation step, when present.*/
-        Text context;
-        /**Whether an intermediate context is present.*/
-        uint8_t has_context;
-        /**Whether failure is allowed.*/
-        uint8_t optional;
-        /**Expression source range.*/
-        Location expression;
-    } ResolveRequest;
+        void diagnostic(
+            std::string_view path, const Luau::Location &location, DiagnosticSeverity severity, std::string_view message, std::string_view rule = {}, std::string_view related_path = {},
+            const Luau::Location *related_location = nullptr, std::string_view related_message = {}
+        );
 
-    /**Result returned by a resolution callback.*/
-    typedef struct ResolveResult {
-        /**Resolved source path.*/
-        Text path;
-        /**Whether a result is present.*/
-        uint8_t present;
-    } ResolveResult;
+        void emit(const Luau::TypeError &error, std::string_view checked);
+        void emit(std::string_view path, const Luau::LintWarning &warning, bool error);
 
-    /**Result returned by a source callback.*/
-    typedef struct SourceResult {
-        /**Source bytes.*/
-        Text source;
-        /**Source kind.*/
-        SourceKind kind;
-    } SourceResult;
+        FileResolver files;
+        ConfigurationResolver configurations;
+        Luau::Frontend frontend;
+        std::unordered_set<std::string> definition_names;
+        std::unordered_set<std::string> script_modules;
+        bool roblox_classes_registered = false;
+        bool roblox_tree_registered = false;
+        bool globals_frozen = false;
 
-    /**Supplies source bytes and kind for a module name.*/
-    typedef uint8_t (*SourceCallback)(void *context, Text name, SourceResult *result);
-    /**Supplies a configuration handle for a module name.*/
-    typedef uint8_t (*ConfigurationCallback)(void *context, Text name, const void **configuration);
-    /**Resolves a module or instance request.*/
-    typedef uint8_t (*ResolveCallback)(void *context, const ResolveRequest *request, ResolveResult *result);
-    /**Receives one diagnostic from the checker.*/
-    typedef uint8_t (*DiagnosticCallback)(void *context, const Diagnostic *diagnostic);
-    /**Receives one text item from an enumeration operation.*/
-    typedef uint8_t (*ItemCallback)(void *context, Text item);
+      private:
+        friend class Operation;
+        friend struct FileResolver;
+        friend struct ConfigurationResolver;
+        Host *host = nullptr;
+    };
 
-    /**Type of an exposed Luau fast flag.*/
-    typedef enum FastFlagType {
-        /**Boolean flag.*/
-        FastFlagBool = 0,
-        /**Integer flag.*/
-        FastFlagInt = 1,
-    } FastFlagType;
-
-    /**Compiled Luau fast flag and its current value.*/
-    typedef struct FastFlag {
-        /**Full Roblox flag name, including its static or dynamic prefix.*/
-        Text name;
-        /**Flag value type.*/
-        FastFlagType type;
-        /**Boolean value when the type is `FastFlagBool`.*/
-        uint8_t bool_value;
-        /**Integer value when the type is `FastFlagInt`.*/
-        int32_t int_value;
-    } FastFlag;
-
-    /**Receives one compiled fast flag.*/
-    typedef uint8_t (*FastFlagCallback)(void *context, const FastFlag *flag);
-
-    /**Enumerates compiled bool and int fast flags.*/
-    int32_t fast_flags(FastFlagCallback callback, void *context);
-    /**Sets one known fast flag, rejecting unknown names and type mismatches.*/
-    int32_t set_fast_flag(Text name, FastFlagType type, uint8_t bool_value, int32_t int_value, String *error);
-
-    /**Callbacks used by the native checker to access project data.*/
-    typedef struct BridgeCallbacks {
-        /**Source callback.*/
-        SourceCallback source;
-        /**Configuration callback.*/
-        ConfigurationCallback configuration;
-        /**Resolution callback.*/
-        ResolveCallback resolve;
-        /**Diagnostic callback.*/
-        DiagnosticCallback diagnostic;
-    } BridgeCallbacks;
-
-    /**Releases an owned string returned by the native ABI.*/
-    void string_destroy(String value);
-
-    /**Creates a configuration handle from JSON source.*/
-    void *configuration_create(Text source, String *error);
-    /**Destroys a configuration handle.*/
-    void configuration_destroy(void *configuration);
-
-    /**Creates a checker handle.*/
-    void *checker_create(const BridgeCallbacks *callbacks, void *context, const FrontendOptions *options, String *error);
-    /**Destroys a checker handle.*/
-    void checker_destroy(void *checker);
-    /**Rebinds the callback context for one checker operation.*/
-    int32_t checker_set_context(void *checker, void *context, String *error);
-    /**Marks a module and its dependents dirty.*/
-    int32_t checker_mark_dirty(void *checker, Text name, String *error);
-    /**Clears ordinary source caches; rebuild the checker to change definitions or globals.*/
-    int32_t checker_clear_sources(void *checker, String *error);
-    /**Freezes the global type arena before parsing or checking.*/
-    int32_t checker_freeze(void *checker, String *error);
-    /**Loads one definition source into the checker.*/
-    int32_t checker_load_definition(void *checker, Text source, Text package_name, const DefinitionOptions *options, String *error);
-    /**Parses one module.*/
-    int32_t checker_parse(void *checker, Text name, String *error);
-    /**Emits parse diagnostics for one module.*/
-    int32_t checker_parse_diagnostics(void *checker, Text name, String *error);
-    /**Prepares the semantic module graph without diagnostics and emits timeout module names.*/
-    int32_t checker_prepare(void *checker, Text name, ItemCallback timeout_callback, void *timeout_context, String *error);
-    /**Emits cached syntax and type diagnostics for one prepared module.*/
-    int32_t checker_check(void *checker, Text name, String *error);
-    /**Runs native lint on one prepared module with retained type graphs and emits warnings only.*/
-    int32_t checker_lint(void *checker, Text name, String *error);
-    /**Enumerates global names known to the checker.*/
-    int32_t checker_globals(void *checker, ItemCallback callback, void *context, String *error);
-    /**Enumerates modules required by the checker.*/
-    int32_t checker_modules(void *checker, ItemCallback callback, void *context, String *error);
-    /**Attaches inferred type data to one module.*/
-    int32_t checker_attach_type_data(void *checker, Text name, String *error);
-#ifdef __cplusplus
-}
-#endif
+    std::unique_ptr<Configuration> configuration_create(rust::Slice<const uint8_t> source, Failure &failure) noexcept;
+    std::unique_ptr<Checker> checker_create(bool retain, Failure &failure) noexcept;
+    Failure fast_flags(rust::Vec<FastFlag> &output) noexcept;
+    Failure set_fast_flag(rust::Str name, bool boolean, bool bool_value, int32_t int_value) noexcept;
+    Failure checker_mark_dirty(Checker &checker, rust::Str name) noexcept;
+    Failure checker_clear_sources(Checker &checker) noexcept;
+    Failure checker_freeze(Checker &checker) noexcept;
+    Failure checker_load_definition(Checker &checker, Host &host, rust::Slice<const uint8_t> source, rust::Str package) noexcept;
+    Failure checker_register_roblox_classes(Checker &checker, rust::Slice<const RobloxClass> classes) noexcept;
+    Failure checker_register_roblox_tree(Checker &checker, rust::Slice<const RobloxNode> nodes) noexcept;
+    Failure checker_parse(Checker &checker, Host &host, rust::Str name) noexcept;
+    Failure checker_parse_diagnostics(Checker &checker, Host &host, rust::Str name) noexcept;
+    Failure checker_prepare(Checker &checker, Host &host, rust::Str name, rust::Vec<rust::String> &timeouts) noexcept;
+    Failure checker_check(Checker &checker, Host &host, rust::Str name) noexcept;
+    Failure checker_lint(Checker &checker, Host &host, rust::Str name) noexcept;
+    Failure checker_globals(const Checker &checker, Items &output) noexcept;
+    Failure checker_modules(const Checker &checker, Items &output) noexcept;
+    Failure checker_attach_type_data(Checker &checker, rust::Str name) noexcept;
+} // namespace instar
 
 #endif

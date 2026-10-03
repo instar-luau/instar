@@ -9,9 +9,12 @@ keywords.workspace = true
 categories.workspace = true
 links = "instar"
 
+[dependencies]
+cxx = "1"
+
 [build-dependencies]
-bindgen = "0.73"
 cmake = "0.1"
+cxx-build = "1"
 
 [lints]
 workspace = true

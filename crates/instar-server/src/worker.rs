@@ -673,7 +673,9 @@ impl Worker {
         Ok(Some(lsp::SignatureHelp {
             signatures: vec![signature],
             active_signature: Some(0),
-            active_parameter: result.active_parameter,
+            active_parameter: result
+                .has_active_parameter
+                .then_some(result.active_parameter),
         }))
     }
 
@@ -755,7 +757,9 @@ impl Worker {
                 kind: lsp::MarkupKind::Markdown,
                 value: text,
             }),
-            range: result.range.map(|range| document.native_range(range)),
+            range: result
+                .has_range
+                .then(|| document.native_range(result.range)),
         }))
     }
 
@@ -774,7 +778,7 @@ impl Worker {
         let mut items = Vec::new();
 
         for result in &results {
-            use instar_bridge::native::EditorCompletionKind as Kind;
+            use instar_bridge::EditorCompletionKind as Kind;
 
             let mut item = lsp::CompletionItem {
                 label: result.name.clone(),
@@ -805,6 +809,7 @@ impl Worker {
                     Kind::CompletionEvent => lsp::CompletionItemKind::EVENT,
                     Kind::CompletionOperator => lsp::CompletionItemKind::OPERATOR,
                     Kind::CompletionTypeParameter => lsp::CompletionItemKind::TYPE_PARAMETER,
+                    _ => return Err(io::Error::other("unknown native completion kind")),
                 }),
                 ..lsp::CompletionItem::default()
             };
@@ -812,10 +817,11 @@ impl Worker {
             let docs = match self.documentation(path, &result.documentation_symbol)? {
                 Some(docs) => Some(docs),
 
-                None => match &result.definition {
-                    Some((module, range)) => self.declaration_documentation(module, *range)?,
-                    None => None,
-                },
+                None if !result.definition_module.is_empty() => {
+                    self.declaration_documentation(&result.definition_module, result.definition)?
+                }
+
+                None => None,
             };
 
             if let Some(docs) = docs {

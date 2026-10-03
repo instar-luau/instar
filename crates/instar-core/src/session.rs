@@ -6,8 +6,8 @@ use std::{
 };
 
 use instar_bridge::{
-    Callbacks, Checker, CheckerOptions, Configuration, ResolveRequest, Source,
-    native::{DiagnosticSeverity, SourceKind},
+    Callbacks, Checker, CheckerOptions, Configuration, DiagnosticSeverity, ResolveRequest, Source,
+    SourceKind,
 };
 
 use crate::{
@@ -311,6 +311,7 @@ impl Callbacks for Host<'_> {
                 DiagnosticSeverity::DiagnosticError => Severity::Error,
                 DiagnosticSeverity::DiagnosticInformation => Severity::Information,
                 DiagnosticSeverity::DiagnosticWarning => Severity::Warning,
+                _ => return Err(invalid("unknown native diagnostic severity")),
             },
         };
 

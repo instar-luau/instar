@@ -1,224 +1,113 @@
 #include "Luau/BuiltinDefinitions.h"
 #include "Luau/Common.h"
-#include "Luau/Config.h"
 #include "Luau/Error.h"
-#include "Luau/FileResolver.h"
-#include "Luau/Frontend.h"
 #include "Luau/Linter.h"
 #include "Luau/Module.h"
 #include "Luau/TypeAttach.h"
-#include "bridge.hpp"
-#include "editor.hpp"
+#include "operation.hpp"
 #include "roblox.hpp"
 
-#include <cstddef>
-#include <cstdint>
-#include <cstdlib>
+#include <array>
 #include <cstring>
-#include <exception>
-#include <memory>
-#include <new>
-#include <optional>
-#include <string>
+#include <stdexcept>
 #include <string_view>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
-namespace {
-
-    struct CallbackFailure final : std::exception {
-        const char *what() const noexcept override { return "native callback failed"; }
-    };
-
-    std::optional<std::string_view> view(Text value) {
-        if (!value.data && value.length != 0) {
-            return std::nullopt;
+namespace instar {
+    namespace {
+        std::array<uint32_t, 4> location(const Luau::Location &value) {
+            return {value.begin.line, value.begin.column, value.end.line, value.end.column};
         }
 
-        return std::string_view(value.data ? reinterpret_cast<const char *>(value.data) : "", value.length);
-    }
-
-    Text text(std::string_view value) {
-        return {reinterpret_cast<const uint8_t *>(value.data()), value.size()};
-    }
-
-    void write(String *destination, std::string_view value) {
-        destination->data = nullptr;
-        destination->length = 0;
-
-        if (value.empty()) {
-            return;
+        rust::Str borrowed(std::string_view value) {
+            return rust::Str(value.data() ? value.data() : "", value.size());
         }
 
-        auto *data = static_cast<uint8_t *>(std::malloc(value.size()));
-
-        if (!data) {
-            throw std::bad_alloc();
-        }
-
-        std::memcpy(data, value.data(), value.size());
-        destination->data = data;
-        destination->length = value.size();
-    }
-
-    int32_t failure(String *error, std::string_view message) {
-        if (error) {
-            write(error, message);
-        }
-
-        return StatusFailure;
-    }
-
-    int32_t exception_failure(String *error) noexcept {
-        try {
-            throw;
-        } catch (const std::exception &value) {
-            if (error) {
-                error->data = nullptr;
-                error->length = 0;
-                const size_t length = std::strlen(value.what());
-                auto *data = static_cast<uint8_t *>(std::malloc(length));
-
-                if (data) {
-                    std::memcpy(data, value.what(), length);
-                    error->data = data;
-                    error->length = length;
-                }
-            }
-        } catch (...) {
-            if (error) {
-                error->data = nullptr;
-                error->length = 0;
+        template <typename T> void emit_fast_flags(Luau::FValue<T> *flags, bool boolean, const char *prefix, const char *dynamic_prefix, rust::Vec<FastFlag> &output) {
+            for (Luau::FValue<T> *flag = flags; flag; flag = flag->next) {
+                const std::string name = std::string(flag->dynamic ? dynamic_prefix : prefix) + flag->name;
+                output.push_back(FastFlag{rust::String(name), boolean, boolean && bool(flag->value), boolean ? 0 : int32_t(flag->value)});
             }
         }
 
-        return StatusFailure;
+        template <typename T> bool flag_name_matches(const Luau::FValue<T> &flag, std::string_view name, std::string_view prefix, std::string_view dynamic_prefix) {
+            const std::string_view selected_prefix = flag.dynamic ? dynamic_prefix : prefix;
+
+            return name.size() == selected_prefix.size() + std::strlen(flag.name) && name.substr(0, selected_prefix.size()) == selected_prefix && name.substr(selected_prefix.size()) == flag.name;
+        }
+    } // namespace
+
+    Checker::Checker(bool retain) : files(this), configurations(this), frontend(Luau::SolverMode::New, &files, &configurations, Luau::FrontendOptions{retain}) {
+        Luau::registerBuiltinGlobals(frontend, frontend.globals);
     }
 
-    struct Configuration {
-        Luau::Config value;
-    };
+    void Checker::diagnostic(
+        std::string_view path, const Luau::Location &range, DiagnosticSeverity severity, std::string_view message, std::string_view rule, std::string_view related_path, const Luau::Location *related_location,
+        std::string_view related_message
+    ) {
+        DiagnosticData value{};
+        value.path = borrowed(path);
+        value.location = location(range);
+        value.severity = severity;
+        value.message = borrowed(message);
+        value.rule = borrowed(rule);
+        value.has_related = related_location != nullptr;
 
-    struct Checker;
-
-    struct FileResolver final : Luau::FileResolver {
-        explicit FileResolver(Checker *checker) : checker(checker) {}
-
-        std::optional<Luau::SourceCode> readSource(const Luau::ModuleName &name) override;
-        std::optional<Luau::ModuleInfo> resolveModule(const Luau::ModuleInfo *context, Luau::AstExpr *expression, const Luau::TypeCheckLimits &) override;
-        std::string getHumanReadableModuleName(const Luau::ModuleName &name) const override { return name; }
-        std::optional<std::string> getEnvironmentForModule(const Luau::ModuleName &name) const override;
-
-        Checker *checker;
-        std::string origin;
-    };
-
-    struct ConfigurationResolver final : Luau::ConfigResolver {
-        explicit ConfigurationResolver(Checker *checker) : checker(checker) {}
-
-        const Luau::Config &getConfig(const Luau::ModuleName &name, const Luau::TypeCheckLimits &) const override;
-
-        Checker *checker;
-    };
-
-    struct Checker {
-        Checker(const BridgeCallbacks &callbacks, void *context, const FrontendOptions &options)
-            : callbacks(callbacks), context(context), files(this), configurations(this), frontend(
-                                                                                             Luau::SolverMode::New, &files, &configurations,
-                                                                                             Luau::FrontendOptions{
-                                                                                                 options.retain_full_type_graphs != 0,
-                                                                                             }
-                                                                                         ) {
-            Luau::registerBuiltinGlobals(frontend, frontend.globals);
+        if (related_location) {
+            value.related_path = borrowed(related_path);
+            value.related_location = location(*related_location);
+            value.related_message = borrowed(related_message);
         }
 
-        bool diagnostic(
-            std::string_view path, const Luau::Location &location, DiagnosticSeverity severity, std::string_view message, std::string_view rule = {}, std::string_view related_path = {}, const Luau::Location *related_location = nullptr,
-            std::string_view related_message = {}
-        ) {
-            Diagnostic value{};
-            value.path = text(path);
-            value.location = {location.begin.line, location.begin.column, location.end.line, location.end.column};
-            value.severity = severity;
-            value.message = text(message);
-            value.rule = text(rule);
-            value.has_related = related_location != nullptr;
-
-            if (related_location) {
-                value.related.path = text(related_path);
-
-                value.related.location = {
-                    related_location->begin.line,
-                    related_location->begin.column,
-                    related_location->end.line,
-                    related_location->end.column,
-                };
-
-                value.related.message = text(related_message);
-            }
-
-            return callbacks.diagnostic(context, &value) != 0;
+        if (!host || !host->diagnostic(value)) {
+            throw CallbackFailure{};
         }
+    }
 
-        bool emit(const Luau::TypeError &error, std::string_view checked) {
-            const std::string_view owner = error.moduleName.empty() ? checked : std::string_view(error.moduleName);
-            const std::string message = Luau::toString(error, Luau::TypeErrorToStringOptions{&files});
-            const Luau::DuplicateTypeDefinition *duplicate = Luau::get<Luau::DuplicateTypeDefinition>(error);
+    void Checker::emit(const Luau::TypeError &error, std::string_view checked) {
+        const std::string_view owner = error.moduleName.empty() ? checked : std::string_view(error.moduleName);
+        const std::string message = Luau::toString(error, Luau::TypeErrorToStringOptions{&files});
+        const Luau::DuplicateTypeDefinition *duplicate = Luau::get<Luau::DuplicateTypeDefinition>(error);
 
-            if (duplicate && duplicate->previousLocation) {
-                return diagnostic(owner, error.location, DiagnosticError, message, {}, owner, &*duplicate->previousLocation, "previous definition");
-            }
-
-            return diagnostic(owner, error.location, DiagnosticError, message);
+        if (duplicate && duplicate->previousLocation) {
+            diagnostic(owner, error.location, DiagnosticSeverity::DiagnosticError, message, {}, owner, &*duplicate->previousLocation, "previous definition");
+        } else {
+            diagnostic(owner, error.location, DiagnosticSeverity::DiagnosticError, message);
         }
+    }
 
-        bool emit(std::string_view path, const Luau::LintWarning &warning, bool error) {
-            const std::string message = std::string(Luau::LintWarning::getName(warning.code)) + ": " + warning.text;
-
-            return diagnostic(path, warning.location, error ? DiagnosticError : DiagnosticWarning, message, Luau::LintWarning::getName(warning.code));
-        }
-
-        BridgeCallbacks callbacks;
-        void *context;
-        FileResolver files;
-        ConfigurationResolver configurations;
-        Luau::Frontend frontend;
-        std::unordered_set<std::string> definition_names;
-        std::unordered_set<std::string> script_modules;
-        bool roblox_classes_registered = false;
-        bool roblox_tree_registered = false;
-        bool globals_frozen = false;
-    };
+    void Checker::emit(std::string_view path, const Luau::LintWarning &warning, bool error) {
+        const std::string message = std::string(Luau::LintWarning::getName(warning.code)) + ": " + warning.text;
+        diagnostic(path, warning.location, error ? DiagnosticSeverity::DiagnosticError : DiagnosticSeverity::DiagnosticWarning, message, Luau::LintWarning::getName(warning.code));
+    }
 
     std::optional<std::string> FileResolver::getEnvironmentForModule(const Luau::ModuleName &name) const {
         return checker->script_modules.count(name) ? std::optional<std::string>(name) : std::nullopt;
     }
 
     std::optional<Luau::SourceCode> FileResolver::readSource(const Luau::ModuleName &name) {
-        // Luau traces each source synchronously after reading it, before loading its dependencies.
         origin = name;
-        SourceResult result{};
 
-        if (!checker->callbacks.source(checker->context, text(name), &result)) {
+        if (!checker->host) {
             throw CallbackFailure{};
         }
 
-        const std::optional<std::string_view> source = view(result.source);
+        const SourceData result = checker->host->source(borrowed(name));
 
-        if (!source) {
+        if (!result.success) {
             throw CallbackFailure{};
         }
 
-        if (result.kind == SourceUnknown) {
+        if (result.kind == SourceKind::SourceUnknown) {
             return std::nullopt;
         }
 
-        if (result.kind != SourceScript && result.kind != SourceModule) {
+        if (result.kind != SourceKind::SourceScript && result.kind != SourceKind::SourceModule) {
             throw CallbackFailure{};
         }
 
-        return Luau::SourceCode{std::string(*source), static_cast<Luau::SourceCode::Type>(result.kind)};
+        return Luau::SourceCode{std::string(reinterpret_cast<const char *>(result.bytes.data()), result.bytes.size()), static_cast<Luau::SourceCode::Type>(result.kind)};
     }
 
     std::optional<Luau::ModuleInfo> FileResolver::resolveModule(const Luau::ModuleInfo *context, Luau::AstExpr *expression, const Luau::TypeCheckLimits &) {
@@ -226,22 +115,21 @@ namespace {
             return std::nullopt;
         }
 
-        ResolveRequest request{
-            text(origin),
-            context ? text(context->name) : text({}),
-            uint8_t(context != nullptr),
-            uint8_t(context && context->optional),
-            {
-                expression->location.begin.line,
-                expression->location.begin.column,
-                expression->location.end.line,
-                expression->location.end.column,
-            },
-        };
+        if (!checker->host) {
+            throw CallbackFailure{};
+        }
 
-        ResolveResult result{};
+        const Resolved result = checker->host->resolve(
+            Resolution{
+                borrowed(origin),
+                context ? borrowed(context->name) : rust::Str{},
+                context != nullptr,
+                context && context->optional,
+                location(expression->location),
+            }
+        );
 
-        if (!checker->callbacks.resolve(checker->context, &request, &result)) {
+        if (!result.success) {
             throw CallbackFailure{};
         }
 
@@ -249,478 +137,221 @@ namespace {
             return std::nullopt;
         }
 
-        const std::optional<std::string_view> path = view(result.path);
-
-        if (!path) {
-            throw CallbackFailure{};
-        }
-
-        return Luau::ModuleInfo{std::string(*path), context && context->optional};
+        return Luau::ModuleInfo{std::string(result.path), context && context->optional};
     }
 
     const Luau::Config &ConfigurationResolver::getConfig(const Luau::ModuleName &name, const Luau::TypeCheckLimits &) const {
-        const void *configuration = nullptr;
-
-        if (!checker->callbacks.configuration(checker->context, text(name), &configuration) || !configuration) {
+        if (!checker->host) {
             throw CallbackFailure{};
         }
 
-        return static_cast<const Configuration *>(configuration)->value;
-    }
+        const Configuration *configuration = checker->host->configuration(borrowed(name));
 
-    template <typename T> int32_t emit_fast_flags(Luau::FValue<T> *flags, FastFlagType type, const char *prefix, const char *dynamic_prefix, FastFlagCallback callback, void *context) {
-        for (Luau::FValue<T> *flag = flags; flag; flag = flag->next) {
-            const std::string name = std::string(flag->dynamic ? dynamic_prefix : prefix) + flag->name;
-
-            FastFlag value{
-                text(name),
-                type,
-                uint8_t(type == FastFlagBool && flag->value),
-                type == FastFlagInt ? flag->value : 0,
-            };
-
-            if (!callback(context, &value)) {
-                return StatusCallbackFailure;
-            }
+        if (!configuration) {
+            throw CallbackFailure{};
         }
 
-        return StatusSuccess;
+        return configuration->value;
     }
 
-    template <typename T> bool flag_name_matches(const Luau::FValue<T> &flag, std::string_view name, std::string_view prefix, std::string_view dynamic_prefix) {
-        const std::string_view selected_prefix = flag.dynamic ? dynamic_prefix : prefix;
+    std::unique_ptr<Configuration> configuration_create(rust::Slice<const uint8_t> source, Failure &failure) noexcept {
+        std::unique_ptr<Configuration> result;
 
-        return name.size() == selected_prefix.size() + std::strlen(flag.name) && name.substr(0, selected_prefix.size()) == selected_prefix && name.substr(selected_prefix.size()) == flag.name;
-    }
-
-    int32_t set_flag_value(std::string_view name, FastFlagType type, uint8_t bool_value, int32_t int_value, String *error) {
-        for (Luau::FValue<bool> *flag = Luau::FValue<bool>::list; flag; flag = flag->next) {
-            if (flag_name_matches(*flag, name, "FFlag", "DFFlag")) {
-                if (type != FastFlagBool) {
-                    return failure(error, "fast flag type mismatch");
-                }
-
-                flag->value = bool_value != 0;
-
-                return StatusSuccess;
-            }
-        }
-
-        for (Luau::FValue<int> *flag = Luau::FValue<int>::list; flag; flag = flag->next) {
-            if (flag_name_matches(*flag, name, "FInt", "DFInt")) {
-                if (type != FastFlagInt) {
-                    return failure(error, "fast flag type mismatch");
-                }
-
-                flag->value = int_value;
-
-                return StatusSuccess;
-            }
-        }
-
-        return failure(error, "unknown fast flag");
-    }
-} // namespace
-
-template <typename Function, typename... Arguments> int32_t call_editor(void *handle, String *error, Function function, Arguments &&...arguments) {
-    try {
-        if (error) {
-            *error = {};
-        }
-
-        auto *checker = static_cast<Checker *>(handle);
-
-        if (!checker) {
-            return failure(error, "null checker");
-        }
-
-        return function(checker->frontend, std::forward<Arguments>(arguments)...);
-
-    } catch (...) {
-        return exception_failure(error);
-    }
-}
-
-extern "C" {
-    int32_t fast_flags(FastFlagCallback callback, void *context) {
-        if (!callback) {
-            return StatusFailure;
-        }
-
-        try {
-            const int32_t bool_status = emit_fast_flags(Luau::FValue<bool>::list, FastFlagBool, "FFlag", "DFFlag", callback, context);
-
-            if (bool_status != StatusSuccess) {
-                return bool_status;
-            }
-
-            return emit_fast_flags(Luau::FValue<int>::list, FastFlagInt, "FInt", "DFInt", callback, context);
-        } catch (...) {
-            return StatusFailure;
-        }
-    }
-
-    int32_t set_fast_flag(Text name, FastFlagType type, uint8_t bool_value, int32_t int_value, String *error) {
-        try {
-            if (error) {
-                *error = {};
-            }
-
-            const std::optional<std::string_view> value = view(name);
-
-            if (!value || (type != FastFlagBool && type != FastFlagInt)) {
-                return failure(error, "invalid fast flag");
-            }
-
-            return set_flag_value(*value, type, bool_value, int_value, error);
-        } catch (...) {
-            return exception_failure(error);
-        }
-    }
-
-    void string_destroy(String value) {
-        std::free(value.data);
-    }
-
-    void *configuration_create(Text source, String *error) {
-        try {
-            if (error) {
-                *error = {};
-            }
-
-            const std::optional<std::string_view> value = view(source);
-
-            if (!value) {
-                failure(error, "invalid configuration source");
-
-                return nullptr;
-            }
-
+        failure = attempt([&] {
             Luau::Config configuration;
             Luau::ConfigOptions options;
             options.aliasOptions = Luau::ConfigOptions::AliasOptions{std::nullopt, true};
 
-            if (const std::optional<std::string> message = Luau::parseConfig(std::string(*value), configuration, options)) {
-                failure(error, *message);
-
-                return nullptr;
+            if (const std::optional<std::string> message = Luau::parseConfig(std::string(reinterpret_cast<const char *>(source.data()), source.size()), configuration, options)) {
+                throw std::invalid_argument(*message);
             }
 
-            return new Configuration{std::move(configuration)};
-        } catch (...) {
-            exception_failure(error);
+            result = std::make_unique<Configuration>(Configuration{std::move(configuration)});
+        });
 
-            return nullptr;
-        }
+        return result;
     }
 
-    void configuration_destroy(void *configuration) {
-        delete static_cast<Configuration *>(configuration);
+    std::unique_ptr<Checker> checker_create(bool retain, Failure &failure) noexcept {
+        std::unique_ptr<Checker> result;
+        failure = attempt([&] { result = std::make_unique<Checker>(retain); });
+
+        return result;
     }
 
-    void *checker_create(const BridgeCallbacks *callbacks, void *context, const FrontendOptions *options, String *error) {
-        try {
-            if (error) {
-                *error = {};
-            }
-
-            if (!callbacks || !callbacks->source || !callbacks->configuration || !callbacks->resolve || !callbacks->diagnostic || !options) {
-                failure(error, "invalid checker callbacks");
-
-                return nullptr;
-            }
-
-            return new Checker(*callbacks, context, *options);
-        } catch (...) {
-            exception_failure(error);
-
-            return nullptr;
-        }
+    Failure fast_flags(rust::Vec<FastFlag> &output) noexcept {
+        return attempt([&] {
+            emit_fast_flags(Luau::FValue<bool>::list, true, "FFlag", "DFFlag", output);
+            emit_fast_flags(Luau::FValue<int>::list, false, "FInt", "DFInt", output);
+        });
     }
 
-    void checker_destroy(void *handle) {
-        delete static_cast<Checker *>(handle);
+    Failure set_fast_flag(rust::Str name, bool boolean, bool bool_value, int32_t int_value) noexcept {
+        return attempt([&] {
+            const std::string_view value(name.data(), name.size());
+
+            for (Luau::FValue<bool> *flag = Luau::FValue<bool>::list; flag; flag = flag->next) {
+                if (flag_name_matches(*flag, value, "FFlag", "DFFlag")) {
+                    if (!boolean) {
+                        throw std::invalid_argument("fast flag type mismatch");
+                    }
+
+                    flag->value = bool_value;
+                    return;
+                }
+            }
+
+            for (Luau::FValue<int> *flag = Luau::FValue<int>::list; flag; flag = flag->next) {
+                if (flag_name_matches(*flag, value, "FInt", "DFInt")) {
+                    if (boolean) {
+                        throw std::invalid_argument("fast flag type mismatch");
+                    }
+
+                    flag->value = int_value;
+                    return;
+                }
+            }
+
+            throw std::invalid_argument("unknown fast flag");
+        });
     }
 
-    int32_t checker_set_context(void *handle, void *context, String *error) {
-        try {
-            if (error) {
-                *error = {};
+    Failure checker_mark_dirty(Checker &checker, rust::Str name) noexcept {
+        return attempt([&] {
+            const std::string value(name);
+
+            if (checker.definition_names.count(value)) {
+                throw std::invalid_argument("definition changes require a new checker");
             }
 
-            auto *checker = static_cast<Checker *>(handle);
-
-            if (!checker) {
-                return failure(error, "null checker");
-            }
-
-            checker->context = context;
-
-            return StatusSuccess;
-        } catch (...) {
-            return exception_failure(error);
-        }
+            checker.frontend.markDirty(value);
+        });
     }
 
-    int32_t checker_mark_dirty(void *handle, Text name, String *error) {
-        try {
-            if (error) {
-                *error = {};
-            }
-
-            auto *checker = static_cast<Checker *>(handle);
-            const std::optional<std::string_view> value = view(name);
-
-            if (!checker || !value) {
-                return failure(error, "invalid dirty module request");
-            }
-
-            if (checker->definition_names.count(std::string(*value))) {
-                return failure(error, "definition changes require a new checker");
-            }
-
-            checker->frontend.markDirty(std::string(*value));
-
-            return StatusSuccess;
-        } catch (...) {
-            return exception_failure(error);
-        }
-    }
-
-    int32_t checker_clear_sources(void *handle, String *error) {
-        try {
-            if (error) {
-                *error = {};
-            }
-
-            auto *checker = static_cast<Checker *>(handle);
-
-            if (!checker) {
-                return failure(error, "null checker");
-            }
-
+    Failure checker_clear_sources(Checker &checker) noexcept {
+        return attempt([&] {
             std::vector<Luau::ModuleName> names;
-            names.reserve(checker->frontend.sourceNodes.size());
+            names.reserve(checker.frontend.sourceNodes.size());
 
-            for (const auto &[name, _] : checker->frontend.sourceNodes) {
-                if (!checker->definition_names.count(name)) {
+            for (const auto &[name, _] : checker.frontend.sourceNodes) {
+                if (!checker.definition_names.count(name)) {
                     names.push_back(name);
                 }
             }
 
-            checker->frontend.clearModules(names);
-
-            return StatusSuccess;
-        } catch (...) {
-            return exception_failure(error);
-        }
+            checker.frontend.clearModules(names);
+        });
     }
 
-    int32_t checker_register_roblox_classes(void *handle, const RobloxClass *classes, size_t class_count, String *error) {
-        try {
-            if (error) {
-                *error = {};
+    Failure checker_register_roblox_classes(Checker &checker, rust::Slice<const RobloxClass> classes) noexcept {
+        return attempt([&] {
+            if (checker.globals_frozen || checker.roblox_classes_registered || !checker.frontend.sourceNodes.empty()) {
+                throw std::invalid_argument("global changes require a new checker");
             }
 
-            auto *checker = static_cast<Checker *>(handle);
-
-            if (!checker || (class_count != 0 && !classes)) {
-                return failure(error, "invalid Roblox registration request");
-            }
-
-            if (checker->globals_frozen || checker->roblox_classes_registered || !checker->frontend.sourceNodes.empty()) {
-                return failure(error, "global changes require a new checker");
-            }
-
-            instar::register_roblox_magic(checker->frontend.globals, classes, class_count);
-            checker->roblox_classes_registered = true;
-
-            return StatusSuccess;
-        } catch (...) {
-            return exception_failure(error);
-        }
+            register_roblox_magic(checker.frontend.globals, classes);
+            checker.roblox_classes_registered = true;
+        });
     }
 
-    int32_t checker_register_roblox_tree(void *handle, const RobloxNode *nodes, size_t node_count, String *error) {
-        try {
-            if (error) {
-                *error = {};
+    Failure checker_register_roblox_tree(Checker &checker, rust::Slice<const RobloxNode> nodes) noexcept {
+        return attempt([&] {
+            if (nodes.empty()) {
+                throw std::invalid_argument("invalid Roblox hierarchy request");
             }
 
-            auto *checker = static_cast<Checker *>(handle);
-
-            if (!checker || !nodes || node_count == 0) {
-                return failure(error, "invalid Roblox hierarchy request");
+            if (!checker.roblox_classes_registered) {
+                throw std::invalid_argument("register Roblox classes before the hierarchy");
             }
 
-            if (!checker->roblox_classes_registered) {
-                return failure(error, "register Roblox classes before the hierarchy");
+            if (checker.globals_frozen || checker.roblox_tree_registered || !checker.frontend.sourceNodes.empty()) {
+                throw std::invalid_argument("hierarchy changes require a new checker");
             }
 
-            if (checker->globals_frozen || checker->roblox_tree_registered || !checker->frontend.sourceNodes.empty()) {
-                return failure(error, "hierarchy changes require a new checker");
-            }
-
-            checker->script_modules = instar::register_roblox_tree(checker->frontend, nodes, node_count);
-            checker->roblox_tree_registered = true;
-
-            return StatusSuccess;
-        } catch (...) {
-            return exception_failure(error);
-        }
+            checker.script_modules = register_roblox_tree(checker.frontend, nodes);
+            checker.roblox_tree_registered = true;
+        });
     }
 
-    int32_t checker_freeze(void *handle, String *error) {
-        try {
-            if (error) {
-                *error = {};
-            }
-
-            auto *checker = static_cast<Checker *>(handle);
-
-            if (!checker) {
-                return failure(error, "null checker");
-            }
-
-            Luau::freeze(checker->frontend.globals.globalTypes);
-            checker->globals_frozen = true;
-
-            return StatusSuccess;
-        } catch (...) {
-            return exception_failure(error);
-        }
+    Failure checker_freeze(Checker &checker) noexcept {
+        return attempt([&] {
+            Luau::freeze(checker.frontend.globals.globalTypes);
+            checker.globals_frozen = true;
+        });
     }
 
-    int32_t checker_load_definition(void *handle, Text source, Text package_name, const DefinitionOptions *options, String *error) {
-        try {
-            if (error) {
-                *error = {};
+    Failure checker_load_definition(Checker &checker, Host &host, rust::Slice<const uint8_t> source, rust::Str package) noexcept {
+        return attempt([&] {
+            Operation operation(checker, host);
+            auto &frontend = operation.frontend();
+            const std::string name(package);
+
+            if (checker.globals_frozen || checker.roblox_classes_registered || !frontend.sourceNodes.empty() || frontend.sourceModules.count(name)) {
+                throw std::invalid_argument("definition changes require a new checker");
             }
 
-            auto *checker = static_cast<Checker *>(handle);
-            const std::optional<std::string_view> source_view = view(source);
-            const std::optional<std::string_view> package_view = view(package_name);
-
-            if (!checker || !source_view || !package_view || !options) {
-                return failure(error, "invalid definition request");
-            }
-
-            const std::string name(*package_view);
-
-            if (checker->globals_frozen || checker->roblox_classes_registered || !checker->frontend.sourceNodes.empty() || checker->frontend.sourceModules.count(name)) {
-                return failure(error, "definition changes require a new checker");
-            }
-
-            Luau::LoadDefinitionFileResult result = checker->frontend.loadDefinitionFile(checker->frontend.globals, checker->frontend.globals.globalScope, *source_view, name, options->capture_comments != 0);
+            Luau::LoadDefinitionFileResult result =
+                frontend.loadDefinitionFile(frontend.globals, frontend.globals.globalScope, std::string_view(reinterpret_cast<const char *>(source.data()), source.size()), name, false);
 
             for (const Luau::ParseError &parse_error : result.parseResult.errors) {
-                if (!checker->diagnostic(name, parse_error.getLocation(), DiagnosticError, parse_error.getMessage())) {
-                    return StatusCallbackFailure;
-                }
+                checker.diagnostic(name, parse_error.getLocation(), DiagnosticSeverity::DiagnosticError, parse_error.getMessage());
             }
 
             if (result.module) {
                 for (const Luau::TypeError &type_error : result.module->errors) {
-                    if (!checker->emit(type_error, name)) {
-                        return StatusCallbackFailure;
-                    }
+                    checker.emit(type_error, name);
                 }
             }
 
             if (!result.success) {
-                if (error) {
-                    write(error, "definition loading failed");
-                }
-
-                return StatusDefinitionFailure;
+                throw DefinitionFailure{};
             }
 
-            checker->frontend.sourceModules[name] = std::make_shared<Luau::SourceModule>(std::move(result.sourceModule));
-            checker->frontend.moduleResolver.setModule(name, std::move(result.module));
-            checker->definition_names.insert(name);
-
-            return StatusSuccess;
-        } catch (...) {
-            return exception_failure(error);
-        }
+            frontend.sourceModules[name] = std::make_shared<Luau::SourceModule>(std::move(result.sourceModule));
+            frontend.moduleResolver.setModule(name, std::move(result.module));
+            checker.definition_names.insert(name);
+        });
     }
 
-    int32_t checker_parse(void *handle, Text name, String *error) {
-        try {
-            if (error) {
-                *error = {};
+    Failure checker_parse(Checker &checker, Host &host, rust::Str name) noexcept {
+        return attempt([&] {
+            Operation operation(checker, host);
+            const std::string value(name);
+
+            if (!checker.definition_names.count(value)) {
+                operation.frontend().parse(value);
             }
-
-            auto *checker = static_cast<Checker *>(handle);
-            const std::optional<std::string_view> value = view(name);
-
-            if (!checker || !value) {
-                return failure(error, "invalid parse request");
-            }
-
-            if (checker->definition_names.find(std::string(*value)) == checker->definition_names.end()) {
-                checker->frontend.parse(std::string(*value));
-            }
-
-            return StatusSuccess;
-        } catch (...) {
-            return exception_failure(error);
-        }
+        });
     }
 
-    int32_t checker_parse_diagnostics(void *handle, Text name, String *error) {
-        try {
-            if (error) {
-                *error = {};
-            }
-
-            auto *checker = static_cast<Checker *>(handle);
-            const std::optional<std::string_view> value = view(name);
-
-            if (!checker || !value) {
-                return failure(error, "invalid parse diagnostic request");
-            }
-
-            const Luau::SourceModule *source = checker->frontend.getSourceModule(std::string(*value));
+    Failure checker_parse_diagnostics(Checker &checker, Host &host, rust::Str name) noexcept {
+        return attempt([&] {
+            Operation operation(checker, host);
+            const std::string value(name);
+            const Luau::SourceModule *source = operation.frontend().getSourceModule(value);
 
             if (!source) {
-                return failure(error, "source unavailable after parse");
+                throw std::invalid_argument("source unavailable after parse");
             }
 
             for (const Luau::ParseError &parse_error : source->parseErrors) {
-                if (!checker->diagnostic(*value, parse_error.getLocation(), DiagnosticError, parse_error.getMessage())) {
-                    return StatusCallbackFailure;
-                }
+                checker.diagnostic(value, parse_error.getLocation(), DiagnosticSeverity::DiagnosticError, parse_error.getMessage());
             }
-
-            return StatusSuccess;
-        } catch (...) {
-            return exception_failure(error);
-        }
+        });
     }
 
-    int32_t checker_prepare(void *handle, Text name, ItemCallback timeout_callback, void *timeout_context, String *error) {
-        try {
-            if (error) {
-                *error = {};
+    Failure checker_prepare(Checker &checker, Host &host, rust::Str name, rust::Vec<rust::String> &timeouts) noexcept {
+        return attempt([&] {
+            Operation operation(checker, host);
+            auto &frontend = operation.frontend();
+            const std::string path(name);
+
+            if (checker.definition_names.count(path)) {
+                return;
             }
 
-            auto *checker = static_cast<Checker *>(handle);
-            const std::optional<std::string_view> value = view(name);
-
-            if (!checker || !value || !timeout_callback) {
-                return failure(error, "invalid preparation request");
-            }
-
-            const std::string path(*value);
-
-            if (checker->definition_names.count(path)) {
-                return StatusSuccess;
-            }
-
-            checker->frontend.queueModuleCheck(path);
-            checker->frontend.checkQueuedModules();
-
+            frontend.queueModuleCheck(path);
+            frontend.checkQueuedModules();
             std::vector<Luau::ModuleName> pending{path};
             std::unordered_set<Luau::ModuleName> seen;
 
@@ -732,105 +363,76 @@ extern "C" {
                     continue;
                 }
 
-                const auto module = checker->frontend.moduleResolver.getModule(current);
+                const auto module = frontend.moduleResolver.getModule(current);
 
-                if (module && module->timeout && !timeout_callback(timeout_context, text(current))) {
-                    return StatusCallbackFailure;
+                if (module && module->timeout) {
+                    timeouts.push_back(rust::String(current));
                 }
 
-                const auto node = checker->frontend.sourceNodes.find(current);
+                const auto node = frontend.sourceNodes.find(current);
 
-                if (node != checker->frontend.sourceNodes.end()) {
+                if (node != frontend.sourceNodes.end()) {
                     for (const Luau::ModuleName &dependency : node->second->requireSet) {
                         pending.push_back(dependency);
                     }
                 }
             }
-
-            return StatusSuccess;
-        } catch (...) {
-            return exception_failure(error);
-        }
+        });
     }
 
-    int32_t checker_check(void *handle, Text name, String *error) {
-        try {
-            if (error) {
-                *error = {};
+    Failure checker_check(Checker &checker, Host &host, rust::Str name) noexcept {
+        return attempt([&] {
+            Operation operation(checker, host);
+            auto &frontend = operation.frontend();
+            const std::string path(name);
+
+            if (checker.definition_names.count(path)) {
+                return;
             }
 
-            auto *checker = static_cast<Checker *>(handle);
-            const std::optional<std::string_view> value = view(name);
+            const auto module = frontend.moduleResolver.getModule(path);
 
-            if (!checker || !value) {
-                return failure(error, "invalid check request");
-            }
-
-            const std::string path(*value);
-
-            if (checker->definition_names.count(path)) {
-                return StatusSuccess;
-            }
-
-            const auto module = checker->frontend.moduleResolver.getModule(path);
-
-            if (checker->frontend.isDirty(path) || !module || module->cancelled) {
-                return failure(error, "semantic preparation required before checking");
+            if (frontend.isDirty(path) || !module || module->cancelled) {
+                throw std::invalid_argument("semantic preparation required before checking");
             }
 
             for (const Luau::TypeError &type_error : module->errors) {
-                if (!checker->emit(type_error, path)) {
-                    return StatusCallbackFailure;
-                }
+                checker.emit(type_error, path);
             }
-
-            return StatusSuccess;
-        } catch (...) {
-            return exception_failure(error);
-        }
+        });
     }
 
-    int32_t checker_lint(void *handle, Text name, String *error) {
-        try {
-            if (error) {
-                *error = {};
+    Failure checker_lint(Checker &checker, Host &host, rust::Str name) noexcept {
+        return attempt([&] {
+            Operation operation(checker, host);
+            auto &frontend = operation.frontend();
+            const std::string path(name);
+
+            if (checker.definition_names.count(path)) {
+                return;
             }
 
-            auto *checker = static_cast<Checker *>(handle);
-            const std::optional<std::string_view> value = view(name);
+            const Luau::SourceModule *source = frontend.getSourceModule(path);
+            const auto module = frontend.moduleResolver.getModule(path);
 
-            if (!checker || !value) {
-                return failure(error, "invalid lint request");
+            if (frontend.isDirty(path) || !source || !module || module->cancelled) {
+                throw std::invalid_argument("semantic preparation required before linting");
             }
 
-            const std::string path(*value);
-
-            if (checker->definition_names.count(path)) {
-                return StatusSuccess;
-            }
-
-            const Luau::SourceModule *source = checker->frontend.getSourceModule(path);
-            const auto module = checker->frontend.moduleResolver.getModule(path);
-
-            if (checker->frontend.isDirty(path) || !source || !module || module->cancelled) {
-                return failure(error, "semantic preparation required before linting");
-            }
-
-            if (!checker->frontend.options.retainFullTypeGraphs) {
-                return failure(error, "linting requires retained full type graphs");
+            if (!frontend.options.retainFullTypeGraphs) {
+                throw std::invalid_argument("linting requires retained full type graphs");
             }
 
             if (!source->parseErrors.empty()) {
-                return StatusSuccess;
+                return;
             }
 
             if (!source->root) {
-                return failure(error, "prepared syntax tree unavailable for linting");
+                throw std::invalid_argument("prepared syntax tree unavailable for linting");
             }
 
-            const Luau::Config config = checker->configurations.getConfig(path, {});
+            const Luau::Config config = checker.configurations.getConfig(path, {});
             const Luau::Mode mode = source->mode.value_or(config.mode);
-            // Match the frontend's lint filtering and module environment resolution.
             Luau::LintOptions options = config.enabledLint;
             options.warningMask &= ~Luau::LintWarning::parseMask(source->hotcomments);
 
@@ -842,7 +444,7 @@ extern "C" {
                 options.disableWarning(Luau::LintWarning::Code_ImplicitReturn);
             }
 
-            Luau::ScopePtr environment = source->environmentName ? checker->frontend.getEnvironmentScope(*source->environmentName) : checker->frontend.globals.globalScope;
+            Luau::ScopePtr environment = source->environmentName ? frontend.getEnvironmentScope(*source->environmentName) : frontend.globals.globalScope;
 
             if (!config.globals.empty()) {
                 environment = std::make_shared<Luau::Scope>(environment);
@@ -851,7 +453,7 @@ extern "C" {
                     const Luau::AstName name = source->names->get(global.c_str());
 
                     if (name.value) {
-                        environment->bindings[name].typeId = checker->frontend.builtinTypes->anyType;
+                        environment->bindings[name].typeId = frontend.builtinTypes->anyType;
                     }
                 }
             }
@@ -859,138 +461,42 @@ extern "C" {
             const auto warnings = Luau::lint(source->root, *source->names, environment, module.get(), source->hotcomments, options);
 
             for (const Luau::LintWarning &warning : warnings) {
-                if (!checker->emit(path, warning, config.lintErrors || config.fatalLint.isEnabled(warning.code))) {
-                    return StatusCallbackFailure;
-                }
+                checker.emit(path, warning, config.lintErrors || config.fatalLint.isEnabled(warning.code));
             }
-
-            return StatusSuccess;
-        } catch (...) {
-            return exception_failure(error);
-        }
+        });
     }
 
-    int32_t checker_globals(void *handle, ItemCallback callback, void *context, String *error) {
-        try {
-            if (error) {
-                *error = {};
-            }
-
-            auto *checker = static_cast<Checker *>(handle);
-
-            if (!checker || !callback) {
-                return failure(error, "invalid global request");
-            }
-
-            for (const auto &[name, _] : checker->frontend.globals.globalScope->bindings) {
-                if (!callback(context, text(name.c_str()))) {
-                    return StatusCallbackFailure;
+    Failure checker_globals(const Checker &checker, Items &output) noexcept {
+        return attempt([&] {
+            for (const auto &[name, _] : checker.frontend.globals.globalScope->bindings) {
+                if (!output.item(borrowed(name.c_str()))) {
+                    throw CallbackFailure{};
                 }
             }
-
-            return StatusSuccess;
-        } catch (...) {
-            return exception_failure(error);
-        }
+        });
     }
 
-    int32_t checker_modules(void *handle, ItemCallback callback, void *context, String *error) {
-        try {
-            if (error) {
-                *error = {};
-            }
-
-            auto *checker = static_cast<Checker *>(handle);
-
-            if (!checker || !callback) {
-                return failure(error, "invalid module request");
-            }
-
-            for (const auto &[name, _] : checker->frontend.sourceNodes) {
-                if (!callback(context, text(name))) {
-                    return StatusCallbackFailure;
+    Failure checker_modules(const Checker &checker, Items &output) noexcept {
+        return attempt([&] {
+            for (const auto &[name, _] : checker.frontend.sourceNodes) {
+                if (!output.item(borrowed(name))) {
+                    throw CallbackFailure{};
                 }
             }
-
-            return StatusSuccess;
-        } catch (...) {
-            return exception_failure(error);
-        }
+        });
     }
 
-    int32_t checker_attach_type_data(void *handle, Text name, String *error) {
-        try {
-            if (error) {
-                *error = {};
-            }
-
-            auto *checker = static_cast<Checker *>(handle);
-            const std::optional<std::string_view> value = view(name);
-
-            if (!checker || !value) {
-                return failure(error, "invalid type data request");
-            }
-
-            Luau::SourceModule *source = checker->frontend.getSourceModule(std::string(*value));
-            Luau::ModulePtr module = checker->frontend.moduleResolver.getModule(std::string(*value));
+    Failure checker_attach_type_data(Checker &checker, rust::Str name) noexcept {
+        return attempt([&] {
+            const std::string value(name);
+            Luau::SourceModule *source = checker.frontend.getSourceModule(value);
+            Luau::ModulePtr module = checker.frontend.moduleResolver.getModule(value);
 
             if (!source || !module) {
-                return failure(error, "checked module unavailable for type data");
+                throw std::invalid_argument("checked module unavailable for type data");
             }
 
             Luau::attachTypeData(*source, *module);
-
-            return StatusSuccess;
-        } catch (...) {
-            return exception_failure(error);
-        }
+        });
     }
-
-    int32_t editor_hover(void *handle, Text name, uint32_t line, uint32_t column, HoverCallback callback, void *context, String *error) {
-        return call_editor(handle, error, instar::editor_hover, name, line, column, callback, context);
-    }
-
-    int32_t editor_completion(void *handle, Text name, uint32_t line, uint32_t column, CompletionCallback callback, void *context, String *error) {
-        return call_editor(handle, error, instar::editor_completion, name, line, column, callback, context);
-    }
-
-    int32_t editor_signature_help(void *handle, Text name, uint32_t line, uint32_t column, SignatureCallback callback, void *context, String *error) {
-        return call_editor(handle, error, instar::editor_signature_help, name, line, column, callback, context);
-    }
-
-    int32_t editor_type_hints(void *handle, Text name, HintCallback callback, void *context, String *error) {
-        return call_editor(handle, error, instar::editor_type_hints, name, callback, context);
-    }
-
-    int32_t editor_definition(void *handle, Text name, uint32_t line, uint32_t column, NavigationCallback callback, void *context, String *error) {
-        return call_editor(handle, error, instar::editor_definition, name, line, column, callback, context);
-    }
-
-    int32_t editor_declaration(void *handle, Text name, uint32_t line, uint32_t column, NavigationCallback callback, void *context, String *error) {
-        return call_editor(handle, error, instar::editor_declaration, name, line, column, callback, context);
-    }
-
-    int32_t editor_implementation(void *handle, Text name, uint32_t line, uint32_t column, NavigationCallback callback, void *context, String *error) {
-        return call_editor(handle, error, instar::editor_implementation, name, line, column, callback, context);
-    }
-
-    int32_t editor_type_definition(void *handle, Text name, uint32_t line, uint32_t column, NavigationCallback callback, void *context, String *error) {
-        return call_editor(handle, error, instar::editor_type_definition, name, line, column, callback, context);
-    }
-
-    int32_t editor_references(void *handle, Text name, uint32_t line, uint32_t column, const Text *candidates, size_t candidate_count, ReferenceCallback callback, void *context, String *error) {
-        return call_editor(handle, error, instar::editor_references, name, line, column, candidates, candidate_count, callback, context);
-    }
-
-    int32_t editor_reference_target(void *handle, Text name, uint32_t line, uint32_t column, ReferenceTargetCallback callback, void *context, String *error) {
-        return call_editor(handle, error, instar::editor_reference_target, name, line, column, callback, context);
-    }
-
-    int32_t editor_rename_target(void *handle, Text name, uint32_t line, uint32_t column, RenameTargetCallback callback, void *context, String *error) {
-        return call_editor(handle, error, instar::editor_rename_target, name, line, column, callback, context);
-    }
-
-    int32_t editor_rename(void *handle, Text name, uint32_t line, uint32_t column, Text new_name, const Text *candidates, size_t candidate_count, ReferenceCallback callback, void *context, String *error) {
-        return call_editor(handle, error, instar::editor_rename, name, line, column, new_name, candidates, candidate_count, callback, context);
-    }
-}
+} // namespace instar
