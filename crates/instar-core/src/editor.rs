@@ -454,6 +454,21 @@ mod tests {
         std::fs::remove_dir_all(directory).unwrap();
     }
 
+    fn signature(diagnostics: &[Diagnostic]) -> Vec<Diagnostic> {
+        let mut result = diagnostics.to_vec();
+
+        result.sort_by_key(|diagnostic| {
+            (
+                diagnostic.location.module.source.clone(),
+                diagnostic.location.range,
+                diagnostic.severity,
+                diagnostic.message.clone(),
+            )
+        });
+
+        result
+    }
+
     #[test]
     fn passes_share_semantics_and_compose_editor_diagnostics() {
         let directory =
@@ -471,21 +486,6 @@ mod tests {
         ).unwrap();
 
         std::fs::write(&dependency, "if true then end\nreturn \"text\"\n").unwrap();
-
-        let signature = |diagnostics: &[Diagnostic]| {
-            let mut result = diagnostics.to_vec();
-
-            result.sort_by_key(|diagnostic| {
-                (
-                    diagnostic.location.module.source.clone(),
-                    diagnostic.location.range,
-                    diagnostic.severity,
-                    diagnostic.message.clone(),
-                )
-            });
-
-            result
-        };
 
         let execute = |linting| {
             let mut reported = Vec::new();
