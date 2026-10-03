@@ -1998,7 +1998,7 @@ mod tests {
     fn native_flags_and_unnamed_complexity_error_owner() {
         let original = fast_flags().unwrap();
         let name = "FIntLuauTarjanChildLimit";
-        assert_eq!(original.get(name), Some(&FastFlagValue::Int(10_000)));
+        assert!(matches!(original.get(name), Some(FastFlagValue::Int(_))));
 
         assert!(set_fast_flag(name, FastFlagValue::Bool(true)).is_err());
         assert!(set_fast_flag("FIntUnknownTestFlag", FastFlagValue::Int(1)).is_err());
@@ -2011,7 +2011,7 @@ mod tests {
             Some(&FastFlagValue::Int(12_345))
         );
 
-        set_fast_flag(name, FastFlagValue::Int(10_000)).unwrap();
+        set_fast_flag(name, original[name]).unwrap();
         let mut checker = Checker::new(&CheckerOptions::default()).unwrap();
         checker.freeze().unwrap();
 

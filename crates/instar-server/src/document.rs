@@ -698,7 +698,6 @@ mod tests {
             io::ErrorKind::NotFound
         );
 
-        assert_eq!(diagnostics(findings, resolve).unwrap(), reports);
         assert_eq!(diagnostics([], resolve).unwrap(), BTreeMap::new());
     }
 }

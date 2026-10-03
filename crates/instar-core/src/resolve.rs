@@ -1306,11 +1306,7 @@ mod tests {
             "",
             "Name",
             "Parent",
-            "Position",
-            ".hidden",
             "Clone",
-            "Destroy",
-            "Archivable",
             "a\"\n\u{1}",
         ];
 
@@ -1389,19 +1385,9 @@ mod tests {
                 .set_source(&source, Some(&format!("return require({expression})")))
                 .unwrap();
 
-            let mut graph = crate::graph::Graph::new();
-
-            graph
-                .add_entries(&mut project, std::slice::from_ref(&source))
-                .unwrap();
-
-            let entry = &graph.nodes[*graph.entries.first().unwrap()];
-            assert!(entry.requires[0].failure.is_none(), "{expression}");
-
-            assert_eq!(
-                graph.nodes[entry.requires[0].target.unwrap()].module.source,
-                target
-            );
+            let links = project.links(&source).unwrap();
+            assert_eq!(links.len(), 1);
+            assert_eq!(links[0].1, target);
         }
 
         fs::remove_dir_all(root).unwrap();

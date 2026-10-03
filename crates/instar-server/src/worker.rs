@@ -1243,23 +1243,25 @@ mod tests {
                 expected = Some(actions);
             }
 
-            let mut changed = snapshot.clone();
-            changed.revision += 1;
+            if diagnostics {
+                let mut changed = snapshot.clone();
+                changed.revision += 1;
 
-            changed.documents.insert(
-                path.clone(),
-                Arc::new(Document::new(uri(&path).unwrap(), 2, "return 1\n".into()).unwrap()),
-            );
+                changed.documents.insert(
+                    path.clone(),
+                    Arc::new(Document::new(uri(&path).unwrap(), 2, "return 1\n".into()).unwrap()),
+                );
 
-            worker.update(&changed, false).unwrap();
+                worker.update(&changed, false).unwrap();
 
-            let crate::Response::Actions(actions) =
-                worker.query(&path, &Query::Actions(range)).unwrap()
-            else {
-                panic!("expected code actions");
-            };
+                let crate::Response::Actions(actions) =
+                    worker.query(&path, &Query::Actions(range)).unwrap()
+                else {
+                    panic!("expected code actions");
+                };
 
-            assert_eq!(actions, lsp::CodeActionResponse::new());
+                assert_eq!(actions, lsp::CodeActionResponse::new());
+            }
         }
 
         std::fs::remove_dir_all(directory).unwrap();

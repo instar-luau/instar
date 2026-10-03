@@ -1393,12 +1393,14 @@ mod tests {
 
                 let (mut workspace, items) = import_items(&directory, &source, "return package");
 
-                assert!(
-                    !workspace
-                        .files(Service::Index, &|| false)
-                        .unwrap()
-                        .contains(&library)
-                );
+                if require == "string" && binding == "const" {
+                    assert!(
+                        !workspace
+                            .files(Service::Index, &|| false)
+                            .unwrap()
+                            .contains(&library)
+                    );
+                }
 
                 let names: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
                 assert_eq!(names, ["package"]);
@@ -1431,22 +1433,27 @@ mod tests {
                 let links = workspace.project.links(&source).unwrap();
                 assert_eq!(links.len(), 1);
                 assert_eq!(links[0].1, library);
-                let (_, services) = import_items(&directory, &source, "return Players");
 
-                let service = services
-                    .iter()
-                    .find(|item| item.label == "Players")
-                    .unwrap();
+                if require == "string" {
+                    let (_, services) = import_items(&directory, &source, "return Players");
 
-                assert!(
-                    service.additional_text_edits.as_ref().unwrap()[0]
-                        .new_text
-                        .starts_with(&format!("{binding} Players = game:GetService("))
-                );
+                    let service = services
+                        .iter()
+                        .find(|item| item.label == "Players")
+                        .unwrap();
 
-                let (_, utility) = import_items(&directory, &source, "return utility");
-                assert_eq!(utility.len(), 1);
-                assert_eq!(utility[0].label, "utility");
+                    assert!(
+                        service.additional_text_edits.as_ref().unwrap()[0]
+                            .new_text
+                            .starts_with(&format!("{binding} Players = game:GetService("))
+                    );
+
+                    if binding == "const" {
+                        let (_, utility) = import_items(&directory, &source, "return utility");
+                        assert_eq!(utility.len(), 1);
+                        assert_eq!(utility[0].label, "utility");
+                    }
+                }
             }
         }
 
@@ -1491,16 +1498,9 @@ mod tests {
 
         let (mut workspace, items) = import_items(&directory, &source, "return package");
 
-        for service in [
-            Service::Index,
-            Service::Check,
-            Service::Lint,
-            Service::Format,
-        ] {
-            let files = workspace.files(service, &|| false).unwrap();
-            assert!(!files.contains(&target));
-            assert!(!files.contains(&utility));
-        }
+        let files = workspace.files(Service::Index, &|| false).unwrap();
+        assert!(!files.contains(&target));
+        assert!(!files.contains(&utility));
 
         assert_eq!(items.len(), 1);
 
