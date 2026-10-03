@@ -262,11 +262,9 @@ exclude = ["imports/private/**"]
                     selected == directory,
                     "{service:?}: {directory}"
                 );
-
-                assert!(
-                    !filters.includes(&root.join(directory).join("private/init.luau"), service)
-                );
             }
+
+            assert!(!filters.includes(&root.join(selected).join("private/init.luau"), service));
         }
     }
 

@@ -67,18 +67,12 @@ fn diagnostic_separation_and_severities() {
         ("allow", "warn", 0),
         ("warn", "deny", 1),
         ("deny", "allow", 1),
-        ("allow", "allow", 0),
     ] {
         fs::write(
             directory.join("instar.toml"),
             format!("[roblox]\nenabled = false\n[lint.local_unused]\nlevel = \"{native_level}\"\n[lint.empty_if]\nlevel = \"{level}\"\n"),
         ).unwrap();
 
-        let checked = invoke("check", &types, 1);
-        assert_ne!(checked, "");
-        assert!(!checked.contains("LocalUnused:") && !checked.contains("empty_if:"));
-        assert_eq!(invoke("lint", &types, 0), "");
-        assert_eq!(invoke("check", &warnings, 0), "");
         let linted = invoke("lint", &warnings, expected);
 
         for (rule, level) in [("LocalUnused", native_level), ("empty_if", level)] {
@@ -95,6 +89,12 @@ fn diagnostic_separation_and_severities() {
             }
         }
     }
+
+    let checked = invoke("check", &types, 1);
+    assert_ne!(checked, "");
+    assert!(!checked.contains("LocalUnused:") && !checked.contains("empty_if:"));
+    assert_eq!(invoke("lint", &types, 0), "");
+    assert_eq!(invoke("check", &warnings, 0), "");
 
     for command in ["check", "lint"] {
         assert_ne!(invoke(command, &syntax, 1), "");

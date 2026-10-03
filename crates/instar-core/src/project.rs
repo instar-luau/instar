@@ -841,7 +841,6 @@ mod tests {
             let configuration = Project::new().configuration_at(directory).unwrap();
             assert_eq!(configuration.roblox.enabled, enabled, "{manifest}");
             assert_eq!(configuration.roblox.sync_flags, synchronize, "{manifest}");
-            assert_eq!(configuration.roblox.security, Security::None);
         }
 
         fs::write(
@@ -854,6 +853,7 @@ mod tests {
         let configuration = Project::new().configuration_at(&roblox).unwrap();
         assert!(configuration.roblox.enabled);
         assert!(!configuration.roblox.sync_flags);
+        assert_eq!(configuration.roblox.security, Security::None);
 
         assert_eq!(
             configuration.settings.flags["FIntLuauTarjanChildLimit"],

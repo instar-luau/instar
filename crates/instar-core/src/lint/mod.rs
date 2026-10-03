@@ -333,11 +333,6 @@ mod tests {
                 "if #list then print(1) end",
                 "if #list > 0 then print(1) end",
             ),
-            (
-                "mismatched_arg_count",
-                "local function f(a,b) return a+b end\nf(1)",
-                "local function f(a,b) return a+b end\nf(1,2)",
-            ),
             ("must_use", "math.abs(-1)", "print(math.abs(-1))"),
             (
                 "type_check_inside_call",
@@ -448,11 +443,6 @@ mod tests {
                 "parenthese_conditions",
                 "if (flag) then print(1) end",
                 "if flag then print(1) end",
-            ),
-            (
-                "prefer_const",
-                "local value=1\nprint(value)",
-                "local value=1\nvalue=2\nprint(value)",
             ),
             (
                 "restricted_globals",

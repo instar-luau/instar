@@ -474,13 +474,22 @@ mod tests {
 
         let signature = |diagnostics: &[Diagnostic]| {
             let mut result = diagnostics.to_vec();
-            diagnostic::sort(&mut result);
+
+            result.sort_by_key(|diagnostic| {
+                (
+                    diagnostic.location.module.source.clone(),
+                    diagnostic.location.range,
+                    diagnostic.severity,
+                    diagnostic.message.clone(),
+                )
+            });
 
             result
         };
 
         let execute = |linting| {
             let mut reported = Vec::new();
+            let mut seen = Vec::new();
 
             let report = |batch: &[Diagnostic]| {
                 reported.extend(batch.iter().cloned());
@@ -499,11 +508,17 @@ mod tests {
                 check::run(
                     &mut Project::new(),
                     std::slice::from_ref(&source),
-                    |_| {},
+                    |module| {
+                        seen.push(module.to_owned());
+                    },
                     report,
                 )
             }
             .unwrap();
+
+            if !linting && !result.is_empty() {
+                assert!(seen.contains(&source));
+            }
 
             assert_eq!(signature(&reported), signature(&result));
 
@@ -907,59 +922,5 @@ mod tests {
         );
 
         std::fs::remove_dir_all(source.parent().unwrap()).unwrap();
-    }
-
-    #[test]
-    fn streaming_reports_each_diagnostic_once() {
-        let path = std::env::temp_dir().join(format!("streaming-{}.luau", std::process::id()));
-
-        std::fs::write(&path, "--!strict\nlocal value: number = \"text\"\n").unwrap();
-
-        let mut reported = Vec::new();
-        let mut seen = Vec::new();
-
-        let result = check::run(
-            &mut Project::new(),
-            std::slice::from_ref(&path),
-            |module| {
-                seen.push(module.to_owned());
-            },
-            |batch| {
-                reported.extend(batch.iter().map(|diagnostic| {
-                    (
-                        diagnostic.location.range,
-                        diagnostic.severity,
-                        diagnostic.message.clone(),
-                    )
-                }));
-
-                Ok(())
-            },
-        )
-        .unwrap();
-
-        assert!(seen.contains(&path));
-        std::fs::remove_file(path).unwrap();
-
-        let mut returned = result
-            .iter()
-            .map(|diagnostic| {
-                (
-                    diagnostic.location.range,
-                    diagnostic.severity,
-                    diagnostic.message.clone(),
-                )
-            })
-            .collect::<Vec<_>>();
-
-        assert!(
-            returned
-                .iter()
-                .any(|(_, severity, _)| *severity == Severity::Error)
-        );
-
-        reported.sort();
-        returned.sort();
-        assert_eq!(reported, returned);
     }
 }
