@@ -1,41 +1,15 @@
-//! Builds the native Luau analysis bridge and generates its Rust bindings.
+//! Builds native Luau analysis and the CXX bridge.
 
 use std::{env, path::PathBuf};
 
 fn main() {
     let root = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("Cargo manifest directory"));
 
-    for path in [
-        "CMakeLists.txt",
-        "native/api.hpp",
-        "native/bridge.cpp",
-        "native/bridge.hpp",
-        "native/editor.cpp",
-        "native/editor.hpp",
-        "native/roblox.cpp",
-        "native/roblox.hpp",
-    ] {
+    for path in ["CMakeLists.txt", "src/bridge.rs", "native", "vendor/luau"] {
         println!("cargo:rerun-if-changed={path}");
     }
 
-    println!("cargo:rerun-if-changed=vendor/luau");
-
-    let bindings = bindgen::Builder::default()
-        .header(root.join("native/api.hpp").display().to_string())
-        .allowlist_file(".*native.*")
-        .rustified_enum(".*")
-        .clang_arg("-x")
-        .clang_arg("c")
-        .derive_default(true)
-        .layout_tests(false)
-        .generate()
-        .expect("generate native bindings");
-
     let output = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo output directory"));
-
-    bindings
-        .write_to_file(output.join("bindings.rs"))
-        .expect("write native bindings");
 
     let mut configuration = cmake::Config::new(&root);
 
@@ -58,7 +32,25 @@ fn main() {
         destination.join("lib").display()
     );
 
-    println!("cargo:rustc-link-lib=static=Instar");
+    let mut bridge = cxx_build::bridge("src/bridge.rs");
+
+    bridge.std("c++17").files([
+        "native/bridge.cpp",
+        "native/editor.cpp",
+        "native/roblox.cpp",
+    ]);
+
+    for component in [
+        "Common", "Ast", "Bytecode", "Compiler", "Config", "Analysis", "VM",
+    ] {
+        bridge.include(root.join("vendor/luau").join(component).join("include"));
+    }
+
+    if target.contains("msvc") {
+        bridge.flag("/EHsc");
+    }
+
+    bridge.compile("instar");
 
     for library in [
         "Luau.Analysis",
@@ -70,11 +62,5 @@ fn main() {
         "Luau.Common",
     ] {
         println!("cargo:rustc-link-lib=static={library}");
-    }
-
-    if target.contains("apple") {
-        println!("cargo:rustc-link-lib=c++");
-    } else if !target.contains("msvc") {
-        println!("cargo:rustc-link-lib=stdc++");
     }
 }

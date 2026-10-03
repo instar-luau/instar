@@ -1,3 +1,4 @@
+#include "instar-bridge/src/bridge.rs.h"
 #include "roblox.hpp"
 
 #include "Luau/Ast.h"
@@ -333,9 +334,9 @@ namespace instar {
         }
     } // namespace
 
-    void register_roblox_magic(Luau::GlobalTypes &globals, const RobloxClass *classes, size_t class_count) {
+    void register_roblox_magic(Luau::GlobalTypes &globals, rust::Slice<const RobloxClass> classes) {
         auto metadata = std::make_shared<Metadata>();
-        metadata->classes.reserve(class_count);
+        metadata->classes.reserve(classes.size());
         auto base = globals.globalScope->lookupType("Object");
 
         if (!base) {
@@ -357,12 +358,12 @@ namespace instar {
 
         std::unordered_set<std::string> tagged;
 
-        for (size_t index = 0; index < class_count; ++index) {
-            if (!classes[index].name.data || classes[index].name.length == 0) {
+        for (size_t index = 0; index < classes.size(); ++index) {
+            if (classes[index].name.empty()) {
                 throw std::invalid_argument("empty Roblox class name");
             }
 
-            const std::string name(reinterpret_cast<const char *>(classes[index].name.data), classes[index].name.length);
+            const std::string name(classes[index].name);
             const auto type = metadata->classes.find(name);
 
             if (type == metadata->classes.end()) {
@@ -373,8 +374,8 @@ namespace instar {
                 throw std::invalid_argument("duplicate Roblox class flags: " + name);
             }
 
-            type->second.service = classes[index].service != 0;
-            type->second.creatable = classes[index].creatable != 0;
+            type->second.service = classes[index].service;
+            type->second.creatable = classes[index].creatable;
             auto *klass = Luau::getMutable<Luau::ExternType>(type->second.type);
 
             if (classes[index].service) {
@@ -403,21 +404,14 @@ namespace instar {
         attach_extern(globals, "Instance", "WaitForChild", nullptr, "instar.child");
     }
 
-    std::unordered_set<std::string> register_roblox_tree(Luau::Frontend &frontend, const RobloxNode *nodes, size_t node_count) {
+    std::unordered_set<std::string> register_roblox_tree(Luau::Frontend &frontend, rust::Slice<const RobloxNode> nodes) {
+        const size_t node_count = nodes.size();
         auto &globals = frontend.globals;
         const auto instance = globals.globalScope->lookupType("Instance");
 
         if (!instance || !Luau::get<Luau::ExternType>(Luau::follow(instance->type)) || node_count == 0) {
             throw std::invalid_argument("Roblox hierarchy requires Instance definitions and at least one node");
         }
-
-        auto view = [](Text value) -> std::string_view {
-            if (!value.data && value.length != 0) {
-                throw std::invalid_argument("invalid Roblox hierarchy text");
-            }
-
-            return {value.data ? reinterpret_cast<const char *>(value.data) : "", value.length};
-        };
 
         std::vector<Luau::TypeId> bases;
         bases.reserve(node_count);
@@ -427,8 +421,7 @@ namespace instar {
 
         for (size_t index = 0; index < node_count; ++index) {
             const auto &node = nodes[index];
-            view(node.name);
-            const std::string class_name(view(node.class_name));
+            const std::string class_name(node.class_name);
             const auto base = globals.globalScope->lookupType(class_name);
 
             if (!base || !Luau::get<Luau::ExternType>(Luau::follow(base->type)) || !derives_from(base->type, instance->type)) {
@@ -442,7 +435,7 @@ namespace instar {
             }
 
             if (node.has_module) {
-                const std::string module(view(node.module));
+                const std::string module(node.module);
 
                 if (module.empty() || !modules.insert(module).second) {
                     throw std::invalid_argument("empty or duplicate Roblox source module");
@@ -479,7 +472,7 @@ namespace instar {
                 current = nodes[current].parent;
             }
 
-            if (game != SIZE_MAX && nodes[index].parent == game && view(nodes[index].class_name) == "Workspace") {
+            if (game != SIZE_MAX && nodes[index].parent == game && std::string_view(nodes[index].class_name.data(), nodes[index].class_name.size()) == "Workspace") {
                 if (workspace != SIZE_MAX) {
                     throw std::invalid_argument("duplicate Workspace in Roblox hierarchy");
                 }
@@ -522,7 +515,7 @@ namespace instar {
                 continue;
             }
 
-            const std::string name(view(node.name));
+            const std::string name(node.name);
 
             if (name == "Parent") {
                 continue;
@@ -532,7 +525,7 @@ namespace instar {
 
             if (const auto *member = Luau::lookupExternTypeProp(parent_class, name)) {
                 if (!member->readTy || !derives_from(types[index], *member->readTy)) {
-                    continue; // Roblox API members take precedence over equally named children.
+                    continue;
                 }
             }
 
@@ -566,7 +559,7 @@ namespace instar {
             Luau::persist(types[index]);
 
             if (nodes[index].has_module) {
-                const auto scope = frontend.addEnvironment(std::string(view(nodes[index].module)));
+                const auto scope = frontend.addEnvironment(std::string(nodes[index].module));
                 Luau::addGlobalBinding(globals, scope, "script", types[index], "Roblox");
             }
         }
