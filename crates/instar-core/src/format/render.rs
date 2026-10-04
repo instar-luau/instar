@@ -15,6 +15,7 @@ struct Renderer<'a> {
     delimiters: Vec<Delimiter>,
     parameter_depth: usize,
     previous: Option<usize>,
+    previous_code: Option<(usize, usize)>,
     blocks: Vec<bool>,
 }
 
@@ -33,6 +34,7 @@ pub(super) fn render(prepared: &Prepared, options: &FormatOptions) -> String {
         delimiters: Vec::new(),
         parameter_depth: 0,
         previous: None,
+        previous_code: None,
         blocks: Vec::new(),
     };
 
@@ -158,11 +160,10 @@ impl Renderer<'_> {
             && self.options.tables.trailing_comma == TrailingComma::Multiline
             && !enclosing_brace(tokens, index)
                 .is_some_and(|start| type_table(syntax, &tokens[start]))
-            && self.previous.is_some_and(|previous| {
-                tokens[previous].text != "," && tokens[previous].text != "{"
-            })
+            && let Some((previous, position)) = self.previous_code
+            && !matches!(tokens[previous].text.as_str(), "," | "{")
         {
-            self.output.push(',');
+            self.output.insert(position, ',');
         }
 
         if line.break_before && !self.output.is_empty() && !self.output.ends_with('\n') {
@@ -211,7 +212,9 @@ impl Renderer<'_> {
             && self
                 .prepared
                 .tokens
-                .get(index + 1)
+                .iter()
+                .skip(index + 1)
+                .find(|token| token.kind != Kind::Comment)
                 .is_some_and(|next| next.text == "}")
     }
 
@@ -227,6 +230,10 @@ impl Renderer<'_> {
             && tokens.get(index + 1).is_none_or(|next| next.text != ";")
         {
             self.output.push(';');
+        }
+
+        if tokens[index].kind != Kind::Comment {
+            self.previous_code = Some((index, self.output.len()));
         }
     }
 

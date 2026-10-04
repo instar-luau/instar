@@ -1207,6 +1207,33 @@ mod tests {
     }
 
     #[test]
+    fn formats_trailing_table_comments() {
+        let mut options = FormatOptions::default();
+
+        for policy in [TrailingComma::Multiline, TrailingComma::Never] {
+            options.tables.trailing_comma = policy;
+
+            let comma = if policy == TrailingComma::Multiline {
+                ","
+            } else {
+                ""
+            };
+
+            let expected = format!("local items = {{\n\tvalue = 1{comma}\n\t-- trailing\n}}\n");
+
+            for separator in ["", ","] {
+                let input =
+                    format!("local items = {{\n\tvalue = 1{separator}\n\t-- trailing\n}}\n");
+
+                let output = source(&input, &options).unwrap();
+
+                assert_eq!(output, expected);
+                assert_eq!(source(&output, &options).unwrap(), output);
+            }
+        }
+    }
+
+    #[test]
     fn configures_interpolation_padding_independently_of_table_spacing() {
         let mut options = FormatOptions::default();
 
