@@ -130,22 +130,22 @@ declare SharedTable: {
 declare function settings(): GlobalSettings
 declare function UserSettings(): UserSettings
 
-@[deprecated {use = "plugin"}]
+@[deprecated { use = "plugin" }]
 declare function PluginManager(): PluginManager
 
-@[deprecated {use = 'game:GetService("DebuggerManager")'}]
+@[deprecated { use = 'game:GetService("DebuggerManager")' }]
 declare function DebuggerManager(): DebuggerManager
 
-@[deprecated{ use = "task.delay" }]
+@[deprecated { use = "task.delay" }]
 declare function delay(delay: number?, callback: (dt: number, gt: number) -> ())
 
-@[deprecated{ use = "gcinfo" }]
+@[deprecated { use = "gcinfo" }]
 declare function collectgarbage(mode: "count"): number
 
-@[deprecated{ use = 'game:GetService("Stats")' }]
+@[deprecated { use = 'game:GetService("Stats")' }]
 declare function stats(): Stats
 
-@[deprecated{ use = "task.wait" }]
+@[deprecated { use = "task.wait" }]
 declare function wait(delay: number?): (number, number)
 
 @deprecated
@@ -160,19 +160,19 @@ declare workspace: Workspace
 
 declare script: LuaSourceContainer
 
-@[deprecated{ use = "task.delay" }]
+@[deprecated { use = "task.delay" }]
 declare function Delay(delay: number?, callback: (dt: number, gt: number) -> ())
 
-@[deprecated{ use = "task.wait" }]
+@[deprecated { use = "task.wait" }]
 declare function Wait(delay: number?): (number, number)
 
-@[deprecated{ use = "elapsedTime" }]
+@[deprecated { use = "elapsedTime" }]
 declare function ElapsedTime(): number
 
-@[deprecated{ use = 'game:GetService("Stats")' }]
+@[deprecated { use = 'game:GetService("Stats")' }]
 declare function Stats(): Stats
 
-@[deprecated{ use = "version" }]
+@[deprecated { use = "version" }]
 declare function Version(): string
 
 type ReflectedClassOrNil = ReflectedClass?
