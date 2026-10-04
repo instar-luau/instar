@@ -12,6 +12,8 @@ jobs:
   check:
     name: check ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
+    env:
+      RUSTUP_TOOLCHAIN: nightly
     permissions:
       contents: read
     strategy:
@@ -28,9 +30,8 @@ jobs:
         with:
           persist-credentials: false
           submodules: true
-      - uses: jdx/mise-action@082e167e38ac2494dfb62e04240eac1f2a2d30dc
-        with:
-          install_args: rust aqua:Kitware/CMake aqua:ninja-build/ninja
+      - name: install Rust
+        run: rustup toolchain install nightly --profile minimal --component clippy
       - name: test
         run: cargo test --workspace --locked --target ${{ matrix.target }}
       - name: clippy
