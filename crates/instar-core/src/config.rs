@@ -5,7 +5,7 @@ use std::{collections::BTreeMap, io, path::PathBuf};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use vermis::{Kind, Parts, View};
+use vermis::tree::{NodeIndex, NodeKind, Tree};
 
 use crate::{invalid, string_value};
 
@@ -1424,35 +1424,42 @@ pub(super) fn parse_luau(source: &str) -> io::Result<LuauConfig> {
         )));
     }
 
-    let root = tree
-        .view(tree.root)
-        .ok_or_else(|| invalid("missing configuration root"))?;
-
-    let Some(Parts::Root { block }) = root.parts() else {
+    let NodeKind::Root { block, .. } = tree.node(tree.root).kind else {
         return Err(invalid("expected configuration block"));
+    };
+
+    let NodeKind::Block { statements } = &tree.node(block).kind else {
+        return Err(invalid("expected configuration statements"));
     };
 
     let mut locals = BTreeMap::new();
     let mut returned = None;
 
-    for statement in block.children() {
+    for statement in tree.list(statements) {
         if returned.is_some() {
             return Err(invalid("unexpected statement after config return"));
         }
 
-        match statement.parts() {
-            Some(Parts::Local { bindings, values }) => {
-                let values = values
-                    .map(|value| literal(value, &locals))
+        match &tree.node(statement.node).kind {
+            NodeKind::Local {
+                bindings, values, ..
+            }
+            | NodeKind::Constant {
+                bindings, values, ..
+            } => {
+                let values = tree
+                    .list(values)
+                    .iter()
+                    .map(|value| literal(&tree, value.node, &locals))
                     .collect::<io::Result<Vec<_>>>()?;
 
-                for (index, binding) in bindings.enumerate() {
-                    let Some(Parts::Binding { name, .. }) = binding.parts() else {
+                for (index, binding) in tree.list(bindings).iter().enumerate() {
+                    let NodeKind::Binding { name, .. } = tree.node(binding.node).kind else {
                         return Err(invalid("invalid config binding"));
                     };
 
                     let name =
-                        std::str::from_utf8(name.text()).map_err(|e| invalid(e.to_string()))?;
+                        std::str::from_utf8(tree.text(name)).map_err(|e| invalid(e.to_string()))?;
 
                     locals.insert(
                         name.to_owned(),
@@ -1461,7 +1468,9 @@ pub(super) fn parse_luau(source: &str) -> io::Result<LuauConfig> {
                 }
             }
 
-            Some(Parts::Return { mut values }) => {
+            NodeKind::Return { values, .. } => {
+                let mut values = tree.list(values).iter();
+
                 let value = values
                     .next()
                     .ok_or_else(|| invalid("config must return a table"))?;
@@ -1470,13 +1479,13 @@ pub(super) fn parse_luau(source: &str) -> io::Result<LuauConfig> {
                     return Err(invalid("config must return exactly one table"));
                 }
 
-                returned = Some(literal(value, &locals)?);
+                returned = Some(literal(&tree, value.node, &locals)?);
             }
 
             _ => {
                 return Err(invalid(format!(
                     "configuration must be declarative; unsupported statement at byte {}",
-                    statement.span().start
+                    tree.node(statement.node).span.start
                 )));
             }
         }
@@ -1507,14 +1516,18 @@ pub(super) fn parse_luau(source: &str) -> io::Result<LuauConfig> {
     legacy_config(luau, ["languagemode", "linterrors", "typeerrors"])
 }
 
-fn literal(node: View<'_, '_>, locals: &BTreeMap<String, Value>) -> io::Result<Value> {
-    match node.kind() {
-        Kind::String => return string_value(node.text()).map(Value::String),
-        Kind::Boolean => return Ok(Value::Bool(node.text() == b"true")),
-        Kind::Nil => return Ok(Value::Null),
+fn literal(
+    tree: &Tree<'_>,
+    node: NodeIndex,
+    locals: &BTreeMap<String, Value>,
+) -> io::Result<Value> {
+    match &tree.node(node).kind {
+        NodeKind::String { .. } => return string_value(tree.text(node)).map(Value::String),
+        NodeKind::Boolean { .. } => return Ok(Value::Bool(tree.text(node) == b"true")),
+        NodeKind::Nil { .. } => return Ok(Value::Null),
 
-        Kind::Name => {
-            let name = std::str::from_utf8(node.text()).map_err(|e| invalid(e.to_string()))?;
+        NodeKind::Name { .. } => {
+            let name = std::str::from_utf8(tree.text(node)).map_err(|e| invalid(e.to_string()))?;
 
             return locals
                 .get(name)
@@ -1522,8 +1535,8 @@ fn literal(node: View<'_, '_>, locals: &BTreeMap<String, Value>) -> io::Result<V
                 .ok_or_else(|| invalid(format!("unknown config constant {name}")));
         }
 
-        Kind::Number => {
-            let text = std::str::from_utf8(node.text()).map_err(|e| invalid(e.to_string()))?;
+        NodeKind::Number { .. } => {
+            let text = std::str::from_utf8(tree.text(node)).map_err(|e| invalid(e.to_string()))?;
 
             return serde_json::from_str(text).map_err(|e| invalid(e.to_string()));
         }
@@ -1531,18 +1544,18 @@ fn literal(node: View<'_, '_>, locals: &BTreeMap<String, Value>) -> io::Result<V
         _ => {}
     }
 
-    match node.parts() {
-        Some(Parts::Group { expression } | Parts::Assertion { expression, .. }) => {
-            literal(expression, locals)
+    match &tree.node(node).kind {
+        NodeKind::Group { expression, .. } | NodeKind::Assertion { expression, .. } => {
+            literal(tree, *expression, locals)
         }
 
-        Some(Parts::Binary {
+        NodeKind::Binary {
             left,
             operator,
             right,
-        }) if operator.text() == b".." => {
-            let left = literal(left, locals)?;
-            let right = literal(right, locals)?;
+        } if tree.token(*operator).span.bytes(tree.source) == b".." => {
+            let left = literal(tree, *left, locals)?;
+            let right = literal(tree, *right, locals)?;
 
             match (left, right) {
                 (Value::String(left), Value::String(right)) => Ok(Value::String(left + &right)),
@@ -1550,30 +1563,31 @@ fn literal(node: View<'_, '_>, locals: &BTreeMap<String, Value>) -> io::Result<V
             }
         }
 
-        Some(Parts::Table { fields }) => {
+        NodeKind::Table { fields, .. } => {
             let mut object = Map::new();
             let mut array = BTreeMap::new();
             let mut next_index = 1_u64;
 
-            for field in fields {
-                let Some(Parts::TableField {
+            for field in tree.list(fields) {
+                let NodeKind::TableField {
                     key,
                     value,
-                    indexed,
-                }) = field.parts()
+                    opening,
+                    ..
+                } = tree.node(field.node).kind
                 else {
                     return Err(invalid("invalid config table field"));
                 };
 
-                let value = literal(value, locals)?;
+                let value = literal(tree, value, locals)?;
 
                 let key = match key {
-                    Some(key) if !indexed => Value::String(
-                        String::from_utf8(key.text().to_vec())
+                    Some(key) if opening.is_none() => Value::String(
+                        String::from_utf8(tree.text(key).to_vec())
                             .map_err(|e| invalid(e.to_string()))?,
                     ),
 
-                    Some(key) => literal(key, locals)?,
+                    Some(key) => literal(tree, key, locals)?,
 
                     None => {
                         let key = Value::from(next_index);
@@ -1625,7 +1639,7 @@ fn literal(node: View<'_, '_>, locals: &BTreeMap<String, Value>) -> io::Result<V
 
         _ => Err(invalid(format!(
             "configuration must be declarative; unsupported expression at byte {}",
-            node.span().start
+            tree.node(node).span.start
         ))),
     }
 }

@@ -347,6 +347,145 @@ mod tests {
     }
 
     #[test]
+    fn rewrites_only_parsed_type_table_field_separators() {
+        let mut options = FormatOptions::default();
+        options.types.tables.separator = crate::config::TypeTableSeparator::Semicolon;
+
+        for (input, expected) in [
+            (
+                "type Callback = { call: (number, string) -> (), next: number }\n",
+                "type Callback = { call: (number, string) -> (); next: number }\n",
+            ),
+            (
+                "type Generic = { value: Pair<number, string>, next: number }\n",
+                "type Generic = { value: Pair<number, string>; next: number }\n",
+            ),
+            (
+                "type Tuple = { call: () -> (number, string), next: number }\n",
+                "type Tuple = { call: () -> (number, string); next: number }\n",
+            ),
+            (
+                "type Expression = { value: typeof(select(1, value)), next: number }\n",
+                "type Expression = { value: typeof(select(1, value)); next: number }\n",
+            ),
+            (
+                "type Nested = { value: { a: number, b: string }, next: number }\n",
+                "type Nested = { value: { a: number; b: string }; next: number }\n",
+            ),
+        ] {
+            let output = source(input, &options).unwrap();
+            assert_eq!(output, expected);
+            assert_eq!(source(&output, &options).unwrap(), output);
+
+            options.types.tables.separator = crate::config::TypeTableSeparator::Comma;
+            assert_eq!(source(expected, &options).unwrap(), input);
+            assert_eq!(source(input, &options).unwrap(), input);
+            options.types.tables.separator = crate::config::TypeTableSeparator::Semicolon;
+        }
+    }
+
+    #[test]
+    fn preserves_statement_semicolons_inside_type_table_annotations() {
+        let options = FormatOptions::default();
+        let input = "type T = { value: typeof(function() local x = 1; return x end) }\n";
+        let output = source(input, &options).unwrap();
+
+        assert!(output.contains("local x = 1;"), "{output}");
+        assert_eq!(source(&output, &options).unwrap(), output);
+    }
+
+    #[test]
+    fn compacts_functions_using_parsed_signatures_and_body_ends() {
+        let mut options = FormatOptions::default();
+        options.blocks.simple_bodies = crate::config::SimpleBodies::CompactFunctions;
+
+        for (input, expected) in [
+            (
+                "local function typed(): number return 1 end\n",
+                "local function typed(): number return 1 end\n",
+            ),
+            (
+                "local function typed(): number\n    return 1\nend\n",
+                "local function typed(): number return 1 end\n",
+            ),
+            (
+                "local function plain()\n    return 1\nend\n",
+                "local function plain() return 1 end\n",
+            ),
+            (
+                "local function multiline\n() return 1 end\n",
+                "local function multiline\n() return 1 end\n",
+            ),
+        ] {
+            let output = source(input, &options).unwrap();
+            assert_eq!(output, expected);
+            assert_eq!(source(&output, &options).unwrap(), output);
+        }
+    }
+
+    #[test]
+    fn compacts_conditionals_using_parsed_condition_boundaries() {
+        let mut options = FormatOptions::default();
+        options.blocks.simple_bodies = crate::config::SimpleBodies::CompactAll;
+
+        for input in [
+            "if (function() return true end)() then run() end\n",
+            "if (if ready then true else false) then run() end\n",
+        ] {
+            let output = source(input, &options).unwrap();
+            assert_eq!(output, input);
+            assert_eq!(source(&output, &options).unwrap(), output);
+        }
+
+        for input in [
+            "local function empty()\nend\n",
+            "if ready then\nend\n",
+            "local function two()\n\trun()\n\twait()\nend\n",
+            "if ready then\n\trun()\n\twait()\nend\n",
+            "local function nested()\n\tif ready then run() end\nend\n",
+            "local function commented() -- comment\n\treturn 1\nend\n",
+            "local function trailing()\n\treturn 1 -- comment\nend\n",
+            "if ready then -- comment\n\trun()\nend\n",
+            "if ready then\n\trun() -- comment\nend\n",
+            "declare function first(x: number): number\n",
+            "declare extern type Widget with\n\tvalue: string\n\tfunction get(self): string\nend\n",
+        ] {
+            let output = source(input, &options).unwrap();
+            assert_eq!(output, input);
+            assert_eq!(source(&output, &options).unwrap(), output);
+        }
+    }
+
+    #[test]
+    fn compacts_each_conditional_arm_without_joining_branch_headers() {
+        let mut options = FormatOptions::default();
+        options.blocks.simple_bodies = crate::config::SimpleBodies::CompactConditionals;
+
+        for (input, expected) in [
+            (
+                "if ready then\n    run()\nend\n",
+                "if ready then run() end\n",
+            ),
+            (
+                "if ready then run() else wait() end\n",
+                "if ready then run()\nelse wait() end\n",
+            ),
+            (
+                "if ready then run() elseif waiting then wait() else stop() end\n",
+                "if ready then run()\nelseif waiting then wait()\nelse stop() end\n",
+            ),
+            (
+                "if ready then run() wait() elseif waiting then wait() else stop() end\n",
+                "if ready then\n\trun()\n\twait()\nelseif waiting then wait()\nelse stop() end\n",
+            ),
+        ] {
+            let output = source(input, &options).unwrap();
+            assert_eq!(output, expected);
+            assert_eq!(source(&output, &options).unwrap(), output);
+        }
+    }
+
+    #[test]
     fn respects_inner_delimiter_spacing_without_separating_calls_or_indexes() {
         let mut options = FormatOptions::default();
         options.spacing.parentheses = true;
@@ -1158,12 +1297,12 @@ mod tests {
 
         assert_eq!(source(&output, &options).unwrap(), output);
 
-        let class = "declare extern type Widget with\nvalue:string\nfunction get():string\nend\n\ndeclare function third():Widget\n";
+        let class = "declare extern type Widget with\nvalue:string\nfunction get(self):string\nend\n\ndeclare function third():Widget\n";
         let formatted = source(class, &options).unwrap();
 
         assert_eq!(
             formatted,
-            "declare extern type Widget with\n\tvalue: string\n\tfunction get(): string\nend\n\ndeclare function third(): Widget\n"
+            "declare extern type Widget with\n\tvalue: string\n\tfunction get(self): string\nend\n\ndeclare function third(): Widget\n"
         );
 
         assert_eq!(source(&formatted, &options).unwrap(), formatted);

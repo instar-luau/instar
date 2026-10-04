@@ -1,36 +1,44 @@
-use vermis::{Kind, Parts, Span, TokenKind, View};
+use vermis::{
+    token::{Keyword, Span, Symbol, TokenKind},
+    tree::{NodeIndex, NodeKind, Tree},
+};
 
 use super::{Context, Finding};
 
 pub(super) fn check(
-    node: View<'_, '_>,
-    ancestors: &[View<'_, '_>],
+    node: NodeIndex,
+    ancestors: &[NodeIndex],
     context: &Context<'_>,
     findings: &mut Vec<Finding>,
 ) {
-    match node.parts() {
-        Some(Parts::Binary {
+    let tree = context.tree;
+
+    match &tree.node(node).kind {
+        NodeKind::Binary {
             operator, right, ..
-        }) if matches!(operator.text(), b"/" | b"//" | b"%")
-            && context.enabled("divide_by_zero")
-            && is_zero(right) =>
+        } if matches!(
+            tree.token(*operator).kind,
+            TokenKind::Symbol(Symbol::Divide | Symbol::FloorDivide | Symbol::Modulo)
+        ) && context.enabled("divide_by_zero")
+            && is_zero(tree, *right) =>
         {
             context.emit(
                 findings,
                 "divide_by_zero",
-                operator.span(),
+                tree.token(*operator).span,
                 "division or modulo by zero",
             );
         }
 
-        Some(Parts::If {
+        NodeKind::If {
             branches,
             otherwise,
-        }) if context.enabled("empty_if") => {
-            for branch in branches {
-                if let Some(Parts::Branch { body, .. }) = branch.parts() {
+            ..
+        } if context.enabled("empty_if") => {
+            for branch in tree.list(branches) {
+                if let NodeKind::Branch { body, .. } = &tree.node(branch.node).kind {
                     emit_empty_body(
-                        body,
+                        *body,
                         "empty_if",
                         "empty conditional branch",
                         context,
@@ -41,7 +49,7 @@ pub(super) fn check(
 
             if let Some(otherwise) = otherwise {
                 emit_empty_body(
-                    otherwise,
+                    *otherwise,
                     "empty_if",
                     "empty conditional branch",
                     context,
@@ -50,39 +58,37 @@ pub(super) fn check(
             }
         }
 
-        Some(Parts::While { body, .. } | Parts::Repeat { body, .. })
+        NodeKind::While { body, .. }
+        | NodeKind::Repeat { body, .. }
+        | NodeKind::NumericFor { body, .. }
+        | NodeKind::GenericFor { body, .. }
             if context.enabled("empty_loop") =>
         {
-            emit_empty_body(body, "empty_loop", "empty loop body", context, findings);
+            emit_empty_body(*body, "empty_loop", "empty loop body", context, findings);
         }
 
-        Some(Parts::NumericFor { body, .. } | Parts::GenericFor { body, .. })
-            if context.enabled("empty_loop") =>
-        {
-            emit_empty_body(body, "empty_loop", "empty loop body", context, findings);
-        }
-
-        Some(_)
-            if node.kind() == Kind::Name
-                && node.text() == b"_G"
-                && context.enabled("global_usage") =>
-        {
+        NodeKind::Name { .. } if tree.text(node) == b"_G" && context.enabled("global_usage") => {
             if !ancestors
                 .last()
-                .is_some_and(|parent| parent.kind() == Kind::Binding)
-                && !is_declared(b"_G", node.span().start, ancestors, context)
+                .is_some_and(|parent| matches!(tree.node(*parent).kind, NodeKind::Binding { .. }))
+                && !is_declared(b"_G", tree.node(node).span.start, ancestors, context)
             {
-                context.emit(findings, "global_usage", node.span(), "access to shared _G");
+                context.emit(
+                    findings,
+                    "global_usage",
+                    tree.node(node).span,
+                    "access to shared _G",
+                );
             }
         }
 
-        Some(Parts::CallStatement { call })
-            if context.enabled("ignored_pcall_result") && is_protected_call(call) =>
+        NodeKind::CallStatement { call }
+            if context.enabled("ignored_pcall_result") && is_protected_call(tree, *call) =>
         {
             context.emit(
                 findings,
                 "ignored_pcall_result",
-                call.span(),
+                tree.node(*call).span,
                 "pcall result is discarded",
             );
         }
@@ -92,26 +98,35 @@ pub(super) fn check(
 
     check_declarations(node, ancestors, context, findings);
     check_assignments(node, ancestors, context, findings);
+    check_identical_branches(node, context, findings);
+}
 
-    if let Some(Parts::If {
+fn check_identical_branches(node: NodeIndex, context: &Context<'_>, findings: &mut Vec<Finding>) {
+    let tree = context.tree;
+
+    if let NodeKind::If {
         branches,
         otherwise: Some(otherwise),
-    }) = node.parts()
+        ..
+    } = &tree.node(node).kind
         && context.enabled("if_same_then_else")
     {
-        let mut bodies = branches.filter_map(|branch| match branch.parts() {
-            Some(Parts::Branch { body, .. }) => Some(body),
-            _ => None,
-        });
+        let mut bodies =
+            tree.list(branches)
+                .iter()
+                .filter_map(|branch| match &tree.node(branch.node).kind {
+                    NodeKind::Branch { body, .. } => Some(*body),
+                    _ => None,
+                });
 
         if let Some(first) = bodies.next()
             && bodies.all(|body| same_body(first, body, context))
-            && same_body(first, otherwise, context)
+            && same_body(first, *otherwise, context)
         {
             context.emit(
                 findings,
                 "if_same_then_else",
-                node.span(),
+                tree.node(node).span,
                 "if branches have identical bodies",
             );
         }
@@ -119,60 +134,68 @@ pub(super) fn check(
 }
 
 fn check_declarations(
-    node: View<'_, '_>,
-    ancestors: &[View<'_, '_>],
+    node: NodeIndex,
+    ancestors: &[NodeIndex],
     context: &Context<'_>,
     findings: &mut Vec<Finding>,
 ) {
-    match node.parts() {
-        Some(Parts::Local {
-            mut bindings,
-            mut values,
-        }) if context.enabled("implicit_any_local") => {
-            if values.next().is_none() {
-                let later_assigned = bindings.any(|binding| {
-                    let Some(Parts::Binding { name, annotation }) = binding.parts() else {
+    let tree = context.tree;
+
+    match &tree.node(node).kind {
+        NodeKind::Local {
+            bindings, values, ..
+        }
+        | NodeKind::Constant {
+            bindings, values, ..
+        } if context.enabled("implicit_any_local") => {
+            if tree.list(values).is_empty() {
+                let later_assigned = tree.list(bindings).iter().any(|binding| {
+                    let NodeKind::Binding {
+                        name, annotation, ..
+                    } = &tree.node(binding.node).kind
+                    else {
                         return false;
                     };
 
-                    annotation.is_none() && assigned_later(name, node, ancestors)
+                    annotation.is_none() && assigned_later(tree, *name, node, ancestors)
                 });
 
                 if later_assigned {
                     context.emit(
                         findings,
                         "implicit_any_local",
-                        node.span(),
+                        tree.node(node).span,
                         "unannotated local is assigned later",
                     );
                 }
             }
         }
 
-        Some(Parts::Parameters { parameters }) if context.enabled("implicit_any_parameter") => {
-            for parameter in parameters {
-                if let Some(Parts::Binding {
+        NodeKind::Parameters { parameters, .. } if context.enabled("implicit_any_parameter") => {
+            for parameter in tree.list(parameters) {
+                if let NodeKind::Binding {
                     annotation: None,
                     name,
-                }) = parameter.parts()
+                    ..
+                } = &tree.node(parameter.node).kind
                 {
                     context.emit(
                         findings,
                         "implicit_any_parameter",
-                        name.span(),
+                        tree.node(*name).span,
                         "parameter has implicit any type",
                     );
                 }
             }
         }
 
-        Some(Parts::Table { fields }) if context.enabled("mixed_table") => {
+        NodeKind::Table { fields, .. } if context.enabled("mixed_table") => {
             let mut positional = false;
             let mut keyed = false;
 
-            for field in fields {
-                if let Some(Parts::TableField { key, indexed, .. }) = field.parts() {
-                    if key.is_some() || indexed {
+            for field in tree.list(fields) {
+                if let NodeKind::TableField { key, opening, .. } = &tree.node(field.node).kind {
+                    if key.is_some() || opening.is_some() {
                         keyed = true;
                     } else {
                         positional = true;
@@ -184,7 +207,7 @@ fn check_declarations(
                 context.emit(
                     findings,
                     "mixed_table",
-                    node.span(),
+                    tree.node(node).span,
                     "table mixes positional and keyed entries",
                 );
             }
@@ -195,65 +218,75 @@ fn check_declarations(
 }
 
 fn check_assignments(
-    node: View<'_, '_>,
-    ancestors: &[View<'_, '_>],
+    node: NodeIndex,
+    ancestors: &[NodeIndex],
     context: &Context<'_>,
     findings: &mut Vec<Finding>,
 ) {
-    if let Some(Parts::Assignment {
-        targets,
-        values,
-        operator,
-    }) = node.parts()
-        && operator.text() == b"="
+    let tree = context.tree;
+
+    if let NodeKind::Assignment {
+        targets, values, ..
+    } = &tree.node(node).kind
         && context.enabled("self_assignment")
     {
-        let targets: Vec<_> = targets.collect();
-        let values: Vec<_> = values.collect();
-
-        for (target, value) in targets.iter().zip(values) {
-            if stable_access(*target) && target.text() == value.text() {
+        for (target, value) in tree.list(targets).iter().zip(tree.list(values)) {
+            if stable_access(tree, target.node) && tree.text(target.node) == tree.text(value.node) {
                 context.emit(
                     findings,
                     "self_assignment",
-                    target.span(),
+                    tree.node(target.node).span,
                     "assignment leaves value unchanged",
                 );
             }
         }
     }
 
-    if let Some(Parts::Assignment { targets, .. }) = node.parts()
-        && context.enabled("unscoped_variables")
-    {
-        for target in targets {
-            if target.kind() == Kind::Name
-                && target.text() != b"_G"
-                && !is_declared(target.text(), target.span().start, ancestors, context)
+    if context.enabled("unscoped_variables") {
+        let mut check_target = |target| {
+            if matches!(tree.node(target).kind, NodeKind::Name { .. })
+                && tree.text(target) != b"_G"
+                && !is_declared(
+                    tree.text(target),
+                    tree.node(target).span.start,
+                    ancestors,
+                    context,
+                )
             {
                 context.emit(
                     findings,
                     "unscoped_variables",
-                    target.span(),
+                    tree.node(target).span,
                     "assignment creates an undeclared global",
                 );
             }
+        };
+
+        match &tree.node(node).kind {
+            NodeKind::Assignment { targets, .. } => {
+                for target in tree.list(targets) {
+                    check_target(target.node);
+                }
+            }
+
+            NodeKind::CompoundAssignment { target, .. } => check_target(*target),
+            _ => {}
         }
     }
 }
 
-pub(super) fn is_zero(node: View<'_, '_>) -> bool {
-    match node.parts() {
-        Some(
-            Parts::Group { expression }
-            | Parts::Unary {
-                operator: _,
-                operand: expression,
-            },
-        ) if node.kind() == Kind::Group || node.text().starts_with(b"-") => is_zero(expression),
+pub(super) fn is_zero(tree: &Tree<'_>, node: NodeIndex) -> bool {
+    match &tree.node(node).kind {
+        NodeKind::Group { expression, .. } => is_zero(tree, *expression),
 
-        _ if node.kind() == Kind::Number => {
-            let Ok(value) = std::str::from_utf8(node.text()) else {
+        NodeKind::Unary { operator, operand }
+            if tree.token(*operator).kind == TokenKind::Symbol(Symbol::Subtract) =>
+        {
+            is_zero(tree, *operand)
+        }
+
+        NodeKind::Number { .. } => {
+            let Ok(value) = std::str::from_utf8(tree.text(node)) else {
                 return false;
             };
 
@@ -274,26 +307,28 @@ pub(super) fn is_zero(node: View<'_, '_>) -> bool {
 }
 
 fn emit_empty_body(
-    body: View<'_, '_>,
+    body: NodeIndex,
     rule: &'static str,
     message: &str,
     context: &Context<'_>,
     findings: &mut Vec<Finding>,
 ) {
-    let block = match body.parts() {
-        Some(Parts::Body { body }) => body,
+    let tree = context.tree;
+
+    let block = match &tree.node(body).kind {
+        NodeKind::Else { body, .. } => *body,
         _ => body,
     };
 
-    let Some(Parts::Block { mut statements }) = block.parts() else {
+    let NodeKind::Block { statements } = &tree.node(block).kind else {
         return;
     };
 
-    if statements.next().is_some() || has_comment(body.span(), context) {
+    if !tree.list(statements).is_empty() || has_comment(tree.node(body).span, context) {
         return;
     }
 
-    context.emit(findings, rule, body.span(), message);
+    context.emit(findings, rule, tree.node(body).span, message);
 }
 
 fn has_comment(span: Span, context: &Context<'_>) -> bool {
@@ -304,13 +339,15 @@ fn has_comment(span: Span, context: &Context<'_>) -> bool {
     })
 }
 
-fn same_body(left: View<'_, '_>, right: View<'_, '_>, context: &Context<'_>) -> bool {
-    let span = |body: View<'_, '_>| match body.parts() {
-        Some(Parts::Body { body }) => body.span(),
-        _ => body.span(),
+fn same_body(left: NodeIndex, right: NodeIndex, context: &Context<'_>) -> bool {
+    let tree = context.tree;
+
+    let span = |body: NodeIndex| match &tree.node(body).kind {
+        NodeKind::Else { body, .. } => tree.node(*body).span,
+        _ => tree.node(body).span,
     };
 
-    let tokens = |body: View<'_, '_>| {
+    let tokens = |body: NodeIndex| {
         let range = span(body);
 
         context
@@ -327,62 +364,65 @@ fn same_body(left: View<'_, '_>, right: View<'_, '_>, context: &Context<'_>) -> 
     tokens(left).eq(tokens(right))
 }
 
-fn is_protected_call(call: View<'_, '_>) -> bool {
-    match call.parts() {
-        Some(Parts::Call { callee, .. }) => {
-            callee.kind() == Kind::Name && callee.text() == b"pcall"
-                || callee.kind() == Kind::Name && callee.text() == b"xpcall"
-        }
-
-        _ => false,
-    }
+fn is_protected_call(tree: &Tree<'_>, call: NodeIndex) -> bool {
+    matches!(&tree.node(call).kind, NodeKind::Call { callee, .. }
+        if matches!(tree.node(*callee).kind, NodeKind::Name { .. })
+            && matches!(tree.text(*callee), b"pcall" | b"xpcall"))
 }
 
-fn stable_access(node: View<'_, '_>) -> bool {
-    match node.parts() {
-        Some(_) if node.kind() == Kind::Name => true,
-        Some(Parts::Field { receiver, .. }) => stable_access(receiver),
+fn stable_access(tree: &Tree<'_>, node: NodeIndex) -> bool {
+    match &tree.node(node).kind {
+        NodeKind::Name { .. } => true,
+        NodeKind::Field { receiver, .. } => stable_access(tree, *receiver),
 
-        Some(Parts::Index { receiver, key }) => {
-            stable_access(receiver) && key.kind() == Kind::String
+        NodeKind::Index { receiver, key, .. } => {
+            stable_access(tree, *receiver)
+                && matches!(tree.node(*key).kind, NodeKind::String { .. })
         }
 
-        Some(Parts::Group { expression }) => stable_access(expression),
+        NodeKind::Group { expression, .. } => stable_access(tree, *expression),
         _ => false,
     }
 }
 
 fn assigned_later(
-    name: View<'_, '_>,
-    declaration: View<'_, '_>,
-    ancestors: &[View<'_, '_>],
+    tree: &Tree<'_>,
+    name: NodeIndex,
+    declaration: NodeIndex,
+    ancestors: &[NodeIndex],
 ) -> bool {
     ancestors
         .iter()
         .rev()
-        .find_map(|ancestor| match ancestor.parts() {
-            Some(Parts::Block { statements }) => Some(statements),
+        .find_map(|ancestor| match &tree.node(*ancestor).kind {
+            NodeKind::Block { statements } => Some(statements),
             _ => None,
         })
         .is_some_and(|statements| {
-            statements
-                .filter(|statement| statement.span().start >= declaration.span().end)
-                .any(|statement| match statement.parts() {
-                    Some(Parts::Assignment { targets, .. }) => targets
-                        .into_iter()
-                        .any(|target| target.kind() == Kind::Name && target.text() == name.text()),
+            tree.list(statements)
+                .iter()
+                .filter(|statement| {
+                    tree.node(statement.node).span.start >= tree.node(declaration).span.end
+                })
+                .any(|statement| match &tree.node(statement.node).kind {
+                    NodeKind::Assignment { targets, .. } => {
+                        tree.list(targets).iter().any(|target| {
+                            matches!(tree.node(target.node).kind, NodeKind::Name { .. })
+                                && tree.text(target.node) == tree.text(name)
+                        })
+                    }
+
+                    NodeKind::CompoundAssignment { target, .. } => {
+                        matches!(tree.node(*target).kind, NodeKind::Name { .. })
+                            && tree.text(*target) == tree.text(name)
+                    }
 
                     _ => false,
                 })
         })
 }
 
-fn is_declared(
-    name: &[u8],
-    before: usize,
-    ancestors: &[View<'_, '_>],
-    context: &Context<'_>,
-) -> bool {
+fn is_declared(name: &[u8], before: usize, ancestors: &[NodeIndex], context: &Context<'_>) -> bool {
     const BUILTINS: &[&[u8]] = &[
         b"assert",
         b"bit32",
@@ -429,55 +469,50 @@ fn is_declared(
         return true;
     }
 
-    has_local(name, before, ancestors)
+    has_local(context.tree, name, before, ancestors)
 }
 
-pub(super) fn has_local(name: &[u8], before: usize, ancestors: &[View<'_, '_>]) -> bool {
-    ancestors
-        .iter()
-        .rev()
-        .any(|ancestor| match ancestor.parts() {
-            Some(Parts::Function { parameters, .. }) => match parameters.parts() {
-                Some(Parts::Parameters { mut parameters }) => {
-                    parameters.any(|parameter| match parameter.parts() {
-                        Some(Parts::Binding { name: binding, .. }) => binding.text() == name,
-                        _ => false,
-                    })
-                }
-
-                _ => false,
-            },
-
-            Some(Parts::NumericFor { binding, .. }) => match binding.parts() {
-                Some(Parts::Binding { name: binding, .. }) => binding.text() == name,
-                _ => false,
-            },
-
-            Some(Parts::GenericFor { mut bindings, .. }) => {
-                bindings.any(|binding| match binding.parts() {
-                    Some(Parts::Binding { name: binding, .. }) => binding.text() == name,
-                    _ => false,
-                })
-            }
-
-            Some(Parts::Block { statements }) => statements
-                .filter(|statement| statement.span().end <= before)
-                .any(|statement| match statement.parts() {
-                    Some(Parts::Local { mut bindings, .. }) => {
-                        bindings.any(|binding| match binding.parts() {
-                            Some(Parts::Binding { name: binding, .. }) => binding.text() == name,
-                            _ => false,
-                        })
-                    }
-
-                    Some(Parts::Function {
-                        name: Some(binding),
-                        ..
-                    }) if statement.kind() == Kind::LocalFunction => binding.text() == name,
-
-                    _ => false,
-                }),
+pub(super) fn has_local(
+    tree: &Tree<'_>,
+    name: &[u8],
+    before: usize,
+    ancestors: &[NodeIndex],
+) -> bool {
+    ancestors.iter().rev().any(|ancestor| match &tree.node(*ancestor).kind {
+        NodeKind::Function { parameters, .. } => match &tree.node(*parameters).kind {
+            NodeKind::Parameters { parameters, .. } => tree.list(parameters).iter().any(|parameter| {
+                matches!(&tree.node(parameter.node).kind, NodeKind::Binding { name: binding, .. }
+                    if tree.text(*binding) == name)
+            }),
 
             _ => false,
-        })
+        },
+
+        NodeKind::NumericFor { binding, .. } => {
+            matches!(&tree.node(*binding).kind, NodeKind::Binding { name: binding, .. }
+                if tree.text(*binding) == name)
+        }
+
+        NodeKind::GenericFor { bindings, .. } => tree.list(bindings).iter().any(|binding| {
+            matches!(&tree.node(binding.node).kind, NodeKind::Binding { name: binding, .. }
+                if tree.text(*binding) == name)
+        }),
+
+        NodeKind::Block { statements } => tree.list(statements)
+            .iter()
+            .filter(|statement| tree.node(statement.node).span.end <= before)
+            .any(|statement| match &tree.node(statement.node).kind {
+                NodeKind::Local { bindings, .. } | NodeKind::Constant { bindings, .. } => tree.list(bindings).iter().any(|binding| {
+                    matches!(&tree.node(binding.node).kind, NodeKind::Binding { name: binding, .. }
+                        if tree.text(*binding) == name)
+                }),
+
+                NodeKind::Function { name: Some(binding), prefix: Some(prefix), .. }
+                    if tree.token(*prefix).kind == TokenKind::Keyword(Keyword::Local) => tree.text(*binding) == name,
+
+                _ => false,
+            }),
+
+        _ => false,
+    })
 }

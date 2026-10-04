@@ -11,7 +11,7 @@ use tower_lsp_server::ls_types::{
     SymbolKind, Uri,
 };
 
-use vermis::{Kind, Parts};
+use vermis::tree::{Node, NodeIndex, NodeKind, Tree};
 
 use crate::bindings::Index;
 
@@ -241,6 +241,20 @@ impl Document {
                 features: crate::features::Syntax::new(&tree),
             };
 
+            let methods = tree
+                .nodes
+                .iter()
+                .filter_map(|node| {
+                    if let NodeKind::Class { ref members, .. } = node.kind {
+                        Some(tree.list(members))
+                    } else {
+                        None
+                    }
+                })
+                .flatten()
+                .map(|entry| entry.node)
+                .collect::<Vec<_>>();
+
             for (index, node) in tree.nodes.iter().enumerate() {
                 let span = node.span;
 
@@ -249,25 +263,52 @@ impl Document {
                 }
 
                 syntax.spans.push((span.start, span.end));
+
+                let token = match node.kind {
+                    NodeKind::Unary { operator, .. }
+                    | NodeKind::Binary { operator, .. }
+                    | NodeKind::CompoundAssignment { operator, .. } => Some(operator),
+
+                    NodeKind::Assignment { assignment, .. } => assignment,
+                    NodeKind::FunctionName { colon, .. } => colon,
+
+                    NodeKind::TypeTable { access, .. }
+                    | NodeKind::TypeField { access, .. }
+                    | NodeKind::TypeIndexer { access, .. } => access,
+
+                    NodeKind::TypeOf { keyword, .. } => Some(keyword),
+                    _ => None,
+                };
+
+                if let Some(token) = token {
+                    let span = tree.token(token).span;
+                    syntax.spans.push((span.start, span.end));
+                }
+
                 let range = self.range(span.start, span.end);
 
-                if range.end.line > range.start.line
-                    && matches!(
-                        node.kind,
-                        Kind::Function
-                            | Kind::LocalFunction
-                            | Kind::If
-                            | Kind::While
-                            | Kind::Repeat
-                            | Kind::NumericFor
-                            | Kind::GenericFor
-                            | Kind::Do
-                            | Kind::Table
-                            | Kind::TypeTable
-                            | Kind::Class
-                            | Kind::String
-                    )
-                {
+                let fold = match node.kind {
+                    NodeKind::Function { prefix, .. } => {
+                        prefix.is_none_or(|prefix| {
+                            matches!(tree.token(prefix).bytes(tree.source), b"local" | b"const")
+                        }) && !methods.contains(&NodeIndex::new(index))
+                    }
+
+                    NodeKind::If { .. }
+                    | NodeKind::While { .. }
+                    | NodeKind::Repeat { .. }
+                    | NodeKind::NumericFor { .. }
+                    | NodeKind::GenericFor { .. }
+                    | NodeKind::Do { .. }
+                    | NodeKind::Table { .. }
+                    | NodeKind::TypeTable { .. }
+                    | NodeKind::Class { .. }
+                    | NodeKind::String { .. } => true,
+
+                    _ => false,
+                };
+
+                if range.end.line > range.start.line && fold {
                     syntax.folds.push(FoldingRange {
                         start_line: range.start.line,
                         start_character: Some(range.start.character),
@@ -278,55 +319,7 @@ impl Document {
                     });
                 }
 
-                #[expect(
-                    deprecated,
-                    reason = "the optional LSP compatibility field remains unset"
-                )]
-                let mut symbol = |name: vermis::View<'_, '_>, kind: SymbolKind| {
-                    let selection = name.span();
-
-                    syntax.symbols.push(DocumentSymbol {
-                        name: String::from_utf8_lossy(name.text()).into_owned(),
-                        detail: None,
-                        kind,
-                        tags: None,
-                        deprecated: None,
-                        range,
-                        selection_range: self.range(selection.start, selection.end),
-                        children: None,
-                    });
-                };
-
-                match tree.view(index).and_then(vermis::View::parts) {
-                    Some(Parts::Function {
-                        name: Some(name), ..
-                    }) => symbol(name, SymbolKind::FUNCTION),
-
-                    Some(Parts::Local { bindings, values }) => {
-                        let values = values.collect::<Vec<_>>();
-
-                        for (i, binding) in bindings.enumerate() {
-                            if let Some(Parts::Binding { name, .. }) = binding.parts() {
-                                let kind = if values
-                                    .get(i)
-                                    .is_some_and(|value| value.kind() == Kind::Function)
-                                {
-                                    SymbolKind::FUNCTION
-                                } else {
-                                    SymbolKind::VARIABLE
-                                };
-
-                                symbol(name, kind);
-                            }
-                        }
-                    }
-
-                    Some(Parts::TypeAlias { name, .. } | Parts::Class { name, .. }) => {
-                        symbol(name, SymbolKind::CLASS);
-                    }
-
-                    _ => {}
-                }
+                self.collect_symbols(&tree, node, &mut syntax.symbols);
             }
 
             syntax.spans.sort_unstable();
@@ -334,6 +327,64 @@ impl Document {
 
             syntax
         })
+    }
+
+    fn collect_symbols(&self, tree: &Tree<'_>, node: &Node, symbols: &mut Vec<DocumentSymbol>) {
+        #[expect(
+            deprecated,
+            reason = "the optional LSP compatibility field remains unset"
+        )]
+        let mut symbol = |name: NodeIndex, kind: SymbolKind| {
+            let selection = tree.node(name).span;
+
+            symbols.push(DocumentSymbol {
+                name: String::from_utf8_lossy(tree.text(name)).into_owned(),
+                detail: None,
+                kind,
+                tags: None,
+                deprecated: None,
+                range: self.range(node.span.start, node.span.end),
+                selection_range: self.range(selection.start, selection.end),
+                children: None,
+            });
+        };
+
+        match &node.kind {
+            NodeKind::Function {
+                name: Some(name), ..
+            } => {
+                symbol(*name, SymbolKind::FUNCTION);
+            }
+
+            NodeKind::Local {
+                bindings, values, ..
+            }
+            | NodeKind::Constant {
+                bindings, values, ..
+            } => {
+                let values = tree.list(values);
+
+                for (i, binding) in tree.list(bindings).iter().enumerate() {
+                    if let NodeKind::Binding { name, .. } = tree.node(binding.node).kind {
+                        let kind = if values.get(i).is_some_and(|value| {
+                            matches!(tree.node(value.node).kind, NodeKind::Function { .. })
+                        }) {
+                            SymbolKind::FUNCTION
+                        } else {
+                            SymbolKind::VARIABLE
+                        };
+
+                        symbol(name, kind);
+                    }
+                }
+            }
+
+            NodeKind::TypeAlias { name, .. } | NodeKind::Class { name, .. } => {
+                symbol(*name, SymbolKind::CLASS);
+            }
+
+            _ => {}
+        }
     }
 
     pub(crate) fn bindings(&self) -> &Index {

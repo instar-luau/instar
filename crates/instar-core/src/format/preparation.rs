@@ -1,6 +1,9 @@
 use std::{io, mem};
 
-use vermis::{Parts, Span, TokenKind, View};
+use vermis::{
+    token::{Keyword, Span, Symbol, TokenKind},
+    tree::{NodeIndex, NodeKind, Tree},
+};
 
 use crate::config::{CallParentheses, FormatOptions, LeadingZero, QuoteStyle, Semicolons};
 
@@ -41,16 +44,18 @@ pub(super) struct FormatSyntax {
     pub(super) conditionals: Vec<Span>,
     pub(super) conditional_branches: Vec<(usize, Span)>,
     pub(super) statement_ifs: Vec<Span>,
+    function_bodies: Vec<Span>,
+    branch_bodies: Vec<Span>,
     pub(super) binary_operators: Vec<usize>,
     pub(super) interpolation_expressions: Vec<Span>,
     pub(super) unary_minus: Vec<usize>,
     type_tables: Vec<usize>,
+    type_separators: Vec<usize>,
     type_spans: Vec<(usize, usize)>,
     pub(super) typeof_gaps: Vec<(usize, usize)>,
     pub(super) type_operator_gaps: Vec<(usize, usize)>,
     pub(super) type_chains: Vec<(usize, usize)>,
     optional_ends: Vec<usize>,
-    outer_type_spans: Vec<(usize, usize)>,
     pub(super) access_modifiers: Vec<usize>,
     pub(super) parameters: Vec<usize>,
     pub(super) signature_ends: Vec<(usize, usize)>,
@@ -66,21 +71,25 @@ pub(super) struct Prepared {
     pub(super) return_levels: Vec<isize>,
 }
 
-fn tokens(tree: &vermis::Tree<'_>) -> io::Result<Vec<Token>> {
+fn tokens(tree: &Tree<'_>) -> io::Result<Vec<Token>> {
     let bytes = tree.source;
     let mut tokens = Vec::new();
     let mut newlines = 0;
 
     for token in &tree.tokens {
         match token.kind {
-            TokenKind::Eof => break,
+            TokenKind::EndOfFile => break,
 
             TokenKind::Whitespace => {
                 newlines += token.bytes(bytes).split(|&byte| byte == b'\n').count() - 1;
                 continue;
             }
 
-            TokenKind::Error(_) => {
+            TokenKind::MalformedString
+            | TokenKind::MalformedComment
+            | TokenKind::InvalidUnicode { .. }
+            | TokenKind::InvalidInterpolationDoubleBrace
+            | TokenKind::InvalidCharacter { .. } => {
                 return Err(invalid(format!(
                     "invalid token at byte {}",
                     token.span.start
@@ -94,13 +103,14 @@ fn tokens(tree: &vermis::Tree<'_>) -> io::Result<Vec<Token>> {
             TokenKind::Name | TokenKind::Keyword(_) => Kind::Word,
             TokenKind::Number => Kind::Number,
 
-            TokenKind::QuotedString | TokenKind::RawString | TokenKind::Interpolated(_) => {
-                Kind::String
-            }
+            TokenKind::QuotedString
+            | TokenKind::RawString
+            | TokenKind::InterpolatedStringStart
+            | TokenKind::InterpolatedStringMiddle
+            | TokenKind::InterpolatedStringEnd
+            | TokenKind::InterpolatedStringSimple => Kind::String,
 
-            TokenKind::Comment | TokenKind::BlockComment | TokenKind::MarkupComment => {
-                Kind::Comment
-            }
+            TokenKind::Comment | TokenKind::BlockComment => Kind::Comment,
 
             _ => Kind::Symbol,
         };
@@ -121,55 +131,47 @@ fn tokens(tree: &vermis::Tree<'_>) -> io::Result<Vec<Token>> {
     Ok(tokens)
 }
 
-fn collect_type_chain(
-    node: View<'_, '_>,
-    parent: Option<vermis::Kind>,
-    types: vermis::Children<'_, '_>,
-    syntax: &mut FormatSyntax,
-) {
-    let span = node.span();
+fn collect_list_metadata(tree: &Tree<'_>, index: NodeIndex, syntax: &mut FormatSyntax) {
+    let node = tree.node(index);
 
-    if parent != Some(node.kind()) {
-        syntax.type_chains.push((span.start, span.end));
-    }
+    match &node.kind {
+        NodeKind::TypeTable { fields, .. } => {
+            syntax.type_tables.push(node.span.start);
 
-    let mut previous = span.start;
+            syntax.type_separators.extend(
+                tree.list(fields)
+                    .iter()
+                    .filter_map(|field| field.separator)
+                    .map(|separator| tree.token(separator).span.start),
+            );
 
-    for member in types {
-        let start = member.span().start;
-
-        if previous < start {
-            syntax.type_operator_gaps.push((previous, start));
+            syntax.list_starts.extend(
+                tree.list(fields)
+                    .iter()
+                    .map(|field| tree.node(field.node).span.start),
+            );
         }
 
-        previous = member.span().end;
-    }
-}
+        NodeKind::Table { fields, .. }
+        | NodeKind::Parameters {
+            parameters: fields, ..
+        } => syntax.list_starts.extend(
+            tree.list(fields)
+                .iter()
+                .map(|field| tree.node(field.node).span.start),
+        ),
 
-fn collect_list_metadata(node: View<'_, '_>, syntax: &mut FormatSyntax) {
-    match node.parts() {
-        Some(Parts::TypeTable { fields, .. }) => {
-            syntax.type_tables.push(node.span().start);
-
-            syntax
-                .list_starts
-                .extend(fields.map(|field| field.span().start));
-        }
-
-        Some(Parts::Table { fields } | Parts::Parameters { parameters: fields }) => syntax
-            .list_starts
-            .extend(fields.map(|field| field.span().start)),
-
-        Some(Parts::Arguments { values }) => {
-            let list_start = node.span().start;
+        NodeKind::Arguments { values, .. } => {
+            let list_start = node.span.start;
             let mut last = None;
 
-            for value in values {
-                let span = value.span();
+            for value in tree.list(values) {
+                let value = tree.node(value.node);
+                let span = value.span;
                 syntax.list_starts.push(span.start);
                 last = Some(span.start);
 
-                if value.kind() == vermis::Kind::Function {
+                if matches!(value.kind, NodeKind::Function { .. }) {
                     syntax.function_arguments.push((list_start, span));
                 }
             }
@@ -179,182 +181,307 @@ fn collect_list_metadata(node: View<'_, '_>, syntax: &mut FormatSyntax) {
             }
         }
 
-        Some(Parts::Return { values }) => {
+        NodeKind::Return { values, .. } => {
             let first = syntax.return_values.len();
 
-            syntax
-                .return_values
-                .extend(values.map(|value| value.span().start));
+            syntax.return_values.extend(
+                tree.list(values)
+                    .iter()
+                    .map(|value| tree.node(value.node).span.start),
+            );
 
             syntax
                 .return_spans
-                .push((node.span(), first..syntax.return_values.len()));
+                .push((node.span, first..syntax.return_values.len()));
         }
 
         _ => {}
     }
 }
 
-fn collect_conditional_branches(node: View<'_, '_>, syntax: &mut FormatSyntax) {
-    if !node.text().starts_with(b"if") {
+fn collect_conditional_branches(tree: &Tree<'_>, index: NodeIndex, syntax: &mut FormatSyntax) {
+    if !tree.text(index).starts_with(b"if") {
         return;
     }
 
-    let root = node.span().start;
-    let mut branch = node;
+    let root = tree.node(index).span.start;
+    let mut branch = index;
 
-    while let Some(Parts::Conditional { truthy, falsy, .. }) = branch.parts() {
-        syntax.conditional_branches.push((root, truthy.span()));
+    while let NodeKind::Conditional { truthy, falsy, .. } = &tree.node(branch).kind {
+        syntax
+            .conditional_branches
+            .push((root, tree.node(*truthy).span));
 
-        if falsy.kind() == vermis::Kind::Conditional && falsy.text().starts_with(b"elseif") {
-            branch = falsy;
+        if matches!(tree.node(*falsy).kind, NodeKind::Conditional { .. })
+            && tree.text(*falsy).starts_with(b"elseif")
+        {
+            branch = *falsy;
         } else {
-            syntax.conditional_branches.push((root, falsy.span()));
+            syntax
+                .conditional_branches
+                .push((root, tree.node(*falsy).span));
+
             break;
         }
     }
 }
 
-fn collect_signature_metadata(node: View<'_, '_>, syntax: &mut FormatSyntax) {
-    if let Some(Parts::Function {
-        parameters: args,
+fn collect_declaration_metadata(
+    tree: &Tree<'_>,
+    index: NodeIndex,
+    parent: Option<&NodeKind>,
+    syntax: &mut FormatSyntax,
+) {
+    let node = tree.node(index);
+
+    if let NodeKind::Function {
+        parameters,
         returns,
         ..
-    }) = node.parts()
+    } = &node.kind
     {
-        syntax.parameters.push(args.span().start);
+        let start = tree.node(*parameters).span.start;
+        syntax.parameters.push(start);
 
         if let Some(annotation) = returns {
             syntax
                 .signature_ends
-                .push((args.span().start, annotation.span().end));
+                .push((start, tree.node(*annotation).span.end));
         }
+    }
+
+    if matches!(
+        node.kind,
+        NodeKind::Declaration { .. } | NodeKind::Function { body: None, .. }
+    ) {
+        syntax.declarations.push((node.span.start, node.span.end));
+    }
+
+    if matches!(parent, Some(NodeKind::Declaration { .. }))
+        && let NodeKind::Class {
+            name,
+            extends,
+            members,
+            ..
+        } = &node.kind
+    {
+        let start = tree.node(extends.unwrap_or(*name)).span.end;
+
+        let end = tree
+            .list(members)
+            .first()
+            .map_or(node.span.end, |member| tree.node(member.node).span.start);
+
+        syntax.class_headers.push((start, end));
+    }
+}
+
+fn collect_simple_body(
+    tree: &Tree<'_>,
+    index: NodeIndex,
+    start: usize,
+    end: usize,
+    bodies: &mut Vec<Span>,
+) {
+    if let NodeKind::Block { statements } = &tree.node(index).kind
+        && let [statement] = tree.list(statements)
+        && statement.separator.is_none()
+    {
+        bodies.push(Span { start, end });
+    }
+}
+
+fn collect_body_metadata(tree: &Tree<'_>, index: NodeIndex, syntax: &mut FormatSyntax) {
+    let node = tree.node(index);
+
+    match &node.kind {
+        NodeKind::Conditional { .. } => {
+            syntax.conditionals.push(node.span);
+            collect_conditional_branches(tree, index, syntax);
+        }
+
+        NodeKind::Function {
+            parameters,
+            returns,
+            body: Some(body),
+            end: Some(end),
+            ..
+        } => collect_simple_body(
+            tree,
+            *body,
+            tree.node(returns.unwrap_or(*parameters)).span.end,
+            tree.token(*end).span.start,
+            &mut syntax.function_bodies,
+        ),
+
+        NodeKind::If {
+            branches,
+            otherwise,
+            end,
+        } => {
+            syntax.statement_ifs.push(node.span);
+
+            if let Some(end) = end {
+                let mut closing = tree.token(*end).span.start;
+
+                if let Some(otherwise) = otherwise
+                    && let NodeKind::Else { keyword, body } = &tree.node(*otherwise).kind
+                {
+                    collect_simple_body(
+                        tree,
+                        *body,
+                        tree.token(*keyword).span.end,
+                        closing,
+                        &mut syntax.branch_bodies,
+                    );
+
+                    closing = tree.token(*keyword).span.start;
+                }
+
+                for branch in tree.list(branches).iter().rev() {
+                    if let NodeKind::Branch {
+                        keyword,
+                        then,
+                        body,
+                        ..
+                    } = &tree.node(branch.node).kind
+                    {
+                        if let Some(then) = then {
+                            collect_simple_body(
+                                tree,
+                                *body,
+                                tree.token(*then).span.end,
+                                closing,
+                                &mut syntax.branch_bodies,
+                            );
+                        }
+
+                        closing = tree.token(*keyword).span.start;
+                    }
+                }
+            }
+        }
+
+        _ => {}
     }
 }
 
 fn body_starts(
-    node: View<'_, '_>,
-    parent: Option<vermis::Kind>,
+    tree: &Tree<'_>,
+    index: NodeIndex,
+    parent: Option<&NodeKind>,
     options: &FormatOptions,
     syntax: &mut FormatSyntax,
 ) {
-    collect_list_metadata(node, syntax);
-    collect_signature_metadata(node, syntax);
+    let node = tree.node(index);
+    collect_list_metadata(tree, index, syntax);
+    collect_declaration_metadata(tree, index, parent, syntax);
+    collect_body_metadata(tree, index, syntax);
 
-    if node.kind() == vermis::Kind::Declaration {
-        let span = node.span();
-        syntax.declarations.push((span.start, span.end));
-    }
-
-    if parent == Some(vermis::Kind::Declaration)
-        && let Some(Parts::Class {
-            name,
-            extends,
-            mut members,
-        }) = node.parts()
-    {
-        let start = extends.map_or(name.span().end, |node| node.span().end);
-
-        let end = members
-            .next()
-            .map_or(node.span().end, |member| member.span().start);
-
-        syntax.class_headers.push((start, end));
-    }
-
-    match node.parts() {
-        Some(Parts::TypeArguments { .. } | Parts::Generics { .. }) => {
-            let span = node.span();
-            syntax.type_spans.push((span.start, span.end));
+    match &node.kind {
+        NodeKind::TypeArguments { .. }
+        | NodeKind::Generics { .. }
+        | NodeKind::InstantiationArguments { .. } => {
+            syntax.type_spans.push((node.span.start, node.span.end));
         }
 
-        Some(Parts::TypeOf { name, expression }) => syntax
-            .typeof_gaps
-            .push((name.span().end, expression.span().start)),
+        NodeKind::TypeOf {
+            keyword,
+            expression,
+            ..
+        } => syntax.typeof_gaps.push((
+            tree.token(*keyword).span.end,
+            tree.node(*expression).span.start,
+        )),
 
-        Some(Parts::TypeUnion { types } | Parts::TypeIntersection { types }) => {
-            collect_type_chain(node, parent, types, syntax);
+        NodeKind::TypeUnion { left, right, .. }
+        | NodeKind::TypeIntersection { left, right, .. } => {
+            if parent
+                .is_none_or(|parent| mem::discriminant(parent) != mem::discriminant(&node.kind))
+            {
+                syntax.type_chains.push((node.span.start, node.span.end));
+            }
+
+            let start = left.map_or(node.span.start, |left| tree.node(left).span.end);
+
+            syntax
+                .type_operator_gaps
+                .push((start, tree.node(*right).span.start));
         }
 
-        Some(Parts::Conditional { .. }) => {
-            syntax.conditionals.push(node.span());
-            collect_conditional_branches(node, syntax);
+        NodeKind::Binary { operator, .. } => {
+            syntax
+                .binary_operators
+                .push(tree.token(*operator).span.start);
         }
 
-        Some(Parts::If { .. }) => syntax.statement_ifs.push(node.span()),
-
-        Some(Parts::Binary { operator, .. }) => {
-            syntax.binary_operators.push(operator.span().start);
-        }
-
-        Some(Parts::Interpolation { segments }) => syntax.interpolation_expressions.extend(
-            segments
-                .filter(|segment| segment.kind() != vermis::Kind::String)
-                .map(View::span),
+        NodeKind::Interpolation { segments } => syntax.interpolation_expressions.extend(
+            tree.list(segments)
+                .iter()
+                .map(|segment| tree.node(segment.node))
+                .filter(|segment| {
+                    !matches!(segment.kind, NodeKind::String { token } if matches!(
+                        tree.token(token).kind,
+                        TokenKind::InterpolatedStringStart
+                            | TokenKind::InterpolatedStringMiddle
+                            | TokenKind::InterpolatedStringEnd
+                            | TokenKind::InterpolatedStringSimple
+                    ))
+                })
+                .map(|segment| segment.span),
         ),
 
-        Some(Parts::Unary { operator, .. }) if operator.text() == b"-" => {
-            syntax.unary_minus.push(operator.span().start);
+        NodeKind::Unary { operator, .. }
+            if tree.token(*operator).kind == TokenKind::Symbol(Symbol::Subtract) =>
+        {
+            syntax.unary_minus.push(tree.token(*operator).span.start);
         }
 
-        Some(Parts::TypeOptional { .. }) => syntax.optional_ends.push(node.span().end),
+        NodeKind::TypeOptional { .. } => syntax.optional_ends.push(node.span.end),
 
-        Some(
-            Parts::Instantiate { arguments, .. }
-            | Parts::MethodCall {
-                types: Some(arguments),
-                ..
-            },
-        ) => {
-            let span = arguments.span();
-            syntax.outer_type_spans.push((span.start, span.end));
-        }
-
-        Some(Parts::TypeField {
+        NodeKind::TypeField {
             access: Some(access),
             ..
-        }) => syntax.access_modifiers.push(access.span().start),
+        }
+        | NodeKind::TypeIndexer {
+            access: Some(access),
+            ..
+        } => {
+            syntax.access_modifiers.push(tree.token(*access).span.start);
+        }
 
         _ => {}
     }
 
-    if let Some(Parts::Block { statements }) = node.parts() {
-        let mut first = true;
+    if let NodeKind::Block { statements } = &node.kind {
+        for (position, statement) in tree.list(statements).iter().enumerate() {
+            let span = tree.node(statement.node).span;
 
-        for statement in statements {
-            if first {
-                if parent != Some(vermis::Kind::Root) {
-                    syntax.edges.push(statement.span().start);
-                }
-
-                first = false;
+            if position == 0 && !matches!(parent, Some(NodeKind::Root { .. })) {
+                syntax.edges.push(span.start);
             }
 
-            syntax.ends.push(statement.span().end);
-            syntax.starts.push(statement.span().start);
+            syntax.ends.push(span.end);
+            syntax.starts.push(span.start);
         }
     }
 
-    if let Some(arguments) = match node.parts() {
-        Some(Parts::Call { arguments, .. } | Parts::MethodCall { arguments, .. }) => {
-            Some(arguments)
-        }
-
-        _ => None,
-    } {
-        syntax.calls.push(arguments.span().start);
+    if let NodeKind::Call { arguments, .. } | NodeKind::MethodCall { arguments, .. } = &node.kind {
+        let span = tree.node(*arguments).span;
+        syntax.calls.push(span.start);
 
         if options.calls.parentheses == CallParentheses::Always
-            && matches!(arguments.text().first(), Some(b'\'' | b'"' | b'[' | b'{'))
+            && matches!(
+                tree.text(*arguments).first(),
+                Some(b'\'' | b'"' | b'[' | b'{')
+            )
         {
-            syntax
-                .bare_calls
-                .push((arguments.span().start, arguments.span().end));
+            syntax.bare_calls.push((span.start, span.end));
         }
     }
 
-    for child in node.children() {
-        body_starts(child, Some(node.kind()), options, syntax);
+    for child in tree.children(index) {
+        body_starts(tree, child, Some(&node.kind), options, syntax);
     }
 }
 
@@ -463,151 +590,36 @@ pub(super) fn enclosing_brace(tokens: &[Token], index: usize) -> Option<usize> {
     None
 }
 
-fn prepare_function_bodies(
+fn compact_bodies(
     tokens: &mut [Token],
-    options: &FormatOptions,
-    starts: &mut Vec<usize>,
-    declared: &[bool],
-) -> Vec<bool> {
-    let mut compact_ends = vec![false; tokens.len()];
-
-    let compact = matches!(
-        options.blocks.simple_bodies,
-        crate::config::SimpleBodies::CompactFunctions | crate::config::SimpleBodies::CompactAll
-    );
-
-    for function in 0..tokens.len() {
-        if tokens[function].kind != Kind::Word
-            || tokens[function].text != "function"
-            || declared.get(function) == Some(&true)
-        {
-            continue;
-        }
-
-        let Some(open) = (function + 1..tokens.len())
-            .take_while(|&index| tokens[index].newlines == 0)
-            .find(|&index| tokens[index].text == "(")
-        else {
-            continue;
-        };
-
-        let Some(parameters_end) = delimiter_end(tokens, open) else {
-            continue;
-        };
-
-        let body = parameters_end + 1;
-
-        if body >= tokens.len() || tokens[body].text == ":" {
-            continue;
-        }
-
-        let Some(end) = (body..tokens.len())
-            .find(|&index| tokens[index].kind == Kind::Word && tokens[index].text == "end")
-        else {
-            continue;
-        };
-
-        let multiple_statements = starts
-            .iter()
-            .any(|&start| start > tokens[body].start && start < tokens[end].start);
-
-        let body_tokens = &tokens[body..end];
-
-        if multiple_statements
-            || body_tokens.is_empty()
-            || body_tokens.iter().any(|token| {
-                token.kind == Kind::Comment
-                    || (token.kind == Kind::Word
-                        && matches!(
-                            token.text.as_str(),
-                            "function" | "if" | "for" | "while" | "do" | "repeat" | "end"
-                        ))
-                    || token.text == ";"
-            })
-            || body_tokens
-                .iter()
-                .filter(|token| token.newlines > 0)
-                .count()
-                > 1
-        {
-            continue;
-        }
-
-        if compact {
-            tokens[body].newlines = 0;
-
-            if let Ok(start) = starts.binary_search(&tokens[body].start) {
-                starts.remove(start);
-            }
-
-            compact_ends[end] = true;
-        } else {
-            tokens[body].newlines = tokens[body].newlines.max(1);
-        }
-    }
-
-    compact_ends
-}
-
-fn prepare_conditional_bodies(
-    tokens: &mut [Token],
-    options: &FormatOptions,
+    bodies: &[Span],
     starts: &mut Vec<usize>,
     compact_ends: &mut [bool],
-    conditionals: &[Span],
 ) {
-    let compact_conditionals = matches!(
-        options.blocks.simple_bodies,
-        crate::config::SimpleBodies::CompactConditionals | crate::config::SimpleBodies::CompactAll
-    );
-
-    for conditional in 0..tokens.len() {
-        if tokens[conditional].kind != Kind::Word
-            || tokens[conditional].text != "if"
-            || conditionals
-                .binary_search_by_key(&tokens[conditional].start, |span| span.start)
-                .is_ok()
-        {
-            continue;
-        }
-
-        let Some(then) = (conditional + 1..tokens.len())
-            .take_while(|&index| !(tokens[index].kind == Kind::Word && tokens[index].text == "end"))
-            .find(|&index| tokens[index].kind == Kind::Word && tokens[index].text == "then")
-        else {
-            continue;
-        };
-
-        let body = then + 1;
-
-        let Some(end) = (body..tokens.len())
-            .find(|&index| tokens[index].kind == Kind::Word && tokens[index].text == "end")
-        else {
-            continue;
-        };
-
-        let multiple_statements = starts
-            .iter()
-            .any(|&start| start > tokens[body].start && start < tokens[end].start);
-
+    for span in bodies {
+        let body = tokens.partition_point(|token| token.start < span.start);
+        let end = tokens.partition_point(|token| token.start < span.end);
         let body_tokens = &tokens[body..end];
 
-        if multiple_statements
-            || body_tokens.is_empty()
+        if body_tokens.is_empty()
             || body_tokens.iter().any(|token| {
-                token.kind == Kind::Comment
-                    || matches!(
-                        token.text.as_str(),
-                        "function"
-                            | "if"
-                            | "for"
-                            | "while"
-                            | "do"
-                            | "repeat"
-                            | "else"
-                            | "elseif"
-                            | ";"
-                    )
+                matches!(
+                    token.syntax_kind,
+                    TokenKind::Comment
+                        | TokenKind::BlockComment
+                        | TokenKind::Keyword(
+                            Keyword::Function
+                                | Keyword::If
+                                | Keyword::For
+                                | Keyword::While
+                                | Keyword::Do
+                                | Keyword::Repeat
+                                | Keyword::End
+                                | Keyword::Else
+                                | Keyword::ElseIf
+                        )
+                        | TokenKind::Symbol(Symbol::Semicolon)
+                )
             })
             || body_tokens
                 .iter()
@@ -618,16 +630,17 @@ fn prepare_conditional_bodies(
             continue;
         }
 
-        if compact_conditionals {
-            tokens[body].newlines = 0;
+        tokens[body].newlines = 0;
 
-            if let Ok(start) = starts.binary_search(&tokens[body].start) {
-                starts.remove(start);
-            }
+        if let Ok(start) = starts.binary_search(&tokens[body].start) {
+            starts.remove(start);
+        }
 
+        if tokens.get(end).is_some_and(|token| {
+            token.start == span.end && token.syntax_kind == TokenKind::Keyword(Keyword::End)
+        }) {
+            tokens[end].newlines = 0;
             compact_ends[end] = true;
-        } else {
-            tokens[body].newlines = tokens[body].newlines.max(1);
         }
     }
 }
@@ -636,7 +649,6 @@ fn type_punctuation(
     tokens: &[Token],
     spans: &[(usize, usize)],
     optional_ends: &[usize],
-    outer_spans: &[(usize, usize)],
 ) -> Vec<bool> {
     let mut tight = vec![false; tokens.len()];
 
@@ -662,20 +674,6 @@ fn type_punctuation(
 
         if after > 0 && tokens[after - 1].end == end && tokens[after - 1].text == "?" {
             tight[after - 1] = true;
-        }
-    }
-
-    for &(arguments_start, arguments_end) in outer_spans {
-        let after_open = tokens.partition_point(|token| token.end <= arguments_start);
-
-        if after_open > 0 && tokens[after_open - 1].text == "<" {
-            tight[after_open - 1] = true;
-        }
-
-        let close = tokens.partition_point(|token| token.start < arguments_end);
-
-        if tokens.get(close).is_some_and(|token| token.text == ">") {
-            tight[close] = true;
         }
     }
 
@@ -797,12 +795,10 @@ fn return_continuation_levels(tokens: &[Token], syntax: &FormatSyntax) -> Vec<is
     levels
 }
 
-fn collect_metadata(tree: &vermis::Tree<'_>, options: &FormatOptions) -> FormatSyntax {
+fn collect_metadata(tree: &Tree<'_>, options: &FormatOptions) -> FormatSyntax {
     let mut syntax = FormatSyntax::default();
 
-    if let Some(root) = tree.view(tree.root) {
-        body_starts(root, None, options, &mut syntax);
-    }
+    body_starts(tree, tree.root, None, options, &mut syntax);
 
     syntax.starts.sort_unstable();
     syntax.calls.sort_unstable();
@@ -836,8 +832,8 @@ fn collect_metadata(tree: &vermis::Tree<'_>, options: &FormatOptions) -> FormatS
     syntax.type_operator_gaps.sort_unstable();
     syntax.type_chains.sort_unstable();
     syntax.type_tables.sort_unstable();
+    syntax.type_separators.sort_unstable();
     syntax.optional_ends.sort_unstable();
-    syntax.outer_type_spans.sort_unstable();
     syntax.parameters.sort_unstable();
 
     syntax
@@ -867,7 +863,7 @@ fn insert_call_parentheses(
                 Token {
                     text: ")".to_owned(),
                     kind: Kind::Symbol,
-                    syntax_kind: TokenKind::Byte(b')'),
+                    syntax_kind: TokenKind::Symbol(Symbol::RightParenthesis),
                     start: end,
                     end,
                     newlines: 0,
@@ -882,7 +878,7 @@ fn insert_call_parentheses(
                 Token {
                     text: "(".to_owned(),
                     kind: Kind::Symbol,
-                    syntax_kind: TokenKind::Byte(b'('),
+                    syntax_kind: TokenKind::Symbol(Symbol::LeftParenthesis),
                     start,
                     end: start,
                     newlines,
@@ -906,23 +902,21 @@ fn normalize_token_spellings(tokens: &mut [Token], options: &FormatOptions) {
     }
 }
 
-pub(super) fn prepare(tree: &vermis::Tree<'_>, options: &FormatOptions) -> io::Result<Prepared> {
+pub(super) fn prepare(tree: &Tree<'_>, options: &FormatOptions) -> io::Result<Prepared> {
     let mut syntax = collect_metadata(tree, options);
     let mut tokens = tokens(tree)?;
     insert_call_parentheses(&mut tokens, &mut syntax, options);
     normalize_calls(&mut tokens, options.calls.parentheses, &syntax.calls);
 
-    for index in 0..tokens.len() {
-        if matches!(tokens[index].text.as_str(), "," | ";")
-            && enclosing_brace(&tokens, index)
-                .is_some_and(|start| type_table(&syntax, &tokens[start]))
-        {
-            tokens[index].text = match (tokens[index].text.as_str(), options.types.tables.separator)
-            {
-                (",", crate::config::TypeTableSeparator::Semicolon) => ";".to_owned(),
-                (";", crate::config::TypeTableSeparator::Comma) => ",".to_owned(),
-                _ => tokens[index].text.clone(),
+    for token in &mut tokens {
+        if syntax.type_separators.binary_search(&token.start).is_ok() {
+            let (text, symbol) = match options.types.tables.separator {
+                crate::config::TypeTableSeparator::Comma => (",", Symbol::Comma),
+                crate::config::TypeTableSeparator::Semicolon => (";", Symbol::Semicolon),
             };
+
+            text.clone_into(&mut token.text);
+            token.syntax_kind = TokenKind::Symbol(symbol);
         }
     }
 
@@ -942,12 +936,7 @@ pub(super) fn prepare(tree: &vermis::Tree<'_>, options: &FormatOptions) -> io::R
         }
     }
 
-    let tight_type = type_punctuation(
-        &tokens,
-        &syntax.type_spans,
-        &syntax.optional_ends,
-        &syntax.outer_type_spans,
-    );
+    let tight_type = type_punctuation(&tokens, &syntax.type_spans, &syntax.optional_ends);
 
     let mut declared = Vec::new();
 
@@ -961,16 +950,31 @@ pub(super) fn prepare(tree: &vermis::Tree<'_>, options: &FormatOptions) -> io::R
         }
     }
 
-    let mut compact_ends =
-        prepare_function_bodies(&mut tokens, options, &mut syntax.starts, &declared);
+    let mut compact_ends = vec![false; tokens.len()];
 
-    prepare_conditional_bodies(
-        &mut tokens,
-        options,
-        &mut syntax.starts,
-        &mut compact_ends,
-        &syntax.conditionals,
-    );
+    if matches!(
+        options.blocks.simple_bodies,
+        crate::config::SimpleBodies::CompactFunctions | crate::config::SimpleBodies::CompactAll
+    ) {
+        compact_bodies(
+            &mut tokens,
+            &syntax.function_bodies,
+            &mut syntax.starts,
+            &mut compact_ends,
+        );
+    }
+
+    if matches!(
+        options.blocks.simple_bodies,
+        crate::config::SimpleBodies::CompactConditionals | crate::config::SimpleBodies::CompactAll
+    ) {
+        compact_bodies(
+            &mut tokens,
+            &syntax.branch_bodies,
+            &mut syntax.starts,
+            &mut compact_ends,
+        );
+    }
 
     for token in &mut tokens {
         if syntax.starts.binary_search(&token.start).is_ok() {

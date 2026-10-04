@@ -1,181 +1,209 @@
-use vermis::{Kind, Parts, View};
+use vermis::{
+    token::{Symbol, TokenKind},
+    tree::{NodeIndex, NodeKind, Tree},
+};
 
 use super::{Context, Finding};
 
-fn numeric_literal(node: View<'_, '_>) -> Option<f64> {
-    if node.kind() == Kind::Number {
-        return std::str::from_utf8(node.text()).ok()?.parse().ok();
+fn numeric_literal(tree: &Tree<'_>, node: NodeIndex) -> Option<f64> {
+    if matches!(tree.node(node).kind, NodeKind::Number { .. }) {
+        return std::str::from_utf8(tree.text(node)).ok()?.parse().ok();
     }
 
-    if let Some(Parts::Unary { operator, operand }) = node.parts()
-        && operator.text() == b"-"
+    if let NodeKind::Unary { operator, operand } = &tree.node(node).kind
+        && tree.token(*operator).kind == TokenKind::Symbol(Symbol::Subtract)
     {
-        return numeric_literal(operand).map(|number| -number);
+        return numeric_literal(tree, *operand).map(|number| -number);
     }
 
     None
 }
 
-fn is_color3_new(node: View<'_, '_>) -> bool {
-    let Some(Parts::Call { callee, .. }) = node.parts() else {
+fn is_color3_new(tree: &Tree<'_>, node: NodeIndex) -> bool {
+    let NodeKind::Call { callee, .. } = &tree.node(node).kind else {
         return false;
     };
 
-    let Some(Parts::Field { receiver, name }) = callee.parts() else {
+    let NodeKind::Field { receiver, name, .. } = &tree.node(*callee).kind else {
         return false;
     };
 
-    receiver.kind() == Kind::Name && receiver.text() == b"Color3" && name.text() == b"new"
+    matches!(tree.node(*receiver).kind, NodeKind::Name { .. })
+        && tree.text(*receiver) == b"Color3"
+        && tree.text(*name) == b"new"
 }
 
-fn is_udim2_new<'tree, 'source>(node: View<'tree, 'source>) -> Option<View<'tree, 'source>> {
-    let Some(Parts::Call { callee, arguments }) = node.parts() else {
+fn is_udim2_new(tree: &Tree<'_>, node: NodeIndex) -> Option<NodeIndex> {
+    let NodeKind::Call { callee, arguments } = &tree.node(node).kind else {
         return None;
     };
 
-    let Some(Parts::Field { receiver, name }) = callee.parts() else {
+    let NodeKind::Field { receiver, name, .. } = &tree.node(*callee).kind else {
         return None;
     };
 
-    (receiver.kind() == Kind::Name && receiver.text() == b"UDim2" && name.text() == b"new")
-        .then_some(arguments)
+    (matches!(tree.node(*receiver).kind, NodeKind::Name { .. })
+        && tree.text(*receiver) == b"UDim2"
+        && tree.text(*name) == b"new")
+        .then_some(*arguments)
 }
 
 pub(super) fn check(
-    node: View<'_, '_>,
-    ancestors: &[View<'_, '_>],
+    node: NodeIndex,
+    ancestors: &[NodeIndex],
     context: &Context<'_>,
     findings: &mut Vec<Finding>,
 ) {
-    if is_color3_new(node)
+    let tree = context.tree;
+
+    if is_color3_new(tree, node)
         && context.enabled("roblox_incorrect_color3_new_bounds")
-        && !super::suspicious::has_local(b"Color3", node.span().start, ancestors)
-        && let Some(Parts::Call { arguments, .. }) = node.parts()
-        && let Some(Parts::Arguments { mut values }) = arguments.parts()
-        && values.any(|value| {
-            numeric_literal(value).is_some_and(|channel| !(0.0..=1.0).contains(&channel))
+        && !super::suspicious::has_local(tree, b"Color3", tree.node(node).span.start, ancestors)
+        && let NodeKind::Call { arguments, .. } = &tree.node(node).kind
+        && let NodeKind::Arguments { values, .. } = &tree.node(*arguments).kind
+        && tree.list(values).iter().any(|value| {
+            numeric_literal(tree, value.node).is_some_and(|channel| !(0.0..=1.0).contains(&channel))
         })
     {
         context.emit(
             findings,
             "roblox_incorrect_color3_new_bounds",
-            node.span(),
+            tree.node(node).span,
             "Color3.new channels use a 0–1 scale",
         );
     }
 
-    if !super::suspicious::has_local(b"UDim2", node.span().start, ancestors)
-        && let Some(arguments) = is_udim2_new(node)
+    if !super::suspicious::has_local(tree, b"UDim2", tree.node(node).span.start, ancestors)
+        && let Some(arguments) = is_udim2_new(tree, node)
     {
-        let Some(Parts::Arguments { values }) = arguments.parts() else {
+        let NodeKind::Arguments { values, .. } = &tree.node(arguments).kind else {
             return;
         };
 
-        let count = values.clone().count();
+        let values = tree.list(values);
+        let count = values.len();
 
         if count == 2 && context.enabled("roblox_suspicious_udim2_new") {
             context.emit(
                 findings,
                 "roblox_suspicious_udim2_new",
-                node.span(),
+                tree.node(node).span,
                 "UDim2.new expects scale and offset components for both axes",
             );
         } else if count == 4 && context.enabled("roblox_manual_fromscale_or_fromoffset") {
-            let mut values = values;
+            let scale = numeric_literal(tree, values[1].node).is_some_and(|value| value == 0.0)
+                && numeric_literal(tree, values[3].node).is_some_and(|value| value == 0.0);
 
-            if let (Some(x_scale), Some(x_offset), Some(y_scale), Some(y_offset)) =
-                (values.next(), values.next(), values.next(), values.next())
-            {
-                let scale = numeric_literal(x_offset).is_some_and(|value| value == 0.0)
-                    && numeric_literal(y_offset).is_some_and(|value| value == 0.0);
+            let offset = numeric_literal(tree, values[0].node).is_some_and(|value| value == 0.0)
+                && numeric_literal(tree, values[2].node).is_some_and(|value| value == 0.0);
 
-                let offset = numeric_literal(x_scale).is_some_and(|value| value == 0.0)
-                    && numeric_literal(y_scale).is_some_and(|value| value == 0.0);
-
-                if scale || offset {
-                    context.emit(
-                        findings,
-                        "roblox_manual_fromscale_or_fromoffset",
-                        node.span(),
-                        if scale {
-                            "use UDim2.fromScale when both offsets are zero"
-                        } else {
-                            "use UDim2.fromOffset when both scales are zero"
-                        },
-                    );
-                }
+            if scale || offset {
+                context.emit(
+                    findings,
+                    "roblox_manual_fromscale_or_fromoffset",
+                    tree.node(node).span,
+                    if scale {
+                        "use UDim2.fromScale when both offsets are zero"
+                    } else {
+                        "use UDim2.fromOffset when both scales are zero"
+                    },
+                );
             }
         }
     }
 
     if context.enabled("roblox_prefer_get_players")
-        && let Some(Parts::MethodCall {
+        && let NodeKind::MethodCall {
             receiver, method, ..
-        }) = node.parts()
-        && method.text() == b"GetChildren"
-        && !super::suspicious::has_local(b"game", node.span().start, ancestors)
-        && (is_confirmed_players(receiver)
-            || (receiver.kind() == Kind::Name && players_binding(receiver, ancestors)))
+        } = &tree.node(node).kind
+        && tree.text(*method) == b"GetChildren"
+        && !super::suspicious::has_local(tree, b"game", tree.node(node).span.start, ancestors)
+        && (is_confirmed_players(tree, *receiver)
+            || (matches!(tree.node(*receiver).kind, NodeKind::Name { .. })
+                && players_binding(tree, *receiver, ancestors)))
     {
         context.emit(
             findings,
             "roblox_prefer_get_players",
-            node.span(),
+            tree.node(node).span,
             "use Players:GetPlayers() to select players",
         );
     }
 }
 
-fn is_confirmed_players(node: View<'_, '_>) -> bool {
-    let Some(Parts::MethodCall {
+fn is_confirmed_players(tree: &Tree<'_>, node: NodeIndex) -> bool {
+    let NodeKind::MethodCall {
         receiver,
         method,
         arguments,
         ..
-    }) = node.parts()
+    } = &tree.node(node).kind
     else {
         return false;
     };
 
-    if method.text() != b"GetService" || receiver.kind() != Kind::Name || receiver.text() != b"game"
+    if tree.text(*method) != b"GetService"
+        || !matches!(tree.node(*receiver).kind, NodeKind::Name { .. })
+        || tree.text(*receiver) != b"game"
     {
         return false;
     }
 
-    matches!(arguments.parts(), Some(Parts::Arguments { values })
-    if values.clone().count() == 1
-        && values.clone().next().is_some_and(|name| {
-            name.kind() == Kind::String && matches!(name.text(), b"\"Players\"" | b"'Players'")
-        }))
+    let NodeKind::Arguments { values, .. } = &tree.node(*arguments).kind else {
+        return false;
+    };
+
+    let values = tree.list(values);
+
+    values.len() == 1
+        && matches!(tree.node(values[0].node).kind, NodeKind::String { .. })
+        && matches!(tree.text(values[0].node), b"\"Players\"" | b"'Players'")
 }
 
-fn players_binding(node: View<'_, '_>, ancestors: &[View<'_, '_>]) -> bool {
-    for ancestor in ancestors.iter().rev() {
-        let Some(Parts::Block { statements }) = ancestor.parts() else {
+fn players_binding(tree: &Tree<'_>, node: NodeIndex, ancestors: &[NodeIndex]) -> bool {
+    for &ancestor in ancestors.iter().rev() {
+        let NodeKind::Block { statements } = &tree.node(ancestor).kind else {
             continue;
         };
 
         let mut declared = None;
 
-        for statement in statements.filter(|statement| statement.span().end <= node.span().start) {
-            match statement.parts() {
-                Some(Parts::Local { bindings, values }) => {
-                    for (binding, value) in bindings.zip(values) {
-                        if let Some(Parts::Binding { name, .. }) = binding.parts()
-                            && name.text() == node.text()
+        for statement in tree
+            .list(statements)
+            .iter()
+            .filter(|statement| tree.node(statement.node).span.end <= tree.node(node).span.start)
+        {
+            match &tree.node(statement.node).kind {
+                NodeKind::Local {
+                    bindings, values, ..
+                }
+                | NodeKind::Constant {
+                    bindings, values, ..
+                } => {
+                    for (binding, value) in tree.list(bindings).iter().zip(tree.list(values)) {
+                        if let NodeKind::Binding { name, .. } = &tree.node(binding.node).kind
+                            && tree.text(*name) == tree.text(node)
                         {
-                            declared = Some(is_confirmed_players(value));
+                            declared = Some(is_confirmed_players(tree, value.node));
                         }
                     }
                 }
 
-                Some(Parts::Assignment { targets, .. }) if declared.is_some() => {
-                    if targets
-                        .into_iter()
-                        .any(|target| target.kind() == Kind::Name && target.text() == node.text())
-                    {
+                NodeKind::Assignment { targets, .. } if declared.is_some() => {
+                    if tree.list(targets).iter().any(|target| {
+                        matches!(tree.node(target.node).kind, NodeKind::Name { .. })
+                            && tree.text(target.node) == tree.text(node)
+                    }) {
                         declared = Some(false);
                     }
+                }
+
+                NodeKind::CompoundAssignment { target, .. }
+                    if declared.is_some()
+                        && matches!(tree.node(*target).kind, NodeKind::Name { .. })
+                        && tree.text(*target) == tree.text(node) =>
+                {
+                    declared = Some(false);
                 }
 
                 _ => {}
