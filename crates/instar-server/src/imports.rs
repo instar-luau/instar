@@ -160,7 +160,7 @@ fn delimiters(raw: &str) -> Option<(usize, String)> {
     }
 }
 
-fn recover_literal(document: &Document, offset: usize) -> Option<vermis::Span> {
+fn recover_literal(document: &Document, offset: usize) -> Option<vermis::token::Span> {
     let span = document.bindings().literal_at(offset)?;
     let raw = &document.text[span.start..span.end];
     let (opening, delimiter) = delimiters(raw)?;

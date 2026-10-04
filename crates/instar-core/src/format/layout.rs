@@ -1,4 +1,4 @@
-use vermis::{InterpolatedKind, Keyword, Operator, Span, TokenKind};
+use vermis::token::{Keyword, Span, Symbol, TokenKind};
 
 use crate::config::{BeforeFunctionParentheses, FormatOptions, Wrap};
 
@@ -639,23 +639,45 @@ fn if_expression_wrap(
 }
 
 fn is_spaced_operator(token: &Token) -> bool {
-    match token.syntax_kind {
-        TokenKind::Operator(Operator::Ellipsis) => false,
-
-        TokenKind::Operator(_)
-        | TokenKind::Byte(
-            b'=' | b'+' | b'-' | b'*' | b'/' | b'%' | b'^' | b'<' | b'>' | b'|' | b'&' | b'?',
-        )
-        | TokenKind::Keyword(Keyword::And | Keyword::Or | Keyword::Not) => true,
-
-        _ => false,
-    }
+    matches!(
+        token.syntax_kind,
+        TokenKind::Symbol(
+            Symbol::Assignment
+                | Symbol::Add
+                | Symbol::Subtract
+                | Symbol::Multiply
+                | Symbol::Divide
+                | Symbol::FloorDivide
+                | Symbol::Modulo
+                | Symbol::Power
+                | Symbol::Concatenate
+                | Symbol::Equal
+                | Symbol::NotEqual
+                | Symbol::LessThan
+                | Symbol::LessThanOrEqual
+                | Symbol::GreaterThan
+                | Symbol::GreaterThanOrEqual
+                | Symbol::AddAssignment
+                | Symbol::SubtractAssignment
+                | Symbol::MultiplyAssignment
+                | Symbol::DivideAssignment
+                | Symbol::FloorDivideAssignment
+                | Symbol::ModuloAssignment
+                | Symbol::PowerAssignment
+                | Symbol::ConcatenateAssignment
+                | Symbol::Arrow
+                | Symbol::DoubleColon
+                | Symbol::Pipe
+                | Symbol::Ampersand
+                | Symbol::QuestionMark
+        ) | TokenKind::Keyword(Keyword::And | Keyword::Or | Keyword::Not)
+    )
 }
 
 fn needs_space(
     prev: &Token,
     current: &Token,
-    next: Option<&Token>,
+    next_role: ParenRole,
     options: &FormatOptions,
     role: ParenRole,
     tight_type_spacing: bool,
@@ -670,21 +692,24 @@ fn needs_space(
 
     if matches!(
         prev.syntax_kind,
-        TokenKind::Interpolated(InterpolatedKind::Begin | InterpolatedKind::Middle)
+        TokenKind::InterpolatedStringStart | TokenKind::InterpolatedStringMiddle
     ) {
-        return options.spacing.interpolation || current.syntax_kind == TokenKind::Byte(b'{');
+        return options.spacing.interpolation
+            || current.syntax_kind == TokenKind::Symbol(Symbol::LeftBrace);
     }
 
     if matches!(
         current.syntax_kind,
-        TokenKind::Interpolated(InterpolatedKind::Middle | InterpolatedKind::End)
+        TokenKind::InterpolatedStringMiddle | TokenKind::InterpolatedStringEnd
     ) {
         return options.spacing.interpolation;
     }
 
     if unary_minus
         || tight_type_spacing
-        || (a == ":" && current.kind == Kind::Word && next.is_some_and(|next| next.text == "("))
+        || (a == ":"
+            && current.kind == Kind::Word
+            && matches!(next_role, ParenRole::Call | ParenRole::Definition))
     {
         return false;
     }
@@ -769,7 +794,7 @@ fn needs_space(
         return true;
     }
 
-    (prev.kind == Kind::Word && current.syntax_kind == TokenKind::Byte(b'#'))
+    (prev.kind == Kind::Word && current.syntax_kind == TokenKind::Symbol(Symbol::Length))
         || (prev.kind == Kind::Number && current.kind == Kind::Word)
 }
 
@@ -815,11 +840,13 @@ fn token_needs_space(
         || needs_space(
             prev,
             token,
-            tokens.get(current + 1),
+            tokens
+                .get(current + 1)
+                .map_or(ParenRole::Group, |next| paren_role(next, syntax)),
             options,
             paren_role(token, syntax),
             tight,
-            prev.syntax_kind == TokenKind::Byte(b'-')
+            prev.syntax_kind == TokenKind::Symbol(Symbol::Subtract)
                 && syntax.unary_minus.binary_search(&prev.start).is_ok(),
         )
 }

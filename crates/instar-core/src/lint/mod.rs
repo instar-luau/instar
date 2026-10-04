@@ -9,7 +9,11 @@ use std::{
 
 use instar_bridge::{Checker, CheckerOptions};
 use regex::Regex;
-use vermis::{Span, Token, View};
+
+use vermis::{
+    token::{Span, Token},
+    tree::{NodeIndex, Tree},
+};
 
 use crate::{
     config::{LintConfig, LintLevel},
@@ -192,6 +196,7 @@ pub(crate) struct Finding {
 
 pub(super) struct Context<'a> {
     pub(super) source: &'a str,
+    pub(super) tree: &'a Tree<'a>,
     pub(super) tokens: &'a [Token],
     pub(super) config: &'a LintConfig,
     pub(super) globals: &'a [String],
@@ -231,9 +236,9 @@ impl Context<'_> {
     }
 }
 
-fn walk<'tree, 'source>(
-    node: View<'tree, 'source>,
-    ancestors: &mut Vec<View<'tree, 'source>>,
+fn walk(
+    node: NodeIndex,
+    ancestors: &mut Vec<NodeIndex>,
     context: &Context<'_>,
     roblox_enabled: bool,
     findings: &mut Vec<Finding>,
@@ -250,7 +255,7 @@ fn walk<'tree, 'source>(
 
     ancestors.push(node);
 
-    for child in node.children() {
+    for child in context.tree.children(node) {
         walk(child, ancestors, context, roblox_enabled, findings);
     }
 
@@ -269,10 +274,6 @@ fn rules(
         return Vec::new();
     }
 
-    let Some(root) = tree.view(tree.root) else {
-        return Vec::new();
-    };
-
     let options = &config.unused_variable;
 
     let ignore_pattern =
@@ -284,17 +285,18 @@ fn rules(
 
     let context = Context {
         source,
+        tree: &tree,
         tokens: &tree.tokens,
         config,
         globals,
         ignore_pattern,
-        writes: Writes::analyze(root),
+        writes: Writes::analyze(&tree),
     };
 
     let mut findings = Vec::new();
 
     walk(
-        root,
+        tree.root,
         &mut Vec::new(),
         &context,
         roblox_enabled,

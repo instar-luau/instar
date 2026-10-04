@@ -1,47 +1,58 @@
-use vermis::{Kind, Parts, View};
+use vermis::{
+    token::{Keyword, TokenKind},
+    tree::{NodeIndex, NodeKind, Tree},
+};
 
 use super::{Context, Finding};
 
-fn score(node: View<'_, '_>, root: bool) -> usize {
-    if !root && matches!(node.kind(), Kind::Function | Kind::LocalFunction) {
+fn score(tree: &Tree<'_>, node: NodeIndex, root: bool) -> usize {
+    if !root
+        && matches!(&tree.node(node).kind, NodeKind::Function { prefix, body: Some(_), .. }
+        if prefix.is_none_or(|prefix| tree.token(prefix).bytes(tree.source) != b"type"))
+    {
         return 0;
     }
 
-    let branch = match node.kind() {
-        Kind::Branch
-        | Kind::While
-        | Kind::Repeat
-        | Kind::NumericFor
-        | Kind::GenericFor
-        | Kind::Conditional => 1,
+    let branch = match &tree.node(node).kind {
+        NodeKind::Branch { .. }
+        | NodeKind::While { .. }
+        | NodeKind::Repeat { .. }
+        | NodeKind::NumericFor { .. }
+        | NodeKind::GenericFor { .. }
+        | NodeKind::Conditional { .. } => 1,
 
-        Kind::Binary => usize::from(
-            matches!(node.parts(), Some(Parts::Binary { operator, .. }) if operator.text() == b"and" || operator.text() == b"or"),
-        ),
+        NodeKind::Binary { operator, .. } => usize::from(matches!(
+            tree.token(*operator).kind,
+            TokenKind::Keyword(Keyword::And | Keyword::Or)
+        )),
 
         _ => 0,
     };
 
     branch
-        + node
-            .children()
-            .map(|child| score(child, false))
+        + tree
+            .children(node)
+            .into_iter()
+            .map(|child| score(tree, child, false))
             .sum::<usize>()
 }
 
 pub(super) fn check(
-    node: View<'_, '_>,
-    _ancestors: &[View<'_, '_>],
+    node: NodeIndex,
+    _ancestors: &[NodeIndex],
     context: &Context<'_>,
     findings: &mut Vec<Finding>,
 ) {
+    let tree = context.tree;
+
     if !context.enabled("high_cyclomatic_complexity")
-        || !matches!(node.kind(), Kind::Function | Kind::LocalFunction)
+        || !matches!(&tree.node(node).kind, NodeKind::Function { prefix, body: Some(_), .. }
+            if prefix.is_none_or(|prefix| tree.token(prefix).bytes(tree.source) != b"type"))
     {
         return;
     }
 
-    let complexity = score(node, true) + 1;
+    let complexity = score(tree, node, true) + 1;
 
     let maximum = context
         .config
@@ -52,7 +63,7 @@ pub(super) fn check(
         context.emit(
             findings,
             "high_cyclomatic_complexity",
-            node.span(),
+            tree.node(node).span,
             format!("function complexity {complexity} exceeds maximum {maximum}"),
         );
     }

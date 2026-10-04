@@ -1,7 +1,11 @@
 use std::collections::BTreeSet;
 
 use tower_lsp_server::ls_types::{Color, ColorInformation, ColorPresentation, Range, TextEdit};
-use vermis::{Kind, Parts, Span, TokenKind, Tree, View};
+
+use vermis::{
+    token::{Span, Symbol, TokenKind},
+    tree::{NodeIndex, NodeKind, Tree},
+};
 
 use crate::document::Document;
 
@@ -31,20 +35,20 @@ pub(crate) struct Syntax {
     pub(crate) insertion: usize,
 }
 
-fn text(node: View<'_, '_>) -> String {
-    String::from_utf8_lossy(node.text()).into_owned()
+fn text(tree: &Tree<'_>, node: NodeIndex) -> String {
+    String::from_utf8_lossy(tree.text(node)).into_owned()
 }
 
 pub(crate) fn binding_name(value: &str) -> Option<String> {
     instar_core::identifier(value).then(|| value.to_owned())
 }
 
-fn top_level<'tree, 'source>(tree: &'tree Tree<'source>) -> Vec<View<'tree, 'source>> {
-    let Some(Parts::Root { block }) = tree.view(tree.root).and_then(View::parts) else {
+fn top_level(tree: &Tree<'_>) -> Vec<NodeIndex> {
+    let NodeKind::Root { block, .. } = tree.node(tree.root).kind else {
         return Vec::new();
     };
 
-    block.children().collect()
+    tree.children(block)
 }
 
 impl Syntax {
@@ -67,93 +71,100 @@ impl Syntax {
 
         result.insertion = statements
             .first()
-            .map_or(tree.source.len(), |node| node.span().start);
+            .map_or(tree.source.len(), |node| tree.node(*node).span.start);
 
-        for node in tree
-            .nodes
-            .iter()
-            .enumerate()
-            .filter_map(|(index, _)| tree.view(index))
-        {
-            match node.parts() {
-                Some(Parts::Binding { name, .. }) => {
-                    result.names.insert(text(name));
+        for node in &tree.nodes {
+            match &node.kind {
+                NodeKind::Binding { name, .. } => {
+                    result.names.insert(text(tree, *name));
                 }
 
-                Some(Parts::Function {
+                NodeKind::Function {
                     name: Some(name), ..
-                }) if name.kind() == Kind::Name => {
-                    result.names.insert(text(name));
+                } if matches!(tree.node(*name).kind, NodeKind::Name { .. }) => {
+                    result.names.insert(text(tree, *name));
                 }
 
-                Some(Parts::Call { callee, .. }) => {
-                    result.callees.push((node.span(), callee.span()));
+                NodeKind::Call { callee, .. } => {
+                    result.callees.push((node.span, tree.node(*callee).span));
                 }
 
-                Some(Parts::MethodCall { method, .. }) => {
-                    result.callees.push((node.span(), method.span()));
+                NodeKind::MethodCall { method, .. } => {
+                    result.callees.push((node.span, tree.node(*method).span));
                 }
 
-                Some(Parts::Assignment { targets, .. }) => {
-                    for target in targets.filter(|target| target.kind() == Kind::Name) {
-                        result.names.insert(text(target));
+                NodeKind::Assignment { targets, .. } => {
+                    for target in tree.list(targets) {
+                        if matches!(tree.node(target.node).kind, NodeKind::Name { .. }) {
+                            result.names.insert(text(tree, target.node));
+                        }
                     }
+                }
+
+                NodeKind::CompoundAssignment { target, .. }
+                    if matches!(tree.node(*target).kind, NodeKind::Name { .. }) =>
+                {
+                    result.names.insert(text(tree, *target));
                 }
 
                 _ => {}
             }
 
-            if let Some(Parts::Local { bindings, values }) = node.parts() {
-                let bindings: Vec<_> = bindings.collect();
-                let values: Vec<_> = values.collect();
+            if let NodeKind::Local {
+                bindings, values, ..
+            }
+            | NodeKind::Constant {
+                bindings, values, ..
+            } = &node.kind
+            {
+                let bindings = tree.list(bindings);
+                let values = tree.list(values);
 
-                for (binding, value) in bindings.iter().zip(&values) {
-                    if let Some(Parts::Binding { name, .. }) = binding.parts()
-                        && matches!(value.parts(), Some(Parts::Call { callee, .. }) if callee.text() == b"require")
+                for (binding, value) in bindings.iter().zip(values) {
+                    if let NodeKind::Binding { name, .. } = tree.node(binding.node).kind
+                        && matches!(tree.node(value.node).kind, NodeKind::Call { callee, .. } if tree.text(callee) == b"require")
                     {
-                        result.require_bindings.push(name.span());
+                        result.require_bindings.push(tree.node(name).span);
                     }
                 }
 
                 if bindings.len() == 1
                     && values.len() <= 1
-                    && let Some(Parts::Binding { name, .. }) = bindings[0].parts()
+                    && let NodeKind::Binding { name, .. } = tree.node(bindings[0].node).kind
                 {
                     let replacement =
-                        values
-                            .first()
-                            .map_or(Some(String::new()), |value| match value.kind() {
-                                Kind::Call | Kind::MethodCall => Some(text(*value)),
-                                Kind::Number | Kind::String | Kind::Function => Some(String::new()),
-
-                                _ if matches!(value.text(), b"nil" | b"true" | b"false") => {
-                                    Some(String::new())
+                        values.first().map_or(Some(String::new()), |value| {
+                            match tree.node(value.node).kind {
+                                NodeKind::Call { .. } | NodeKind::MethodCall { .. } => {
+                                    Some(text(tree, value.node))
                                 }
 
+                                NodeKind::Number { .. }
+                                | NodeKind::String { .. }
+                                | NodeKind::Function { .. }
+                                | NodeKind::Nil { .. }
+                                | NodeKind::Boolean { .. } => Some(String::new()),
+
                                 _ => None,
-                            });
+                            }
+                        });
 
                     result.locals.push(Local {
-                        name: name.span(),
-                        statement: node.span(),
+                        name: tree.node(name).span,
+                        statement: node.span,
                         replacement,
                     });
                 }
             }
         }
 
-        result.dependencies = dependencies(&statements);
-        result.exports = exports(&statements);
+        result.dependencies = dependencies(tree, &statements);
+        result.exports = exports(tree, &statements);
 
         if !result.names.contains("Color3") {
-            for node in tree
-                .nodes
-                .iter()
-                .enumerate()
-                .filter_map(|(index, _)| tree.view(index))
-            {
-                if let Some(color) = color_call(node) {
-                    result.colors.push((node.span(), color.0, color.1));
+            for (index, node) in tree.nodes.iter().enumerate() {
+                if let Some(color) = color_call(tree, NodeIndex::new(index)) {
+                    result.colors.push((node.span, color.0, color.1));
                 }
             }
         }
@@ -383,35 +394,37 @@ impl Syntax {
     }
 }
 
-fn number(node: View<'_, '_>) -> Option<f64> {
-    match node.parts() {
-        Some(Parts::Unary { operator, operand }) if operator.text() == b"-" => {
-            number(operand).map(|value| -value)
+fn number(tree: &Tree<'_>, node: NodeIndex) -> Option<f64> {
+    match tree.node(node).kind {
+        NodeKind::Unary { operator, operand }
+            if tree.token(operator).kind == TokenKind::Symbol(Symbol::Subtract) =>
+        {
+            number(tree, operand).map(|value| -value)
         }
 
-        Some(Parts::Group { expression }) => number(expression),
+        NodeKind::Group { expression, .. } => number(tree, expression),
 
-        Some(Parts::Binary {
+        NodeKind::Binary {
             left,
             operator,
             right,
-        }) => {
-            let left = number(left)?;
-            let right = number(right)?;
+        } => {
+            let left = number(tree, left)?;
+            let right = number(tree, right)?;
 
-            let value = match operator.text() {
-                b"+" => left + right,
-                b"-" => left - right,
-                b"*" => left * right,
-                b"/" => left / right,
+            let value = match tree.token(operator).kind {
+                TokenKind::Symbol(Symbol::Add) => left + right,
+                TokenKind::Symbol(Symbol::Subtract) => left - right,
+                TokenKind::Symbol(Symbol::Multiply) => left * right,
+                TokenKind::Symbol(Symbol::Divide) => left / right,
                 _ => return None,
             };
 
             value.is_finite().then_some(value)
         }
 
-        _ if node.kind() == Kind::Number => {
-            let value = text(node).replace('_', "");
+        NodeKind::Number { .. } => {
+            let value = text(tree, node).replace('_', "");
 
             if let Some(hex) = value
                 .strip_prefix("0x")
@@ -427,24 +440,24 @@ fn number(node: View<'_, '_>) -> Option<f64> {
     }
 }
 
-fn color_call(node: View<'_, '_>) -> Option<([f64; 3], String)> {
-    let Parts::Call { callee, arguments } = node.parts()? else {
+fn color_call(tree: &Tree<'_>, node: NodeIndex) -> Option<([f64; 3], String)> {
+    let NodeKind::Call { callee, arguments } = tree.node(node).kind else {
         return None;
     };
 
-    let Parts::Field { receiver, name } = callee.parts()? else {
+    let NodeKind::Field { receiver, name, .. } = tree.node(callee).kind else {
         return None;
     };
 
-    if receiver.text() != b"Color3" {
+    if tree.text(receiver) != b"Color3" {
         return None;
     }
 
-    let arguments: Vec<_> = arguments.children().collect();
-    let format = text(name);
+    let arguments = tree.children(arguments);
+    let format = text(tree, name);
 
     if format == "fromHex" && arguments.len() == 1 {
-        let value = instar_core::string_value(arguments[0].text()).ok()?;
+        let value = instar_core::string_value(tree.text(arguments[0])).ok()?;
         let hex = value.strip_prefix('#').unwrap_or(&value);
 
         if !matches!(hex.len(), 3 | 6) || !hex.is_ascii() {
@@ -470,7 +483,7 @@ fn color_call(node: View<'_, '_>) -> Option<([f64; 3], String)> {
                 } else {
                     ""
                 },
-                if arguments[0].text().starts_with(b"'") {
+                if tree.text(arguments[0]).starts_with(b"'") {
                     "'"
                 } else {
                     "\""
@@ -486,10 +499,10 @@ fn color_call(node: View<'_, '_>) -> Option<([f64; 3], String)> {
     let mut color = [0.0; 3];
 
     for (component, argument) in color.iter_mut().zip(arguments) {
-        *component = if argument.text() == b"nil" && format != "fromHSV" {
+        *component = if tree.text(argument) == b"nil" && format != "fromHSV" {
             0.0
         } else {
-            number(argument)?
+            number(tree, argument)?
         };
     }
 
@@ -574,32 +587,43 @@ fn comments(tree: &Tree<'_>) -> Vec<(Span, String)> {
     comments
 }
 
-fn dependencies(statements: &[View<'_, '_>]) -> Vec<Dependency> {
+fn dependencies(tree: &Tree<'_>, statements: &[NodeIndex]) -> Vec<Dependency> {
     let mut dependencies = Vec::new();
 
     for node in statements {
-        if let Some(Parts::Local { bindings, values }) = node.parts() {
-            for (binding, value) in bindings.zip(values) {
-                let Some(Parts::Binding { name, .. }) = binding.parts() else {
+        if let NodeKind::Local {
+            bindings, values, ..
+        }
+        | NodeKind::Constant {
+            bindings, values, ..
+        } = &tree.node(*node).kind
+        {
+            for (binding, value) in tree.list(bindings).iter().zip(tree.list(values)) {
+                let NodeKind::Binding { name, .. } = tree.node(binding.node).kind else {
                     continue;
                 };
 
-                let dependency = match value.parts() {
-                    Some(Parts::Call { callee, arguments }) if callee.text() == b"require" => {
-                        arguments.children().next().map(|argument| (argument, None))
-                    }
+                let dependency = match tree.node(value.node).kind {
+                    NodeKind::Call { callee, arguments } if tree.text(callee) == b"require" => tree
+                        .children(arguments)
+                        .first()
+                        .copied()
+                        .map(|argument| (argument, None)),
 
-                    Some(Parts::MethodCall {
+                    NodeKind::MethodCall {
                         receiver,
                         method,
                         arguments,
                         ..
-                    }) if receiver.text() == b"game" && method.text() == b"GetService" => {
-                        arguments.children().next().and_then(|argument| {
-                            instar_core::string_value(argument.text())
-                                .ok()
-                                .map(|service| (argument, Some(service)))
-                        })
+                    } if tree.text(receiver) == b"game" && tree.text(method) == b"GetService" => {
+                        tree.children(arguments)
+                            .first()
+                            .copied()
+                            .and_then(|argument| {
+                                instar_core::string_value(tree.text(argument))
+                                    .ok()
+                                    .map(|service| (argument, Some(service)))
+                            })
                     }
 
                     _ => None,
@@ -607,11 +631,11 @@ fn dependencies(statements: &[View<'_, '_>]) -> Vec<Dependency> {
 
                 if let Some((argument, service)) = dependency {
                     dependencies.push(Dependency {
-                        name: text(name),
-                        argument: argument.span(),
+                        name: text(tree, name),
+                        argument: tree.node(argument).span,
                         service,
-                        start: node.span().start,
-                        end: node.span().end,
+                        start: tree.node(*node).span.start,
+                        end: tree.node(*node).span.end,
                     });
                 }
             }
@@ -621,62 +645,83 @@ fn dependencies(statements: &[View<'_, '_>]) -> Vec<Dependency> {
     dependencies
 }
 
-fn exports(statements: &[View<'_, '_>]) -> BTreeSet<String> {
+fn exports(tree: &Tree<'_>, statements: &[NodeIndex]) -> BTreeSet<String> {
     let mut exports = BTreeSet::new();
 
-    let Some(Parts::Return { mut values }) = statements.last().and_then(|node| node.parts()) else {
+    let Some(last) = statements.last() else {
         return exports;
     };
 
-    let Some(value) = values.next() else {
+    let NodeKind::Return { ref values, .. } = tree.node(*last).kind else {
+        return exports;
+    };
+
+    let Some(value) = tree.list(values).first().map(|entry| entry.node) else {
         return exports;
     };
 
     let mut returned = value;
 
-    if value.kind() == Kind::Name {
+    if matches!(tree.node(value).kind, NodeKind::Name { .. }) {
         for node in statements {
-            if let Some(Parts::Local { bindings, values }) = node.parts() {
-                for (binding, initializer) in bindings.zip(values) {
-                    if matches!(binding.parts(), Some(Parts::Binding { name, .. }) if name.text() == value.text())
-                    {
-                        returned = initializer;
-                    }
-                }
+            if let NodeKind::Local {
+                bindings, values, ..
             }
-
-            if let Some(Parts::Function {
-                name: Some(name), ..
-            }) = node.parts()
+            | NodeKind::Constant {
+                bindings, values, ..
+            } = &tree.node(*node).kind
             {
-                let prefix = format!("{}.", text(value));
-
-                if let Some(member) = text(name).strip_prefix(&prefix).and_then(binding_name) {
-                    exports.insert(member);
+                for (binding, initializer) in tree.list(bindings).iter().zip(tree.list(values)) {
+                    if matches!(tree.node(binding.node).kind, NodeKind::Binding { name, .. } if tree.text(name) == tree.text(value))
+                    {
+                        returned = initializer.node;
+                    }
                 }
             }
 
-            if let Some(Parts::Assignment { targets, .. }) = node.parts() {
-                for target in targets {
-                    if let Some(Parts::Field { receiver, name }) = target.parts()
-                        && receiver.text() == value.text()
+            if let NodeKind::Function {
+                name: Some(name), ..
+            } = tree.node(*node).kind
+                && let NodeKind::FunctionName {
+                    ref path,
+                    method: None,
+                    ..
+                } = tree.node(name).kind
+                && let [receiver, member] = tree.list(path)
+                && tree.text(receiver.node) == tree.text(value)
+                && let Some(member) = binding_name(&text(tree, member.node))
+            {
+                exports.insert(member);
+            }
+
+            if let NodeKind::Assignment { ref targets, .. } = tree.node(*node).kind {
+                for target in tree.list(targets) {
+                    if let NodeKind::Field { receiver, name, .. } = tree.node(target.node).kind
+                        && tree.text(receiver) == tree.text(value)
                     {
-                        exports.insert(text(name));
+                        exports.insert(text(tree, name));
                     }
                 }
+            }
+
+            if let NodeKind::CompoundAssignment { target, .. } = tree.node(*node).kind
+                && let NodeKind::Field { receiver, name, .. } = tree.node(target).kind
+                && tree.text(receiver) == tree.text(value)
+            {
+                exports.insert(text(tree, name));
             }
         }
     }
 
-    if returned.kind() == Kind::Table {
-        for field in returned.children() {
-            if let Some(Parts::TableField {
+    if let NodeKind::Table { ref fields, .. } = tree.node(returned).kind {
+        for field in tree.list(fields) {
+            if let NodeKind::TableField {
                 key: Some(key),
-                indexed: false,
+                opening: None,
                 ..
-            }) = field.parts()
+            } = tree.node(field.node).kind
             {
-                exports.insert(text(key));
+                exports.insert(text(tree, key));
             }
         }
     }
@@ -688,6 +733,31 @@ fn exports(statements: &[View<'_, '_>]) -> BTreeSet<String> {
 mod tests {
     use super::*;
     use tower_lsp_server::ls_types::Position;
+
+    #[test]
+    fn exports_use_parsed_function_paths() {
+        let source = concat!(
+            "local Module = { value = true }\n",
+            "function Module.compact() end\n",
+            "function Module . spaced() end\n",
+            "function Module --[[ owner ]] . --[[ member ]] commented() end\n",
+            "function Module.nested.indirect() end\n",
+            "function Module.nested:method() end\n",
+            "function Other.unrelated() end\n",
+            "Module.assigned = true\n",
+            "return Module\n",
+        );
+
+        let tree = vermis::parse(source.as_bytes());
+        assert!(tree.diagnostics.is_empty(), "{:?}", tree.diagnostics);
+
+        assert_eq!(
+            Syntax::new(&tree).exports,
+            ["assigned", "commented", "compact", "spaced", "value"]
+                .map(str::to_owned)
+                .into()
+        );
+    }
 
     #[test]
     fn typed_colors_and_presentations_keep_ranges_formats_and_validation() {

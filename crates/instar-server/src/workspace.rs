@@ -15,6 +15,11 @@ use instar_core::{
 
 use tower_lsp_server::ls_types::{self as lsp, CompletionItemKind, Range};
 
+use vermis::{
+    lexer::Lexer,
+    token::{Symbol, TokenKind},
+};
+
 use crate::{
     Snapshot,
     document::{Document, uri},
@@ -155,17 +160,17 @@ impl Workspace {
                 let source = document.text.as_bytes();
                 let mut index = SyntaxCandidates::default();
 
-                for token in vermis::Lexer::new(source) {
+                for token in Lexer::new(source) {
                     match token.kind {
-                        vermis::TokenKind::Name => {
+                        TokenKind::Name => {
                             if let Ok(name) = token.utf8(source) {
                                 index.names.insert(name.to_owned());
                             }
                         }
 
-                        vermis::TokenKind::QuotedString
-                        | vermis::TokenKind::RawString
-                        | vermis::TokenKind::Error(vermis::LexError::BrokenString) => {
+                        TokenKind::QuotedString
+                        | TokenKind::RawString
+                        | TokenKind::MalformedString => {
                             index
                                 .strings
                                 .push(String::from_utf8_lossy(token.bytes(source)).into_owned());
@@ -176,7 +181,7 @@ impl Workspace {
                             }
                         }
 
-                        vermis::TokenKind::Byte(b'[') => index.dynamic_bracket = true,
+                        TokenKind::Symbol(Symbol::LeftBracket) => index.dynamic_bracket = true,
                         _ => {}
                     }
                 }
@@ -1096,10 +1101,14 @@ pub(crate) fn import_site(document: &Document, offset: usize) -> Option<(usize, 
 
     if prefix.is_empty()
         || document.text[..start].trim_end().ends_with(['.', ':'])
+        || document.bindings().literal_at(offset).is_some()
         || document.bindings().tokens().any(|(span, kind, _)| {
-            span.start <= offset
-                && offset < span.end
-                && matches!(kind, crate::bindings::SemanticKind::Comment)
+            span.start <= start
+                && start < span.end
+                && matches!(
+                    kind,
+                    crate::bindings::SemanticKind::Comment | crate::bindings::SemanticKind::String
+                )
         })
     {
         return None;
@@ -1129,6 +1138,43 @@ fn fresh_name(document: &Document, name: &str, occupied: &impl Fn(&str) -> bool)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn import_sites_respect_string_contexts() {
+        for (source, expected) in [
+            ("Cata", true),
+            ("local value = Cata", true),
+            ("local value = 'Cata'", false),
+            ("local value = \"Cata\"", false),
+            ("local value = [[Cata]]", false),
+            ("local value = [=[Cata]=]", false),
+            ("local value = `Cata`", false),
+            ("local value = `Cata {value}`", false),
+            ("local value = `{value} Cata`", false),
+            ("local value = `first {Cata}`", true),
+            ("local value = `first {call('Cata')}`", false),
+            ("local value = 'Cata", false),
+            ("local value = [=[Cata", false),
+            ("local value = `Cata", false),
+            ("type Value = { ['Cata']: number }", false),
+            ("-- Cata comment\n", false),
+        ] {
+            let document = Document::new(
+                uri(&std::env::temp_dir().join("completion.luau")).unwrap(),
+                1,
+                source.into(),
+            )
+            .unwrap();
+
+            let offset = source.find("Cata").unwrap() + "Cata".len();
+
+            assert_eq!(
+                import_site(&document, offset).is_some(),
+                expected,
+                "{source}"
+            );
+        }
+    }
 
     fn import_items(
         directory: &Path,

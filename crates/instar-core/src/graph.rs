@@ -7,13 +7,14 @@ use std::{
     rc::Rc,
 };
 
-use petgraph::{
-    algo::kosaraju_scc,
-    graph::{DiGraph, NodeIndex},
-};
+use petgraph::{algo::kosaraju_scc, graph::DiGraph};
 
 use serde::Serialize;
-use vermis::{Kind, Parts, View};
+
+use vermis::{
+    token::{Keyword, Symbol, TokenKind},
+    tree::{NodeIndex, NodeKind, NodeList, Tree},
+};
 
 use crate::{
     invalid,
@@ -24,7 +25,7 @@ use crate::{
 };
 
 /// Stable node index within a graph snapshot.
-pub type ModuleId = NodeIndex<usize>;
+pub type ModuleId = petgraph::graph::NodeIndex<usize>;
 
 /// A source or configuration problem encountered while discovering a module.
 #[derive(Debug, Serialize)]
@@ -272,7 +273,8 @@ enum Binding {
     Other,
 }
 
-struct Extractor<'source> {
+struct Extractor<'tree, 'source> {
+    tree: &'tree Tree<'source>,
     source: &'source str,
     line_starts: Vec<usize>,
     scopes: Vec<HashMap<String, Binding>>,
@@ -281,7 +283,7 @@ struct Extractor<'source> {
     sites: Vec<RequireSite>,
     script: Option<Instance>,
     map: Result<Option<Rc<Sourcemap>>, Failure>,
-    values: HashMap<(usize, usize, std::mem::Discriminant<Kind>), Binding>,
+    values: HashMap<usize, Binding>,
 }
 
 pub(crate) struct Extraction {
@@ -309,10 +311,7 @@ pub(crate) fn extract(
         .collect();
 
     let mut writes = Writes::new(None);
-
-    if let Some(root) = tree.view(tree.root) {
-        writes.visit(root);
-    }
+    writes.visit(&tree, tree.root);
 
     let mut line_starts = vec![0];
 
@@ -324,6 +323,7 @@ pub(crate) fn extract(
     );
 
     let mut extractor = Extractor {
+        tree: &tree,
         source,
         line_starts,
         scopes: vec![HashMap::new()],
@@ -335,23 +335,23 @@ pub(crate) fn extract(
         values: HashMap::new(),
     };
 
-    if let Some(root) = tree.view(tree.root) {
-        extractor.visit(root);
-    }
+    extractor.visit(tree.root);
 
     extractor.sites.sort_by_key(|site| site.range);
 
     let expressions = extractor
         .values
         .into_iter()
-        .filter_map(|((start, end, _), value)| {
+        .filter_map(|(index, value)| {
             let request = match value {
                 Binding::String(value) => Request::String(value),
                 Binding::Instance(Ok(instance)) => Request::Instance(instance),
                 _ => return None,
             };
 
-            Some(([start, end], request))
+            let span = tree.node(NodeIndex::new(index)).span;
+
+            Some(([span.start, span.end], request))
         })
         .collect();
 
@@ -364,39 +364,53 @@ pub(crate) fn extract(
     }
 }
 
-fn reexport(tree: &vermis::Tree<'_>) -> Option<[usize; 2]> {
+fn reexport(tree: &Tree<'_>) -> Option<[usize; 2]> {
     if !tree.diagnostics.is_empty() {
         return None;
     }
 
-    let Parts::Root { block } = tree.view(tree.root)?.parts()? else {
+    let NodeKind::Root { block, .. } = &tree.node(tree.root).kind else {
         return None;
     };
 
-    let mut statements = block.children();
-
-    let Parts::Return { mut values } = statements.next()?.parts()? else {
+    let NodeKind::Block { statements } = &tree.node(*block).kind else {
         return None;
     };
 
-    let Parts::Call { callee, arguments } = values.next()?.parts()? else {
+    let [statement] = tree.list(statements) else {
         return None;
     };
 
-    if statements.next().is_some() || values.next().is_some() || callee.text() != b"require" {
+    let NodeKind::Return { values, .. } = &tree.node(statement.node).kind else {
+        return None;
+    };
+
+    let [value] = tree.list(values) else {
+        return None;
+    };
+
+    let NodeKind::Call { callee, arguments } = &tree.node(value.node).kind else {
+        return None;
+    };
+
+    if tree.text(*callee) != b"require" {
         return None;
     }
 
-    let mut arguments = arguments.children();
-    let argument = arguments.next()?.span();
+    let NodeKind::Arguments { values, .. } = &tree.node(*arguments).kind else {
+        return None;
+    };
 
-    arguments
-        .next()
-        .is_none()
-        .then_some([argument.start, argument.end])
+    let [argument] = tree.list(values) else {
+        return None;
+    };
+
+    let span = tree.node(argument.node).span;
+
+    Some([span.start, span.end])
 }
 
-impl Extractor<'_> {
+impl Extractor<'_, '_> {
     fn binding(&self, name: &[u8]) -> Binding {
         let name = String::from_utf8_lossy(name);
 
@@ -439,9 +453,8 @@ impl Extractor<'_> {
         }
     }
 
-    fn value(&mut self, node: View<'_, '_>) -> Binding {
-        let span = node.span();
-        let key = (span.start, span.end, std::mem::discriminant(&node.kind()));
+    fn value(&mut self, node: NodeIndex) -> Binding {
+        let key = node.get();
 
         if let Some(value) = self.values.get(&key) {
             return value.clone();
@@ -453,29 +466,31 @@ impl Extractor<'_> {
         value
     }
 
-    fn value_inner(&mut self, node: View<'_, '_>) -> Binding {
-        match node.kind() {
-            Kind::String => {
-                return string_value(node.text()).map_or(Binding::Other, Binding::String);
+    fn value_inner(&mut self, node: NodeIndex) -> Binding {
+        let tree = self.tree;
+
+        match &tree.node(node).kind {
+            NodeKind::String { .. } => {
+                string_value(tree.text(node)).map_or(Binding::Other, Binding::String)
             }
 
-            Kind::Boolean => return Binding::Boolean(node.text() == b"true"),
-            Kind::Name => return self.binding(node.text()),
-            _ => {}
-        }
-
-        match node.parts() {
-            Some(Parts::Group { expression } | Parts::Assertion { expression, .. }) => {
-                self.value(expression)
+            NodeKind::Boolean { token } => {
+                Binding::Boolean(tree.token(*token).kind == TokenKind::Keyword(Keyword::True))
             }
 
-            Some(Parts::Binary {
+            NodeKind::Name { .. } => self.binding(tree.text(node)),
+
+            NodeKind::Group { expression, .. } | NodeKind::Assertion { expression, .. } => {
+                self.value(*expression)
+            }
+
+            NodeKind::Binary {
                 left,
                 operator,
                 right,
-            }) if operator.text() == b".." => {
+            } if tree.token(*operator).kind == TokenKind::Symbol(Symbol::Concatenate) => {
                 if let (Binding::String(left), Binding::String(right)) =
-                    (self.value(left), self.value(right))
+                    (self.value(*left), self.value(*right))
                 {
                     Binding::String(left + &right)
                 } else {
@@ -483,28 +498,28 @@ impl Extractor<'_> {
                 }
             }
 
-            Some(Parts::Field { receiver, name }) => self.field(receiver, name.text()),
+            NodeKind::Field { receiver, name, .. } => self.field(*receiver, tree.text(*name)),
 
-            Some(Parts::Index { receiver, key }) => {
-                if let Binding::String(name) = self.value(key) {
-                    self.field(receiver, name.as_bytes())
+            NodeKind::Index { receiver, key, .. } => {
+                if let Binding::String(name) = self.value(*key) {
+                    self.field(*receiver, name.as_bytes())
                 } else {
                     Binding::Other
                 }
             }
 
-            Some(Parts::MethodCall {
+            NodeKind::MethodCall {
                 receiver,
                 method,
                 arguments,
                 ..
-            }) => self.method(receiver, method.text(), arguments),
+            } => self.method(*receiver, tree.text(*method), *arguments),
 
             _ => Binding::Other,
         }
     }
 
-    fn field(&mut self, receiver: View<'_, '_>, name: &[u8]) -> Binding {
+    fn field(&mut self, receiver: NodeIndex, name: &[u8]) -> Binding {
         let Binding::Instance(instance) = self.value(receiver) else {
             return Binding::Other;
         };
@@ -527,12 +542,7 @@ impl Extractor<'_> {
         }
     }
 
-    fn method(
-        &mut self,
-        receiver: View<'_, '_>,
-        method: &[u8],
-        arguments: View<'_, '_>,
-    ) -> Binding {
+    fn method(&mut self, receiver: NodeIndex, method: &[u8], arguments: NodeIndex) -> Binding {
         if !matches!(method, b"GetService" | b"WaitForChild" | b"FindFirstChild") {
             return Binding::Other;
         }
@@ -546,7 +556,11 @@ impl Extractor<'_> {
             Err(error) => return Binding::Instance(Err(error)),
         };
 
-        let mut arguments = arguments.children();
+        let NodeKind::Arguments { values, .. } = &self.tree.node(arguments).kind else {
+            return Binding::Other;
+        };
+
+        let mut arguments = self.tree.list(values).iter().map(|entry| entry.node);
 
         let Some(first) = arguments.next() else {
             return Binding::Other;
@@ -582,45 +596,61 @@ impl Extractor<'_> {
         Binding::Instance(result)
     }
 
-    fn bind(&mut self, node: View<'_, '_>, value: Binding) {
-        if let Some(Parts::Binding { name, annotation }) = node.parts() {
+    fn bind(&mut self, node: NodeIndex, value: Binding) {
+        let tree = self.tree;
+
+        if let NodeKind::Binding {
+            name, annotation, ..
+        } = &tree.node(node).kind
+        {
             if let Some(annotation) = annotation {
-                self.visit(annotation);
+                self.visit(*annotation);
             }
 
-            let assigned = self.assigned.contains(&name.span().start);
-            let name = String::from_utf8_lossy(name.text()).into_owned();
+            let assigned = self.assigned.contains(&tree.node(*name).span.start);
+            let name = String::from_utf8_lossy(tree.text(*name)).into_owned();
 
             let value = if assigned { Binding::Other } else { value };
 
             if let Some(scope) = self.scopes.last_mut() {
                 scope.insert(name, value);
             }
+        } else if let NodeKind::Variadic {
+            annotation: Some(annotation),
+            ..
+        } = &tree.node(node).kind
+        {
+            self.visit(*annotation);
         }
     }
 
-    fn scoped(&mut self, node: View<'_, '_>) {
+    fn scoped(&mut self, node: NodeIndex) {
         self.scopes.push(HashMap::new());
         self.visit(node);
         self.scopes.pop();
     }
 
-    fn function(&mut self, node: View<'_, '_>) {
-        let Some(Parts::Function {
+    fn function(&mut self, node: NodeIndex) {
+        let tree = self.tree;
+
+        let NodeKind::Function {
+            prefix,
             name,
             parameters,
             returns,
             body,
             ..
-        }) = node.parts()
+        } = &tree.node(node).kind
         else {
             return;
         };
 
-        if node.kind() == Kind::LocalFunction
-            && let Some(name) = name
+        if prefix.is_some_and(|prefix| {
+            tree.token(prefix).kind == TokenKind::Keyword(Keyword::Local)
+                || tree.token(prefix).bytes(tree.source) == b"const"
+        }) && let Some(name) = name
         {
-            let name = String::from_utf8_lossy(name.text()).into_owned();
+            let name = String::from_utf8_lossy(tree.text(*name)).into_owned();
 
             if let Some(scope) = self.scopes.last_mut() {
                 scope.insert(name, Binding::Other);
@@ -629,27 +659,35 @@ impl Extractor<'_> {
 
         self.scopes.push(HashMap::new());
 
-        for parameter in parameters.children() {
-            self.bind(parameter, Binding::Other);
+        if let NodeKind::Parameters { parameters, .. } = &tree.node(*parameters).kind {
+            for parameter in tree.list(parameters) {
+                self.bind(parameter.node, Binding::Other);
+            }
         }
 
         if let Some(returns) = returns {
-            self.visit(returns);
+            self.visit(*returns);
         }
 
         if let Some(body) = body {
-            self.visit(body);
+            self.visit(*body);
         }
 
         self.scopes.pop();
     }
 
-    fn call(&mut self, callee: View<'_, '_>, arguments: View<'_, '_>) {
+    fn call(&mut self, callee: NodeIndex, arguments: NodeIndex) {
+        let tree = self.tree;
+
+        let NodeKind::Arguments { values, .. } = &tree.node(arguments).kind else {
+            return;
+        };
+
         if matches!(self.value(callee), Binding::Require) {
-            let mut values = arguments.children();
+            let mut values = tree.list(values).iter().map(|entry| entry.node);
             let argument = values.next();
             let single = argument.is_some() && values.next().is_none();
-            let span = argument.map_or(arguments.span(), View::span);
+            let span = tree.node(argument.unwrap_or(arguments)).span;
 
             let value = if single && !self.global_assigned.contains("require") {
                 argument.map_or(Binding::Other, |arg| self.value(arg))
@@ -702,110 +740,142 @@ impl Extractor<'_> {
 
         self.visit(callee);
 
-        for argument in arguments.children() {
-            self.visit(argument);
+        for argument in tree.list(values) {
+            self.visit(argument.node);
         }
     }
 
-    fn visit(&mut self, node: View<'_, '_>) {
-        if node.kind() == Kind::TypeFunction {
+    fn local(&mut self, bindings: &NodeList, values: &NodeList) {
+        let tree = self.tree;
+        let values = tree.list(values);
+
+        let evaluated = values
+            .iter()
+            .map(|value| self.value(value.node))
+            .collect::<Vec<_>>();
+
+        for value in values {
+            self.visit(value.node);
+        }
+
+        for (index, binding) in tree.list(bindings).iter().enumerate() {
+            self.bind(
+                binding.node,
+                evaluated.get(index).cloned().unwrap_or(Binding::Other),
+            );
+        }
+    }
+
+    fn visit(&mut self, node: NodeIndex) {
+        let tree = self.tree;
+
+        if matches!(&tree.node(node).kind, NodeKind::Function { prefix: Some(prefix), .. }
+            if tree.token(*prefix).bytes(tree.source) == b"type")
+        {
             return;
         }
 
         self.value(node);
 
-        match node.parts() {
-            Some(Parts::Local { bindings, values }) => {
-                let values = values.collect::<Vec<_>>();
-
-                let evaluated = values
-                    .iter()
-                    .map(|&value| self.value(value))
-                    .collect::<Vec<_>>();
-
-                for value in values {
-                    self.visit(value);
-                }
-
-                for (index, binding) in bindings.enumerate() {
-                    self.bind(
-                        binding,
-                        evaluated.get(index).cloned().unwrap_or(Binding::Other),
-                    );
-                }
+        match &tree.node(node).kind {
+            NodeKind::Local {
+                bindings, values, ..
             }
+            | NodeKind::Constant {
+                bindings, values, ..
+            } => self.local(bindings, values),
 
-            Some(Parts::Function { .. }) => self.function(node),
+            NodeKind::Function { .. } => self.function(node),
 
-            Some(Parts::If {
+            NodeKind::If {
                 branches,
                 otherwise,
-            }) => {
-                for branch in branches {
-                    self.scoped(branch);
+                ..
+            } => {
+                for branch in tree.list(branches) {
+                    self.scoped(branch.node);
                 }
 
                 if let Some(otherwise) = otherwise {
-                    self.scoped(otherwise);
+                    self.scoped(*otherwise);
                 }
             }
 
-            Some(Parts::While { condition, body }) => {
-                self.visit(condition);
-                self.scoped(body);
+            NodeKind::Conditional {
+                condition,
+                truthy,
+                falsy,
+                ..
+            } => {
+                self.scopes.push(HashMap::new());
+                self.visit(*condition);
+                self.visit(*truthy);
+                self.scopes.pop();
+                self.visit(*falsy);
             }
 
-            Some(Parts::Repeat { body, condition }) => {
+            NodeKind::While {
+                condition, body, ..
+            } => {
+                self.visit(*condition);
+                self.scoped(*body);
+            }
+
+            NodeKind::Repeat {
+                body, condition, ..
+            } => {
                 self.scopes.push(HashMap::new());
-                self.visit(body);
-                self.visit(condition);
+                self.visit(*body);
+                self.visit(*condition);
                 self.scopes.pop();
             }
 
-            Some(Parts::NumericFor {
+            NodeKind::NumericFor {
                 binding,
                 start,
                 end,
                 step,
                 body,
-            }) => {
-                self.visit(start);
-                self.visit(end);
+                ..
+            } => {
+                self.visit(*start);
+                self.visit(*end);
 
                 if let Some(step) = step {
-                    self.visit(step);
+                    self.visit(*step);
                 }
 
                 self.scopes.push(HashMap::new());
-                self.bind(binding, Binding::Other);
-                self.visit(body);
+                self.bind(*binding, Binding::Other);
+                self.visit(*body);
                 self.scopes.pop();
             }
 
-            Some(Parts::GenericFor {
+            NodeKind::GenericFor {
                 bindings,
                 values,
                 body,
-            }) => {
-                for value in values {
-                    self.visit(value);
+                ..
+            } => {
+                for value in tree.list(values) {
+                    self.visit(value.node);
                 }
 
                 self.scopes.push(HashMap::new());
 
-                for binding in bindings {
-                    self.bind(binding, Binding::Other);
+                for binding in tree.list(bindings) {
+                    self.bind(binding.node, Binding::Other);
                 }
 
-                self.visit(body);
+                self.visit(*body);
                 self.scopes.pop();
             }
 
-            Some(Parts::Body { body }) if node.kind() == Kind::Do => self.scoped(body),
-            Some(Parts::Call { callee, arguments }) => self.call(callee, arguments),
+            NodeKind::Do { body, .. } => self.scoped(*body),
+            NodeKind::Call { callee, arguments } => self.call(*callee, *arguments),
 
             _ => {
-                for child in node.children() {
+                for child in tree.children(node) {
                     self.visit(child);
                 }
             }
@@ -837,33 +907,29 @@ impl Writes {
         }
     }
 
-    pub(crate) fn analyze(root: View<'_, '_>) -> Self {
+    pub(crate) fn analyze(tree: &Tree<'_>) -> Self {
         let mut writes = Self::new(Some(WriteDetails::default()));
-        writes.visit(root);
+        writes.visit(tree, tree.root);
 
         writes
     }
 
-    pub(crate) fn assigned(&self, name: View<'_, '_>) -> bool {
-        self.assigned.contains(&name.span().start)
+    pub(crate) fn assigned(&self, start: usize) -> bool {
+        self.assigned.contains(&start)
     }
 
-    pub(crate) fn mutated(&self, name: View<'_, '_>) -> bool {
+    pub(crate) fn mutated(&self, start: usize) -> bool {
         self.details
             .as_ref()
-            .is_some_and(|details| details.mutated.contains(&name.span().start))
+            .is_some_and(|details| details.mutated.contains(&start))
     }
 
-    pub(crate) fn arity(&self, name: View<'_, '_>) -> Option<(usize, bool)> {
-        self.details
-            .as_ref()?
-            .arities
-            .get(&name.span().start)
-            .copied()
+    pub(crate) fn arity(&self, start: usize) -> Option<(usize, bool)> {
+        self.details.as_ref()?.arities.get(&start).copied()
     }
 
-    fn resolve(&self, name: View<'_, '_>) -> Option<usize> {
-        let name = String::from_utf8_lossy(name.text());
+    fn resolve(&self, tree: &Tree<'_>, name: NodeIndex) -> Option<usize> {
+        let name = String::from_utf8_lossy(tree.text(name));
 
         self.scopes
             .iter()
@@ -871,24 +937,24 @@ impl Writes {
             .find_map(|scope| scope.get(name.as_ref()).copied())
     }
 
-    fn function_arity(&mut self, name: View<'_, '_>, value: View<'_, '_>) {
+    fn function_arity(&mut self, tree: &Tree<'_>, name: NodeIndex, value: NodeIndex) {
         let Some(details) = &mut self.details else {
             return;
         };
 
-        let Some(Parts::Function { parameters, .. }) = value.parts() else {
+        let NodeKind::Function { parameters, .. } = &tree.node(value).kind else {
             return;
         };
 
-        let Some(Parts::Parameters { parameters }) = parameters.parts() else {
+        let NodeKind::Parameters { parameters, .. } = &tree.node(*parameters).kind else {
             return;
         };
 
         let mut minimum = 0;
         let mut variadic = false;
 
-        for parameter in parameters {
-            if parameter.kind() == Kind::Variadic {
+        for parameter in tree.list(parameters) {
+            if matches!(tree.node(parameter.node).kind, NodeKind::Variadic { .. }) {
                 variadic = true;
             } else {
                 minimum += 1;
@@ -897,261 +963,304 @@ impl Writes {
 
         details
             .functions
-            .insert(name.span().start, (minimum, variadic));
+            .insert(tree.node(name).span.start, (minimum, variadic));
     }
 
-    fn read(&mut self, name: View<'_, '_>) {
+    fn read(&mut self, tree: &Tree<'_>, name: NodeIndex) {
         if self.details.is_none() {
             return;
         }
 
-        let Some(id) = self.resolve(name) else {
+        let Some(id) = self.resolve(tree, name) else {
             return;
         };
 
         let details = self.details.as_mut().unwrap();
 
         if let Some(&arity) = details.functions.get(&id) {
-            details.arities.insert(name.span().start, arity);
+            details.arities.insert(tree.node(name).span.start, arity);
         }
     }
 
-    fn mutate(&mut self, target: View<'_, '_>) {
+    fn mutate(&mut self, tree: &Tree<'_>, target: NodeIndex) {
         if self.details.is_none() {
             return;
         }
 
-        let Some(Parts::Field { receiver, .. } | Parts::Index { receiver, .. }) = target.parts()
+        let (NodeKind::Field { receiver, .. } | NodeKind::Index { receiver, .. }) =
+            &tree.node(target).kind
         else {
             return;
         };
 
-        if receiver.kind() == Kind::Name
-            && let Some(id) = self.resolve(receiver)
+        if matches!(tree.node(*receiver).kind, NodeKind::Name { .. })
+            && let Some(id) = self.resolve(tree, *receiver)
         {
             self.details.as_mut().unwrap().mutated.insert(id);
         }
     }
 
-    fn bind(&mut self, node: View<'_, '_>) {
-        if let Some(Parts::Binding { name, .. }) = node.parts() {
+    fn bind(&mut self, tree: &Tree<'_>, node: NodeIndex) {
+        if let NodeKind::Binding { name, .. } = &tree.node(node).kind {
             self.scopes.last_mut().unwrap().insert(
-                String::from_utf8_lossy(name.text()).into_owned(),
-                name.span().start,
+                String::from_utf8_lossy(tree.text(*name)).into_owned(),
+                tree.node(*name).span.start,
             );
         }
     }
 
-    fn write(&mut self, name: View<'_, '_>) {
-        if let Some(id) = self.resolve(name) {
+    fn write(&mut self, tree: &Tree<'_>, name: NodeIndex) {
+        if let Some(id) = self.resolve(tree, name) {
             self.assigned.insert(id);
 
             if let Some(details) = &mut self.details {
                 details.functions.remove(&id);
             }
         } else {
-            let name = String::from_utf8_lossy(name.text());
+            let name = String::from_utf8_lossy(tree.text(name));
             self.global_assigned.insert(name.into_owned());
         }
     }
 
-    fn scoped(&mut self, node: View<'_, '_>) {
+    fn scoped(&mut self, tree: &Tree<'_>, node: NodeIndex) {
         self.scopes.push(HashMap::new());
-        self.visit(node);
+        self.visit(tree, node);
         self.scopes.pop();
     }
 
-    fn visit(&mut self, node: View<'_, '_>) {
-        if node.kind() == Kind::TypeFunction {
+    fn visit(&mut self, tree: &Tree<'_>, node: NodeIndex) {
+        if matches!(&tree.node(node).kind, NodeKind::Function { prefix: Some(prefix), .. }
+            if tree.token(*prefix).bytes(tree.source) == b"type")
+        {
             return;
         }
 
-        match node.parts() {
-            Some(Parts::Local { bindings, values }) => {
-                for value in values.clone() {
-                    self.visit(value);
+        match &tree.node(node).kind {
+            NodeKind::Local {
+                bindings, values, ..
+            }
+            | NodeKind::Constant {
+                bindings, values, ..
+            } => {
+                for value in tree.list(values) {
+                    self.visit(tree, value.node);
                 }
 
-                let mut values = values;
+                let mut values = tree.list(values).iter();
 
-                for binding in bindings {
-                    self.bind(binding);
+                for binding in tree.list(bindings) {
+                    self.bind(tree, binding.node);
 
                     if let Some(value) = values.next()
-                        && let Some(Parts::Binding { name, .. }) = binding.parts()
+                        && let NodeKind::Binding { name, .. } = &tree.node(binding.node).kind
                     {
-                        self.function_arity(name, value);
+                        self.function_arity(tree, *name, value.node);
                     }
                 }
             }
 
-            Some(Parts::Assignment { targets, .. }) => {
-                for target in targets {
-                    if target.kind() == Kind::Name {
-                        self.write(target);
+            NodeKind::Assignment { targets, .. } => {
+                for target in tree.list(targets) {
+                    if matches!(tree.node(target.node).kind, NodeKind::Name { .. }) {
+                        self.write(tree, target.node);
                     } else {
-                        self.mutate(target);
+                        self.mutate(tree, target.node);
                     }
                 }
 
-                for child in node.children() {
-                    self.visit(child);
+                for child in tree.children(node) {
+                    self.visit(tree, child);
                 }
             }
 
-            Some(Parts::Function { .. }) => self.visit_function(node),
+            NodeKind::CompoundAssignment { target, value, .. } => {
+                if matches!(tree.node(*target).kind, NodeKind::Name { .. }) {
+                    self.write(tree, *target);
+                } else {
+                    self.mutate(tree, *target);
+                }
 
-            Some(
-                Parts::If { .. }
-                | Parts::While { .. }
-                | Parts::Repeat { .. }
-                | Parts::NumericFor { .. }
-                | Parts::GenericFor { .. },
-            ) => self.visit_scoped_control(node),
-
-            Some(Parts::Body { .. }) if node.kind() == Kind::Do => {
-                self.visit_scoped_control(node);
+                self.visit(tree, *target);
+                self.visit(tree, *value);
             }
 
-            _ if node.kind() == Kind::Name => self.read(node),
+            NodeKind::Function { .. } => self.visit_function(tree, node),
+
+            NodeKind::If { .. }
+            | NodeKind::Conditional { .. }
+            | NodeKind::While { .. }
+            | NodeKind::Repeat { .. }
+            | NodeKind::NumericFor { .. }
+            | NodeKind::GenericFor { .. }
+            | NodeKind::Do { .. } => self.visit_scoped_control(tree, node),
+
+            NodeKind::Name { .. } => self.read(tree, node),
 
             _ => {
-                for child in node.children() {
-                    self.visit(child);
+                for child in tree.children(node) {
+                    self.visit(tree, child);
                 }
             }
         }
     }
 
-    fn visit_function(&mut self, node: View<'_, '_>) {
-        if let Some(Parts::Function {
+    fn visit_function(&mut self, tree: &Tree<'_>, node: NodeIndex) {
+        let NodeKind::Function {
+            prefix,
             name,
             parameters,
             body,
             ..
-        }) = node.parts()
-        {
-            if let Some(name) = name {
-                if node.kind() == Kind::LocalFunction {
-                    self.scopes.last_mut().unwrap().insert(
-                        String::from_utf8_lossy(name.text()).into_owned(),
-                        name.span().start,
-                    );
+        } = &tree.node(node).kind
+        else {
+            return;
+        };
 
-                    self.function_arity(name, node);
-                } else if name.kind() == Kind::Name {
-                    self.write(name);
-                } else if self.details.is_some()
-                    && let Some(Parts::FunctionName { mut path, method }) = name.parts()
-                    && let Some(receiver) = path.next()
+        if let Some(name) = name {
+            if prefix.is_some_and(|prefix| {
+                tree.token(prefix).kind == TokenKind::Keyword(Keyword::Local)
+                    || tree.token(prefix).bytes(tree.source) == b"const"
+            }) {
+                self.scopes.last_mut().unwrap().insert(
+                    String::from_utf8_lossy(tree.text(*name)).into_owned(),
+                    tree.node(*name).span.start,
+                );
+
+                self.function_arity(tree, *name, node);
+            } else if matches!(tree.node(*name).kind, NodeKind::Name { .. }) {
+                self.write(tree, *name);
+            } else if let NodeKind::FunctionName { path, method, .. } = &tree.node(*name).kind
+                && let Some(receiver) = tree.list(path).first()
+            {
+                let path = tree.list(path);
+
+                if path.len() == 1 && method.is_none() {
+                    self.write(tree, receiver.node);
+                } else if (path.len() == 1 && method.is_some()
+                    || path.len() == 2 && method.is_none())
+                    && let Some(id) = self.resolve(tree, receiver.node)
+                    && self.details.is_some()
                 {
-                    let field = path.next();
-
-                    if field.is_none() && method.is_none() {
-                        self.write(receiver);
-                    } else if path.next().is_none()
-                        && (field.is_none() || method.is_none())
-                        && let Some(id) = self.resolve(receiver)
-                    {
-                        self.details.as_mut().unwrap().mutated.insert(id);
-                    }
+                    self.details.as_mut().unwrap().mutated.insert(id);
                 }
             }
-
-            self.scopes.push(HashMap::new());
-
-            if self.details.is_some()
-                && let Some(name) = name
-                && let Some(Parts::FunctionName {
-                    method: Some(method),
-                    ..
-                }) = name.parts()
-            {
-                self.scopes
-                    .last_mut()
-                    .unwrap()
-                    .insert("self".into(), method.span().start);
-            }
-
-            for parameter in parameters.children() {
-                self.bind(parameter);
-            }
-
-            if let Some(body) = body {
-                self.visit(body);
-            }
-
-            self.scopes.pop();
         }
+
+        self.scopes.push(HashMap::new());
+
+        if self.details.is_some()
+            && let Some(name) = name
+            && let NodeKind::FunctionName {
+                method: Some(method),
+                ..
+            } = &tree.node(*name).kind
+        {
+            self.scopes
+                .last_mut()
+                .unwrap()
+                .insert("self".into(), tree.node(*method).span.start);
+        }
+
+        if let NodeKind::Parameters { parameters, .. } = &tree.node(*parameters).kind {
+            for parameter in tree.list(parameters) {
+                self.bind(tree, parameter.node);
+            }
+        }
+
+        if let Some(body) = body {
+            self.visit(tree, *body);
+        }
+
+        self.scopes.pop();
     }
 
-    fn visit_scoped_control(&mut self, node: View<'_, '_>) {
-        match node.parts() {
-            Some(Parts::If {
+    fn visit_scoped_control(&mut self, tree: &Tree<'_>, node: NodeIndex) {
+        match &tree.node(node).kind {
+            NodeKind::If {
                 branches,
                 otherwise,
-            }) => {
-                for branch in branches {
-                    self.scoped(branch);
+                ..
+            } => {
+                for branch in tree.list(branches) {
+                    self.scoped(tree, branch.node);
                 }
 
                 if let Some(otherwise) = otherwise {
-                    self.scoped(otherwise);
+                    self.scoped(tree, *otherwise);
                 }
             }
 
-            Some(Parts::While { condition, body }) => {
-                self.visit(condition);
-                self.scoped(body);
+            NodeKind::Conditional {
+                condition,
+                truthy,
+                falsy,
+                ..
+            } => {
+                self.scopes.push(HashMap::new());
+                self.visit(tree, *condition);
+                self.visit(tree, *truthy);
+                self.scopes.pop();
+                self.visit(tree, *falsy);
             }
 
-            Some(Parts::Repeat { body, condition }) => {
+            NodeKind::While {
+                condition, body, ..
+            } => {
+                self.visit(tree, *condition);
+                self.scoped(tree, *body);
+            }
+
+            NodeKind::Repeat {
+                body, condition, ..
+            } => {
                 self.scopes.push(HashMap::new());
-                self.visit(body);
-                self.visit(condition);
+                self.visit(tree, *body);
+                self.visit(tree, *condition);
                 self.scopes.pop();
             }
 
-            Some(Parts::NumericFor {
+            NodeKind::NumericFor {
                 binding,
                 start,
                 end,
                 step,
                 body,
-            }) => {
-                self.visit(start);
-                self.visit(end);
+                ..
+            } => {
+                self.visit(tree, *start);
+                self.visit(tree, *end);
 
                 if let Some(step) = step {
-                    self.visit(step);
+                    self.visit(tree, *step);
                 }
 
                 self.scopes.push(HashMap::new());
-                self.bind(binding);
-                self.visit(body);
+                self.bind(tree, *binding);
+                self.visit(tree, *body);
                 self.scopes.pop();
             }
 
-            Some(Parts::GenericFor {
+            NodeKind::GenericFor {
                 bindings,
                 values,
                 body,
-            }) => {
-                for value in values {
-                    self.visit(value);
+                ..
+            } => {
+                for value in tree.list(values) {
+                    self.visit(tree, value.node);
                 }
 
                 self.scopes.push(HashMap::new());
 
-                for binding in bindings {
-                    self.bind(binding);
+                for binding in tree.list(bindings) {
+                    self.bind(tree, binding.node);
                 }
 
-                self.visit(body);
+                self.visit(tree, *body);
                 self.scopes.pop();
             }
 
-            Some(Parts::Body { body }) if node.kind() == Kind::Do => self.scoped(body),
+            NodeKind::Do { body, .. } => self.scoped(tree, *body),
 
             _ => {}
         }
@@ -1161,6 +1270,63 @@ impl Writes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conditional_bindings_keep_require_scope() {
+        for keyword in ["local", "const"] {
+            for suffix in ["", "\nlocal ="] {
+                let source = format!(
+                    "local path = './outer'\n\
+                     local result = if {keyword} path = path .. '/inner' then require(path) else require(path)\n\
+                     require(path){suffix}"
+                );
+
+                let extraction = extract(&source, None, Ok(None));
+
+                assert_eq!(
+                    extraction.diagnostics.is_empty(),
+                    suffix.is_empty(),
+                    "{source}"
+                );
+
+                let requests: Vec<_> = extraction
+                    .sites
+                    .iter()
+                    .map(|site| match &site.request {
+                        Some(Request::String(path)) => Some(path.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+
+                assert_eq!(
+                    requests,
+                    [Some("./outer/inner"), Some("./outer"), Some("./outer")],
+                    "{source}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn conditional_bindings_keep_write_scope() {
+        for keyword in ["local", "const"] {
+            let source = format!(
+                "local target = false\n\
+                 local result = if {keyword} target = false then target else (function() target = true end)()\n\
+                 target = true"
+            );
+
+            let tree = vermis::parse(source.as_bytes());
+            assert!(tree.diagnostics.is_empty(), "{:?}", tree.diagnostics);
+
+            let writes = Writes::analyze(&tree);
+            let outer = source.find("target").unwrap();
+            let inner = source.match_indices("target = false").nth(1).unwrap().0;
+
+            assert!(writes.assigned(outer), "{source}");
+            assert!(!writes.assigned(inner), "{source}");
+        }
+    }
 
     #[test]
     fn require_values_keep_lexical_write_ownership() {
@@ -1201,6 +1367,121 @@ mod tests {
                 .collect();
 
             assert_eq!(requests, [expected], "{source}");
+        }
+    }
+
+    #[test]
+    fn function_declarations_invalidate_require_values() {
+        let cases: &[(&str, &[Option<&str>])] = &[
+            (
+                "local path='./a'\nfunction path() end\nrequire(path)",
+                &[None],
+            ),
+            (
+                "function require(value) return value end\nrequire('./a')",
+                &[None],
+            ),
+            (
+                "local loader=require\nfunction loader() end\nloader('./a')",
+                &[],
+            ),
+        ];
+
+        for &(source, expected) in cases {
+            let extraction = extract(source, None, Ok(None));
+            assert!(extraction.diagnostics.is_empty(), "{source}");
+
+            let requests: Vec<_> = extraction
+                .sites
+                .iter()
+                .map(|site| match &site.request {
+                    Some(Request::String(path)) => Some(path.as_str()),
+                    _ => None,
+                })
+                .collect();
+
+            assert_eq!(requests, expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn function_name_writes_keep_lexical_and_member_ownership() {
+        let cases = [
+            (
+                "local target=function() end\nfunction target() end",
+                true,
+                false,
+            ),
+            ("local target={}\nfunction target.member() end", false, true),
+            ("local target={}\nfunction target:method() end", false, true),
+            (
+                "local target={member={}}\nfunction target.member.nested() end",
+                false,
+                false,
+            ),
+            (
+                "local target=false\ndo local target=false\nfunction target() end\nend",
+                false,
+                false,
+            ),
+            (
+                "local target=false\nlocal function target() end",
+                false,
+                false,
+            ),
+        ];
+
+        for (source, assigned, mutated) in cases {
+            let tree = vermis::parse(source.as_bytes());
+            assert!(tree.diagnostics.is_empty(), "{:?}", tree.diagnostics);
+            let target = source.find("target").unwrap();
+
+            let mut writes = Writes::new(None);
+            writes.visit(&tree, tree.root);
+            assert_eq!(writes.assigned(target), assigned, "{source}");
+            assert!(!writes.mutated(target), "{source}");
+
+            let writes = Writes::analyze(&tree);
+            assert_eq!(writes.assigned(target), assigned, "{source}");
+            assert_eq!(writes.mutated(target), mutated, "{source}");
+        }
+    }
+
+    #[test]
+    fn variadic_annotations_extract_requires_in_parameter_scope() {
+        let cases: &[(&str, &[&str])] = &[
+            (
+                "local function f(...: typeof(require('./a'))) end",
+                &["./a"],
+            ),
+            (
+                "local loader=require\nlocal function f(...: typeof(loader('./a'))) end",
+                &["./a"],
+            ),
+            (
+                "local function f(require, ...: typeof(require('./a'))) end",
+                &[],
+            ),
+            (
+                "local function f(value: typeof(require('./a'))) end",
+                &["./a"],
+            ),
+        ];
+
+        for &(source, expected) in cases {
+            let extraction = extract(source, None, Ok(None));
+            assert!(extraction.diagnostics.is_empty(), "{source}");
+
+            let requests: Vec<_> = extraction
+                .sites
+                .iter()
+                .map(|site| match &site.request {
+                    Some(Request::String(path)) => path.as_str(),
+                    _ => panic!("expected a static string require: {source}"),
+                })
+                .collect();
+
+            assert_eq!(requests, expected, "{source}");
         }
     }
 }
