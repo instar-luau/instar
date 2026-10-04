@@ -1364,11 +1364,9 @@ mod tests {
         for (name, item) in ["primary", "secondary"].into_iter().zip(items) {
             let statement = &item.additional_text_edits.as_ref().unwrap()[0].new_text;
 
-            assert!(
-                statement.contains(&format!(
-                    ":WaitForChild(\"{name}\"):WaitForChild(\"package\")"
-                )),
-                "{statement}"
+            assert_eq!(
+                statement,
+                &format!("const package = require(\"@game/ReplicatedStorage/{name}/package\")\n")
             );
 
             workspace
@@ -1538,7 +1536,7 @@ mod tests {
 
         std::fs::write(
             directory.join("caller/instar.toml"),
-            "[lsp.imports]\nexclude = []\nbinding = \"const\"\n",
+            "[lsp.imports]\nexclude = []\n",
         )
         .unwrap();
 

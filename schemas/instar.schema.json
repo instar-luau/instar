@@ -624,7 +624,7 @@
       "type": "object",
       "properties": {
         "binding": {
-          "description": "Generated binding style; omission inherits or defaults to local bindings.",
+          "description": "Generated binding style; omission inherits or defaults to const bindings.",
           "anyOf": [
             {
               "$ref": "#/$defs/BindingStyle"
@@ -650,7 +650,7 @@
           }
         },
         "require": {
-          "description": "Preferred require path style; omission inherits or defaults to instance paths.",
+          "description": "Preferred require path style; omission inherits or defaults to string paths.",
           "anyOf": [
             {
               "$ref": "#/$defs/RequireStyle"

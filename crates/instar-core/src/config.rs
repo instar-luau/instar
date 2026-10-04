@@ -499,10 +499,10 @@ pub struct LspConfig {
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct ImportsConfig {
-    /// Preferred require path style; omission inherits or defaults to instance paths.
+    /// Preferred require path style; omission inherits or defaults to string paths.
     pub require: Option<RequireStyle>,
 
-    /// Generated binding style; omission inherits or defaults to local bindings.
+    /// Generated binding style; omission inherits or defaults to const bindings.
     pub binding: Option<BindingStyle>,
 
     /// Include globs relative to their manifest; omission inherits, an explicit list replaces.
@@ -536,10 +536,10 @@ impl ImportsConfig {
 #[serde(rename_all = "lowercase")]
 pub enum RequireStyle {
     /// Prefer instance paths when available.
-    #[default]
     Instance,
 
     /// Prefer string paths.
+    #[default]
     String,
 }
 
@@ -548,10 +548,10 @@ pub enum RequireStyle {
 #[serde(rename_all = "lowercase")]
 pub enum BindingStyle {
     /// Generate local bindings.
-    #[default]
     Local,
 
     /// Generate constant bindings.
+    #[default]
     Const,
 }
 
@@ -2027,8 +2027,8 @@ mod tests {
     #[test]
     fn import_defaults_and_omitted_preferences_inherit() {
         let mut imports = Config::default().lsp.imports;
-        assert_eq!(imports.require.unwrap_or_default(), RequireStyle::Instance);
-        assert_eq!(imports.binding.unwrap_or_default(), BindingStyle::Local);
+        assert_eq!(imports.require.unwrap_or_default(), RequireStyle::String);
+        assert_eq!(imports.binding.unwrap_or_default(), BindingStyle::Const);
 
         let config: Config =
             toml::from_str("[lsp.imports]\nrequire = \"instance\"\nbinding = \"local\"").unwrap();
