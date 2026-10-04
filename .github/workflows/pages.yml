@@ -1,15 +1,6 @@
 name: pages
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - .github/workflows/pages.yml
-      - crates/instar-bridge/vendor/luau
-      - schemas/instar.schema.json
-      - scripts/pages.nu
-      - scripts/roblox.nu
-      - scripts/roblox/**
   repository_dispatch:
     types: [release-published]
   schedule:
