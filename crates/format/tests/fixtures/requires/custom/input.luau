@@ -1,0 +1,5 @@
+local alias=require("@app/amber")
+local relative=require("./beta")
+local vendor=require("@vendor/zeta")
+local package=require("packages/alpha")
+local external=require("omega")

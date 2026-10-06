@@ -1,0 +1,3 @@
+[requires]
+order = "grouped"
+groups = [{ name = "vendor", patterns = ["@vendor/*", "packages/*"] }, "relative", "alias", "other"]

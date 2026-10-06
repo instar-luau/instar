@@ -12,6 +12,10 @@ categories.workspace = true
 glob.workspace = true
 schemars.workspace = true
 serde.workspace = true
+vermis = "0.7"
+
+[dev-dependencies]
+toml.workspace = true
 
 [lints]
 workspace = true
