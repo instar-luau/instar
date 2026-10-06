@@ -10,192 +10,230 @@ struct Fixture {
     rule: Rule,
     positive: &'static str,
     negative: &'static str,
+    range: [usize; 2],
 }
 
 const FIXTURES: &[Fixture] = &[
     Fixture {
         rule: Rule::AlmostSwapped,
         positive: "local a,b=1,2\na=b\nb=a\nreturn a+b",
+        range: [18, 21],
         negative: "local a,b=1,2\na,b=b,a\nreturn a+b",
     },
     Fixture {
         rule: Rule::BadStringEscape,
         positive: r#"return "\q""#,
+        range: [7, 11],
         negative: r#"return "\n""#,
     },
     Fixture {
         rule: Rule::CompareNan,
         positive: "return 0/0 == 1",
+        range: [7, 15],
         negative: "return 0/1 == 1",
     },
     Fixture {
         rule: Rule::ConstantCondition,
         positive: "if true then print(1) end",
+        range: [3, 7],
         negative: "if flag then print(1) end",
     },
     Fixture {
         rule: Rule::ConstantTableComparison,
         positive: "return {} == value",
+        range: [7, 18],
         negative: "return value == other",
     },
     Fixture {
         rule: Rule::LengthAsCondition,
         positive: "if #list then print(1) end",
+        range: [3, 8],
         negative: "if #list > 0 then print(1) end",
     },
     Fixture {
         rule: Rule::MismatchedArgumentCount,
         positive: "local function f(a,b) return a,b end\nreturn f(1)",
+        range: [44, 48],
         negative: "local function f(a,b) return a,b end\nreturn f(1,2)",
     },
     Fixture {
         rule: Rule::MustUse,
         positive: "math.abs(-1)",
+        range: [0, 12],
         negative: "return math.abs(-1)",
     },
     Fixture {
         rule: Rule::ZeroStepLoop,
         positive: "for i=1,10,0 do print(i) end",
+        range: [11, 12],
         negative: "for i=1,10,1 do print(i) end",
     },
     Fixture {
         rule: Rule::DivideByZero,
         positive: "return 1/0.00",
+        range: [9, 13],
         negative: "return 1/1",
     },
     Fixture {
         rule: Rule::SelfAssignment,
         positive: "local value=1\nvalue=value\nreturn value",
+        range: [14, 19],
         negative: "local value=1\nvalue=2\nreturn value",
     },
     Fixture {
         rule: Rule::EmptyIf,
         positive: "if flag then end",
+        range: [13, 13],
         negative: "if flag then print(1) end",
     },
     Fixture {
         rule: Rule::EmptyLoop,
         positive: "while flag do end",
+        range: [14, 14],
         negative: "while flag do break end",
     },
     Fixture {
         rule: Rule::IfSameThenElse,
         positive: "if flag then print(1) else print(1) end",
+        range: [0, 39],
         negative: "if flag then print(1) else print(2) end",
     },
     Fixture {
         rule: Rule::IgnoredPcallResult,
         positive: "pcall(print,1)",
+        range: [0, 14],
         negative: "local ok=pcall(print,1)\nreturn ok",
     },
     Fixture {
         rule: Rule::MixedTable,
         positive: "return {1,key=2}",
+        range: [7, 16],
         negative: "return {key=1,other=2}",
     },
     Fixture {
         rule: Rule::UnscopedVariables,
         positive: "created=1",
+        range: [0, 7],
         negative: "local created=1\ncreated=2\nreturn created",
     },
     Fixture {
         rule: Rule::RobloxIncorrectColor3NewBounds,
         positive: "return Color3.new(255,0,0)",
+        range: [7, 26],
         negative: "return Color3.new(1,0,0)",
     },
     Fixture {
         rule: Rule::RobloxManualFromscaleOrFromoffset,
         positive: "return UDim2.new(0.5,0,0.2,0)",
+        range: [7, 29],
         negative: "return UDim2.new(0.5,10,0.2,5)",
     },
     Fixture {
         rule: Rule::RobloxPreferGetPlayers,
         positive: "local Players=game:GetService('Players')\nreturn Players:GetChildren()",
+        range: [48, 69],
         negative: "local Folder=game:GetService('ReplicatedStorage')\nreturn Folder:GetChildren()",
     },
     Fixture {
         rule: Rule::RobloxSuspiciousUdim2New,
         positive: "return UDim2.new(1,2)",
+        range: [7, 21],
         negative: "return UDim2.new(1,2,3,4)",
     },
     Fixture {
         rule: Rule::AndOrConditional,
         positive: "return flag and 1 or 2",
+        range: [7, 22],
         negative: "return flag and false or 2",
     },
     Fixture {
         rule: Rule::CollapsibleIf,
         positive: "if a then if b then print(1) end end",
+        range: [0, 36],
         negative: "if a then print(1) end",
     },
     Fixture {
         rule: Rule::ElseAfterReturn,
         positive: "local function f(x) if x then return 1 else return 2 end end\nreturn f",
+        range: [39, 52],
         negative: "local function f(x) if x then print(1) else return 2 end end\nreturn f",
     },
     Fixture {
         rule: Rule::IfExpressionAssignment,
         positive: "local v\nif flag then v=1 else v=2 end\nreturn v",
+        range: [8, 37],
         negative: "local v=if flag then 1 else 2\nreturn v",
     },
     Fixture {
         rule: Rule::NegatedCondition,
         positive: "if not flag then print(1) else print(2) end",
+        range: [3, 11],
         negative: "if flag then print(1) else print(2) end",
     },
     Fixture {
         rule: Rule::ParenthesizedConditions,
         positive: "if (flag) then print(1) end",
+        range: [3, 9],
         negative: "if flag then print(1) end",
     },
     Fixture {
         rule: Rule::GlobalUsage,
         positive: "return external",
+        range: [7, 15],
         negative: "local external=1\nreturn external",
     },
     Fixture {
         rule: Rule::TypeCheckInsideCall,
         positive: "return type(1 == 2)",
+        range: [7, 19],
         negative: "return type(1) == 'number'",
     },
     Fixture {
         rule: Rule::LoopInvariantCall,
         positive: "while running do game:GetService('Players') end",
+        range: [17, 43],
         negative: "local Players=game:GetService('Players')\nwhile running do print(Players) end",
     },
     Fixture {
         rule: Rule::ManualTableClone,
         positive: "local dest={}\nfor k,v in pairs(src) do dest[k]=v end\nreturn dest",
+        range: [14, 52],
         negative: "local dest={}\nfor k,v in pairs(src) do dest[k]=v print(k) end\nreturn dest",
     },
     Fixture {
         rule: Rule::StringConcatInLoop,
         positive: "local s=''\nwhile running do s=s..'x' end\nreturn s",
+        range: [30, 36],
         negative: "local s=''\nwhile running do local t=s..'x' print(t) end",
     },
     Fixture {
         rule: Rule::UnusedVariable,
         positive: "local unused=1\nreturn 2",
+        range: [6, 12],
         negative: "local used=1\nreturn used",
     },
     Fixture {
         rule: Rule::HighCyclomaticComplexity,
         positive: "local function f(x) if x then return 1 end while x do break end end\nreturn f",
+        range: [0, 67],
         negative: "local function f(x) if x then return 1 end end\nreturn f",
     },
     Fixture {
         rule: Rule::PreferConst,
         positive: "local value=1\nreturn value",
+        range: [6, 11],
         negative: "local value=1\nvalue=2\nreturn value",
     },
     Fixture {
         rule: Rule::Deprecated,
         positive: "old.api()",
+        range: [0, 7],
         negative: "new.api()",
     },
     Fixture {
         rule: Rule::RestrictedGlobals,
         positive: "print(1)",
+        range: [0, 5],
         negative: "local print=function() end\nprint(1)",
     },
 ];
@@ -256,11 +294,25 @@ fn run(
     )
 }
 
-fn contains(result: &instar_lint::Result<&str>, rule: Rule) -> bool {
-    result
-        .diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.kind == Kind::Rule(rule))
+fn assert_findings(result: &instar_lint::Result<&str>, rule: Rule, ranges: &[[usize; 2]]) {
+    assert_eq!(result.completion, Completion::Complete, "{rule}");
+    assert_eq!(result.modules, ["fixture"]);
+
+    assert_eq!(
+        result.diagnostics.len(),
+        ranges.len(),
+        "{rule}: {:?}",
+        result.diagnostics
+    );
+
+    for (diagnostic, range) in result.diagnostics.iter().zip(ranges) {
+        assert_eq!(diagnostic.kind, Kind::Rule(rule));
+        assert_eq!(diagnostic.level, Level::Warn);
+        assert_eq!(diagnostic.location.module, "fixture");
+        assert_eq!(diagnostic.location.revision, 7);
+        assert_eq!(&diagnostic.location.range, range);
+        assert_eq!(diagnostic.related, Vec::new());
+    }
 }
 
 #[test]
@@ -270,41 +322,9 @@ fn every_syntax_rule_has_positive_and_negative_fixtures() -> io::Result<()> {
         let positive = run(fixture.positive, &configuration, &[], None)?;
         let negative = run(fixture.negative, &configuration, &[], None)?;
 
-        assert_eq!(
-            positive.completion,
-            Completion::Complete,
-            "{}",
-            fixture.rule
-        );
-
-        assert_eq!(
-            negative.completion,
-            Completion::Complete,
-            "{}",
-            fixture.rule
-        );
-
-        assert!(
-            contains(&positive, fixture.rule),
-            "{}: {:?}",
-            fixture.rule,
-            positive.diagnostics
-        );
-
-        assert!(
-            !contains(&negative, fixture.rule),
-            "{}: {:?}",
-            fixture.rule,
-            negative.diagnostics
-        );
-
-        assert!(
-            positive
-                .diagnostics
-                .iter()
-                .all(|diagnostic| diagnostic.location.revision == 7
-                    && diagnostic.location.range[1] <= fixture.positive.len())
-        );
+        assert_findings(&positive, fixture.rule, &[fixture.range]);
+        assert_findings(&negative, fixture.rule, &[]);
+        assert!(positive.diagnostics[0].location.range[1] <= fixture.positive.len());
     }
 
     Ok(())
@@ -328,15 +348,17 @@ fn typed_require_fixtures() -> io::Result<()> {
         path: Some("./clear".to_owned()),
     };
 
-    assert!(contains(
+    assert_findings(
         &run("require(path)", &configuration, &[dynamic], None)?,
-        Rule::NonConstRequire
-    ));
+        Rule::NonConstRequire,
+        &[[8, 12]],
+    );
 
-    assert!(!contains(
+    assert_findings(
         &run("require('./clear')", &configuration, &[constant], None)?,
-        Rule::NonConstRequire
-    ));
+        Rule::NonConstRequire,
+        &[],
+    );
 
     let configuration = configured(Rule::RestrictedModulePaths);
 
@@ -354,15 +376,17 @@ fn typed_require_fixtures() -> io::Result<()> {
         path: Some("./clear".to_owned()),
     };
 
-    assert!(contains(
+    assert_findings(
         &run("require('./blocked')", &configuration, &[blocked], None)?,
-        Rule::RestrictedModulePaths
-    ));
+        Rule::RestrictedModulePaths,
+        &[[8, 19]],
+    );
 
-    assert!(!contains(
+    assert_findings(
         &run("require('./clear')", &configuration, &[clear], None)?,
-        Rule::RestrictedModulePaths
-    ));
+        Rule::RestrictedModulePaths,
+        &[],
+    );
 
     Ok(())
 }
@@ -389,12 +413,13 @@ fn native_inference_fixtures_and_unavailable_capability() -> io::Result<()> {
             parameter,
         };
 
-        assert!(contains(
+        assert_findings(
             &run(text, &configuration, &[], Some(&[inference]))?,
-            rule
-        ));
+            rule,
+            &[[start, start + 5]],
+        );
 
-        assert!(!contains(&run(text, &configuration, &[], Some(&[]))?, rule));
+        assert_findings(&run(text, &configuration, &[], Some(&[]))?, rule, &[]);
         let unsupported = run(text, &configuration, &[], None)?;
 
         assert_eq!(
@@ -402,12 +427,20 @@ fn native_inference_fixtures_and_unavailable_capability() -> io::Result<()> {
             Completion::Incomplete(Reason::Unsupported)
         );
 
-        assert!(
-            unsupported
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.kind == Kind::Unsupported)
+        assert_eq!(unsupported.modules, ["fixture"]);
+        assert_eq!(unsupported.diagnostics.len(), 1);
+        let diagnostic = &unsupported.diagnostics[0];
+
+        assert_eq!(
+            diagnostic.kind,
+            Kind::Analysis(instar_analysis::Kind::Unsupported)
         );
+
+        assert_eq!(diagnostic.level, Level::Deny);
+        assert_eq!(diagnostic.location.module, "fixture");
+        assert_eq!(diagnostic.location.revision, 7);
+        assert_eq!(diagnostic.location.range, [0, 0]);
+        assert_eq!(diagnostic.related, Vec::new());
     }
 
     Ok(())
@@ -451,10 +484,11 @@ fn rule_severity_allow_and_cooperative_limits() -> io::Result<()> {
 
     configuration.divide_by_zero.level = Level::Allow;
 
-    assert!(!contains(
+    assert_findings(
         &run("return 1/0", &configuration, &[], None)?,
-        Rule::DivideByZero
-    ));
+        Rule::DivideByZero,
+        &[],
+    );
 
     let source = Source {
         text: "return 1",
@@ -498,54 +532,68 @@ fn lexical_binding_options_and_shadowing() -> io::Result<()> {
         None,
     )?;
 
-    assert_eq!(result.diagnostics.len(), 2);
+    let source = "local function f(value) do local value=1 print(value) end end\nfor skip,kept in iterator do print(1) end\nreturn f";
+    let parameter = source.find("value").expect("parameter");
+    let binding = source.find("kept").expect("loop binding");
+
+    assert_findings(
+        &result,
+        Rule::UnusedVariable,
+        &[[parameter, parameter + 5], [binding, binding + 4]],
+    );
+
     let mut configuration = configured(Rule::PreferConst);
     configuration.prefer_const.mutated_tables_stay_local = true;
 
-    assert!(!contains(
+    assert_findings(
         &run("local t={}\nt.field=1\nreturn t", &configuration, &[], None)?,
-        Rule::PreferConst
-    ));
+        Rule::PreferConst,
+        &[],
+    );
 
-    assert!(contains(
+    assert_findings(
         &run(
             "local t={}\nlocal function f(t) t.field=1 end\nreturn t,f",
             &configuration,
             &[],
-            None
+            None,
         )?,
-        Rule::PreferConst
-    ));
+        Rule::PreferConst,
+        &[[6, 7]],
+    );
 
-    assert!(!contains(
+    assert_findings(
         &run(
             "local function f(a,b) return a,b end\nlocal function g(f) return f(1) end\nreturn g",
             &configured(Rule::MismatchedArgumentCount),
             &[],
-            None
+            None,
         )?,
-        Rule::MismatchedArgumentCount
-    ));
+        Rule::MismatchedArgumentCount,
+        &[],
+    );
 
-    assert!(!contains(
+    assert_findings(
         &run(
             "local pcall=function() end\npcall()",
             &configured(Rule::IgnoredPcallResult),
             &[],
-            None
+            None,
         )?,
-        Rule::IgnoredPcallResult
-    ));
+        Rule::IgnoredPcallResult,
+        &[],
+    );
 
-    assert!(!contains(
+    assert_findings(
         &run(
             "local Color3={new=function() end}\nColor3.new(255)",
             &configured(Rule::RobloxIncorrectColor3NewBounds),
             &[],
-            None
+            None,
         )?,
-        Rule::RobloxIncorrectColor3NewBounds
-    ));
+        Rule::RobloxIncorrectColor3NewBounds,
+        &[],
+    );
 
     Ok(())
 }
@@ -554,12 +602,30 @@ fn lexical_binding_options_and_shadowing() -> io::Result<()> {
 fn syntax_errors_are_explicit() -> io::Result<()> {
     let result = run("local =", &Configuration::default(), &[], None)?;
 
-    assert!(
-        result
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.kind == Kind::Syntax && diagnostic.level == Level::Deny)
-    );
+    let tree = vermis::parse(b"local =");
+    assert_eq!(result.completion, Completion::Complete);
+    assert_eq!(result.modules, ["fixture"]);
+    assert_ne!(result.diagnostics, Vec::new());
+    assert_eq!(result.diagnostics.len(), tree.diagnostics.len());
+
+    for (diagnostic, expected) in result.diagnostics.iter().zip(&tree.diagnostics) {
+        assert_eq!(
+            diagnostic.kind,
+            Kind::Analysis(instar_analysis::Kind::Syntax { code: None })
+        );
+
+        assert_eq!(diagnostic.level, Level::Deny);
+        assert_eq!(diagnostic.location.module, "fixture");
+        assert_eq!(diagnostic.location.revision, 7);
+
+        assert_eq!(
+            diagnostic.location.range,
+            [expected.span.start, expected.span.end]
+        );
+
+        assert_eq!(diagnostic.message, expected.message);
+        assert_eq!(diagnostic.related, Vec::new());
+    }
 
     Ok(())
 }
@@ -572,28 +638,31 @@ fn service_rules_use_literal_values_and_byte_escapes_remain_valid() -> io::Resul
         "return game:GetService([=[Players]=]):GetChildren()",
         r#"return game:GetService("Pla\121ers"):GetChildren()"#,
     ] {
-        assert!(contains(
+        assert_findings(
             &run(text, &configuration, &[], None)?,
-            Rule::RobloxPreferGetPlayers
-        ));
+            Rule::RobloxPreferGetPlayers,
+            &[[7, text.len()]],
+        );
     }
 
-    assert!(!contains(
+    assert_findings(
         &run(
             r#"return game:GetService("Other"):GetChildren()"#,
             &configuration,
             &[],
-            None
+            None,
         )?,
-        Rule::RobloxPreferGetPlayers
-    ));
+        Rule::RobloxPreferGetPlayers,
+        &[],
+    );
 
     let configuration = configured(Rule::BadStringEscape);
 
-    assert!(!contains(
+    assert_findings(
         &run(r#"return "\255""#, &configuration, &[], None)?,
-        Rule::BadStringEscape
-    ));
+        Rule::BadStringEscape,
+        &[],
+    );
 
     Ok(())
 }

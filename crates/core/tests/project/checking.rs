@@ -1,65 +1,21 @@
 //! Synthetic native checking across project snapshots.
 
-use instar_check::{Completion, Kind, Options, Reason};
+use std::{fs, io, time::Duration};
+
+use instar_analysis::{Completion, Kind, Options, Reason};
 
 use instar_core::{
-    checking::{Entry, Origin},
-    project::{Change, Project},
+    analysis::{Entry, Origin},
+    project::Change,
 };
 
 use serde_json::json;
 
-use std::{
-    fs, io,
-    path::PathBuf,
-    sync::atomic::{AtomicUsize, Ordering},
-    time::Duration,
-};
-
-static NEXT: AtomicUsize = AtomicUsize::new(0);
-struct Directory(PathBuf);
-
-impl Directory {
-    fn new() -> io::Result<Self> {
-        let path = std::env::temp_dir().join(format!(
-            "instar-checking-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-
-        fs::create_dir(&path)?;
-        let directory = Self(path);
-        directory.file(".luaurc", r#"{"languageMode":"strict"}"#)?;
-
-        Ok(directory)
-    }
-
-    fn file(&self, name: &str, text: &str) -> io::Result<PathBuf> {
-        let path = self.0.join(name);
-        fs::create_dir_all(path.parent().expect("fixture parent"))?;
-        fs::write(&path, text)?;
-
-        Ok(path)
-    }
-}
-
-impl Drop for Directory {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.0).expect("remove checker fixture");
-    }
-}
-
-fn options() -> Options {
-    Options::new(Duration::from_secs(5))
-}
-
-fn project() -> Project {
-    Project::new(Duration::from_secs(2))
-}
+use crate::support::{Directory, options, project};
 
 #[test]
 fn imported_types_and_source_updates() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(Some(r#"{"languageMode":"strict"}"#))?;
 
     let dependency = directory.file(
         "dependency.luau",
@@ -101,7 +57,7 @@ fn imported_types_and_source_updates() -> io::Result<()> {
 
 #[test]
 fn dependency_errors_are_not_filtered_or_repeated() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(Some(r#"{"languageMode":"strict"}"#))?;
     directory.file("instar.toml", "[check]\nexclude = ['dependency.luau']")?;
 
     let dependency = directory.file(
@@ -115,7 +71,7 @@ fn dependency_errors_are_not_filtered_or_repeated() -> io::Result<()> {
     let single = project.check(&[Entry::new(first.clone())], &options())?;
     let multiple = project.check(&[Entry::new(first), Entry::new(second)], &options())?;
 
-    let dependency_errors = |result: &instar_check::Result<Origin>| {
+    let dependency_errors = |result: &instar_analysis::Result<Origin>| {
         result
             .diagnostics
             .iter()
@@ -138,7 +94,7 @@ fn dependency_errors_are_not_filtered_or_repeated() -> io::Result<()> {
 
 #[test]
 fn cycles_are_finite_and_keep_native_identity() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(Some(r#"{"languageMode":"strict"}"#))?;
 
     let first = directory.file(
         "first.luau",
@@ -167,7 +123,7 @@ fn cycles_are_finite_and_keep_native_identity() -> io::Result<()> {
 
 #[test]
 fn declarations_are_scoped_and_invalidated() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(Some(r#"{"languageMode":"strict"}"#))?;
 
     directory.file(
         "instar.toml",
@@ -243,8 +199,8 @@ fn declarations_are_scoped_and_invalidated() -> io::Result<()> {
 
 #[test]
 fn native_modes_and_lint_ownership() -> io::Result<()> {
-    let directory = Directory::new()?;
-    let configuration = directory.0.join(".luaurc");
+    let directory = Directory::new(Some(r#"{"languageMode":"strict"}"#))?;
+    let configuration = directory.path.join(".luaurc");
 
     let entry = directory.file(
         "entry.luau",
@@ -298,7 +254,7 @@ fn native_modes_and_lint_ownership() -> io::Result<()> {
 
 #[test]
 fn unresolved_import_has_one_source_diagnostic() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(Some(r#"{"languageMode":"strict"}"#))?;
     let entry = directory.file("entry.luau", "return require('./missing')")?;
     let result = project().check(&[Entry::new(entry)], &options())?;
     assert_eq!(result.completion, Completion::Complete);
@@ -316,7 +272,7 @@ fn unresolved_import_has_one_source_diagnostic() -> io::Result<()> {
 
 #[test]
 fn interruption_is_not_success_and_can_be_retried() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(Some(r#"{"languageMode":"strict"}"#))?;
     let entry = directory.file("entry.luau", "return 1")?;
     let mut project = project();
     let cancelled = options();
@@ -345,8 +301,52 @@ fn interruption_is_not_success_and_can_be_retried() -> io::Result<()> {
 }
 
 #[test]
+fn incomplete_environments_keep_known_source_diagnostics() -> io::Result<()> {
+    let directory = Directory::new(Some(
+        r#"{"languageMode":"strict","lint":{"*":false,"LocalUnused":true}}"#,
+    ))?;
+
+    directory.file("instar.toml", "[environment]\ndefinitions=['missing.luau']")?;
+    let entry = directory.file("entry.luau", "return require('./absent')")?;
+    let mut project = project();
+    let entries = [Entry::new(entry.clone())];
+    let result = project.check(&entries, &options())?;
+
+    assert_eq!(
+        result.completion,
+        Completion::Incomplete(Reason::Environment)
+    );
+
+    assert_eq!(result.diagnostics.len(), 2);
+
+    assert!(result.diagnostics.iter().any(|diagnostic| matches!(
+        diagnostic.kind,
+        Kind::Resolution { code: None }
+    ) && diagnostic.location.module.source()
+        == entry
+        && &project.source(&entry).expect("entry source").text
+            [diagnostic.location.range[0]..diagnostic.location.range[1]]
+            == "'./absent'"));
+
+    let linted = project.lint(&entries, &options())?;
+    assert_eq!(linted.completion, result.completion);
+    assert_eq!(linted.modules, result.modules);
+
+    assert_eq!(
+        linted.diagnostics,
+        result
+            .diagnostics
+            .into_iter()
+            .map(instar_lint::Diagnostic::from)
+            .collect::<Vec<_>>()
+    );
+
+    Ok(())
+}
+
+#[test]
 fn roblox_without_native_setup_is_explicitly_incomplete() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(Some(r#"{"languageMode":"strict"}"#))?;
     directory.file("instar.toml", "[roblox]\nenabled = true")?;
     let entry = directory.file("entry.luau", "return game")?;
     let result = project().check(&[Entry::new(entry)], &options())?;
@@ -368,7 +368,7 @@ fn roblox_without_native_setup_is_explicitly_incomplete() -> io::Result<()> {
 
 #[test]
 fn broken_dependency_reports_syntax_without_a_generic_import_failure() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(Some(r#"{"languageMode":"strict"}"#))?;
     let dependency = directory.file("dependency.luau", "local =")?;
     let entry = directory.file("entry.luau", "return require('./dependency')")?;
     let result = project().check(&[Entry::new(entry)], &options())?;
@@ -396,7 +396,7 @@ fn broken_dependency_reports_syntax_without_a_generic_import_failure() -> io::Re
 
 #[test]
 fn malformed_require_has_one_resolution_error() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(Some(r#"{"languageMode":"strict"}"#))?;
     let entry = directory.file("entry.luau", "return require()")?;
     let result = project().check(&[Entry::new(entry)], &options())?;
     assert_eq!(result.completion, Completion::Complete);
@@ -412,8 +412,8 @@ fn malformed_require_has_one_resolution_error() -> io::Result<()> {
 
 #[test]
 fn executable_configuration_and_module_directives_control_modes() -> io::Result<()> {
-    let directory = Directory::new()?;
-    fs::remove_file(directory.0.join(".luaurc"))?;
+    let directory = Directory::new(Some(r#"{"languageMode":"strict"}"#))?;
+    fs::remove_file(directory.path.join(".luaurc"))?;
     directory.file(".config.luau", "return {languageMode = 'strict'}")?;
     let entry = directory.file("entry.luau", "--!nocheck\nreturn unknown")?;
     let mut project = project();
@@ -440,7 +440,7 @@ fn executable_configuration_and_module_directives_control_modes() -> io::Result<
 
 #[test]
 fn declarations_can_build_on_prior_files_and_be_removed() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(Some(r#"{"languageMode":"strict"}"#))?;
 
     let configuration = directory.file(
         "instar.toml",
@@ -479,7 +479,7 @@ fn declarations_can_build_on_prior_files_and_be_removed() -> io::Result<()> {
 
 #[test]
 fn explicit_declarations_preserve_distinct_mapped_contexts() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(Some(r#"{"languageMode":"strict"}"#))?;
 
     directory.file(
         "instar.toml",
@@ -534,7 +534,7 @@ fn explicit_declarations_preserve_distinct_mapped_contexts() -> io::Result<()> {
 
 #[test]
 fn roblox_security_filtering_is_not_silently_ignored() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(Some(r#"{"languageMode":"strict"}"#))?;
     directory.file("instar.toml", "[environment]\ndefinitions = ['globals.luau']\n[roblox]\nenabled = true\nsecurity = 'plugin'")?;
     directory.file("globals.luau", "declare game: any")?;
     let entry = directory.file("entry.luau", "return game")?;
@@ -557,7 +557,7 @@ fn roblox_security_filtering_is_not_silently_ignored() -> io::Result<()> {
 
 #[test]
 fn nonstrict_keeps_native_unknown_global_errors() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(Some(r#"{"languageMode":"strict"}"#))?;
     directory.file(".luaurc", r#"{"languageMode":"nonstrict"}"#)?;
     let entry = directory.file("entry.luau", "local unused = 1\nreturn undeclared")?;
     let result = project().check(&[Entry::new(entry.clone())], &options())?;

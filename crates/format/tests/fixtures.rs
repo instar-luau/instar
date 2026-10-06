@@ -1,6 +1,7 @@
 //! Formatter fixture syntax and lossless emission contracts.
 
-use std::{error::Error, fs, io};
+use instar_analysis::{Completion, Options, Reason};
+use std::{error::Error, fs, io, time::Duration};
 
 use instar_format::configuration::{Configuration, LineEnding};
 
@@ -38,8 +39,16 @@ fn fixtures() -> Result<(), Box<dyn Error>> {
         let input = fs::read(case.join("input.luau"))?;
         let expected = fs::read(case.join("expected.luau"))?;
 
-        let actual = instar_format::format(&input, &configuration)
-            .map_err(|error| format!("{}: {error}", case.display()))?;
+        let actual = instar_format::format(
+            &input,
+            &configuration,
+            &Options::new(Duration::from_secs(5)),
+        )
+        .map_err(|error| format!("{}: {error}", case.display()))?;
+
+        assert_eq!(actual.completion, Completion::Complete);
+        assert_eq!(actual.diagnostics, Vec::new());
+        let actual = actual.output.expect("complete formatted output");
 
         assert_eq!(
             actual,
@@ -48,9 +57,18 @@ fn fixtures() -> Result<(), Box<dyn Error>> {
             case.display()
         );
 
+        let repeated = instar_format::format(
+            &expected,
+            &configuration,
+            &Options::new(Duration::from_secs(5)),
+        )
+        .map_err(|error| format!("{}: {error}", case.display()))?;
+
+        assert_eq!(repeated.completion, Completion::Complete);
+        assert_eq!(repeated.diagnostics, Vec::new());
+
         assert_eq!(
-            instar_format::format(&expected, &configuration)
-                .map_err(|error| format!("{}: {error}", case.display()))?,
+            repeated.output.expect("idempotent output"),
             expected,
             "{}: expected output must be idempotent",
             case.display()
@@ -124,4 +142,79 @@ fn preserved<'source>(tree: &Tree<'source>) -> Vec<&'source [u8]> {
     tokens.sort_unstable();
 
     tokens
+}
+
+#[test]
+fn require_ordering_respects_lexical_identity() -> Result<(), Box<dyn Error>> {
+    let configuration: Configuration = toml::from_str("[requires]\norder='alphabetical'")?;
+
+    for source in [
+        "local require = function(value) return value end\nlocal z = require('./z')\nlocal a = require('./a')\n",
+        "local function load(require)\nlocal z = require('./z')\nlocal a = require('./a')\nend\n",
+        "require = custom\nlocal z = require('./z')\nlocal a = require('./a')\n",
+        "local z = require('./z')\nlocal require = require('./a')\n",
+        "local value = require('./z')\nlocal value = require('./a')\n",
+        "local z = require('./z')\nlocal a: typeof(z) = require('./a')\n",
+    ] {
+        let output = String::from_utf8(
+            instar_format::format(
+                source.as_bytes(),
+                &configuration,
+                &Options::new(Duration::from_secs(5)),
+            )?
+            .output
+            .expect("formatted source"),
+        )?;
+
+        assert!(
+            output.find("./z").expect("first call") < output.find("./a").expect("second call"),
+            "{output}"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn failures_and_limits_never_return_partial_output() -> Result<(), Box<dyn Error>> {
+    let configuration = Configuration::default();
+    let source = b"local =";
+
+    let failed = instar_format::format(
+        source,
+        &configuration,
+        &Options::new(Duration::from_secs(5)),
+    )?;
+
+    let parsed = vermis::parse(source);
+    assert_eq!(failed.completion, Completion::Complete);
+    assert_eq!(failed.output, None);
+
+    assert_eq!(
+        failed.diagnostics,
+        parsed
+            .diagnostics
+            .iter()
+            .map(|diagnostic| instar_format::Diagnostic {
+                range: [diagnostic.span.start, diagnostic.span.end],
+                message: diagnostic.message.to_owned(),
+            })
+            .collect::<Vec<_>>()
+    );
+
+    assert_ne!(failed.diagnostics, Vec::new());
+    let cancelled = Options::new(Duration::from_secs(5));
+    cancelled.cancellation.cancel();
+
+    for (options, reason) in [
+        (cancelled, Reason::Cancelled),
+        (Options::new(Duration::ZERO), Reason::Timeout),
+    ] {
+        let result = instar_format::format(b"return 1", &configuration, &options)?;
+        assert_eq!(result.completion, Completion::Incomplete(reason));
+        assert_eq!(result.output, None);
+        assert_eq!(result.diagnostics, Vec::new());
+    }
+
+    Ok(())
 }

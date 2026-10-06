@@ -1,4 +1,4 @@
-#include "instar-bridge/src/lib.rs.h"
+#include "instar-bridge/src/boundary.rs.h"
 
 #include "Luau/Config.h"
 #include "Luau/LuauConfig.h"

@@ -1,14 +1,14 @@
-use crate::{
-    graph::{Problem, Site},
-    resolve::{Request, Root, Step},
-    source::Failure,
-};
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use vermis::{
     token::{Keyword, Symbol, TokenKind},
     tree::{NodeIndex, NodeKind, NodeList, Tree},
+};
+
+use crate::{
+    graph::{Problem, Site},
+    resolve::{Request, Root, Step},
+    source::Failure,
 };
 
 #[derive(Clone)]
@@ -106,7 +106,7 @@ impl Extractor<'_, '_> {
             NodeKind::Name { .. } => self.lookup(node),
 
             NodeKind::String { .. } => {
-                instar_lint::literal::string(self.tree, node).map_or(Value::Other, Value::String)
+                instar_syntax::literal::string(self.tree, node).map_or(Value::Other, Value::String)
             }
 
             NodeKind::Boolean { token } => {

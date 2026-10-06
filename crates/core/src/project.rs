@@ -8,8 +8,10 @@ use std::{
     time::Duration,
 };
 
+use instar_analysis::error::invalid;
+
 use crate::{
-    configuration::{Configuration, invalid},
+    configuration::Configuration,
     source::{Document, Failure, Kind, View, normalize, related},
     sourcemap::Map,
 };

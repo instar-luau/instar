@@ -1,18 +1,18 @@
 //! Immutable sourcemap instance contexts and navigation.
 
-use crate::{
-    configuration::invalid,
-    resolve::{Identity, Module, module_path},
-    source::{Document, normalize},
-};
-
-use serde::Deserialize;
-
 use std::{
     collections::BTreeMap,
     io,
     path::{Path, PathBuf},
     rc::Rc,
+};
+
+use instar_analysis::error::invalid;
+use serde::Deserialize;
+
+use crate::{
+    resolve::{Identity, Module, module_path},
+    source::{Document, normalize},
 };
 
 #[derive(Deserialize)]

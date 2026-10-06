@@ -2,6 +2,7 @@
 
 use std::{io, path::PathBuf};
 
+use instar_analysis::error::invalid;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -20,7 +21,7 @@ pub struct Configuration {
     pub exclude: Option<Vec<String>>,
 
     /// Checker file selection.
-    pub check: instar_check::Configuration,
+    pub check: Selection,
 
     /// Formatter style and file selection.
     pub format: instar_format::Configuration,
@@ -55,16 +56,12 @@ impl Configuration {
     /// # Errors
     /// Returns an error for invalid configuration values.
     pub fn validate(&self) -> io::Result<()> {
-        self.format.validate().map_err(invalid)?;
-        self.lint.validate().map_err(invalid)?;
+        self.format.validate()?;
+        self.lint.validate()?;
 
         for patterns in [
             &self.include,
             &self.exclude,
-            &self.format.include,
-            &self.format.exclude,
-            &self.lint.include,
-            &self.lint.exclude,
             &self.check.include,
             &self.check.exclude,
             &self.editor.index.include,
@@ -75,13 +72,7 @@ impl Configuration {
         .into_iter()
         .flatten()
         {
-            for pattern in patterns {
-                if pattern.is_empty() || pattern.contains('\0') {
-                    return Err(invalid("file patterns must be nonempty and contain no NUL"));
-                }
-
-                glob::Pattern::new(pattern).map_err(invalid)?;
-            }
+            instar_analysis::selection::validate(Some(patterns), "selection")?;
         }
 
         for path in self
@@ -134,10 +125,6 @@ impl Configuration {
 #[must_use]
 pub fn schema() -> schemars::Schema {
     schemars::schema_for!(Configuration)
-}
-
-pub(crate) fn invalid(error: impl std::fmt::Display) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, error.to_string())
 }
 
 /// Optional file-selection overrides.

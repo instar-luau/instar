@@ -1,4 +1,4 @@
-//! Typed string literal values independent of lint state.
+//! Typed Luau string literal values.
 
 use vermis::{
     token::TokenKind,

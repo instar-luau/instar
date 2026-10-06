@@ -1,55 +1,15 @@
 //! Synthetic source, configuration, graph and sourcemap lifecycle fixtures.
 
+use std::{collections::BTreeSet, fs, io, rc::Rc};
+
 use instar_core::{
-    project::{Change, Project},
+    project::Change,
     resolve::{Identity, Request},
 };
 
 use serde_json::json;
 
-use std::{
-    collections::BTreeSet,
-    fs, io,
-    path::PathBuf,
-    rc::Rc,
-    sync::atomic::{AtomicUsize, Ordering},
-    time::Duration,
-};
-
-static NEXT: AtomicUsize = AtomicUsize::new(0);
-struct Directory(PathBuf);
-
-impl Directory {
-    fn new() -> io::Result<Self> {
-        let path = std::env::temp_dir().join(format!(
-            "instar-lifecycle-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-
-        fs::create_dir(&path)?;
-
-        Ok(Self(path))
-    }
-
-    fn file(&self, name: &str, text: &str) -> io::Result<PathBuf> {
-        let path = self.0.join(name);
-        fs::create_dir_all(path.parent().expect("fixture parent"))?;
-        fs::write(&path, text)?;
-
-        Ok(path)
-    }
-
-    fn project() -> Project {
-        Project::new(Duration::from_secs(2))
-    }
-}
-
-impl Drop for Directory {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.0).expect("remove lifecycle fixture");
-    }
-}
+use crate::support::{Directory, project};
 
 fn map(first: &str, second: &str) -> String {
     json!({"name":"Place","className":"DataModel","children":[
@@ -67,13 +27,17 @@ fn map(first: &str, second: &str) -> String {
 
 #[test]
 fn overlays_and_cached_settings() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(None)?;
     let caller = directory.file("caller.luau", "return require('@named')")?;
     let target = directory.file("target.luau", "return 1")?;
     let aliases = directory.file(".luaurc", r#"{"aliases":{"named":"./target"}}"#)?;
-    let mut project = Directory::project();
-    let settings = project.configuration(&directory.0)?;
-    assert!(Rc::ptr_eq(&settings, &project.configuration(&directory.0)?));
+    let mut project = project();
+    let settings = project.configuration(&directory.path)?;
+
+    assert!(Rc::ptr_eq(
+        &settings,
+        &project.configuration(&directory.path)?
+    ));
 
     assert_eq!(
         project.resolve_source(&caller, "@named").result?.source,
@@ -87,7 +51,11 @@ fn overlays_and_cached_settings() -> io::Result<()> {
         text: Some("return 2".to_owned()),
     })?;
 
-    assert!(Rc::ptr_eq(&settings, &project.configuration(&directory.0)?));
+    assert!(Rc::ptr_eq(
+        &settings,
+        &project.configuration(&directory.path)?
+    ));
+
     let overlay = project.source(&caller)?;
     assert!(overlay.revision > original.revision);
     assert_eq!(&*original.text, "return require('@named')");
@@ -117,12 +85,12 @@ fn overlays_and_cached_settings() -> io::Result<()> {
 
 #[test]
 fn missing_ambiguous_and_replaced_targets_invalidate_links() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(None)?;
     let caller = directory.file("caller.luau", "return require('./target')")?;
-    let mut project = Directory::project();
+    let mut project = project();
     let missing = project.links(&caller, None)?;
     assert!(missing.sites[0].failure.is_some());
-    let target = directory.0.join("target.luau");
+    let target = directory.path.join("target.luau");
     assert!(missing.sites[0].inputs.contains(&target));
     assert_eq!(project.graph().len(), 1);
     directory.file("target.luau", "return 1")?;
@@ -198,7 +166,7 @@ fn missing_ambiguous_and_replaced_targets_invalidate_links() -> io::Result<()> {
 
 #[test]
 fn lexical_sites_keep_shadowing_mutations_and_revisions() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(None)?;
     directory.file("target.luau", "return 1")?;
 
     let cases: &[(&str, &[Option<&str>])] = &[
@@ -258,7 +226,7 @@ fn lexical_sites_keep_shadowing_mutations_and_revisions() -> io::Result<()> {
     ];
 
     let caller = directory.file("caller.luau", "")?;
-    let mut project = Directory::project();
+    let mut project = project();
 
     for &(source, expected) in cases {
         project.change(Change::Overlay {
@@ -293,10 +261,10 @@ fn lexical_sites_keep_shadowing_mutations_and_revisions() -> io::Result<()> {
 
 #[test]
 fn cycles_expand_once_and_reverse_edges_invalidate() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(None)?;
     let first = directory.file("first.luau", "return require('./second')")?;
     let second = directory.file("second.luau", "return require('./first')")?;
-    let mut project = Directory::project();
+    let mut project = project();
     let identities = project.discover(&first, None)?;
     assert_eq!(identities.len(), 2);
     assert_eq!(project.graph().len(), 2);
@@ -317,12 +285,12 @@ fn cycles_expand_once_and_reverse_edges_invalidate() -> io::Result<()> {
 
 #[test]
 fn duplicate_sources_are_distinct_instance_contexts() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(None)?;
     let caller = directory.file("caller.luau", "return require(script.Parent.Target)")?;
     let first = directory.file("first.luau", "return 1")?;
     let second = directory.file("second.luau", "return 2")?;
     directory.file("sourcemap.json", &map("first.luau", "second.luau"))?;
-    let mut project = Directory::project();
+    let mut project = project();
 
     assert!(
         project
@@ -360,12 +328,12 @@ fn duplicate_sources_are_distinct_instance_contexts() -> io::Result<()> {
 
 #[test]
 fn malformed_deleted_and_moved_maps_never_reuse_targets() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(None)?;
     let caller = directory.file("caller.luau", "return require(script.Parent.Target)")?;
     directory.file("first.luau", "return 1")?;
     let second = directory.file("second.luau", "return 2")?;
     let location = directory.file("sourcemap.json", &map("first.luau", "second.luau"))?;
-    let mut project = Directory::project();
+    let mut project = project();
     let original = project.contexts(&caller)?.remove(0);
     let node = project.links(&caller, Some(&original.identity))?;
     assert!(node.sites[0].target.is_some());
@@ -412,10 +380,10 @@ fn malformed_deleted_and_moved_maps_never_reuse_targets() -> io::Result<()> {
 
 #[test]
 fn nearest_maps_and_explicit_disabling_follow_configuration_events() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(None)?;
     let caller = directory.file("nested/caller.luau", "return require(game.GetService)")?;
     let outer = directory.file("sourcemap.json", &json!({"name":"Outer","className":"DataModel","children":[{"name":"Caller","className":"ModuleScript","filePaths":["nested/caller.luau"]}]}).to_string())?;
-    let mut project = Directory::project();
+    let mut project = project();
 
     assert!(
         matches!(project.module(&caller,None)?.identity, Identity::Instance { map, .. } if map == outer)
@@ -436,7 +404,7 @@ fn nearest_maps_and_explicit_disabling_follow_configuration_events() -> io::Resu
         matches!(project.module(&caller,None)?.identity, Identity::Instance { map, .. } if map == outer)
     );
 
-    let manifest = directory.0.join("nested/instar.toml");
+    let manifest = directory.path.join("nested/instar.toml");
 
     project.change(Change::Overlay {
         path: manifest.clone(),
@@ -470,7 +438,7 @@ fn nearest_maps_and_explicit_disabling_follow_configuration_events() -> io::Resu
 
 #[test]
 fn overlapping_maps_need_explicit_context_and_nonmodules_fail() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(None)?;
 
     let caller = directory.file(
         "caller.luau",
@@ -492,7 +460,7 @@ fn overlapping_maps_need_explicit_context_and_nonmodules_fail() -> io::Result<()
         "[roblox]\nsourcemaps=['one.json','two.json']",
     )?;
 
-    let mut project = Directory::project();
+    let mut project = project();
     assert!(project.module(&caller, None).is_err());
     let contexts = project.contexts(&caller)?;
     assert_eq!(contexts.len(), 2);
@@ -516,13 +484,13 @@ fn overlapping_maps_need_explicit_context_and_nonmodules_fail() -> io::Result<()
 
 #[test]
 fn configuration_failures_track_absent_conflicting_candidates() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(None)?;
     let caller = directory.file("caller.luau", "require('@named')")?;
     directory.file("target.luau", "return 1")?;
     directory.file(".luaurc", r#"{"aliases":{"named":"./target"}}"#)?;
-    let mut project = Directory::project();
+    let mut project = project();
     let node = project.links(&caller, None)?;
-    let executable = directory.0.join(".config.luau");
+    let executable = directory.path.join(".config.luau");
     assert!(node.inputs.contains(&executable));
 
     project.change(Change::Overlay {
@@ -608,7 +576,7 @@ const SERVICE_CASES: &[(&str, bool, bool)] = &[
 
 #[test]
 fn replicated_storage_service_chains_keep_static_and_lexical_context() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(None)?;
     let caller = directory.file("caller.luau", "")?;
     let target = directory.file("target.luau", "return 1")?;
 
@@ -627,7 +595,7 @@ fn replicated_storage_service_chains_keep_static_and_lexical_context() -> io::Re
         .to_string(),
     )?;
 
-    let mut project = Directory::project();
+    let mut project = project();
 
     for &(source, known, resolved) in SERVICE_CASES {
         project.change(Change::Overlay {
@@ -660,7 +628,7 @@ fn replicated_storage_service_chains_keep_static_and_lexical_context() -> io::Re
 
 #[test]
 fn native_adapter_uses_rust_results_for_aliases_instances_and_lifecycle() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(None)?;
 
     let caller = directory.file(
         "caller.luau",
@@ -668,7 +636,7 @@ fn native_adapter_uses_rust_results_for_aliases_instances_and_lifecycle() -> io:
     )?;
 
     let target = directory.file("target.luau", "return 1")?;
-    let mut project = Directory::project();
+    let mut project = project();
     let node = project.links(&caller, None)?;
     assert_eq!(project.graph().len(), 1);
     let links = project.prepare(&caller, None)?;
@@ -733,7 +701,7 @@ fn native_adapter_uses_rust_results_for_aliases_instances_and_lifecycle() -> io:
 
 #[test]
 fn mapped_sources_outside_map_ancestors_keep_explicit_context() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(None)?;
     let caller = directory.file("place/caller.luau", "return require(script.Parent.Target)")?;
     let target = directory.file("shared/target.luau", "return require(script.Parent.Other)")?;
     let other = directory.file("shared/other.luau", "return 1")?;
@@ -751,7 +719,7 @@ fn mapped_sources_outside_map_ancestors_keep_explicit_context() -> io::Result<()
         .to_string(),
     )?;
 
-    let mut project = Directory::project();
+    let mut project = project();
 
     assert!(matches!(
         project.module(&target, None)?.identity,
@@ -795,11 +763,11 @@ fn mapped_sources_outside_map_ancestors_keep_explicit_context() -> io::Result<()
 
 #[test]
 fn overlay_only_sources_and_configuration_need_no_disk_directories() -> io::Result<()> {
-    let directory = Directory::new()?;
-    let caller = directory.0.join("virtual/caller.luau");
-    let target = directory.0.join("virtual/target.luau");
-    let aliases = directory.0.join("virtual/.luaurc");
-    let mut project = Directory::project();
+    let directory = Directory::new(None)?;
+    let caller = directory.path.join("virtual/caller.luau");
+    let target = directory.path.join("virtual/target.luau");
+    let aliases = directory.path.join("virtual/.luaurc");
+    let mut project = project();
 
     project.change(Change::Overlay {
         path: caller.clone(),
@@ -836,7 +804,7 @@ fn overlay_only_sources_and_configuration_need_no_disk_directories() -> io::Resu
 
 #[test]
 fn instance_requests_cannot_import_native_configuration_sources() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(None)?;
     let caller = directory.file("caller.luau", "require(script.Parent.Configuration)")?;
     directory.file(".config.luau", "return {}")?;
 
@@ -849,7 +817,7 @@ fn instance_requests_cannot_import_native_configuration_sources() -> io::Result<
         .to_string(),
     )?;
 
-    let mut project = Directory::project();
+    let mut project = project();
     let node = project.links(&caller, None)?;
     assert!(node.sites[0].target.is_none());
 
@@ -867,12 +835,12 @@ fn instance_requests_cannot_import_native_configuration_sources() -> io::Result<
 
 #[test]
 fn file_creation_below_missing_navigation_directories_retries_failures() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(None)?;
     let caller = directory.file("caller.luau", "require('./created/nested/target')")?;
-    let mut project = Directory::project();
+    let mut project = project();
     let missing = project.links(&caller, None)?;
     assert!(missing.sites[0].failure.is_some());
-    assert!(missing.inputs.contains(&directory.0.join("created")));
+    assert!(missing.inputs.contains(&directory.path.join("created")));
     let target = directory.file("created/nested/target.luau", "return 1")?;
     let affected = project.change(Change::Disk(target.clone()))?;
     assert!(affected.contains(&missing.module.identity));

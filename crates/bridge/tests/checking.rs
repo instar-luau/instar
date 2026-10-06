@@ -1,12 +1,13 @@
 //! Native checker diagnostics and interruption boundary fixtures.
 
+use std::{io, time::Duration};
+
+use instar_analysis::{Completion, Kind, Options, Reason};
+
 use instar_bridge::{
     Configuration,
     frontend::{Definition, Frontend, Site},
 };
-
-use instar_check::{Completion, Kind, Options, Reason};
-use std::{io, time::Duration};
 
 #[test]
 fn native_type_codes_locations_and_related_data_are_retained() -> io::Result<()> {

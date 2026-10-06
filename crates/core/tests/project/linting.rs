@@ -1,63 +1,15 @@
 //! Native and Instar lint policies over shared contextual project sources.
 
+use std::{io, time::Duration};
+
 use instar_core::{
-    linting::{Entry, Origin},
-    project::{Change, Project},
+    analysis::{Entry, Origin},
+    project::Change,
 };
 
 use instar_lint::{Completion, Kind, Level, Options, Reason, Rule};
 
-use std::{
-    fs, io,
-    path::PathBuf,
-    sync::atomic::{AtomicUsize, Ordering},
-    time::Duration,
-};
-
-static NEXT: AtomicUsize = AtomicUsize::new(0);
-struct Directory(PathBuf);
-
-impl Directory {
-    fn new() -> io::Result<Self> {
-        let path = std::env::temp_dir().join(format!(
-            "instar-linting-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-
-        fs::create_dir(&path)?;
-        let directory = Self(path);
-
-        directory.file(
-            ".luaurc",
-            r#"{"languageMode":"strict","lint":{"*":false,"LocalUnused":true}}"#,
-        )?;
-
-        Ok(directory)
-    }
-
-    fn file(&self, name: &str, text: &str) -> io::Result<PathBuf> {
-        let path = self.0.join(name);
-        fs::create_dir_all(path.parent().expect("fixture parent"))?;
-        fs::write(&path, text)?;
-
-        Ok(path)
-    }
-}
-
-impl Drop for Directory {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.0).expect("remove lint fixture");
-    }
-}
-
-fn project() -> Project {
-    Project::new(Duration::from_secs(2))
-}
-
-fn options() -> Options {
-    Options::new(Duration::from_secs(5))
-}
+use crate::support::{Directory, options, project};
 
 fn rule(result: &instar_lint::Result<Origin>, name: Rule) -> bool {
     result
@@ -68,7 +20,10 @@ fn rule(result: &instar_lint::Result<Origin>, name: Rule) -> bool {
 
 #[test]
 fn native_and_instar_policies_are_independent_and_checker_stays_clean() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(Some(
+        r#"{"languageMode":"strict","lint":{"*":false,"LocalUnused":true}}"#,
+    ))?;
+
     directory.file("instar.toml", "[lint.unused_variable]\nlevel='info'")?;
     let entry = directory.file("entry.luau", "local unused=1\nreturn 2")?;
     let mut project = project();
@@ -90,7 +45,7 @@ fn native_and_instar_policies_are_independent_and_checker_stays_clean() -> io::R
     assert_eq!(project.check(&entries, &options())?, before);
 
     project.change(Change::Overlay {
-        path: directory.0.join(".luaurc"),
+        path: directory.path.join(".luaurc"),
         text: Some(
             r#"{"languageMode":"strict","lint":{"*":false,"LocalUnused":true},"lintErrors":true}"#
                 .to_owned(),
@@ -127,14 +82,24 @@ fn native_and_instar_policies_are_independent_and_checker_stays_clean() -> io::R
 }
 
 #[test]
-fn selection_filters_findings_but_not_dependency_analysis_errors() -> io::Result<()> {
-    let directory = Directory::new()?;
+fn selection_chooses_entries_and_reports_reachable_dependencies() -> io::Result<()> {
+    let directory = Directory::new(Some(
+        r#"{"languageMode":"strict","lint":{"*":false,"LocalUnused":true}}"#,
+    ))?;
+
     directory.file("instar.toml", "include=['entry.luau']")?;
     let entry = directory.file("entry.luau", "return require('./dependency')")?;
-    let dependency = directory.file("dependency.luau", "return require('./missing')")?;
+
+    let dependency = directory.file(
+        "dependency.luau",
+        "local unused=1\nreturn require('./missing')",
+    )?;
+
     let mut project = project();
-    let result = project.lint(&[Entry::new(entry)], &options())?;
-    assert_eq!(result.modules.len(), 1);
+    let entries = [Entry::new(entry)];
+    let result = project.lint(&entries, &options())?;
+    assert_eq!(result.modules.len(), 2);
+    assert_eq!(result.modules, project.check(&entries, &options())?.modules);
 
     assert!(
         result
@@ -142,7 +107,22 @@ fn selection_filters_findings_but_not_dependency_analysis_errors() -> io::Result
             .iter()
             .any(
                 |diagnostic| diagnostic.location.module.source() == dependency
-                    && diagnostic.kind == Kind::Resolution
+                    && diagnostic.kind == Kind::Rule(Rule::UnusedVariable)
+            )
+    );
+
+    assert!(result.diagnostics.iter().any(|diagnostic| diagnostic.location.module.source() == dependency && matches!(&diagnostic.kind, Kind::Native { name, .. } if name == "LocalUnused")));
+
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(
+                |diagnostic| diagnostic.location.module.source() == dependency
+                    && matches!(
+                        diagnostic.kind,
+                        Kind::Analysis(instar_analysis::Kind::Resolution { .. })
+                    )
             )
     );
 
@@ -158,7 +138,10 @@ fn selection_filters_findings_but_not_dependency_analysis_errors() -> io::Result
 
 #[test]
 fn shared_typed_require_aliases_drive_restrictions() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(Some(
+        r#"{"languageMode":"strict","lint":{"*":false,"LocalUnused":true}}"#,
+    ))?;
+
     directory.file(".luaurc", r#"{"lint":{"*":false}}"#)?;
     directory.file("instar.toml", "[lint.restricted_module_paths]\nlevel='deny'\n[lint.restricted_module_paths.paths]\n'./dependency'='blocked'\n[lint.non_const_require]\nlevel='warn'")?;
     directory.file("dependency.luau", "return 1")?;
@@ -197,7 +180,10 @@ fn shared_typed_require_aliases_drive_restrictions() -> io::Result<()> {
 
 #[test]
 fn syntax_only_rules_do_not_load_declaration_environments() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(Some(
+        r#"{"languageMode":"strict","lint":{"*":false,"LocalUnused":true}}"#,
+    ))?;
+
     directory.file(".luaurc", r#"{"lint":{"*":false}}"#)?;
     directory.file("instar.toml", "[environment]\ndefinitions=['missing.luau']")?;
     let entry = directory.file("entry.luau", "return 1/0")?;
@@ -205,19 +191,19 @@ fn syntax_only_rules_do_not_load_declaration_environments() -> io::Result<()> {
     assert_eq!(result.completion, Completion::Complete);
     assert!(rule(&result, Rule::DivideByZero));
 
-    assert!(
-        !result
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.kind == Kind::Analysis)
-    );
+    assert!(!result.diagnostics.iter().any(|diagnostic| matches!(
+        diagnostic.kind,
+        Kind::Analysis(instar_analysis::Kind::Analysis { .. })
+    )));
 
     Ok(())
 }
 
 #[test]
 fn inferred_any_uses_native_types_and_per_module_selection() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(Some(
+        r#"{"languageMode":"strict","lint":{"*":false,"LocalUnused":true}}"#,
+    ))?;
 
     directory.file(
         "instar.toml",
@@ -243,7 +229,7 @@ fn inferred_any_uses_native_types_and_per_module_selection() -> io::Result<()> {
     assert!(!rule(&strict, Rule::ImplicitAnyParameter));
 
     project.change(Change::Overlay {
-        path: directory.0.join(".luaurc"),
+        path: directory.path.join(".luaurc"),
         text: Some(r#"{"languageMode":"nonstrict","lint":{"*":false}}"#.to_owned()),
     })?;
 
@@ -271,19 +257,20 @@ fn inferred_any_uses_native_types_and_per_module_selection() -> io::Result<()> {
     let nocheck = project.lint(&[Entry::new(entry)], &options())?;
     assert_eq!(nocheck.completion, Completion::Incomplete(Reason::Analysis));
 
-    assert!(
-        nocheck
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.kind == Kind::Analysis)
-    );
+    assert!(nocheck.diagnostics.iter().any(|diagnostic| matches!(
+        diagnostic.kind,
+        Kind::Analysis(instar_analysis::Kind::Analysis { .. })
+    )));
 
     Ok(())
 }
 
 #[test]
 fn missing_and_invalid_definitions_remain_explicit_with_syntax_findings() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(Some(
+        r#"{"languageMode":"strict","lint":{"*":false,"LocalUnused":true}}"#,
+    ))?;
+
     directory.file("instar.toml", "[environment]\ndefinitions=['globals.luau']")?;
     let entry = directory.file("entry.luau", "local unused=1\nreturn 1/0")?;
     let mut project = project();
@@ -299,9 +286,12 @@ fn missing_and_invalid_definitions_remain_explicit_with_syntax_findings() -> io:
     assert!(missing.diagnostics.iter().any(|diagnostic| matches!(
         diagnostic.location.module,
         Origin::Definition(_)
-    ) && diagnostic.kind == Kind::Analysis));
+    ) && matches!(
+        diagnostic.kind,
+        Kind::Analysis(instar_analysis::Kind::Analysis { .. })
+    )));
 
-    let definition = directory.0.join("globals.luau");
+    let definition = directory.path.join("globals.luau");
 
     project.change(Change::Overlay {
         path: definition.clone(),
@@ -321,7 +311,10 @@ fn missing_and_invalid_definitions_remain_explicit_with_syntax_findings() -> io:
             .iter()
             .any(
                 |diagnostic| diagnostic.location.module.source() == definition
-                    && diagnostic.kind == Kind::Syntax
+                    && matches!(
+                        diagnostic.kind,
+                        Kind::Analysis(instar_analysis::Kind::Syntax { .. })
+                    )
             )
     );
 
@@ -340,7 +333,10 @@ fn missing_and_invalid_definitions_remain_explicit_with_syntax_findings() -> io:
 
 #[test]
 fn roblox_capability_limits_are_not_silent() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(Some(
+        r#"{"languageMode":"strict","lint":{"*":false,"LocalUnused":true}}"#,
+    ))?;
+
     directory.file("instar.toml", "[roblox]\nenabled=true\nsecurity='plugin'")?;
     let entry = directory.file("entry.luau", "return Color3.new(255,0,0)")?;
     let result = project().lint(&[Entry::new(entry)], &options())?;
@@ -356,7 +352,7 @@ fn roblox_capability_limits_are_not_silent() -> io::Result<()> {
         result
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.kind == Kind::Unsupported)
+            .any(|diagnostic| diagnostic.kind == Kind::Analysis(instar_analysis::Kind::Unsupported))
     );
 
     Ok(())
@@ -364,7 +360,9 @@ fn roblox_capability_limits_are_not_silent() -> io::Result<()> {
 
 #[test]
 fn source_updates_and_contexts_keep_exact_revision_identity() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(Some(
+        r#"{"languageMode":"strict","lint":{"*":false,"LocalUnused":true}}"#,
+    ))?;
 
     directory.file(
         "instar.toml",
@@ -413,7 +411,10 @@ fn source_updates_and_contexts_keep_exact_revision_identity() -> io::Result<()> 
 
 #[test]
 fn cancellation_and_timeout_are_explicit() -> io::Result<()> {
-    let directory = Directory::new()?;
+    let directory = Directory::new(Some(
+        r#"{"languageMode":"strict","lint":{"*":false,"LocalUnused":true}}"#,
+    ))?;
+
     let entry = directory.file("entry.luau", "return 1")?;
     let mut project = project();
     let entries = [Entry::new(entry)];
@@ -432,6 +433,96 @@ fn cancellation_and_timeout_are_explicit() -> io::Result<()> {
         project.lint(&entries, &cancelled)?.completion,
         Completion::Incomplete(Reason::Cancelled)
     );
+
+    Ok(())
+}
+
+#[test]
+fn native_analysis_identity_survives_lint_conversion() -> io::Result<()> {
+    let directory = Directory::new(Some(
+        r#"{"languageMode":"strict","lint":{"*":false,"TableOperations":true}}"#,
+    ))?;
+
+    let entry = directory.file("entry.luau", "return require('./absent')")?;
+    let mut project = project();
+    let entries = [Entry::new(entry.clone())];
+
+    for source in [
+        "return require('./absent')",
+        "require()require()",
+        "local =",
+    ] {
+        project.change(Change::Overlay {
+            path: entry.clone(),
+            text: Some(source.to_owned()),
+        })?;
+
+        let checked = project.check(&entries, &options())?;
+        let linted = project.lint(&entries, &options())?;
+        assert_eq!(linted.completion, checked.completion);
+        assert_eq!(linted.modules, checked.modules);
+        assert_ne!(checked.diagnostics, Vec::new());
+
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.kind.native_code().is_some())
+        );
+
+        assert_eq!(
+            linted.diagnostics,
+            checked
+                .diagnostics
+                .into_iter()
+                .map(instar_lint::Diagnostic::from)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    project.change(Change::Overlay {
+        path: entry,
+        text: Some("return 1".to_owned()),
+    })?;
+
+    project.change(Change::Overlay {
+        path: directory.path.join("instar.toml"),
+        text: Some("[environment]\ndefinitions=['globals.luau']".to_owned()),
+    })?;
+
+    for declaration in ["declare configured:", "declare configured: MissingType"] {
+        project.change(Change::Overlay {
+            path: directory.path.join("globals.luau"),
+            text: Some(declaration.to_owned()),
+        })?;
+
+        let checked = project.check(&entries, &options())?;
+        let linted = project.lint(&entries, &options())?;
+
+        assert_eq!(
+            checked.completion,
+            Completion::Incomplete(Reason::Environment)
+        );
+
+        assert_eq!(linted.completion, checked.completion);
+        assert_ne!(checked.diagnostics, Vec::new());
+
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.kind.native_code().is_some())
+        );
+
+        assert_eq!(
+            linted.diagnostics,
+            checked
+                .diagnostics
+                .into_iter()
+                .map(instar_lint::Diagnostic::from)
+                .collect::<Vec<_>>()
+        );
+    }
 
     Ok(())
 }

@@ -1,4 +1,4 @@
-use crate::{Options, Reason};
+//! Lexical bindings and global identity over typed Luau syntax.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -10,39 +10,79 @@ use vermis::{
     tree::{NodeIndex, NodeKind, NodeList, Tree},
 };
 
+use instar_analysis::{Options, Reason};
+
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Category {
+/// Lexical declaration category.
+pub enum Category {
+    /// Local variable.
     Local,
+
+    /// Constant binding.
     Constant,
+
+    /// Function parameter.
     Parameter,
+
+    /// Loop binding.
     Loop,
+
+    /// Local function.
     Function,
 }
 
-pub(super) struct Binding {
-    pub(super) name: NodeIndex,
-    pub(super) category: Category,
-    pub(super) value: Option<NodeIndex>,
-    pub(super) read: bool,
-    pub(super) assigned: bool,
-    pub(super) mutated: bool,
+/// One lexical declaration and its observed uses.
+pub struct Binding {
+    /// Declaration name node.
+    pub name: NodeIndex,
+
+    /// Declaration category.
+    pub category: Category,
+
+    /// Initializer expression when available.
+    pub value: Option<NodeIndex>,
+
+    /// Whether the binding is read.
+    pub read: bool,
+
+    /// Whether the binding is reassigned.
+    pub assigned: bool,
+
+    /// Whether the referenced value is mutated.
+    pub mutated: bool,
 }
 
 #[derive(Default)]
-pub(super) struct Bindings {
-    pub(super) declarations: BTreeMap<usize, Binding>,
-    pub(super) references: BTreeMap<usize, usize>,
-    pub(super) globals: BTreeSet<usize>,
-    pub(super) global_writes: BTreeSet<String>,
-    pub(super) arities: BTreeMap<usize, (usize, bool)>,
+/// One lexical declaration and its observed uses.
+/// Lexical declarations and references from one immutable syntax tree.
+pub struct Bindings {
+    /// Declarations indexed by syntax node identity.
+    pub declarations: BTreeMap<usize, Binding>,
+
+    /// References mapped to their declaration identities.
+    pub references: BTreeMap<usize, usize>,
+
+    /// Unbound name references.
+    pub globals: BTreeSet<usize>,
+
+    /// Global names assigned or mutated in this source.
+    pub global_writes: BTreeSet<String>,
+
+    /// Known function argument counts and variadic status at references.
+    pub arities: BTreeMap<usize, (usize, bool)>,
+
     scopes: Vec<BTreeMap<String, usize>>,
     functions: BTreeMap<usize, (usize, bool)>,
     limits: Option<(Options, Instant)>,
-    pub(super) interruption: Option<Reason>,
+
+    /// Why lexical traversal stopped early.
+    pub interruption: Option<Reason>,
 }
 
 impl Bindings {
-    pub(super) fn analyze(tree: &Tree<'_>, options: &Options, started: Instant) -> Self {
+    /// Analyzes lexical identity within the supplied operation budget.
+    #[must_use]
+    pub fn analyze(tree: &Tree<'_>, options: &Options, started: Instant) -> Self {
         let mut bindings = Self {
             scopes: vec![BTreeMap::new()],
             limits: Some((options.clone(), started)),
@@ -54,11 +94,15 @@ impl Bindings {
         bindings
     }
 
-    pub(super) fn global(&self, tree: &Tree<'_>, node: NodeIndex) -> bool {
+    /// Whether a reference names an unchanged global.
+    #[must_use]
+    pub fn global(&self, tree: &Tree<'_>, node: NodeIndex) -> bool {
         self.globals.contains(&node.get()) && !self.global_writes.contains(&text(tree, node))
     }
 
-    pub(super) fn declaration(&self, node: NodeIndex) -> Option<&Binding> {
+    /// Returns the declaration referenced by a syntax node.
+    #[must_use]
+    pub fn declaration(&self, node: NodeIndex) -> Option<&Binding> {
         self.references
             .get(&node.get())
             .and_then(|index| self.declarations.get(index))
@@ -322,13 +366,7 @@ impl Bindings {
         }
 
         if let Some((options, started)) = &self.limits {
-            self.interruption = if options.cancellation.requested() {
-                Some(Reason::Cancelled)
-            } else if started.elapsed() >= options.timeout {
-                Some(Reason::Timeout)
-            } else {
-                None
-            };
+            self.interruption = options.interrupted(*started);
 
             if self.interruption.is_some() {
                 return;

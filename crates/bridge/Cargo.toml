@@ -10,7 +10,7 @@ categories.workspace = true
 
 [dependencies]
 cxx = "1"
-instar-check = { path = "../check" }
+instar-analysis = { path = "../analysis" }
 serde.workspace = true
 
 [build-dependencies]

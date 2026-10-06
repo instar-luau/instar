@@ -10,9 +10,11 @@ categories.workspace = true
 
 [dependencies]
 glob.workspace = true
+instar-analysis = { path = "../analysis" }
+instar-syntax = { path = "../syntax" }
 schemars.workspace = true
 serde.workspace = true
-vermis = "0.7"
+vermis.workspace = true
 
 [dev-dependencies]
 toml.workspace = true

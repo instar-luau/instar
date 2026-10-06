@@ -1,11 +1,11 @@
 //! Host/native analysis agreement and invalidation fixtures.
 
+use std::io;
+
 use instar_bridge::{
     Configuration,
     frontend::{Frontend, Site},
 };
-
-use std::io;
 
 #[test]
 fn host_targets_are_authoritative_for_lexical_loader_aliases() -> io::Result<()> {

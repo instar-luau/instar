@@ -2,14 +2,11 @@
 
 pub mod configuration;
 
+mod diagnostic;
 mod formatter;
+mod result;
 
 pub use configuration::Configuration;
-
-/// Formats Luau source using the supplied configuration.
-///
-/// # Errors
-/// Returns an error when the configuration or source syntax is invalid.
-pub fn format(source: &[u8], configuration: &Configuration) -> Result<Vec<u8>, String> {
-    formatter::format(source, configuration)
-}
+pub use diagnostic::Diagnostic;
+pub use formatter::format;
+pub use result::Result;

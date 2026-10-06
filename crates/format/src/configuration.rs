@@ -2,11 +2,12 @@
 
 use std::{collections::BTreeSet, num::NonZeroUsize};
 
+use instar_analysis::error::invalid;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Effective formatter settings after configuration inheritance.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Configuration {
     /// Included file patterns, inheriting global selection when omitted.
@@ -58,23 +59,16 @@ impl Configuration {
     ///
     /// # Errors
     /// Returns an error for invalid globs or invalid require group names or patterns.
-    pub fn validate(&self) -> Result<(), String> {
-        for (field, patterns) in [("include", &self.include), ("exclude", &self.exclude)] {
-            if let Some(patterns) = patterns {
-                for pattern in patterns {
-                    glob::Pattern::new(pattern).map_err(|error| {
-                        format!("format.{field}: invalid glob {pattern:?}: {error}")
-                    })?;
-                }
-            }
-        }
+    pub fn validate(&self) -> std::io::Result<()> {
+        instar_analysis::selection::validate(self.include.as_deref(), "format.include")?;
+        instar_analysis::selection::validate(self.exclude.as_deref(), "format.exclude")?;
 
         self.requires.validate()
     }
 }
 
 /// Characters used for indentation.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum IndentStyle {
     /// Indent with tabs.
@@ -86,7 +80,7 @@ pub enum IndentStyle {
 }
 
 /// Output line ending convention.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum LineEnding {
     /// Line feed.
@@ -98,7 +92,7 @@ pub enum LineEnding {
 }
 
 /// Quoting policy for string literals.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum QuoteStyle {
     /// Prefer double quotes unless single quotes avoid escaping.
@@ -119,7 +113,7 @@ pub enum QuoteStyle {
 }
 
 /// Require ordering and grouping settings.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Requires {
     /// Ordering policy for requires.
@@ -152,7 +146,7 @@ impl Requires {
     /// # Errors
     /// Returns an error for empty, reserved, or duplicate names, empty custom
     /// pattern lists or patterns, or invalid custom globs.
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> std::io::Result<()> {
         let mut names = BTreeSet::new();
 
         for group in &self.groups {
@@ -163,36 +157,38 @@ impl Requires {
 
                 Group::Custom(group) => {
                     if group.name.trim().is_empty() {
-                        return Err("format.requires.groups: group names must not be empty".into());
+                        return Err(invalid(
+                            "format.requires.groups: group names must not be empty",
+                        ));
                     }
 
                     if matches!(group.name.as_str(), "alias" | "relative" | "other") {
-                        return Err(format!(
+                        return Err(invalid(format!(
                             "format.requires.groups: custom group name {:?} is reserved",
                             group.name
-                        ));
+                        )));
                     }
 
                     if group.patterns.is_empty() {
-                        return Err(format!(
+                        return Err(invalid(format!(
                             "format.requires.groups: custom group {:?} needs patterns",
                             group.name
-                        ));
+                        )));
                     }
 
                     for pattern in &group.patterns {
                         if pattern.trim().is_empty() {
-                            return Err(format!(
+                            return Err(invalid(format!(
                                 "format.requires.groups: custom group {:?} has an empty pattern",
                                 group.name
-                            ));
+                            )));
                         }
 
                         glob::Pattern::new(pattern).map_err(|error| {
-                            format!(
+                            invalid(format!(
                                 "format.requires.groups: group {:?} has invalid glob {pattern:?}: {error}",
                                 group.name
-                            )
+                            ))
                         })?;
                     }
 
@@ -201,9 +197,9 @@ impl Requires {
             };
 
             if !names.insert(name) {
-                return Err(format!(
+                return Err(invalid(format!(
                     "format.requires.groups: duplicate group name {name:?}"
-                ));
+                )));
             }
         }
 
@@ -212,7 +208,7 @@ impl Requires {
 }
 
 /// Require ordering policy.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Order {
     /// Preserve existing order.
@@ -227,7 +223,7 @@ pub enum Order {
 }
 
 /// Blank line policy between require groups.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BlankLines {
     /// Separate groups with a blank line.
@@ -239,7 +235,7 @@ pub enum BlankLines {
 }
 
 /// A built-in group name or a custom named pattern group.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(untagged)]
 pub enum Group {
     /// A built-in require classification.
@@ -250,7 +246,7 @@ pub enum Group {
 }
 
 /// Built-in require classifications.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BuiltinGroup {
     /// Alias-based require paths.
@@ -264,7 +260,7 @@ pub enum BuiltinGroup {
 }
 
 /// A named group matching require paths against glob patterns.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CustomGroup {
     /// Unique nonempty name, distinct from built-in names.

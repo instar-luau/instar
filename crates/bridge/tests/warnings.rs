@@ -1,12 +1,13 @@
 //! Native lint warnings, semantic facts and shared-session boundaries.
 
+use std::{io, path::Path, time::Duration};
+
+use instar_analysis::{Completion, Kind, Options, Reason};
+
 use instar_bridge::{
     Configuration,
     frontend::{Definition, FactKind, Frontend, Site},
 };
-
-use instar_check::{Completion, Kind, Options, Reason};
-use std::{io, path::Path, time::Duration};
 
 fn options() -> Options {
     Options::new(Duration::from_secs(5))
