@@ -19,6 +19,7 @@ namespace instar {
         ~NativeConfiguration();
         NativeOutcome apply(rust::Str source, rust::Str path, bool executable, double timeoutSeconds);
         NativeSnapshot snapshot() const;
+        const Luau::Config &value() const;
 
       private:
         std::unique_ptr<Luau::Config> configuration;

@@ -123,7 +123,8 @@ namespace instar {
 
                         execution.checkDeadline();
 
-                        if (lua_status(resumed) == LUA_OK && lua_gettop(resumed) == 1 && lua_type(resumed, -1) == LUA_TTABLE) {
+                        if (lua_status(resumed) == LUA_OK && lua_gettop(resumed) == 1 &&
+                            lua_type(resumed, -1) == LUA_TTABLE) {
                             if (!lua_checkstack(resumed, 128 * 3 + 3)) {
                                 throw ExtractionFailure{"configuration table exceeds extraction stack limit"};
                             }
@@ -199,5 +200,9 @@ namespace instar {
         }
 
         return result;
+    }
+
+    const Luau::Config &NativeConfiguration::value() const {
+        return *configuration;
     }
 } // namespace instar

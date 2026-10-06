@@ -1,4 +1,4 @@
-//! Native Luau configuration.
+//! Native Luau configuration and host-adapted analysis representation.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Serialize;
+
+pub mod frontend;
 
 /// An opaque configuration initialized and layered using upstream Luau APIs.
 pub struct Configuration {
@@ -225,7 +227,11 @@ fn source_error(path: &Path, kind: io::ErrorKind, message: impl fmt::Display) ->
     reason = "CXX generates public unsafe declarations inside this private native boundary"
 )]
 mod boundary {
-    pub(super) use native::{NativeConfiguration, create};
+    use crate::frontend::Host;
+
+    pub(super) use native::{
+        NativeConfiguration, NativeFrontend, NativeSite, NativeSource, create, create_frontend,
+    };
 
     #[cxx::bridge(namespace = "instar")]
     mod native {
@@ -256,10 +262,57 @@ mod boundary {
             aliases: Vec<NativeAlias>,
         }
 
+        struct NativeSite {
+            call_start: usize,
+            call_end: usize,
+            argument_start: usize,
+            argument_end: usize,
+            static_request: bool,
+            target: String,
+        }
+
+        struct NativeSource {
+            found: bool,
+            text: String,
+            revision: u64,
+            sites: Vec<NativeSite>,
+        }
+
+        struct NativeLink {
+            module: String,
+            revision: u64,
+            call_start: usize,
+            call_end: usize,
+            argument_start: usize,
+            argument_end: usize,
+            target: String,
+        }
+
+        extern "Rust" {
+            type Host;
+            fn read_source(self: &Host, name: &str) -> NativeSource;
+            fn resolve(self: &Host, name: &str, start: usize, end: usize) -> String;
+        }
+
         unsafe extern "C++" {
             include!("src/configuration.hpp");
+            include!("src/frontend.hpp");
 
             type NativeConfiguration;
+            type NativeFrontend;
+
+            fn create_frontend() -> Result<UniquePtr<NativeFrontend>>;
+            fn configure(
+                self: Pin<&mut NativeFrontend>,
+                name: &str,
+                configuration: &NativeConfiguration,
+            ) -> Result<()>;
+            fn prepare(
+                self: Pin<&mut NativeFrontend>,
+                host: &Host,
+                names: &[String],
+            ) -> Result<Vec<NativeLink>>;
+            fn invalidate(self: Pin<&mut NativeFrontend>, names: &[String]) -> Result<()>;
 
             fn create() -> Result<UniquePtr<NativeConfiguration>>;
             fn apply(

@@ -1,4 +1,4 @@
-//! Builds the private native configuration boundary.
+//! Builds the private native configuration and frontend boundary.
 
 use std::env;
 use std::fs;
@@ -63,6 +63,7 @@ fn main() {
 
     for library in [
         "configuration",
+        "Luau.Analysis",
         "Luau.Config",
         "Luau.Compiler",
         "Luau.Ast",
@@ -77,6 +78,9 @@ fn main() {
     println!("cargo:rerun-if-changed=src/lib.rs");
     println!("cargo:rerun-if-changed=src/configuration.hpp");
     println!("cargo:rerun-if-changed=src/configuration.cpp");
+    println!("cargo:rerun-if-changed=src/frontend.rs");
+    println!("cargo:rerun-if-changed=src/frontend.hpp");
+    println!("cargo:rerun-if-changed=src/frontend.cpp");
     println!("cargo:rerun-if-changed=vendor/luau");
 }
 
