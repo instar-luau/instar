@@ -79,7 +79,8 @@ fn configuration_projects() -> Result<(), Box<dyn std::error::Error>> {
             Err(error) => return Err(error.into()),
         };
 
-        let result = Project::load(&directory.0.join(relative.trim()), Duration::from_secs(2));
+        let mut view = Project::new(Duration::from_secs(2));
+        let result = view.configuration(&directory.0.join(relative.trim()));
 
         if case.join("error.txt").exists() {
             let expected = fs::read_to_string(case.join("error.txt"))?;
