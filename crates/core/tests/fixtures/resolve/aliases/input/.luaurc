@@ -1,0 +1,9 @@
+{
+ "aliases": {
+ "Root": "./library", "inherited": "./parent", "selected": "./parent",
+ "chain": "@Root/leaf", "chaincase": "@RoOt/leaf", "p.K-1_a": "./parent",
+ "parentonly": "./library", "down": "@childonly",
+ "first": "@second", "second": "@FIRST",
+ "workspace": ".", "plain": "library/leaf", "absolute": "$ROOT/library/leaf.lua", "empty": "",
+ },
+}

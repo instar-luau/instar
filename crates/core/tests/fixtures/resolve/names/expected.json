@@ -1,0 +1,5 @@
+[
+  {
+    "error": "$ROOT/caller.luau: require \"@bad\": $ROOT/.config.luau: Invalid alias bad name"
+  }
+]

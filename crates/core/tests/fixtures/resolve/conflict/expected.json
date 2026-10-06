@@ -1,0 +1,5 @@
+[
+  {
+    "error": "$ROOT/caller.luau: require \"@missing\": $ROOT: .luaurc and .config.luau cannot coexist in one directory"
+  }
+]

@@ -1,0 +1,23 @@
+[
+  {
+    "error": "$ROOT/caller.luau: require \"./dual\": ambiguous module $ROOT/dual: $ROOT/dual.luau, $ROOT/dual.lua, $ROOT/dual"
+  },
+  {
+    "error": "$ROOT/caller.luau: require \"./mixed\": ambiguous module $ROOT/mixed: $ROOT/mixed.luau, $ROOT/mixed"
+  },
+  {
+    "error": "$ROOT/caller.luau: require \"./both\": ambiguous module $ROOT/both: $ROOT/both/init.luau, $ROOT/both/init.lua"
+  },
+  {
+    "error": "$ROOT/caller.luau: require \"./empty\": ambiguous module $ROOT/empty: $ROOT/empty.lua, $ROOT/empty"
+  },
+  {
+    "error": "$ROOT/caller.luau: require \"./mixed/../both\": ambiguous module $ROOT/mixed: $ROOT/mixed.luau, $ROOT/mixed"
+  },
+  {
+    "module": {
+      "path": "$ROOT/caller",
+      "source": "$ROOT/caller.luau"
+    }
+  }
+]

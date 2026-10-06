@@ -1,0 +1,26 @@
+[
+  {
+    "source": "caller.luau",
+    "request": "./dual"
+  },
+  {
+    "source": "caller.luau",
+    "request": "./mixed"
+  },
+  {
+    "source": "caller.luau",
+    "request": "./both"
+  },
+  {
+    "source": "caller.luau",
+    "request": "./empty"
+  },
+  {
+    "source": "caller.luau",
+    "request": "./mixed/../both"
+  },
+  {
+    "source": "dual/leaf.luau",
+    "request": "../caller"
+  }
+]

@@ -1,0 +1,5 @@
+[
+  {
+    "error": "$ROOT/caller.luau: require \"@self\": $ROOT/.luaurc: alias @self is reserved"
+  }
+]

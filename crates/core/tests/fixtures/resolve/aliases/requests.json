@@ -1,0 +1,70 @@
+[
+  {
+    "source": "child/caller.luau",
+    "request": "@rOoT/leaf"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": "@SELECTED"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": "@inherited"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": "@chain"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": "@chaincase"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": "@P.k-1_A"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": "@fromparent"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": "@down/leaf"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": "@first"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": "@workspace/library/leaf"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": "@plain"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": "@absolute"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": "@empty"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": "@missing"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": "@"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": "@bad!"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": "@ümlaut"
+  }
+]

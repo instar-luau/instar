@@ -1,0 +1,83 @@
+[
+  {
+    "module": {
+      "path": "$ROOT/child/local/leaf",
+      "source": "$ROOT/child/local/leaf.luau"
+    }
+  },
+  {
+    "module": {
+      "path": "$ROOT/child/local/leaf",
+      "source": "$ROOT/child/local/leaf.luau"
+    }
+  },
+  {
+    "module": {
+      "path": "$ROOT/parent",
+      "source": "$ROOT/parent.luau"
+    }
+  },
+  {
+    "module": {
+      "path": "$ROOT/library/leaf",
+      "source": "$ROOT/library/leaf.lua"
+    }
+  },
+  {
+    "module": {
+      "path": "$ROOT/library/leaf",
+      "source": "$ROOT/library/leaf.lua"
+    }
+  },
+  {
+    "module": {
+      "path": "$ROOT/parent",
+      "source": "$ROOT/parent.luau"
+    }
+  },
+  {
+    "module": {
+      "path": "$ROOT/library/leaf",
+      "source": "$ROOT/library/leaf.lua"
+    }
+  },
+  {
+    "error": "$ROOT/child/caller.luau: require \"@down/leaf\": unknown alias @childonly"
+  },
+  {
+    "error": "$ROOT/child/caller.luau: require \"@first\": alias cycle: $ROOT:@first -> $ROOT:@second -> $ROOT:@first"
+  },
+  {
+    "module": {
+      "path": "$ROOT/library/leaf",
+      "source": "$ROOT/library/leaf.lua"
+    }
+  },
+  {
+    "module": {
+      "path": "$ROOT/library/leaf",
+      "source": "$ROOT/library/leaf.lua"
+    }
+  },
+  {
+    "module": {
+      "path": "$ROOT/library/leaf",
+      "source": "$ROOT/library/leaf.lua"
+    }
+  },
+  {
+    "error": "$ROOT/child/caller.luau: require \"@empty\": alias @empty target must be nonempty and contain no NUL"
+  },
+  {
+    "error": "$ROOT/child/caller.luau: require \"@missing\": unknown alias @missing"
+  },
+  {
+    "error": "$ROOT/child/caller.luau: require \"@\": invalid alias name @"
+  },
+  {
+    "error": "$ROOT/child/caller.luau: require \"@bad!\": invalid alias name @bad!"
+  },
+  {
+    "error": "$ROOT/child/caller.luau: require \"@ümlaut\": invalid alias name @ümlaut"
+  }
+]

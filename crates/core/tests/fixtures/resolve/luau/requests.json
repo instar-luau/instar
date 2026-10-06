@@ -1,0 +1,38 @@
+[
+  {
+    "source": "child/caller.luau",
+    "request": "@root/leaf"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": "@selected"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": "@inherited"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": "@chain"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": "@fromparent"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": "@down/leaf"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": "@first"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": "@one"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": "@TWO"
+  }
+]

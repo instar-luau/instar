@@ -1,0 +1,32 @@
+[
+  {
+    "module": {
+      "path": "$ROOT/library/item",
+      "source": "$ROOT/library/item.luau"
+    }
+  },
+  {
+    "module": {
+      "path": "$ROOT/library/item",
+      "source": "$ROOT/library/item.luau"
+    }
+  },
+  {
+    "module": {
+      "path": "$ROOT/child/sibling",
+      "source": "$ROOT/child/sibling.lua"
+    }
+  },
+  {
+    "error": "$ROOT/child/deep/caller.luau: require \"@missing\": module path not found: $ROOT/absent"
+  },
+  {
+    "error": "$ROOT/child/deep/caller.luau: require \"$ROOT/library/item\": require path must start with ./, ../, or @"
+  },
+  {
+    "module": {
+      "path": "$ROOT/child/deep/sibling",
+      "source": "$ROOT/child/deep/sibling.luau"
+    }
+  }
+]

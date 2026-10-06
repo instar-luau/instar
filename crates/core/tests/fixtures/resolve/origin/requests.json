@@ -1,0 +1,26 @@
+[
+  {
+    "source": "child/deep/caller.luau",
+    "request": "@relative"
+  },
+  {
+    "source": "child/deep/caller.luau",
+    "request": "@chained"
+  },
+  {
+    "source": "child/deep/caller.luau",
+    "request": "@scoped"
+  },
+  {
+    "source": "child/deep/caller.luau",
+    "request": "@missing"
+  },
+  {
+    "source": "child/deep/caller.luau",
+    "request": "$ROOT/library/item"
+  },
+  {
+    "source": "child/deep/caller.luau",
+    "request": "./sibling"
+  }
+]

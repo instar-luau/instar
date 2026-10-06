@@ -1,0 +1,22 @@
+[
+  {
+    "source": "caller.luau",
+    "request": "./.config"
+  },
+  {
+    "source": "caller.luau",
+    "request": "./.config.luau"
+  },
+  {
+    "source": "caller.luau",
+    "request": "@configuration"
+  },
+  {
+    "source": ".config.luau",
+    "request": "./caller"
+  },
+  {
+    "source": "caller.luau",
+    "request": "@package"
+  }
+]

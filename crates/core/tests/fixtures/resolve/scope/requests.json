@@ -1,0 +1,26 @@
+[
+  {
+    "source": "package/init.luau",
+    "request": "@selected"
+  },
+  {
+    "source": "package/init.luau",
+    "request": "@chain"
+  },
+  {
+    "source": "package/init.luau",
+    "request": "@inherited"
+  },
+  {
+    "source": "package/init.luau",
+    "request": "@inheritedchain"
+  },
+  {
+    "source": "package/init.luau",
+    "request": "./outside"
+  },
+  {
+    "source": "package/init.luau",
+    "request": "@self/inside"
+  }
+]
