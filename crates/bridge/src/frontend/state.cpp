@@ -1,10 +1,12 @@
-#include "state.hpp"
-#include "diagnostics.hpp"
 #include "instar-bridge/src/boundary.rs.h"
+
+#include "diagnostics.hpp"
+#include "state.hpp"
 
 #include "Luau/Ast.h"
 #include "Luau/BuiltinDefinitions.h"
 #include "Luau/TypeArena.h"
+
 #include <stdexcept>
 
 namespace instar::frontend {

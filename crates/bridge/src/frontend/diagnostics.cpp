@@ -1,4 +1,5 @@
 #include "diagnostics.hpp"
+
 #include <stdexcept>
 
 namespace instar::frontend {
