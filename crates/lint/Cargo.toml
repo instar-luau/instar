@@ -1,0 +1,12 @@
+[package]
+name = "instar-lint"
+version.workspace = true
+edition.workspace = true
+description = "Luau source linting"
+repository.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true

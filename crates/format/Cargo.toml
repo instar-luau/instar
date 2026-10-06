@@ -1,0 +1,12 @@
+[package]
+name = "instar-format"
+version.workspace = true
+edition.workspace = true
+description = "Luau source formatting"
+repository.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
