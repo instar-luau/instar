@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use instar_core::resolve::resolve;
+use instar_core::project::Project;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -84,6 +84,7 @@ fn require_fixtures() -> Result<(), Box<dyn std::error::Error>> {
         let directory = Directory::new()?;
         let root = directory.0.to_string_lossy().replace('\\', "/");
         copy(&case.join("input"), &directory.0, &root)?;
+        let mut project = Project::new(Duration::from_secs(2));
 
         let requests: Vec<Request> =
             serde_json::from_str(&fs::read_to_string(case.join("requests.json"))?)?;
@@ -108,7 +109,7 @@ fn require_fixtures() -> Result<(), Box<dyn std::error::Error>> {
             let source = directory.0.join(&request.source);
             let argument = request.request.replace("$ROOT", &root);
 
-            let mut output = match resolve(&source, &argument, Duration::from_secs(2)) {
+            let mut output = match project.resolve_source(&source, &argument).result {
                 Ok(module) => json!({"module": {"path": module.path, "source": module.source}}),
                 Err(error) => json!({"error": error.to_string()}),
             };
@@ -131,7 +132,9 @@ fn require_fixtures() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn relative_callers_are_rejected() {
-    let error = resolve(Path::new("caller.luau"), "./target", Duration::from_secs(2))
+    let error = Project::new(Duration::from_secs(2))
+        .resolve_source(Path::new("caller.luau"), "./target")
+        .result
         .expect_err("a relative caller would depend on cwd");
 
     assert_eq!(
