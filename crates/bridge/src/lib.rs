@@ -10,7 +10,6 @@ mod boundary;
 mod configuration;
 pub mod flags;
 pub mod frontend;
-mod process;
 mod protocol;
 
 /// Native worker process entry point.

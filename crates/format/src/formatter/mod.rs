@@ -8,14 +8,7 @@ use crate::{Configuration, Diagnostic, Result};
 use instar_analysis::{Completion, Options};
 use std::{io, time::Instant};
 
-/// Formats source within a shared analysis budget.
-///
-/// Syntax failures carry byte ranges. Interrupted operations never return partial output.
-/// Parsing and individual emitter operations are budget-checked between calls.
-///
-/// # Errors
-/// Returns invalid formatter configuration.
-pub fn format(
+pub(crate) fn format(
     source: &[u8],
     configuration: &Configuration,
     options: &Options,

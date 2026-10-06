@@ -14,7 +14,9 @@ instar-analysis = { path = "../analysis" }
 instar-syntax = { path = "../syntax" }
 schemars.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 vermis.workspace = true
+unicode-width = "0.2"
 
 [dev-dependencies]
 toml.workspace = true

@@ -4,6 +4,7 @@ mod diagnostic;
 pub mod error;
 mod limits;
 mod location;
+pub mod process;
 mod result;
 pub mod selection;
 

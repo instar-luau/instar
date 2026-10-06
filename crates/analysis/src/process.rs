@@ -1,3 +1,5 @@
+//! Cancellable typed requests to isolated analysis workers.
+
 use std::{
     env,
     io::{self, BufRead, BufReader, Write},
@@ -8,25 +10,38 @@ use std::{
     time::{Duration, Instant},
 };
 
-use instar_analysis::{Options, Reason};
+use serde::{Serialize, de::DeserializeOwned};
 
-use crate::protocol::{Request, Response};
+use crate::{Options, Reason};
 
-pub(crate) struct Process {
+/// An isolated worker with deadline-aware request transport.
+pub struct Process<Request, Response> {
     child: Child,
     requests: Option<SyncSender<Request>>,
     responses: Receiver<io::Result<Response>>,
     transport: Option<JoinHandle<()>>,
 }
 
-pub(crate) enum Outcome {
+/// A worker response or an interrupted operation.
+pub enum Outcome<Response> {
+    /// A complete worker response.
     Response(Response),
+
+    /// The worker was stopped before completing the request.
     Interrupted(Reason),
 }
 
-impl Process {
-    pub(crate) fn start() -> io::Result<Self> {
-        let mut child = Command::new(executable()?)
+impl<Request, Response> Process<Request, Response> {
+    /// Starts a sibling worker executable.
+    ///
+    /// # Errors
+    /// Returns executable discovery, process creation, or transport failures.
+    pub fn start(name: &str) -> io::Result<Self>
+    where
+        Request: Serialize + Send + 'static,
+        Response: DeserializeOwned + Send + 'static,
+    {
+        let mut child = Command::new(executable(name)?)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -66,13 +81,19 @@ impl Process {
         })
     }
 
-    pub(crate) fn request(
+    /// Sends a request and stops the worker when cancelled or timed out.
+    ///
+    /// # Errors
+    /// Returns transport, worker, or process cleanup failures.
+    pub fn request(
         &mut self,
         request: Request,
         options: &Options,
         started: Instant,
-    ) -> io::Result<Outcome> {
+    ) -> io::Result<Outcome<Response>> {
         if let Some(reason) = options.interrupted(started) {
+            self.stop()?;
+
             return Ok(Outcome::Interrupted(reason));
         }
 
@@ -95,7 +116,16 @@ impl Process {
                 .responses
                 .recv_timeout(remaining.min(Duration::from_millis(1)))
             {
-                Ok(response) => return response.map(Outcome::Response),
+                Ok(response) => {
+                    if let Some(reason) = options.interrupted(started) {
+                        self.stop()?;
+
+                        return Ok(Outcome::Interrupted(reason));
+                    }
+
+                    return response.map(Outcome::Response);
+                }
+
                 Err(RecvTimeoutError::Timeout) => {}
 
                 Err(RecvTimeoutError::Disconnected) => {
@@ -125,15 +155,15 @@ impl Process {
     }
 }
 
-impl Drop for Process {
+impl<Request, Response> Drop for Process<Request, Response> {
     fn drop(&mut self) {
         if let Err(error) = self.stop() {
-            eprintln!("could not stop native worker: {error}");
+            eprintln!("could not stop analysis worker: {error}");
         }
     }
 }
 
-fn exchange(
+fn exchange<Request: Serialize, Response: DeserializeOwned>(
     request: &Request,
     input: &mut impl Write,
     output: &mut impl BufRead,
@@ -146,7 +176,7 @@ fn exchange(
     if output.read_line(&mut line)? == 0 {
         return Err(io::Error::new(
             io::ErrorKind::UnexpectedEof,
-            "native worker exited without a response",
+            "analysis worker exited without a response",
         ));
     }
 
@@ -155,7 +185,7 @@ fn exchange(
     result.map_err(io::Error::other)
 }
 
-fn executable() -> io::Result<PathBuf> {
+fn executable(name: &str) -> io::Result<PathBuf> {
     let executable = env::current_exe()?;
 
     let directory = executable
@@ -179,12 +209,12 @@ fn executable() -> io::Result<PathBuf> {
     }
     .ok_or_else(|| io::Error::other("worker executable directory is unavailable"))?;
 
-    let worker = directory.join(format!("worker{}", env::consts::EXE_SUFFIX));
+    let worker = directory.join(format!("{name}{}", env::consts::EXE_SUFFIX));
 
     if !worker.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("native worker is unavailable: {}", worker.display()),
+            format!("analysis worker is unavailable: {}", worker.display()),
         ));
     }
 
