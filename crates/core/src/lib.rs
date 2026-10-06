@@ -1,5 +1,6 @@
 //! Project orchestration for the Luau toolchain.
 
+pub mod checking;
 pub mod configuration;
 mod extract;
 pub mod graph;

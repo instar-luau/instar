@@ -227,10 +227,11 @@ fn source_error(path: &Path, kind: io::ErrorKind, message: impl fmt::Display) ->
     reason = "CXX generates public unsafe declarations inside this private native boundary"
 )]
 mod boundary {
-    use crate::frontend::Host;
+    use crate::frontend::{Cancellation, Host};
 
     pub(super) use native::{
-        NativeConfiguration, NativeFrontend, NativeSite, NativeSource, create, create_frontend,
+        NativeCompletion, NativeConfiguration, NativeDefinition, NativeFrontend, NativeKind,
+        NativeSite, NativeSource, create, create_frontend,
     };
 
     #[cxx::bridge(namespace = "instar")]
@@ -276,6 +277,7 @@ mod boundary {
             text: String,
             revision: u64,
             sites: Vec<NativeSite>,
+            definitions: Vec<NativeDefinition>,
         }
 
         struct NativeLink {
@@ -288,10 +290,58 @@ mod boundary {
             target: String,
         }
 
+        struct NativeDefinition {
+            name: String,
+            text: String,
+            revision: u64,
+        }
+
+        struct NativeLocation {
+            module: String,
+            revision: u64,
+            start: usize,
+            end: usize,
+        }
+
+        struct NativeRelated {
+            location: NativeLocation,
+            message: String,
+        }
+
+        enum NativeKind {
+            Syntax,
+            Type,
+            Resolution,
+            Analysis,
+        }
+
+        struct NativeDiagnostic {
+            location: NativeLocation,
+            kind: NativeKind,
+            code: i32,
+            message: String,
+            related: Vec<NativeRelated>,
+        }
+
+        enum NativeCompletion {
+            Complete,
+            Cancelled,
+            Timeout,
+            Environment,
+            Analysis,
+        }
+
+        struct NativeCheck {
+            diagnostics: Vec<NativeDiagnostic>,
+            completion: NativeCompletion,
+        }
+
         extern "Rust" {
             type Host;
             fn read_source(self: &Host, name: &str) -> NativeSource;
             fn resolve(self: &Host, name: &str, start: usize, end: usize) -> String;
+            type Cancellation;
+            fn requested(self: &Cancellation) -> bool;
         }
 
         unsafe extern "C++" {
@@ -313,6 +363,14 @@ mod boundary {
                 names: &[String],
             ) -> Result<Vec<NativeLink>>;
             fn invalidate(self: Pin<&mut NativeFrontend>, names: &[String]) -> Result<()>;
+            fn check(
+                self: Pin<&mut NativeFrontend>,
+                host: &Host,
+                entries: &[String],
+                timeout_seconds: f64,
+                names: &[String],
+                cancellation: &Cancellation,
+            ) -> Result<NativeCheck>;
 
             fn create() -> Result<UniquePtr<NativeConfiguration>>;
             fn apply(

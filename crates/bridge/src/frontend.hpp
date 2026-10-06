@@ -6,6 +6,8 @@
 
 namespace instar {
     struct Host;
+    struct Cancellation;
+    struct NativeCheck;
     struct NativeLink;
     class NativeConfiguration;
 
@@ -16,6 +18,11 @@ namespace instar {
         void configure(rust::Str name, const NativeConfiguration &configuration);
         rust::Vec<NativeLink> prepare(const Host &host, rust::Slice<const rust::String> names);
         void invalidate(rust::Slice<const rust::String> names);
+
+        NativeCheck check(
+            const Host &host, rust::Slice<const rust::String> entries, double timeout_seconds,
+            rust::Slice<const rust::String> names, const Cancellation &cancellation
+        );
 
       private:
         struct State;
