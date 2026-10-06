@@ -1,0 +1,22 @@
+{
+  "/configuration/check/include": [
+    "$ROOT/child/child/**"
+  ],
+  "/configuration/check/exclude": [],
+  "/configuration/format/include": [
+    "$ROOT/formatted/**"
+  ],
+  "/configuration/format/exclude": [
+    "$ROOT/generated/**"
+  ],
+  "/configuration/lint/include": [
+    "$ROOT/child/child/**"
+  ],
+  "/configuration/editor/index/include": [],
+  "/configuration/editor/imports/include": [
+    "$ROOT/child/child/**"
+  ],
+  "/configuration/editor/imports/exclude": [
+    "$ROOT/private/**"
+  ]
+}

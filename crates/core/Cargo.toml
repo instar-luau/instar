@@ -8,5 +8,18 @@ license.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[dependencies]
+glob.workspace = true
+instar-bridge = { path = "../bridge" }
+instar-check = { path = "../check" }
+instar-format = { path = "../format" }
+instar-lint = { path = "../lint" }
+schemars.workspace = true
+serde.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
 [lints]
 workspace = true

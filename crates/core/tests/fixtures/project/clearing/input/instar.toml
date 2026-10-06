@@ -1,0 +1,4 @@
+[environment]
+definitions = ["types.luau"]
+[roblox]
+sourcemaps = ["maps.json"]

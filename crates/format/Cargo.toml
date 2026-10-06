@@ -8,5 +8,10 @@ license.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[dependencies]
+glob.workspace = true
+schemars.workspace = true
+serde.workspace = true
+
 [lints]
 workspace = true

@@ -1,0 +1,11 @@
+exclude = []
+[format]
+indent_style = "spaces"
+[format.requires]
+groups = ["relative", "other"]
+[lint.restricted_globals.names]
+old = "child"
+[editor.hints]
+parameter_names = true
+[environment]
+documentation = ["child.json"]

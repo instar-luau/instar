@@ -1,0 +1,98 @@
+{
+  "include": ["src/**/*.luau"],
+  "exclude": ["src/generated/**"],
+  "check": { "include": [], "exclude": [] },
+  "format": {
+    "include": ["src/**"],
+    "exclude": [],
+    "width": 88,
+    "indent_style": "spaces",
+    "indent_width": 2,
+    "line_ending": "crlf",
+    "quote_style": "prefer_single",
+    "requires": {
+      "order": "grouped",
+      "groups": [
+        { "name": "services", "patterns": ["@services/**"] },
+        "alias",
+        "relative",
+        "other"
+      ],
+      "blank_lines": "none"
+    }
+  },
+  "lint": {
+    "include": ["src/**"],
+    "exclude": ["src/vendor/**"],
+    "almost_swapped": { "level": "warn" },
+    "bad_string_escape": { "level": "warn" },
+    "compare_nan": { "level": "deny" },
+    "constant_condition": { "level": "info" },
+    "constant_table_comparison": { "level": "warn" },
+    "length_as_condition": { "level": "warn" },
+    "mismatched_argument_count": { "level": "warn" },
+    "must_use": { "level": "warn" },
+    "zero_step_loop": { "level": "warn" },
+    "divide_by_zero": { "level": "warn" },
+    "self_assignment": { "level": "warn" },
+    "empty_if": { "level": "warn" },
+    "empty_loop": { "level": "warn" },
+    "if_same_then_else": { "level": "warn" },
+    "ignored_pcall_result": { "level": "warn" },
+    "mixed_table": { "level": "warn" },
+    "unscoped_variables": { "level": "warn" },
+    "roblox_incorrect_color3_new_bounds": { "level": "warn" },
+    "roblox_manual_fromscale_or_fromoffset": { "level": "warn" },
+    "roblox_prefer_get_players": { "level": "warn" },
+    "roblox_suspicious_udim2_new": { "level": "warn" },
+    "implicit_any_local": { "level": "allow" },
+    "implicit_any_parameter": { "level": "allow" },
+    "and_or_conditional": { "level": "allow" },
+    "collapsible_if": { "level": "allow" },
+    "else_after_return": { "level": "allow" },
+    "if_expression_assignment": { "level": "allow" },
+    "negated_condition": { "level": "allow" },
+    "non_const_require": { "level": "allow" },
+    "parenthesized_conditions": { "level": "allow" },
+    "global_usage": { "level": "allow" },
+    "type_check_inside_call": { "level": "allow" },
+    "loop_invariant_call": { "level": "allow" },
+    "manual_table_clone": { "level": "allow" },
+    "string_concat_in_loop": { "level": "allow" },
+    "unused_variable": {
+      "level": "info",
+      "parameters": true,
+      "loop_variables": false,
+      "ignore_pattern": "^(_|ignored)"
+    },
+    "high_cyclomatic_complexity": { "level": "warn", "maximum_complexity": 12 },
+    "prefer_const": { "level": "info", "mutated_tables_stay_local": true },
+    "deprecated": {
+      "level": "warn",
+      "paths": { "old.call": "new.call" },
+      "ambiguous_methods": true
+    },
+    "restricted_globals": { "level": "deny", "names": { "print": "Use logger" } },
+    "restricted_module_paths": { "level": "warn", "paths": { "legacy/**": "Use new modules" } }
+  },
+  "editor": {
+    "diagnostics": { "scope": "workspace" },
+    "index": { "include": ["src/**"], "exclude": [] },
+    "completion": { "snippets": false },
+    "imports": {
+      "enabled": false,
+      "include": ["modules/**"],
+      "exclude": ["modules/private/**"],
+      "require": "instance",
+      "binding": "local"
+    },
+    "hints": {
+      "variable_types": true,
+      "parameter_names": true,
+      "return_types": true,
+      "hide_obvious": false
+    }
+  },
+  "environment": { "definitions": ["types.d.luau"], "documentation": ["docs.json"] },
+  "roblox": { "enabled": true, "sourcemaps": ["sourcemap.json"], "security": "plugin" }
+}
