@@ -96,11 +96,13 @@ fn failed_definitions_do_not_pollute_other_environments() -> io::Result<()> {
         &[
             Definition {
                 name: "first".to_owned(),
+                namespace: "@custom".to_owned(),
                 revision: 1,
                 text: "declare configured: number".to_owned(),
             },
             Definition {
                 name: "broken".to_owned(),
+                namespace: "@custom".to_owned(),
                 revision: 1,
                 text: "declare broken:".to_owned(),
             },
@@ -145,6 +147,7 @@ fn failed_definitions_do_not_pollute_other_environments() -> io::Result<()> {
         "configured",
         &[Definition {
             name: "first".to_owned(),
+            namespace: "@custom".to_owned(),
             revision: 1,
             text: "declare configured: number".to_owned(),
         }],
@@ -220,6 +223,7 @@ fn worker_interruption_discards_native_state_and_allows_retry() -> io::Result<()
         "entry",
         &[Definition {
             name: "definitions".to_owned(),
+            namespace: "@custom".to_owned(),
             revision: 1,
             text: (0..100_000).fold(String::new(), |mut text, number| {
                 writeln!(text, "declare value{number}: number").expect("string write");

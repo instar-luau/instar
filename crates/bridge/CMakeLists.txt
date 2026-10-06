@@ -15,6 +15,7 @@ add_library(configuration STATIC
     src/frontend.cpp
     src/frontend/checking.cpp
     src/frontend/diagnostics.cpp
+    src/frontend/documentation.cpp
     src/frontend/linting.cpp
     src/frontend/roblox.cpp
     src/frontend/state.cpp

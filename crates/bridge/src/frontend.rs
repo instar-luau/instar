@@ -7,10 +7,11 @@ use std::{
 };
 
 use instar_analysis::{Completion, Diagnostic, Location, Options};
+
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Configuration, Snapshot, boundary,
+    Configuration, Snapshot, boundary, flags,
     process::{Outcome, Process},
     protocol::{Operation, Request, Response},
 };
@@ -56,6 +57,9 @@ pub struct Definition {
     /// Opaque host declaration identity.
     pub name: String,
 
+    /// Documentation namespace independent of the declaration's source identity.
+    pub namespace: String,
+
     /// Source revision.
     pub revision: u64,
 
@@ -100,6 +104,7 @@ pub(crate) struct Source {
     pub(crate) sites: Vec<Site>,
     pub(crate) definitions: Vec<Definition>,
     pub(crate) classes: Vec<Class>,
+    pub(crate) flags: BTreeMap<String, flags::Value>,
 }
 
 pub(crate) struct Cancellation(pub(crate) instar_analysis::Cancellation);
@@ -161,6 +166,7 @@ impl Host {
                 .iter()
                 .map(|definition| boundary::NativeDefinition {
                     name: definition.name.clone(),
+                    namespace: definition.namespace.clone(),
                     text: definition.text.clone(),
                     revision: definition.revision,
                 })
@@ -259,6 +265,7 @@ pub struct LintResult {
 pub struct Frontend {
     process: Option<Process>,
     host: Host,
+    flags: BTreeMap<String, flags::Value>,
 }
 
 impl Frontend {
@@ -270,6 +277,7 @@ impl Frontend {
         Ok(Self {
             process: Some(Process::start()?),
             host: Host::default(),
+            flags: BTreeMap::new(),
         })
     }
 
@@ -337,6 +345,7 @@ impl Frontend {
                 sites: sites.to_vec(),
                 definitions: Vec::new(),
                 classes: Vec::new(),
+                flags: BTreeMap::new(),
             },
         );
 
@@ -376,6 +385,8 @@ impl Frontend {
         let mut names = BTreeSet::new();
 
         for definition in definitions {
+            validate_namespace(&definition.namespace)?;
+
             if definition.name.is_empty()
                 || definition.name.contains('\0')
                 || !names.insert(&definition.name)
@@ -386,7 +397,11 @@ impl Frontend {
                     .iter()
                     .filter(|(module, _)| module.as_str() != name)
                     .flat_map(|(_, source)| &source.definitions)
-                    .any(|existing| existing.name == definition.name && existing != definition)
+                    .any(|existing| {
+                        existing.name == definition.name
+                            && (existing.revision != definition.revision
+                                || existing.text != definition.text)
+                    })
             {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -402,6 +417,24 @@ impl Frontend {
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "module is unavailable"))?;
 
         source.definitions = definitions.to_vec();
+
+        Ok(())
+    }
+
+    /// Installs process-wide flag overrides for an inserted module.
+    ///
+    /// # Errors
+    /// Rejects invalid flag names, types, and unavailable modules.
+    pub fn flags(&mut self, name: &str, flags: &BTreeMap<String, flags::Value>) -> io::Result<()> {
+        let flags = flags::normalize(flags)?;
+
+        let source = self
+            .host
+            .sources
+            .get_mut(name)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "module is unavailable"))?;
+
+        source.flags = flags;
 
         Ok(())
     }
@@ -444,6 +477,37 @@ impl Frontend {
         source.classes = classes.to_vec();
 
         Ok(())
+    }
+
+    /// Resolves a global or exported type path to its native documentation identifier.
+    ///
+    /// # Errors
+    /// Returns incomplete analysis, invalid environments, or worker failures.
+    pub fn documentation(
+        &mut self,
+        entry: &str,
+        symbol: &str,
+        options: &Options,
+    ) -> io::Result<Option<String>> {
+        let started = Instant::now();
+        let entries = [entry.to_owned()];
+        let modules = self.names(&entries)?;
+
+        match self.request(
+            &entries,
+            &modules,
+            Operation::Documentation(symbol.to_owned()),
+            options,
+            started,
+        )? {
+            Outcome::Response(Response::Documentation(symbol)) => Ok(symbol),
+
+            Outcome::Interrupted(reason) => Err(io::Error::other(format!(
+                "documentation analysis interrupted: {reason:?}"
+            ))),
+
+            Outcome::Response(_) => Err(io::Error::other("unexpected native worker response")),
+        }
     }
 
     /// Checks selected entries with their complete host-resolved dependency graph.
@@ -570,6 +634,33 @@ impl Frontend {
             return Ok(Outcome::Interrupted(reason));
         }
 
+        let mut effective = None;
+
+        for name in modules {
+            let source =
+                self.host.sources.get(name).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::NotFound, "module is unavailable")
+                })?;
+
+            if let Some((previous, flags)) = effective {
+                if flags != &source.flags {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("conflicting Luau flags in analysis graph: {previous} and {name}"),
+                    ));
+                }
+            } else {
+                effective = Some((name, &source.flags));
+            }
+        }
+
+        let flags = effective.map_or_else(BTreeMap::new, |(_, flags)| flags.clone());
+
+        if self.flags != flags {
+            self.process.take();
+            self.flags.clone_from(&flags);
+        }
+
         if self.process.is_none() {
             self.process = Some(Process::start()?);
         }
@@ -580,6 +671,7 @@ impl Frontend {
             modules: modules.to_vec(),
             operation,
             timeout: options.timeout.saturating_sub(started.elapsed()),
+            flags,
         };
 
         let result = self
@@ -606,4 +698,26 @@ impl Frontend {
 
         Ok(())
     }
+}
+
+/// Validates the namespace component of a native documentation identifier.
+///
+/// # Errors
+/// Rejects empty namespaces and characters outside ASCII letters, digits, underscores and hyphens.
+pub fn validate_namespace(namespace: &str) -> io::Result<()> {
+    let valid = namespace.strip_prefix('@').is_some_and(|name| {
+        !name.is_empty()
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    });
+
+    if !valid {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid documentation namespace",
+        ));
+    }
+
+    Ok(())
 }

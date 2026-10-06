@@ -20,10 +20,9 @@
   },
   "/configuration/editor/hints/variable_types": true,
   "/configuration/editor/hints/parameter_names": true,
-  "/configuration/environment/definitions": [
-    "$ROOT/types.luau"
-  ],
-  "/configuration/environment/documentation": [
+  "/configuration/environment/0/namespace": "@child",
+  "/configuration/environment/0/definitions": [],
+  "/configuration/environment/0/documentation": [
     "$ROOT/child/child.json"
   ],
   "/configuration/roblox/enabled": false,

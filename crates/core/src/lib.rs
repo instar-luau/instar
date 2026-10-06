@@ -3,6 +3,7 @@
 pub mod analysis;
 pub mod checking;
 pub mod configuration;
+pub mod documentation;
 mod environment;
 mod extract;
 pub mod graph;

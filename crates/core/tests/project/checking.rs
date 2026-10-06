@@ -127,7 +127,7 @@ fn declarations_are_scoped_and_invalidated() -> io::Result<()> {
 
     directory.file(
         "instar.toml",
-        "[environment]\ndefinitions = ['globals.luau']",
+        "[[environment]]\nnamespace='@custom'\ndefinitions = ['globals.luau']",
     )?;
 
     let definition = directory.file("globals.luau", "declare configured: number")?;
@@ -137,7 +137,7 @@ fn declarations_are_scoped_and_invalidated() -> io::Result<()> {
         "local number: number = configured\nreturn number",
     )?;
 
-    directory.file("isolated/instar.toml", "[environment]\ndefinitions = []")?;
+    directory.file("isolated/instar.toml", "environment = []")?;
     let isolated = directory.file("isolated/entry.luau", "return configured")?;
     let mut project = project();
 
@@ -306,7 +306,11 @@ fn incomplete_environments_keep_known_source_diagnostics() -> io::Result<()> {
         r#"{"languageMode":"strict","lint":{"*":false,"LocalUnused":true}}"#,
     ))?;
 
-    directory.file("instar.toml", "[environment]\ndefinitions=['missing.luau']")?;
+    directory.file(
+        "instar.toml",
+        "[[environment]]\nnamespace='@custom'\ndefinitions=['missing.luau']",
+    )?;
+
     let entry = directory.file("entry.luau", "return require('./absent')")?;
     let mut project = project();
     let entries = [Entry::new(entry.clone())];
@@ -453,7 +457,7 @@ fn declarations_can_build_on_prior_files_and_be_removed() -> io::Result<()> {
 
     let configuration = directory.file(
         "instar.toml",
-        "[environment]\ndefinitions = ['types.luau', 'globals.luau']",
+        "[[environment]]\nnamespace='@custom'\ndefinitions = ['types.luau', 'globals.luau']",
     )?;
 
     directory.file("types.luau", "export type Value = number")?;
@@ -475,7 +479,7 @@ fn declarations_can_build_on_prior_files_and_be_removed() -> io::Result<()> {
 
     project.change(Change::Overlay {
         path: configuration,
-        text: Some("[environment]\ndefinitions = []".to_owned()),
+        text: Some("environment = []".to_owned()),
     })?;
 
     assert_ne!(
@@ -492,7 +496,7 @@ fn explicit_declarations_preserve_distinct_mapped_contexts() -> io::Result<()> {
 
     directory.file(
         "instar.toml",
-        "[environment]\ndefinitions = ['globals.luau']",
+        "[[environment]]\nnamespace='@custom'\ndefinitions = ['globals.luau']",
     )?;
 
     directory.file("globals.luau", "declare script: any")?;

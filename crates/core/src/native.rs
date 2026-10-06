@@ -85,6 +85,8 @@ impl Project {
                     &settings.native,
                     &sites,
                 )?;
+
+                frontend.flags(&name(&identity), &settings.configuration.luau.native()?)?;
             }
 
             Ok(entry)

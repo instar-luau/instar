@@ -7,5 +7,6 @@ groups = ["relative", "other"]
 old = "child"
 [editor.hints]
 parameter_names = true
-[environment]
+[[environment]]
+namespace = "@child"
 documentation = ["child.json"]

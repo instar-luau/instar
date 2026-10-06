@@ -19,6 +19,7 @@ namespace instar {
         void configure(rust::Str name, const NativeConfiguration &configuration);
         rust::Vec<NativeLink> prepare(const Host &host, rust::Slice<const rust::String> names);
         void invalidate(rust::Slice<const rust::String> names);
+        rust::String documentation(rust::Str module, rust::Str symbol) const;
 
         NativeCheck check(
             const Host &host, rust::Slice<const rust::String> entries, double timeout_seconds,

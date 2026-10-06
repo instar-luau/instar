@@ -2,9 +2,9 @@ use crate::frontend::{Cancellation, Host};
 
 pub(super) use native::{
     NativeAlias, NativeClass, NativeCompletion, NativeConfiguration, NativeDefinition,
-    NativeDiagnostic, NativeFact, NativeFactKind, NativeFrontend, NativeKind, NativeLint,
-    NativeLocation, NativeProperty, NativeSite, NativeSnapshot, NativeSource, create,
-    create_frontend,
+    NativeDiagnostic, NativeFact, NativeFactKind, NativeFlag, NativeFrontend, NativeKind,
+    NativeLint, NativeLocation, NativeProperty, NativeSite, NativeSnapshot, NativeSource,
+    apply_flags, create, create_frontend, normalize_flags, validate_flags,
 };
 
 #[cxx::bridge(namespace = "instar")]
@@ -64,8 +64,19 @@ mod native {
         target: String,
     }
 
+    struct NativeFlag {
+        name: String,
+        boolean: bool,
+        integer: i32,
+        is_boolean: bool,
+    }
+
     struct NativeDefinition {
         name: String,
+
+        #[cxx_name = "namespace_name"]
+        namespace: String,
+
         text: String,
         revision: u64,
     }
@@ -163,8 +174,12 @@ mod native {
 
         type NativeConfiguration;
         type NativeFrontend;
+        fn validate_flags(flags: &[NativeFlag]) -> Result<()>;
+        fn apply_flags(flags: &[NativeFlag]) -> Result<()>;
+        fn normalize_flags(flags: &[NativeFlag]) -> Result<Vec<NativeFlag>>;
 
         fn create_frontend() -> Result<UniquePtr<NativeFrontend>>;
+        fn documentation(self: &NativeFrontend, module: &str, symbol: &str) -> Result<String>;
         fn configure(
             self: Pin<&mut NativeFrontend>,
             name: &str,

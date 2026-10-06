@@ -345,12 +345,14 @@ fn anchor(layer: &mut toml::Value, directory: &Path) -> io::Result<()> {
         }
     }
 
-    for (section, field) in [
-        (&["environment"][..], "definitions"),
-        (&["environment"][..], "documentation"),
-        (&["roblox"][..], "sourcemaps"),
-    ] {
-        anchor_list(layer, section, field, directory, false)?;
+    anchor_list(layer, &["roblox"], "sourcemaps", directory, false)?;
+
+    if let Some(toml::Value::Array(environments)) = layer.get_mut("environment") {
+        for environment in environments {
+            for field in ["definitions", "documentation"] {
+                anchor_list(environment, &[], field, directory, false)?;
+            }
+        }
     }
 
     Ok(())

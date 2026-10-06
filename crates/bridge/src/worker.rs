@@ -11,10 +11,12 @@ use crate::{
 struct Session {
     native: cxx::UniquePtr<boundary::NativeFrontend>,
     host: Host,
+    flags: std::collections::BTreeMap<String, crate::flags::Value>,
 }
 
 impl Session {
-    fn new() -> io::Result<Self> {
+    fn new(flags: std::collections::BTreeMap<String, crate::flags::Value>) -> io::Result<Self> {
+        crate::flags::apply(&flags)?;
         let native = boundary::create_frontend().map_err(io::Error::other)?;
 
         if native.is_null() {
@@ -24,6 +26,7 @@ impl Session {
         Ok(Self {
             native,
             host: Host::default(),
+            flags,
         })
     }
 
@@ -69,11 +72,54 @@ impl Session {
         Ok(())
     }
 
+    fn documentation(&mut self, request: &Request, symbol: &str) -> io::Result<Response> {
+        let cancellation = Cancellation(instar_analysis::Cancellation::default());
+
+        let result = self
+            .native
+            .pin_mut()
+            .check(
+                &self.host,
+                &request.entries,
+                request.timeout.as_secs_f64(),
+                &request.modules,
+                &cancellation,
+            )
+            .map_err(io::Error::other)?;
+
+        if completion(result.completion)? != Completion::Complete || !result.diagnostics.is_empty()
+        {
+            return Err(io::Error::other(
+                "documentation requires complete native analysis",
+            ));
+        }
+
+        let entry = request
+            .entries
+            .first()
+            .ok_or_else(|| io::Error::other("documentation entry is missing"))?;
+
+        let symbol = self
+            .native
+            .documentation(entry, symbol)
+            .map_err(io::Error::other)?;
+
+        Ok(Response::Documentation(
+            (!symbol.is_empty()).then_some(symbol),
+        ))
+    }
+
     fn execute(&mut self, request: Request) -> io::Result<Response> {
+        if self.flags != request.flags {
+            return Err(io::Error::other("native worker flag configuration changed"));
+        }
+
         self.synchronize(&request)?;
         let cancellation = Cancellation(instar_analysis::Cancellation::default());
 
-        match request.operation {
+        match &request.operation {
+            Operation::Documentation(symbol) => self.documentation(&request, symbol),
+
             Operation::Parse => {
                 let links = self
                     .native
@@ -129,7 +175,7 @@ impl Session {
                         request.timeout.as_secs_f64(),
                         &request.modules,
                         &cancellation,
-                        &semantic,
+                        semantic,
                     )
                     .map_err(io::Error::other)?;
 
@@ -168,13 +214,23 @@ impl Session {
 /// # Errors
 /// Returns initialization, protocol, or transport failures.
 pub fn run() -> io::Result<()> {
-    let mut session = Session::new()?;
+    let mut session = None;
     let input = io::stdin().lock();
     let mut output = io::stdout().lock();
 
     for line in input.lines() {
         let request: Request = serde_json::from_str(&line?)?;
-        let response = session.execute(request).map_err(|error| error.to_string());
+
+        if session.is_none() {
+            session = Some(Session::new(request.flags.clone())?);
+        }
+
+        let response = session
+            .as_mut()
+            .ok_or_else(|| io::Error::other("native worker is unavailable"))?
+            .execute(request)
+            .map_err(|error| error.to_string());
+
         serde_json::to_writer(&mut output, &response)?;
         output.write_all(b"\n")?;
         output.flush()?;

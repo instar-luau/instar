@@ -1,6 +1,7 @@
 #include "instar-bridge/src/boundary.rs.h"
 
 #include "diagnostics.hpp"
+#include "documentation.hpp"
 #include "roblox.hpp"
 #include "state.hpp"
 
@@ -111,8 +112,12 @@ namespace instar {
                 State::Signature signature;
 
                 for (const NativeDefinition &definition : source.definitions) {
-                    signature.first
-                        .emplace_back(std::string(definition.name), definition.revision, std::string(definition.text));
+                    signature.first.emplace_back(
+                        std::string(definition.name),
+                        definition.revision,
+                        std::string(definition.text),
+                        std::string(definition.namespace_name)
+                    );
                 }
 
                 for (const NativeClass &klass : source.classes) {
@@ -223,6 +228,8 @@ namespace instar {
 
                             return result;
                         }
+
+                        assign_documentation(scope, definitionName, std::string(definition.namespace_name));
                     }
 
                     if (!source.classes.empty()) {

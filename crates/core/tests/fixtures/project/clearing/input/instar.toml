@@ -1,4 +1,5 @@
-[environment]
+[[environment]]
+namespace = "@custom"
 definitions = ["types.luau"]
 [roblox]
 sourcemaps = ["maps.json"]
