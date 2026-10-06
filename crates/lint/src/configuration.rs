@@ -49,8 +49,8 @@ impl Default for AllowedRule {
 
 macro_rules! configuration {
     (
-        warn { $($warning:ident => $warning_documentation:literal,)* }
-        allow { $($allowed:ident => $allowed_documentation:literal,)* }
+        warn { $($warning:ident => $warning_identity:ident: $warning_documentation:literal,)* }
+        allow { $($allowed:ident => $allowed_identity:ident: $allowed_documentation:literal,)* }
     ) => {
         /// Effective Instar linter settings after configuration inheritance.
         #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -102,48 +102,132 @@ macro_rules! configuration {
                 }
             }
         }
+
+        /// Typed identities for configured Instar lint rules.
+        pub mod identity {
+            /// An Instar rule identity; names are only configuration and display boundaries.
+            #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+            pub enum Rule {
+                $(#[doc = $warning_documentation] $warning_identity,)*
+                $(#[doc = $allowed_documentation] $allowed_identity,)*
+                /// Unused local, parameter or loop binding.
+                UnusedVariable,
+                /// Excessive function cyclomatic complexity.
+                HighCyclomaticComplexity,
+                /// Immutable binding preference.
+                PreferConst,
+                /// A configured deprecated symbol.
+                Deprecated,
+                /// A configured restricted global.
+                RestrictedGlobals,
+                /// A configured restricted require request.
+                RestrictedModulePaths,
+            }
+
+            impl Rule {
+                /// Returns the unchanged configuration and presentation name.
+                #[must_use]
+                pub const fn name(self) -> &'static str {
+                    match self {
+                        $(Self::$warning_identity => stringify!($warning),)*
+                        $(Self::$allowed_identity => stringify!($allowed),)*
+                        Self::UnusedVariable => "unused_variable",
+                        Self::HighCyclomaticComplexity => "high_cyclomatic_complexity",
+                        Self::PreferConst => "prefer_const",
+                        Self::Deprecated => "deprecated",
+                        Self::RestrictedGlobals => "restricted_globals",
+                        Self::RestrictedModulePaths => "restricted_module_paths",
+                    }
+                }
+            }
+
+            impl std::fmt::Display for Rule {
+                fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    formatter.write_str(self.name())
+                }
+            }
+        }
+
+        impl Configuration {
+            /// Returns every configured rule and its effective severity.
+            #[must_use]
+            pub fn rules(&self) -> Vec<(identity::Rule, Level)> {
+                vec![
+                    $((identity::Rule::$warning_identity, self.$warning.level),)*
+                    $((identity::Rule::$allowed_identity, self.$allowed.level),)*
+                    (identity::Rule::UnusedVariable, self.unused_variable.level),
+                    (identity::Rule::HighCyclomaticComplexity, self.high_cyclomatic_complexity.level),
+                    (identity::Rule::PreferConst, self.prefer_const.level),
+                    (identity::Rule::Deprecated, self.deprecated.level),
+                    (identity::Rule::RestrictedGlobals, self.restricted_globals.level),
+                    (identity::Rule::RestrictedModulePaths, self.restricted_module_paths.level),
+                ]
+            }
+
+            /// Returns the severity for an inventoried rule.
+            #[must_use]
+            pub const fn level(&self, rule: identity::Rule) -> Level {
+                match rule {
+                    $(identity::Rule::$warning_identity => self.$warning.level,)*
+                    $(identity::Rule::$allowed_identity => self.$allowed.level,)*
+                    identity::Rule::UnusedVariable => self.unused_variable.level,
+                    identity::Rule::HighCyclomaticComplexity => self.high_cyclomatic_complexity.level,
+                    identity::Rule::PreferConst => self.prefer_const.level,
+                    identity::Rule::Deprecated => self.deprecated.level,
+                    identity::Rule::RestrictedGlobals => self.restricted_globals.level,
+                    identity::Rule::RestrictedModulePaths => self.restricted_module_paths.level,
+                }
+            }
+
+            /// Whether inferred native binding types are needed.
+            #[must_use]
+            pub fn semantic(&self) -> bool {
+                self.implicit_any_local.level != Level::Allow
+                    || self.implicit_any_parameter.level != Level::Allow
+            }
+        }
     };
 }
 
 configuration! {
     warn {
-        almost_swapped => "Assignments that appear to swap values incorrectly.",
-        bad_string_escape => "Invalid or suspicious string escapes.",
-        compare_nan => "Comparisons against NaN.",
-        constant_condition => "Conditions with constant outcomes.",
-        constant_table_comparison => "Constant comparisons of table values.",
-        length_as_condition => "Lengths used directly as conditions.",
-        mismatched_argument_count => "Calls with mismatched argument counts.",
-        must_use => "Discarded results that must be used.",
-        zero_step_loop => "Numeric loops with zero steps.",
-        divide_by_zero => "Division by zero.",
-        self_assignment => "Assignments of a binding to itself.",
-        empty_if => "Empty conditional branches.",
-        empty_loop => "Empty loop bodies.",
-        if_same_then_else => "Identical conditional branches.",
-        ignored_pcall_result => "Ignored protected-call results.",
-        mixed_table => "Mixed array and dictionary table entries.",
-        unscoped_variables => "Variables declared without explicit scope.",
-        roblox_incorrect_color3_new_bounds => "Out-of-range Color3.new arguments.",
-        roblox_manual_fromscale_or_fromoffset => "Manual equivalents of fromScale or fromOffset.",
-        roblox_prefer_get_players => "Player enumeration better expressed with `GetPlayers`.",
-        roblox_suspicious_udim2_new => "Suspicious UDim2.new arguments.",
+        almost_swapped => AlmostSwapped: "Assignments that appear to swap values incorrectly.",
+        bad_string_escape => BadStringEscape: "Invalid or suspicious string escapes.",
+        compare_nan => CompareNan: "Comparisons against NaN.",
+        constant_condition => ConstantCondition: "Conditions with constant outcomes.",
+        constant_table_comparison => ConstantTableComparison: "Constant comparisons of table values.",
+        length_as_condition => LengthAsCondition: "Lengths used directly as conditions.",
+        mismatched_argument_count => MismatchedArgumentCount: "Calls with mismatched argument counts.",
+        must_use => MustUse: "Discarded results that must be used.",
+        zero_step_loop => ZeroStepLoop: "Numeric loops with zero steps.",
+        divide_by_zero => DivideByZero: "Division by zero.",
+        self_assignment => SelfAssignment: "Assignments of a binding to itself.",
+        empty_if => EmptyIf: "Empty conditional branches.",
+        empty_loop => EmptyLoop: "Empty loop bodies.",
+        if_same_then_else => IfSameThenElse: "Identical conditional branches.",
+        ignored_pcall_result => IgnoredPcallResult: "Ignored protected-call results.",
+        mixed_table => MixedTable: "Mixed array and dictionary table entries.",
+        unscoped_variables => UnscopedVariables: "Variables declared without explicit scope.",
+        roblox_incorrect_color3_new_bounds => RobloxIncorrectColor3NewBounds: "Out-of-range Color3.new arguments.",
+        roblox_manual_fromscale_or_fromoffset => RobloxManualFromscaleOrFromoffset: "Manual equivalents of fromScale or fromOffset.",
+        roblox_prefer_get_players => RobloxPreferGetPlayers: "Player enumeration better expressed with `GetPlayers`.",
+        roblox_suspicious_udim2_new => RobloxSuspiciousUdim2New: "Suspicious UDim2.new arguments.",
     }
     allow {
-        implicit_any_local => "Local bindings with implicit any types.",
-        implicit_any_parameter => "Parameters with implicit any types.",
-        and_or_conditional => "Conditional expressions written with and/or.",
-        collapsible_if => "Nested conditionals that can be collapsed.",
-        else_after_return => "Else branches following returning branches.",
-        if_expression_assignment => "Assignments expressible with if expressions.",
-        negated_condition => "Conditionals with negated conditions.",
-        non_const_require => "Require calls with nonconstant arguments.",
-        parenthesized_conditions => "Unnecessary parentheses around conditions.",
-        global_usage => "Uses of global bindings.",
-        type_check_inside_call => "Type checks inside call expressions.",
-        loop_invariant_call => "Loop-invariant calls inside loops.",
-        manual_table_clone => "Manual table cloning.",
-        string_concat_in_loop => "Repeated string concatenation inside loops.",
+        implicit_any_local => ImplicitAnyLocal: "Local bindings with implicit any types.",
+        implicit_any_parameter => ImplicitAnyParameter: "Parameters with implicit any types.",
+        and_or_conditional => AndOrConditional: "Conditional expressions written with and/or.",
+        collapsible_if => CollapsibleIf: "Nested conditionals that can be collapsed.",
+        else_after_return => ElseAfterReturn: "Else branches following returning branches.",
+        if_expression_assignment => IfExpressionAssignment: "Assignments expressible with if expressions.",
+        negated_condition => NegatedCondition: "Conditionals with negated conditions.",
+        non_const_require => NonConstRequire: "Require calls with nonconstant arguments.",
+        parenthesized_conditions => ParenthesizedConditions: "Unnecessary parentheses around conditions.",
+        global_usage => GlobalUsage: "Uses of global bindings.",
+        type_check_inside_call => TypeCheckInsideCall: "Type checks inside call expressions.",
+        loop_invariant_call => LoopInvariantCall: "Loop-invariant calls inside loops.",
+        manual_table_clone => ManualTableClone: "Manual table cloning.",
+        string_concat_in_loop => StringConcatInLoop: "Repeated string concatenation inside loops.",
     }
 }
 

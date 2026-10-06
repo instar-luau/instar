@@ -10,9 +10,14 @@ categories.workspace = true
 
 [dependencies]
 glob.workspace = true
+instar-check = { path = "../check" }
 regex.workspace = true
 schemars.workspace = true
 serde.workspace = true
+vermis = "0.7"
+
+[dev-dependencies]
+toml.workspace = true
 
 [lints]
 workspace = true
