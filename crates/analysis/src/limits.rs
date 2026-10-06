@@ -6,8 +6,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+use serde::{Deserialize, Serialize};
+
 /// Why analysis could not produce a complete answer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub enum Reason {
     /// The caller requested cancellation.
     Cancelled,
@@ -26,7 +28,7 @@ pub enum Reason {
 }
 
 /// Whether the result covers all selected entries and their dependencies.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub enum Completion {
     /// Analysis finished; diagnostics may still contain errors.
     Complete,
@@ -76,9 +78,7 @@ impl Cancellation {
 pub struct Options {
     /// Total elapsed budget, including host preparation and declarations.
     ///
-    /// Native module typechecking is cooperatively interrupted. Upstream declaration
-    /// loading and parsing have no interruptible API; their budget is checked before
-    /// and after execution, and overruns are reported as incomplete.
+    /// Native analysis runs in an isolated worker that is terminated on interruption.
     pub timeout: Duration,
 
     /// Shared cancellation signal.

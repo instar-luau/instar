@@ -49,9 +49,8 @@ impl Project {
     /// findings according to their own rule settings. Native warnings use the shared
     /// native frontend and declaration environments. Instar syntax rules do not load
     /// declarations when no native warning or inferred-type rule is requested.
-    /// Roblox API declarations and security filtering are explicit capability limits.
-    /// Native parsing and declaration loading are budget-checked between phases;
-    /// module analysis and syntax traversal support cooperative cancellation.
+    /// Roblox environments load the configured generated asset bundle.
+    /// Native analysis is isolated in a cancellable worker process.
     /// No fixes are executed.
     ///
     /// # Errors

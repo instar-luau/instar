@@ -24,13 +24,19 @@ impl Project {
     ///
     /// # Errors
     /// Returns graph discovery, source/configuration or native agreement failures.
-    pub fn prepare(&mut self, source: &Path, context: Option<&Identity>) -> io::Result<Vec<Link>> {
+    pub fn prepare(
+        &mut self,
+        source: &Path,
+        context: Option<&Identity>,
+        options: &instar_analysis::Options,
+    ) -> io::Result<Vec<Link>> {
+        let started = std::time::Instant::now();
         let entry = self.install(source, context)?;
 
         self.frontend
             .as_mut()
             .ok_or_else(|| invalid("native frontend is unavailable"))?
-            .parse(&name(&entry.identity))
+            .parse(&name(&entry.identity), &options.remaining(started))
     }
 
     pub(crate) fn install(

@@ -1,6 +1,8 @@
 //! Synthetic source, configuration, graph and sourcemap lifecycle fixtures.
 
-use std::{collections::BTreeSet, fs, io, rc::Rc};
+use std::{collections::BTreeSet, fs, io, rc::Rc, time::Duration};
+
+use instar_analysis::Options;
 
 use instar_core::{
     project::Change,
@@ -639,7 +641,7 @@ fn native_adapter_uses_rust_results_for_aliases_instances_and_lifecycle() -> io:
     let mut project = project();
     let node = project.links(&caller, None)?;
     assert_eq!(project.graph().len(), 1);
-    let links = project.prepare(&caller, None)?;
+    let links = project.prepare(&caller, None, &Options::new(Duration::from_secs(5)))?;
     assert_eq!(links.len(), 1);
 
     assert_eq!(
@@ -655,16 +657,31 @@ fn native_adapter_uses_rust_results_for_aliases_instances_and_lifecycle() -> io:
         instar_core::native::name(&node.sites[0].target.as_ref().expect("Rust target").identity)
     );
 
-    assert_eq!(project.prepare(&caller, None)?, links);
+    assert_eq!(
+        project.prepare(&caller, None, &Options::new(Duration::from_secs(5)))?,
+        links
+    );
 
     project.change(Change::Overlay {
         path: target.clone(),
         text: None,
     })?;
 
-    assert_eq!(project.prepare(&caller, None)?.len(), 0);
+    assert_eq!(
+        project
+            .prepare(&caller, None, &Options::new(Duration::from_secs(5)))?
+            .len(),
+        0
+    );
+
     project.change(Change::Close(target))?;
-    assert_eq!(project.prepare(&caller, None)?.len(), 1);
+
+    assert_eq!(
+        project
+            .prepare(&caller, None, &Options::new(Duration::from_secs(5)))?
+            .len(),
+        1
+    );
 
     let location = directory.file("sourcemap.json", &json!({"name":"Place","className":"DataModel","children":[
         {"name":"Caller","className":"ModuleScript","filePaths":["caller.luau"]},
@@ -681,7 +698,7 @@ fn native_adapter_uses_rust_results_for_aliases_instances_and_lifecycle() -> io:
         ),
     })?;
 
-    let links = project.prepare(&caller, None)?;
+    let links = project.prepare(&caller, None, &Options::new(Duration::from_secs(5)))?;
     assert_eq!(links.len(), 1);
     let node = project.links(&caller, None)?;
 
@@ -748,7 +765,13 @@ fn mapped_sources_outside_map_ancestors_keep_explicit_context() -> io::Result<()
     );
 
     assert_eq!(project.discover(&caller, None)?.len(), 3);
-    assert_eq!(project.prepare(&caller, None)?.len(), 2);
+
+    assert_eq!(
+        project
+            .prepare(&caller, None, &Options::new(Duration::from_secs(5)))?
+            .len(),
+        2
+    );
 
     project.change(Change::Overlay {
         path: location,
@@ -795,7 +818,13 @@ fn overlay_only_sources_and_configuration_need_no_disk_directories() -> io::Resu
         target
     );
 
-    assert_eq!(project.prepare(&caller, None)?.len(), 1);
+    assert_eq!(
+        project
+            .prepare(&caller, None, &Options::new(Duration::from_secs(5)))?
+            .len(),
+        1
+    );
+
     project.change(Change::Close(caller.clone()))?;
     assert!(project.links(&caller, None).is_err());
 

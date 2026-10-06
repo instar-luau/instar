@@ -202,6 +202,45 @@ namespace instar {
         return result;
     }
 
+    void NativeConfiguration::restore(const NativeSnapshot &snapshot) {
+        auto next = std::make_unique<Luau::Config>();
+
+        if (const auto error = Luau::parseModeString(next->mode, std::string(snapshot.mode))) {
+            throw std::invalid_argument(*error);
+        }
+
+        next->lintErrors = snapshot.lint_errors;
+        next->typeErrors = snapshot.type_errors;
+        next->enabledLint.warningMask = 0;
+        next->fatalLint.warningMask = 0;
+
+        for (const NativeLint &lint : snapshot.lint) {
+            const auto code = Luau::LintWarning::parseName(std::string(lint.name).c_str());
+
+            if (code == Luau::LintWarning::Code_Unknown) {
+                throw std::invalid_argument("unknown native lint name");
+            }
+
+            if (lint.enabled) {
+                next->enabledLint.enableWarning(code);
+            }
+
+            if (lint.fatal) {
+                next->fatalLint.enableWarning(code);
+            }
+        }
+
+        for (const rust::String &global : snapshot.globals) {
+            next->globals.emplace_back(global);
+        }
+
+        for (const NativeAlias &alias : snapshot.aliases) {
+            next->setAlias(std::string(alias.original_case), std::string(alias.value), std::string(alias.location));
+        }
+
+        configuration = std::move(next);
+    }
+
     const Luau::Config &NativeConfiguration::value() const {
         return *configuration;
     }

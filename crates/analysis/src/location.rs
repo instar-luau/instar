@@ -1,5 +1,7 @@
+use serde::{Deserialize, Serialize};
+
 /// Source location anchored to an immutable host module revision.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Location<Module> {
     /// Exact host-owned module identity.
     pub module: Module,
@@ -12,7 +14,7 @@ pub struct Location<Module> {
 }
 
 /// Additional source context supplied by a native diagnostic.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Related<Module> {
     /// Related source location.
     pub location: Location<Module>,

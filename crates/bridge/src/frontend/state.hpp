@@ -33,7 +33,12 @@ namespace instar {
     struct NativeFrontend::State {
         frontend::Resolver resolver;
         Luau::Frontend frontend{Luau::SolverMode::New, &resolver, &resolver};
-        std::map<std::string, std::vector<std::tuple<std::string, uint64_t, std::string>>> definitions;
+
+        using Signature = std::pair<
+            std::vector<std::tuple<std::string, uint64_t, std::string>>,
+            std::vector<std::tuple<std::string, bool, bool, std::vector<std::tuple<std::string, bool, bool>>>>>;
+
+        std::map<std::string, Signature> definitions;
         uint64_t environmentRevision = 0;
 
         State();

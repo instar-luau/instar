@@ -49,7 +49,10 @@ impl Drop for Directory {
 }
 
 pub(crate) fn project() -> Project {
-    Project::new(Duration::from_secs(2))
+    let mut project = Project::new(Duration::from_secs(2));
+    assets(&mut project).expect("Roblox cache fixture");
+
+    project
 }
 
 pub(crate) fn options() -> Options {
@@ -84,4 +87,55 @@ pub(crate) fn normalize(value: &mut Value, root: &str) {
         Value::Object(values) => values.values_mut().for_each(|value| normalize(value, root)),
         _ => {}
     }
+}
+
+fn assets(project: &mut Project) -> io::Result<()> {
+    use sha2::{Digest, Sha256};
+    let directory = instar_core::roblox::cache_directory()?;
+
+    let mut file = |name: &str, text: &str| {
+        project
+            .change(instar_core::project::Change::Overlay {
+                path: directory.join(name),
+                text: Some(text.to_owned()),
+            })
+            .map(|_| ())
+    };
+
+    let declarations = "declare extern type Instance with\n    read Name: string\nend\ndeclare extern type DataModel extends Instance with end\ndeclare extern type Part extends Instance with end\ndeclare Instance: {new: (name: string) -> Instance}\ndeclare game: DataModel\ndeclare script: Instance";
+    let plugin = format!("{declarations}\ndeclare plugin: {{Name: string}}");
+    let mut profiles = serde_json::Map::new();
+
+    for (name, source) in [
+        ("none", declarations),
+        ("local", declarations),
+        ("plugin", plugin.as_str()),
+        ("roblox", plugin.as_str()),
+    ] {
+        file(&format!("{name}.d.luau"), source)?;
+
+        profiles.insert(
+            name.to_owned(),
+            Value::String(format!("{:x}", Sha256::digest(source.as_bytes()))),
+        );
+    }
+
+    file("enumerations.d.luau", "")?;
+    file("documentation.json", "{}")?;
+
+    file(
+        "metadata.json",
+        &serde_json::json!({
+            "revision": "0123456789012345678901234567890123456789",
+            "services": ["DataModel"],
+            "creatable_instances": ["Part"],
+            "profiles": profiles,
+            "properties": {"none": [], "local": [], "plugin": [], "roblox": []},
+            "enumerations": format!("{:x}", Sha256::digest(b"")),
+            "documentation": format!("{:x}", Sha256::digest(b"{}")),
+        })
+        .to_string(),
+    )?;
+
+    Ok(())
 }

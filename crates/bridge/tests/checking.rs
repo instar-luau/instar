@@ -197,3 +197,60 @@ fn native_interruption_does_not_cache_a_clean_answer() -> io::Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn worker_interruption_discards_native_state_and_allows_retry() -> io::Result<()> {
+    use std::fmt::Write;
+    let configuration = Configuration::new()?;
+    let mut frontend = Frontend::new()?;
+    let source = "local value = 1\n".repeat(500_000);
+    frontend.insert("entry", &source, 1, &configuration, &[])?;
+    let options = Options::new(Duration::from_millis(20));
+    let started = std::time::Instant::now();
+
+    let error = frontend
+        .parse("entry", &options)
+        .expect_err("parsing deadline");
+
+    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    assert!(started.elapsed() < Duration::from_secs(2));
+    frontend.insert("entry", "return 1", 2, &configuration, &[])?;
+
+    frontend.definitions(
+        "entry",
+        &[Definition {
+            name: "definitions".to_owned(),
+            revision: 1,
+            text: (0..100_000).fold(String::new(), |mut text, number| {
+                writeln!(text, "declare value{number}: number").expect("string write");
+
+                text
+            }),
+        }],
+    )?;
+
+    let options = Options::new(Duration::from_secs(5));
+    let cancellation = options.cancellation.clone();
+
+    let monitor = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(20));
+        cancellation.cancel();
+    });
+
+    let started = std::time::Instant::now();
+    let interrupted = frontend.check(&["entry".to_owned()], &options)?;
+    monitor.join().expect("cancellation thread");
+
+    assert_eq!(
+        interrupted.completion,
+        Completion::Incomplete(Reason::Cancelled)
+    );
+
+    assert!(started.elapsed() < Duration::from_secs(2));
+    frontend.definitions("entry", &[])?;
+    let retry = frontend.check(&["entry".to_owned()], &Options::new(Duration::from_secs(5)))?;
+    assert_eq!(retry.completion, Completion::Complete);
+    assert_eq!(retry.diagnostics, Vec::new());
+
+    Ok(())
+}

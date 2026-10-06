@@ -16,6 +16,7 @@ add_library(configuration STATIC
     src/frontend/checking.cpp
     src/frontend/diagnostics.cpp
     src/frontend/linting.cpp
+    src/frontend/roblox.cpp
     src/frontend/state.cpp
     "${CXX_BRIDGE_SOURCE}"
 )

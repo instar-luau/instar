@@ -1,7 +1,9 @@
+use serde::{Deserialize, Serialize};
+
 use crate::{Location, Related};
 
 /// Analysis diagnostic category, retaining upstream type error codes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub enum Kind {
     /// Source parser error.
     Syntax {
@@ -44,7 +46,7 @@ impl Kind {
 }
 
 /// A structured native analysis error.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Diagnostic<Module> {
     /// Actual source location, including dependency modules.
     pub location: Location<Module>,

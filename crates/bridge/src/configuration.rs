@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::boundary;
 
@@ -23,6 +23,62 @@ impl fmt::Debug for Configuration {
 }
 
 impl Configuration {
+    pub(crate) fn restore(snapshot: &Snapshot) -> io::Result<Self> {
+        let mut configuration = Self::new()?;
+
+        let mode = match snapshot.mode {
+            Mode::NoCheck => "nocheck",
+            Mode::NonStrict => "nonstrict",
+            Mode::Strict => "strict",
+            Mode::Definition => "definition",
+        };
+
+        let snapshot = boundary::NativeSnapshot {
+            mode: mode.to_owned(),
+            lint: snapshot
+                .lint
+                .iter()
+                .map(|(name, policy)| boundary::NativeLint {
+                    name: name.clone(),
+                    enabled: policy.enabled,
+                    fatal: policy.fatal,
+                })
+                .collect(),
+            lint_errors: snapshot.lint_errors,
+            type_errors: snapshot.type_errors,
+            globals: snapshot.globals.clone(),
+            aliases: snapshot
+                .aliases
+                .iter()
+                .map(|(name, alias)| {
+                    let path = alias.directory.join(".luaurc");
+
+                    let location = path.to_str().ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "native alias directory requires UTF-8",
+                        )
+                    })?;
+
+                    Ok(boundary::NativeAlias {
+                        name: name.clone(),
+                        value: alias.value.clone(),
+                        location: location.to_owned(),
+                        original_case: alias.original_case.clone(),
+                    })
+                })
+                .collect::<io::Result<_>>()?,
+        };
+
+        configuration
+            .native
+            .pin_mut()
+            .restore(&snapshot)
+            .map_err(io::Error::other)?;
+
+        Ok(configuration)
+    }
+
     /// Creates a configuration with upstream defaults.
     ///
     /// # Errors
@@ -155,7 +211,7 @@ impl Configuration {
 }
 
 /// Upstream Luau language mode.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
     /// Disables type inference.
@@ -172,7 +228,7 @@ pub enum Mode {
 }
 
 /// The independent upstream lint masks for a named warning.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct LintPolicy {
     /// Whether the warning is enabled.
     pub enabled: bool,
@@ -182,7 +238,7 @@ pub struct LintPolicy {
 }
 
 /// A native require alias and its defining directory.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Alias {
     /// The upstream alias value, without resolving it against the directory.
     pub value: String,
@@ -195,7 +251,7 @@ pub struct Alias {
 }
 
 /// A detached snapshot of effective upstream native settings.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Snapshot {
     /// The effective language mode.
     pub mode: Mode,

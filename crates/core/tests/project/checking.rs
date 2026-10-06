@@ -345,22 +345,31 @@ fn incomplete_environments_keep_known_source_diagnostics() -> io::Result<()> {
 }
 
 #[test]
-fn roblox_without_native_setup_is_explicitly_incomplete() -> io::Result<()> {
+fn invalid_roblox_metadata_is_explicitly_incomplete() -> io::Result<()> {
     let directory = Directory::new(Some(r#"{"languageMode":"strict"}"#))?;
+
     directory.file("instar.toml", "[roblox]\nenabled = true")?;
+
     let entry = directory.file("entry.luau", "return game")?;
-    let result = project().check(&[Entry::new(entry)], &options())?;
+    let mut project = project();
+
+    project.change(Change::Overlay {
+        path: instar_core::roblox::cache_directory()?.join("metadata.json"),
+        text: Some("{}".to_owned()),
+    })?;
+
+    let result = project.check(&[Entry::new(entry)], &options())?;
 
     assert_eq!(
         result.completion,
-        Completion::Incomplete(Reason::Unsupported)
+        Completion::Incomplete(Reason::Environment)
     );
 
     assert!(
         result
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.kind == Kind::Unsupported)
+            .any(|diagnostic| diagnostic.kind == Kind::Analysis { code: None })
     );
 
     Ok(())
@@ -533,23 +542,51 @@ fn explicit_declarations_preserve_distinct_mapped_contexts() -> io::Result<()> {
 }
 
 #[test]
-fn roblox_security_filtering_is_not_silently_ignored() -> io::Result<()> {
+fn roblox_security_profiles_and_metadata_control_native_types() -> io::Result<()> {
     let directory = Directory::new(Some(r#"{"languageMode":"strict"}"#))?;
-    directory.file("instar.toml", "[environment]\ndefinitions = ['globals.luau']\n[roblox]\nenabled = true\nsecurity = 'plugin'")?;
-    directory.file("globals.luau", "declare game: any")?;
-    let entry = directory.file("entry.luau", "return game")?;
-    let result = project().check(&[Entry::new(entry)], &options())?;
+
+    let configuration =
+        directory.file("instar.toml", "[roblox]\nenabled=true\nsecurity='plugin'")?;
+
+    let entry = directory.file(
+        "entry.luau",
+        "local part: Part = Instance.new('Part')\nreturn plugin.Name, part",
+    )?;
+
+    let entries = [Entry::new(entry)];
+    let mut project = project();
+    let plugin = project.check(&entries, &options())?;
+    assert_eq!(plugin.completion, Completion::Complete);
+    assert_eq!(plugin.diagnostics, Vec::new());
+
+    project.change(Change::Overlay {
+        path: configuration,
+        text: Some("[roblox]\nenabled=true\nsecurity='none'".to_owned()),
+    })?;
+
+    let game = project.check(&entries, &options())?;
+    assert_eq!(game.completion, Completion::Complete);
+    assert_eq!(game.diagnostics.len(), 1);
+    assert!(game.diagnostics[0].message.contains("plugin"));
+    let metadata = instar_core::roblox::cache_directory()?.join("none.d.luau");
+
+    project.change(Change::Overlay {
+        path: metadata,
+        text: Some("declare game: any".to_owned()),
+    })?;
+
+    let mismatched = project.check(&entries, &options())?;
 
     assert_eq!(
-        result.completion,
-        Completion::Incomplete(Reason::Unsupported)
+        mismatched.completion,
+        Completion::Incomplete(Reason::Environment)
     );
 
     assert!(
-        result
+        mismatched
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.kind == Kind::Unsupported)
+            .any(|diagnostic| diagnostic.message.contains("do not match"))
     );
 
     Ok(())

@@ -1,5 +1,7 @@
-#include "diagnostics.hpp"
 #include "instar-bridge/src/boundary.rs.h"
+
+#include "diagnostics.hpp"
+#include "roblox.hpp"
 #include "state.hpp"
 
 #include "Luau/Cancellation.h"
@@ -7,10 +9,10 @@
 #include "Luau/Module.h"
 #include "Luau/Scope.h"
 #include "Luau/TypeArena.h"
+
 #include <atomic>
 #include <chrono>
 #include <exception>
-#include <stdexcept>
 #include <thread>
 #include <utility>
 
@@ -106,11 +108,22 @@ namespace instar {
             for (const rust::String &opaque : names) {
                 const std::string name(opaque);
                 const NativeSource source = host.read_source(name);
-                std::vector<std::tuple<std::string, uint64_t, std::string>> signature;
+                State::Signature signature;
 
                 for (const NativeDefinition &definition : source.definitions) {
-                    signature
+                    signature.first
                         .emplace_back(std::string(definition.name), definition.revision, std::string(definition.text));
+                }
+
+                for (const NativeClass &klass : source.classes) {
+                    std::vector<std::tuple<std::string, bool, bool>> properties;
+
+                    for (const NativeProperty &property : klass.properties) {
+                        properties.emplace_back(std::string(property.name), property.read, property.write);
+                    }
+
+                    signature.second
+                        .emplace_back(std::string(klass.name), klass.service, klass.creatable, std::move(properties));
                 }
 
                 if (const auto found = state->definitions.find(name);
@@ -210,6 +223,13 @@ namespace instar {
 
                             return result;
                         }
+                    }
+
+                    if (!source.classes.empty()) {
+                        register_roblox_magic(
+                            frontend.globals,
+                            rust::Slice<const NativeClass>{source.classes.data(), source.classes.size()}
+                        );
                     }
                 }
 

@@ -332,28 +332,32 @@ fn missing_and_invalid_definitions_remain_explicit_with_syntax_findings() -> io:
 }
 
 #[test]
-fn roblox_capability_limits_are_not_silent() -> io::Result<()> {
+fn invalid_roblox_metadata_keeps_known_lint_findings() -> io::Result<()> {
     let directory = Directory::new(Some(
         r#"{"languageMode":"strict","lint":{"*":false,"LocalUnused":true}}"#,
     ))?;
 
     directory.file("instar.toml", "[roblox]\nenabled=true\nsecurity='plugin'")?;
+
     let entry = directory.file("entry.luau", "return Color3.new(255,0,0)")?;
-    let result = project().lint(&[Entry::new(entry)], &options())?;
+    let mut project = project();
+
+    project.change(Change::Overlay {
+        path: instar_core::roblox::cache_directory()?.join("metadata.json"),
+        text: Some("{}".to_owned()),
+    })?;
+
+    let result = project.lint(&[Entry::new(entry)], &options())?;
 
     assert_eq!(
         result.completion,
-        Completion::Incomplete(Reason::Unsupported)
+        Completion::Incomplete(Reason::Environment)
     );
 
     assert!(rule(&result, Rule::RobloxIncorrectColor3NewBounds));
 
-    assert!(
-        result
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.kind == Kind::Analysis(instar_analysis::Kind::Unsupported))
-    );
+    assert!(result.diagnostics.iter().any(|diagnostic| diagnostic.kind
+        == Kind::Analysis(instar_analysis::Kind::Analysis { code: None })));
 
     Ok(())
 }
