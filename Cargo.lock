@@ -237,9 +237,12 @@ name = "instar-lint"
 version = "0.7.2"
 dependencies = [
  "glob",
+ "instar-check",
  "regex",
  "schemars",
  "serde",
+ "toml",
+ "vermis",
 ]
 
 [[package]]
