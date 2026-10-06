@@ -5,7 +5,6 @@ use instar_bridge::frontend::Definition;
 
 use crate::{
     analysis::Origin,
-    configuration::Security,
     graph::Node,
     project::{Project, Settings},
     source::Document,
@@ -15,6 +14,21 @@ pub(crate) struct Environment {
     pub(crate) definitions: Vec<Definition>,
     pub(crate) diagnostics: Vec<Diagnostic<Origin>>,
     pub(crate) completion: Completion,
+}
+
+impl Environment {
+    fn failure(&mut self, location: Location<Origin>, error: &std::io::Error) {
+        self.diagnostics.push(Diagnostic {
+            location,
+            kind: Kind::Analysis { code: None },
+            message: error.to_string(),
+            related: Vec::new(),
+        });
+
+        self.completion = self
+            .completion
+            .combine(Completion::Incomplete(Reason::Environment));
+    }
 }
 
 impl Project {
@@ -34,22 +48,56 @@ impl Project {
 
         let configuration = &settings.configuration;
 
-        if configuration.roblox.enabled == Some(true)
-            && (configuration.environment.definitions.is_empty()
-                || !matches!(configuration.roblox.security, Security::None))
+        let classes = if configuration.roblox.enabled == Some(true) {
+            match self.roblox_assets(configuration.roblox.security, options, started) {
+                Ok(assets) => {
+                    for (path, document) in assets.definitions {
+                        let name = format!("Definition({})", path.display());
+                        sources.insert(name.clone(), (Origin::Definition(path), document.clone()));
+
+                        environment.definitions.push(Definition {
+                            name,
+                            revision: document.revision,
+                            text: document.text.to_string(),
+                        });
+                    }
+
+                    assets.classes
+                }
+
+                Err(error) => {
+                    environment.failure(
+                        Location {
+                            module: Origin::Module(node.module.clone()),
+                            revision: node.document.revision,
+                            range: [0, 0],
+                        },
+                        &error,
+                    );
+
+                    if let Some(reason) = options.interrupted(started) {
+                        environment.completion = Completion::Incomplete(reason);
+                    }
+
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
+
+        if let Some(frontend) = &mut self.frontend
+            && let Err(error) =
+                frontend.classes(&crate::native::name(&node.module.identity), &classes)
         {
-            environment.diagnostics.push(Diagnostic {
-                location: Location {
+            environment.failure(
+                Location {
                     module: Origin::Module(node.module.clone()),
                     revision: node.document.revision,
                     range: [0, 0],
                 },
-                kind: Kind::Unsupported,
-                message: "Native Roblox analysis requires explicit API declarations and does not support API security filtering".to_owned(),
-                related: Vec::new(),
-            });
-
-            environment.completion = Completion::Incomplete(Reason::Unsupported);
+                &error,
+            );
         }
 
         for path in &configuration.environment.definitions {
@@ -62,20 +110,14 @@ impl Project {
                 Ok(document) => document,
 
                 Err(error) => {
-                    environment.diagnostics.push(Diagnostic {
-                        location: Location {
+                    environment.failure(
+                        Location {
                             module: Origin::Definition(path.clone()),
                             revision: 0,
                             range: [0, 0],
                         },
-                        kind: Kind::Analysis { code: None },
-                        message: error.to_string(),
-                        related: Vec::new(),
-                    });
-
-                    environment.completion = environment
-                        .completion
-                        .combine(Completion::Incomplete(Reason::Environment));
+                        &error,
+                    );
 
                     continue;
                 }

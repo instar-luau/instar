@@ -3,14 +3,20 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
+    time::Instant,
 };
 
-use instar_analysis::{Completion, Diagnostic, Kind, Location, Options, Reason, Related};
+use instar_analysis::{Completion, Diagnostic, Location, Options};
+use serde::{Deserialize, Serialize};
 
-use crate::{Configuration, Snapshot, boundary};
+use crate::{
+    Configuration, Snapshot, boundary,
+    process::{Outcome, Process},
+    protocol::{Operation, Request, Response},
+};
 
 /// One host-extracted require site, anchored to immutable source bytes.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Site {
     /// Entire call byte range, with exclusive end.
     pub call: [usize; 2],
@@ -26,7 +32,7 @@ pub struct Site {
 }
 
 /// An agreed native graph edge backed by a host require site.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Link {
     /// Opaque requiring module name.
     pub module: String,
@@ -45,7 +51,7 @@ pub struct Link {
 }
 
 /// Immutable declaration file used to establish a module's native environment.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Definition {
     /// Opaque host declaration identity.
     pub name: String,
@@ -57,15 +63,46 @@ pub struct Definition {
     pub text: String,
 }
 
-struct Source {
-    configuration: Snapshot,
-    text: String,
-    revision: u64,
-    sites: Vec<Site>,
-    definitions: Vec<Definition>,
+/// A Roblox class capability supplied by the asset metadata.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct Class {
+    /// Declared class name.
+    pub name: String,
+
+    /// Whether `GetService` accepts the class.
+    pub service: bool,
+
+    /// Whether Instance.new accepts the class.
+    pub creatable: bool,
+
+    /// Property access rules that require native application.
+    pub properties: Vec<Property>,
 }
 
-pub(crate) struct Cancellation(instar_analysis::Cancellation);
+/// Independent read and write access to a declared Roblox property.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct Property {
+    /// Exact property name.
+    pub name: String,
+
+    /// Whether reading is permitted.
+    pub read: bool,
+
+    /// Whether writing is permitted.
+    pub write: bool,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub(crate) struct Source {
+    pub(crate) configuration: Snapshot,
+    pub(crate) text: String,
+    pub(crate) revision: u64,
+    pub(crate) sites: Vec<Site>,
+    pub(crate) definitions: Vec<Definition>,
+    pub(crate) classes: Vec<Class>,
+}
+
+pub(crate) struct Cancellation(pub(crate) instar_analysis::Cancellation);
 
 impl Cancellation {
     pub(crate) fn requested(&self) -> bool {
@@ -75,7 +112,7 @@ impl Cancellation {
 
 #[derive(Default)]
 pub(crate) struct Host {
-    sources: BTreeMap<String, Source>,
+    pub(crate) sources: BTreeMap<String, Source>,
 }
 
 impl Host {
@@ -93,6 +130,7 @@ impl Host {
                 revision: definition.map_or(0, |definition| definition.revision),
                 sites: Vec::new(),
                 definitions: Vec::new(),
+                classes: Vec::new(),
             };
         };
 
@@ -100,6 +138,24 @@ impl Host {
             found: true,
             text: source.text.clone(),
             revision: source.revision,
+            classes: source
+                .classes
+                .iter()
+                .map(|class| boundary::NativeClass {
+                    name: class.name.clone(),
+                    service: class.service,
+                    creatable: class.creatable,
+                    properties: class
+                        .properties
+                        .iter()
+                        .map(|property| boundary::NativeProperty {
+                            name: property.name.clone(),
+                            read: property.read,
+                            write: property.write,
+                        })
+                        .collect(),
+                })
+                .collect(),
             definitions: source
                 .definitions
                 .iter()
@@ -139,7 +195,7 @@ impl Host {
 }
 
 /// An upstream native warning anchored to a host source revision.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Warning {
     /// Warning source range.
     pub location: Location<String>,
@@ -158,7 +214,7 @@ pub struct Warning {
 }
 
 /// An inferred semantic property used by Instar lint rules.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub enum FactKind {
     /// An unannotated local binding inferred as any.
     ImplicitAnyLocal,
@@ -168,7 +224,7 @@ pub enum FactKind {
 }
 
 /// A detached semantic finding from the native type graph.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Fact {
     /// Binding source range.
     pub location: Location<String>,
@@ -181,7 +237,7 @@ pub struct Fact {
 }
 
 /// Native lint output, retaining diagnostics when analysis is incomplete.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct LintResult {
     /// Selected entries and their host-resolved dependencies.
     pub modules: Vec<String>,
@@ -199,79 +255,20 @@ pub struct LintResult {
     pub completion: Completion,
 }
 
-fn completion(value: boundary::NativeCompletion) -> io::Result<Completion> {
-    match value {
-        boundary::NativeCompletion::Complete => Ok(Completion::Complete),
-        boundary::NativeCompletion::Cancelled => Ok(Completion::Incomplete(Reason::Cancelled)),
-        boundary::NativeCompletion::Timeout => Ok(Completion::Incomplete(Reason::Timeout)),
-        boundary::NativeCompletion::Environment => Ok(Completion::Incomplete(Reason::Environment)),
-        boundary::NativeCompletion::Analysis => Ok(Completion::Incomplete(Reason::Analysis)),
-        _ => Err(io::Error::other("unknown native completion status")),
-    }
-}
-
-fn location(value: boundary::NativeLocation) -> Location<String> {
-    Location {
-        module: value.module,
-        revision: value.revision,
-        range: [value.start, value.end],
-    }
-}
-
-fn diagnostic(value: boundary::NativeDiagnostic) -> io::Result<Diagnostic<String>> {
-    let kind = match value.kind {
-        boundary::NativeKind::Syntax => Kind::Syntax {
-            code: Some(value.code),
-        },
-
-        boundary::NativeKind::Type => Kind::Type { code: value.code },
-
-        boundary::NativeKind::Resolution => Kind::Resolution {
-            code: Some(value.code),
-        },
-
-        boundary::NativeKind::Analysis => Kind::Analysis {
-            code: (value.code != 0).then_some(value.code),
-        },
-
-        _ => return Err(io::Error::other("unknown native diagnostic kind")),
-    };
-
-    Ok(Diagnostic {
-        location: location(value.location),
-        kind,
-        message: value.message,
-        related: value
-            .related
-            .into_iter()
-            .map(|related| Related {
-                location: location(related.location),
-                message: related.message,
-            })
-            .collect(),
-    })
-}
-
 /// A native Luau Frontend whose resolution policy belongs exclusively to its host.
 pub struct Frontend {
-    native: cxx::UniquePtr<boundary::NativeFrontend>,
+    process: Option<Process>,
     host: Host,
 }
 
 impl Frontend {
-    /// Allocates native analysis storage and registers standard Luau builtins.
+    /// Creates a host snapshot store for an isolated native frontend.
     ///
     /// # Errors
-    /// Returns native allocation or builtin initialization errors.
+    /// Returns worker startup failures.
     pub fn new() -> io::Result<Self> {
-        let native = boundary::create_frontend().map_err(io::Error::other)?;
-
-        if native.is_null() {
-            return Err(io::Error::other("native frontend allocation failed"));
-        }
-
         Ok(Self {
-            native,
+            process: Some(Process::start()?),
             host: Host::default(),
         })
     }
@@ -331,16 +328,6 @@ impl Frontend {
             return Ok(());
         }
 
-        let configuration = configuration
-            .native
-            .as_ref()
-            .ok_or_else(|| io::Error::other("native configuration is unavailable"))?;
-
-        self.native
-            .pin_mut()
-            .configure(name, configuration)
-            .map_err(io::Error::other)?;
-
         self.host.sources.insert(
             name.to_owned(),
             Source {
@@ -349,6 +336,7 @@ impl Frontend {
                 revision,
                 sites: sites.to_vec(),
                 definitions: Vec::new(),
+                classes: Vec::new(),
             },
         );
 
@@ -359,43 +347,25 @@ impl Frontend {
     ///
     /// # Errors
     /// Returns missing host targets, native parsing failures or host/native agreement errors.
-    pub fn parse(&mut self, entry: &str) -> io::Result<Vec<Link>> {
-        let mut names = BTreeSet::new();
-        let mut pending = vec![entry.to_owned()];
+    pub fn parse(&mut self, entry: &str, options: &Options) -> io::Result<Vec<Link>> {
+        let started = Instant::now();
+        let entries = [entry.to_owned()];
+        let names = self.names(&entries)?;
 
-        while let Some(name) = pending.pop() {
-            if !names.insert(name.clone()) {
-                continue;
-            }
+        match self.request(&entries, &names, Operation::Parse, options, started)? {
+            Outcome::Response(Response::Parsed(links)) => Ok(links),
 
-            let source = self.host.sources.get(&name).ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!("host module is unavailable: {name}"),
-                )
-            })?;
+            Outcome::Interrupted(reason) => Err(io::Error::new(
+                if reason == instar_analysis::Reason::Timeout {
+                    io::ErrorKind::TimedOut
+                } else {
+                    io::ErrorKind::Interrupted
+                },
+                format!("native parsing interrupted: {reason:?}"),
+            )),
 
-            pending.extend(source.sites.iter().filter_map(|site| site.target.clone()));
+            Outcome::Response(_) => Err(io::Error::other("unexpected native worker response")),
         }
-
-        let names = names.into_iter().collect::<Vec<_>>();
-
-        let links = self
-            .native
-            .pin_mut()
-            .prepare(&self.host, &names)
-            .map_err(io::Error::other)?;
-
-        Ok(links
-            .into_iter()
-            .map(|link| Link {
-                module: link.module,
-                revision: link.revision,
-                call: [link.call_start, link.call_end],
-                argument: [link.argument_start, link.argument_end],
-                target: link.target,
-            })
-            .collect())
     }
 
     /// Installs declaration snapshots for an already inserted module.
@@ -436,10 +406,49 @@ impl Frontend {
         Ok(())
     }
 
+    /// Installs Roblox class capabilities for a module environment.
+    ///
+    /// # Errors
+    /// Rejects unknown modules and duplicate or invalid class names.
+    pub fn classes(&mut self, name: &str, classes: &[Class]) -> io::Result<()> {
+        let mut names = BTreeSet::new();
+
+        for class in classes {
+            if class.name.is_empty() || class.name.contains('\0') || !names.insert(&class.name) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "invalid Roblox class metadata",
+                ));
+            }
+
+            let mut properties = BTreeSet::new();
+
+            if class.properties.iter().any(|property| {
+                property.name.is_empty()
+                    || property.name.contains('\0')
+                    || !properties.insert(&property.name)
+            }) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "invalid Roblox property metadata",
+                ));
+            }
+        }
+
+        let source = self
+            .host
+            .sources
+            .get_mut(name)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "module is unavailable"))?;
+
+        source.classes = classes.to_vec();
+
+        Ok(())
+    }
+
     /// Checks selected entries with their complete host-resolved dependency graph.
     ///
-    /// Native lint checks are disabled. Declaration loading and parsing cannot be
-    /// preempted upstream; overruns and cancellation are checked around those phases.
+    /// The worker is terminated if the deadline expires or cancellation is requested.
     ///
     /// # Errors
     /// Returns missing host targets, host/native disagreement or native failures.
@@ -448,39 +457,25 @@ impl Frontend {
         entries: &[String],
         options: &Options,
     ) -> io::Result<instar_analysis::Result<String>> {
-        let names = self.names(entries)?;
+        let started = Instant::now();
+        let modules = self.names(entries)?;
 
-        let result = self
-            .native
-            .pin_mut()
-            .check(
-                &self.host,
-                entries,
-                options.timeout.as_secs_f64(),
-                &names,
-                &Cancellation(options.cancellation.clone()),
-            )
-            .map_err(io::Error::other)?;
+        match self.request(entries, &modules, Operation::Check, options, started)? {
+            Outcome::Response(Response::Checked(result)) => Ok(result),
 
-        let completion = completion(result.completion)?;
+            Outcome::Interrupted(reason) => Ok(instar_analysis::Result {
+                modules,
+                diagnostics: Vec::new(),
+                completion: Completion::Incomplete(reason),
+            }),
 
-        let diagnostics = result
-            .diagnostics
-            .into_iter()
-            .map(diagnostic)
-            .collect::<io::Result<Vec<_>>>()?;
-
-        Ok(instar_analysis::Result {
-            modules: names,
-            diagnostics,
-            completion,
-        })
+            Outcome::Response(_) => Err(io::Error::other("unexpected native worker response")),
+        }
     }
 
     /// Runs enabled upstream warnings using the shared native analysis session.
     ///
-    /// Parsing, declaration loading and upstream lint passes cannot be preempted;
-    /// cancellation and timeout overruns are checked around these phases.
+    /// The worker is terminated if the deadline expires or cancellation is requested.
     ///
     /// # Errors
     /// Returns missing host targets, host/native disagreement or native failures.
@@ -490,8 +485,7 @@ impl Frontend {
 
     /// Runs native warnings and extracts inferred-any facts for selected source modules.
     ///
-    /// Nocheck semantic selections produce an explicit incomplete result. The same
-    /// phase-boundary timeout and cancellation limits apply as for native lint.
+    /// Nocheck semantic selections produce an explicit incomplete result.
     ///
     /// # Errors
     /// Rejects semantic selections outside the reachable graph, missing host targets,
@@ -533,6 +527,7 @@ impl Frontend {
         semantic_modules: &[String],
         options: &Options,
     ) -> io::Result<LintResult> {
+        let started = Instant::now();
         let modules = self.names(entries)?;
 
         if semantic_modules.iter().any(|name| !modules.contains(name)) {
@@ -542,60 +537,62 @@ impl Frontend {
             ));
         }
 
+        match self.request(
+            entries,
+            &modules,
+            Operation::Lint(semantic_modules.to_vec()),
+            options,
+            started,
+        )? {
+            Outcome::Response(Response::Linted(result)) => Ok(result),
+
+            Outcome::Interrupted(reason) => Ok(LintResult {
+                modules,
+                warnings: Vec::new(),
+                facts: Vec::new(),
+                diagnostics: Vec::new(),
+                completion: Completion::Incomplete(reason),
+            }),
+
+            Outcome::Response(_) => Err(io::Error::other("unexpected native worker response")),
+        }
+    }
+
+    fn request(
+        &mut self,
+        entries: &[String],
+        modules: &[String],
+        operation: Operation,
+        options: &Options,
+        started: Instant,
+    ) -> io::Result<Outcome> {
+        if let Some(reason) = options.interrupted(started) {
+            return Ok(Outcome::Interrupted(reason));
+        }
+
+        if self.process.is_none() {
+            self.process = Some(Process::start()?);
+        }
+
+        let request = Request {
+            sources: self.host.sources.clone(),
+            entries: entries.to_vec(),
+            modules: modules.to_vec(),
+            operation,
+            timeout: options.timeout.saturating_sub(started.elapsed()),
+        };
+
         let result = self
-            .native
-            .pin_mut()
-            .lint(
-                &self.host,
-                entries,
-                options.timeout.as_secs_f64(),
-                &modules,
-                &Cancellation(options.cancellation.clone()),
-                semantic_modules,
-            )
-            .map_err(io::Error::other)?;
+            .process
+            .as_mut()
+            .ok_or_else(|| io::Error::other("native worker is unavailable"))?
+            .request(request, options, started);
 
-        Ok(LintResult {
-            modules,
-            warnings: result
-                .warnings
-                .into_iter()
-                .map(|warning| Warning {
-                    location: location(warning.location),
-                    code: warning.code,
-                    name: warning.name,
-                    message: warning.message,
-                    fatal: warning.fatal,
-                })
-                .collect(),
-            facts: result
-                .facts
-                .into_iter()
-                .map(|fact| {
-                    let kind = match fact.kind {
-                        boundary::NativeFactKind::ImplicitAnyLocal => FactKind::ImplicitAnyLocal,
+        if !matches!(result, Ok(Outcome::Response(_))) {
+            self.process.take();
+        }
 
-                        boundary::NativeFactKind::ImplicitAnyParameter => {
-                            FactKind::ImplicitAnyParameter
-                        }
-
-                        _ => return Err(io::Error::other("unknown native semantic fact kind")),
-                    };
-
-                    Ok(Fact {
-                        location: location(fact.location),
-                        kind,
-                        message: fact.message,
-                    })
-                })
-                .collect::<io::Result<Vec<_>>>()?,
-            diagnostics: result
-                .diagnostics
-                .into_iter()
-                .map(diagnostic)
-                .collect::<io::Result<Vec<_>>>()?,
-            completion: completion(result.completion)?,
-        })
+        result
     }
 
     /// Removes changed module revisions from host and native analysis caches.
@@ -603,11 +600,6 @@ impl Frontend {
     /// # Errors
     /// Returns native invalidation failures.
     pub fn invalidate(&mut self, names: &[String]) -> io::Result<()> {
-        self.native
-            .pin_mut()
-            .invalidate(names)
-            .map_err(io::Error::other)?;
-
         for name in names {
             self.host.sources.remove(name);
         }

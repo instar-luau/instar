@@ -28,10 +28,8 @@ impl Project {
     ///
     /// Instar patterns select entries only. Native configuration controls language
     /// modes and type error visibility; native lint warnings are never emitted.
-    /// Enabled Roblox checking requires explicit native declarations; Roblox API
-    /// security filtering is unsupported. Native module analysis is cooperatively
-    /// interrupted; host discovery, parsing and upstream declaration loading are
-    /// budget-checked between phases.
+    /// Roblox environments load the configured generated asset bundle.
+    /// Native analysis is isolated in a cancellable worker process.
     /// Missing declaration files use revision zero and an empty source range.
     ///
     /// # Errors

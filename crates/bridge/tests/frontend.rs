@@ -1,6 +1,8 @@
 //! Host/native analysis agreement and invalidation fixtures.
 
-use std::io;
+use std::{io, time::Duration};
+
+use instar_analysis::Options;
 
 use instar_bridge::{
     Configuration,
@@ -31,7 +33,7 @@ fn host_targets_are_authoritative_for_lexical_loader_aliases() -> io::Result<()>
     )?;
 
     frontend.insert("contextual-target", "return 1", 3, &configuration, &[])?;
-    let links = frontend.parse("entry")?;
+    let links = frontend.parse("entry", &Options::new(Duration::from_secs(5)))?;
     assert_eq!(links.len(), 1);
     assert_eq!(links[0].module, "entry");
     assert_eq!(links[0].revision, 7);
@@ -40,12 +42,21 @@ fn host_targets_are_authoritative_for_lexical_loader_aliases() -> io::Result<()>
     frontend.invalidate(&["entry".to_owned(), "contextual-target".to_owned()])?;
 
     assert_eq!(
-        frontend.parse("entry").expect_err("removed source").kind(),
+        frontend
+            .parse("entry", &Options::new(Duration::from_secs(5)))
+            .expect_err("removed source")
+            .kind(),
         io::ErrorKind::NotFound
     );
 
     frontend.insert("entry", "return 2", 8, &configuration, &[])?;
-    assert_eq!(frontend.parse("entry")?.len(), 0);
+
+    assert_eq!(
+        frontend
+            .parse("entry", &Options::new(Duration::from_secs(5)))?
+            .len(),
+        0
+    );
 
     Ok(())
 }
@@ -71,7 +82,7 @@ fn static_argument_disagreement_is_an_error() -> io::Result<()> {
 
     assert!(
         frontend
-            .parse("entry")
+            .parse("entry", &Options::new(Duration::from_secs(5)))
             .expect_err("mismatched host argument")
             .to_string()
             .contains("static require argument disagreement")
@@ -103,7 +114,7 @@ fn missing_host_targets_and_invalid_ranges_are_not_guessed() -> io::Result<()> {
 
     assert_eq!(
         frontend
-            .parse("entry")
+            .parse("entry", &Options::new(Duration::from_secs(5)))
             .expect_err("missing host target")
             .kind(),
         io::ErrorKind::NotFound

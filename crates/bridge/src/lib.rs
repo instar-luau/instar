@@ -9,5 +9,10 @@ mod boundary;
 
 mod configuration;
 pub mod frontend;
+mod process;
+mod protocol;
+
+/// Native worker process entry point.
+pub mod worker;
 
 pub use configuration::{Alias, Configuration, LintPolicy, Mode, Snapshot};

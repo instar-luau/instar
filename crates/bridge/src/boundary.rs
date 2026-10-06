@@ -1,8 +1,10 @@
 use crate::frontend::{Cancellation, Host};
 
 pub(super) use native::{
-    NativeCompletion, NativeConfiguration, NativeDefinition, NativeDiagnostic, NativeFactKind,
-    NativeFrontend, NativeKind, NativeLocation, NativeSite, NativeSource, create, create_frontend,
+    NativeAlias, NativeClass, NativeCompletion, NativeConfiguration, NativeDefinition,
+    NativeDiagnostic, NativeFact, NativeFactKind, NativeFrontend, NativeKind, NativeLint,
+    NativeLocation, NativeProperty, NativeSite, NativeSnapshot, NativeSource, create,
+    create_frontend,
 };
 
 #[cxx::bridge(namespace = "instar")]
@@ -49,6 +51,7 @@ mod native {
         revision: u64,
         sites: Vec<NativeSite>,
         definitions: Vec<NativeDefinition>,
+        classes: Vec<NativeClass>,
     }
 
     struct NativeLink {
@@ -65,6 +68,19 @@ mod native {
         name: String,
         text: String,
         revision: u64,
+    }
+
+    struct NativeClass {
+        name: String,
+        service: bool,
+        creatable: bool,
+        properties: Vec<NativeProperty>,
+    }
+
+    struct NativeProperty {
+        name: String,
+        read: bool,
+        write: bool,
     }
 
     struct NativeLocation {
@@ -187,5 +203,6 @@ mod native {
             timeout_seconds: f64,
         ) -> Result<NativeOutcome>;
         fn snapshot(self: &NativeConfiguration) -> Result<NativeSnapshot>;
+        fn restore(self: Pin<&mut NativeConfiguration>, snapshot: &NativeSnapshot) -> Result<()>;
     }
 }
