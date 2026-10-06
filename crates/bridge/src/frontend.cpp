@@ -1,8 +1,10 @@
-#include "frontend/diagnostics.hpp"
-#include "frontend/state.hpp"
 #include "instar-bridge/src/boundary.rs.h"
 
+#include "frontend/diagnostics.hpp"
+#include "frontend/state.hpp"
+
 #include "Luau/Ast.h"
+
 #include <stdexcept>
 #include <utility>
 

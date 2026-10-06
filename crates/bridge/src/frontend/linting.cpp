@@ -1,5 +1,6 @@
-#include "diagnostics.hpp"
 #include "instar-bridge/src/boundary.rs.h"
+
+#include "diagnostics.hpp"
 #include "state.hpp"
 
 #include "Luau/Ast.h"
@@ -8,6 +9,7 @@
 #include "Luau/Scope.h"
 #include "Luau/Type.h"
 #include "Luau/TypeArena.h"
+
 #include <chrono>
 #include <set>
 #include <stdexcept>
