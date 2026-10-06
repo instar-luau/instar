@@ -6,13 +6,15 @@ use std::{
     time::Instant,
 };
 
-use instar_analysis::{Completion, Diagnostic, Location, Options};
+use instar_analysis::{
+    Completion, Diagnostic, Location, Options,
+    process::{Outcome, Process},
+};
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
     Configuration, Snapshot, boundary, flags,
-    process::{Outcome, Process},
     protocol::{Operation, Request, Response},
 };
 
@@ -263,7 +265,7 @@ pub struct LintResult {
 
 /// A native Luau Frontend whose resolution policy belongs exclusively to its host.
 pub struct Frontend {
-    process: Option<Process>,
+    process: Option<Process<Request, Response>>,
     host: Host,
     flags: BTreeMap<String, flags::Value>,
 }
@@ -275,7 +277,7 @@ impl Frontend {
     /// Returns worker startup failures.
     pub fn new() -> io::Result<Self> {
         Ok(Self {
-            process: Some(Process::start()?),
+            process: Some(Process::start("worker")?),
             host: Host::default(),
             flags: BTreeMap::new(),
         })
@@ -629,7 +631,7 @@ impl Frontend {
         operation: Operation,
         options: &Options,
         started: Instant,
-    ) -> io::Result<Outcome> {
+    ) -> io::Result<Outcome<Response>> {
         if let Some(reason) = options.interrupted(started) {
             return Ok(Outcome::Interrupted(reason));
         }
@@ -662,7 +664,7 @@ impl Frontend {
         }
 
         if self.process.is_none() {
-            self.process = Some(Process::start()?);
+            self.process = Some(Process::start("worker")?);
         }
 
         let request = Request {

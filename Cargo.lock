@@ -306,6 +306,7 @@ version = "0.7.2"
 dependencies = [
  "glob",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -352,7 +353,9 @@ dependencies = [
  "instar-syntax",
  "schemars",
  "serde",
+ "serde_json",
  "toml",
+ "unicode-width",
  "vermis",
 ]
 

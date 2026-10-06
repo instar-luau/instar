@@ -1,6 +1,6 @@
 use super::{
     builder::Plan,
-    document::{Document, Layout, width},
+    document::{Document, Layout},
 };
 
 use crate::{
@@ -10,6 +10,7 @@ use crate::{
 
 use instar_analysis::{Completion, Options, Reason};
 use std::time::Instant;
+use unicode_width::UnicodeWidthStr;
 
 use vermis::{
     emitter::{Emitter, LineEnding as EmittedLineEnding},
@@ -79,17 +80,18 @@ pub(super) fn emit(
     let mut renderer = Renderer {
         tree,
         configuration,
-        quotes: &plan.quotes,
         options,
         started,
         interruption: None,
-        emitter: Emitter::from_tree(tree, line_ending),
+        emitter: Some(Emitter::from_tree(tree, line_ending)),
         replacements: &replacements,
         indentation: 0,
         column: 0,
         lines: 0,
         space: false,
         emitted: false,
+        measurement: None,
+        exceeded: false,
     };
 
     renderer.render(&plan.document, false);
@@ -102,11 +104,21 @@ pub(super) fn emit(
     }
 
     if renderer.emitted {
-        renderer.emitter.newline();
+        renderer
+            .emitter
+            .as_mut()
+            .expect("output renderer")
+            .newline();
     }
 
     Output {
-        output: Some(renderer.emitter.finish().into_owned()),
+        output: Some(
+            renderer
+                .emitter
+                .expect("output renderer")
+                .finish()
+                .into_owned(),
+        ),
         diagnostics: Vec::new(),
         completion: Completion::Complete,
     }
@@ -115,17 +127,18 @@ pub(super) fn emit(
 struct Renderer<'tree, 'source> {
     tree: &'tree Tree<'source>,
     configuration: &'tree Configuration,
-    quotes: &'tree [Option<Vec<u8>>],
     options: &'tree Options,
     started: Instant,
     interruption: Option<Reason>,
-    emitter: Emitter<'source>,
+    emitter: Option<Emitter<'source>>,
     replacements: &'tree [Option<(Tree<'source>, TokenIndex)>],
     indentation: usize,
     column: usize,
     lines: usize,
     space: bool,
     emitted: bool,
+    measurement: Option<Layout>,
+    exceeded: bool,
 }
 
 impl Renderer<'_, '_> {
@@ -135,39 +148,25 @@ impl Renderer<'_, '_> {
                 .interruption
                 .or_else(|| self.options.interrupted(self.started));
 
-            if self.interruption.is_some() {
+            if self.interruption.is_some() || self.exceeded {
                 return;
             }
 
             match item {
-                Document::Token(index) => {
-                    self.separate();
-
-                    let bytes = if let Some((tree, token)) = &self.replacements[index.get()] {
-                        self.emitter.token(tree, *token);
-
-                        tree.token(*token).bytes(tree.source)
-                    } else {
-                        self.emitter.token(self.tree, *index);
-
-                        self.tree.token(*index).bytes(self.tree.source)
-                    };
-
-                    self.column = bytes
-                        .iter()
-                        .rposition(|&byte| byte == b'\n')
-                        .map_or(self.column + bytes.len(), |position| {
-                            bytes.len() - position - 1
-                        });
-
-                    self.emitted = true;
-                }
+                Document::Token(index) => self.token(*index),
 
                 Document::Symbol(symbol) => {
                     self.separate();
-                    self.emitter.symbol(*symbol);
+
+                    if let Some(emitter) = &mut self.emitter {
+                        emitter.symbol(*symbol);
+                    }
+
                     self.column += 1;
                     self.emitted = true;
+
+                    self.exceeded |=
+                        self.emitter.is_none() && self.column > self.configuration.width.get();
                 }
 
                 Document::Space => self.space = true,
@@ -175,6 +174,7 @@ impl Renderer<'_, '_> {
                 Document::Line(lines) => {
                     self.lines = self.lines.max(*lines);
                     self.space = false;
+                    self.exceeded |= matches!(self.measurement, Some(Layout::Fit));
                 }
 
                 Document::Soft(spaces) => {
@@ -189,8 +189,15 @@ impl Renderer<'_, '_> {
                 Document::TrailingComma => {
                     if !flat {
                         self.separate();
-                        self.emitter.symbol(Symbol::Comma);
+
+                        if let Some(emitter) = &mut self.emitter {
+                            emitter.symbol(Symbol::Comma);
+                        }
+
                         self.column += 1;
+
+                        self.exceeded |=
+                            self.emitter.is_none() && self.column > self.configuration.width.get();
                     }
                 }
 
@@ -212,18 +219,14 @@ impl Renderer<'_, '_> {
                     };
 
                     let flat = match layout {
-                        Layout::Vertical => false,
-                        Layout::Pressed => true,
+                        Layout::Vertical => {
+                            self.exceeded |= matches!(self.measurement, Some(Layout::Fit));
 
-                        Layout::Fit => {
-                            flat || width(
-                                content,
-                                self.tree,
-                                self.quotes,
-                                self.options,
-                                self.started,
-                            )
-                            .is_some_and(|width| column + width <= self.configuration.width.get())
+                            false
+                        }
+
+                        Layout::Arguments | Layout::Fit => {
+                            flat || self.fits(content, column, *layout)
                         }
                     };
 
@@ -233,29 +236,106 @@ impl Renderer<'_, '_> {
         }
     }
 
+    fn fits(&self, document: &[Document], column: usize, layout: Layout) -> bool {
+        let mut probe = Renderer {
+            tree: self.tree,
+            configuration: self.configuration,
+            options: self.options,
+            started: self.started,
+            interruption: None,
+            emitter: None,
+            replacements: self.replacements,
+            indentation: self.indentation,
+            column,
+            lines: 0,
+            space: false,
+            emitted: true,
+            measurement: Some(layout),
+            exceeded: false,
+        };
+
+        probe.render(document, true);
+
+        !probe.exceeded && probe.interruption.is_none()
+    }
+
+    fn token(&mut self, index: TokenIndex) {
+        self.separate();
+
+        let (tree, token) = self.replacements[index.get()]
+            .as_ref()
+            .map_or((self.tree, index), |(tree, token)| (tree, *token));
+
+        if let Some(emitter) = &mut self.emitter {
+            emitter.token(tree, token);
+        }
+
+        let bytes = tree.token(token).bytes(tree.source);
+        let (column, maximum) = columns(bytes, self.column, self.configuration.indent_width.get());
+        self.column = column;
+
+        self.exceeded |= self.emitter.is_none()
+            && (maximum > self.configuration.width.get()
+                || (matches!(self.measurement, Some(Layout::Fit)) && bytes.contains(&b'\n')));
+
+        self.emitted = true;
+    }
+
     fn separate(&mut self) {
         if self.lines > 0 || !self.emitted {
-            if self.emitted {
-                for _ in 0..self.lines {
-                    self.emitter.newline();
+            if let Some(emitter) = &mut self.emitter {
+                if self.emitted {
+                    for _ in 0..self.lines {
+                        emitter.newline();
+                    }
                 }
-            }
 
-            match self.configuration.indent_style {
-                IndentStyle::Tabs => self.emitter.tabs(self.indentation),
+                match self.configuration.indent_style {
+                    IndentStyle::Tabs => emitter.tabs(self.indentation),
 
-                IndentStyle::Spaces => self
-                    .emitter
-                    .spaces(self.indentation * self.configuration.indent_width.get()),
+                    IndentStyle::Spaces => {
+                        emitter.spaces(self.indentation * self.configuration.indent_width.get());
+                    }
+                }
             }
 
             self.column = self.indentation * self.configuration.indent_width.get();
         } else if self.space {
-            self.emitter.spaces(1);
+            if let Some(emitter) = &mut self.emitter {
+                emitter.spaces(1);
+            }
+
             self.column += 1;
         }
 
         self.lines = 0;
         self.space = false;
     }
+}
+
+fn columns(bytes: &[u8], mut column: usize, tab_width: usize) -> (usize, usize) {
+    let mut maximum = column;
+
+    for segment in bytes.split_inclusive(|byte| matches!(byte, b'\n' | b'\t')) {
+        let (text, separator) = match segment.split_last() {
+            Some((&separator @ (b'\n' | b'\t'), text)) => (text, Some(separator)),
+            _ => (segment, None),
+        };
+
+        column += UnicodeWidthStr::width(String::from_utf8_lossy(text).as_ref());
+        maximum = maximum.max(column);
+
+        match separator {
+            Some(b'\n') => column = 0,
+
+            Some(b'\t') => {
+                column += tab_width - column % tab_width;
+                maximum = maximum.max(column);
+            }
+
+            _ => {}
+        }
+    }
+
+    (column, maximum)
 }

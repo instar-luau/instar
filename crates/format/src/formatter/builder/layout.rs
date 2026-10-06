@@ -1,4 +1,4 @@
-use super::super::document::{Document, Layout, width};
+use super::super::document::{Document, Layout};
 use super::{Builder, Statement};
 use crate::configuration::{BlankLines, Order};
 use std::ops::Range;
@@ -528,16 +528,10 @@ impl Builder<'_, '_> {
             .map(|entry| self.node(entry.node))
             .collect::<Vec<_>>();
 
-        let pressed = documents.iter().any(|document| {
-            width(
-                document,
-                self.tree,
-                &self.quotes,
-                self.options,
-                self.started,
-            )
-            .is_none()
-        });
+        let multiline = documents
+            .iter()
+            .flatten()
+            .any(|item| item.multiline(self.tree));
 
         let mut interior = vec![Document::Soft(0)];
         let mut position = opening.get() + 1;
@@ -580,8 +574,8 @@ impl Builder<'_, '_> {
         interior.extend(self.trivia(position..closing.get(), true));
 
         vec![Document::Group {
-            layout: if pressed {
-                Layout::Pressed
+            layout: if multiline {
+                Layout::Arguments
             } else {
                 Layout::Fit
             },

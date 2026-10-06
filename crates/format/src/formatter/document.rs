@@ -4,7 +4,7 @@ use vermis::{token::Symbol, tree::TokenIndex};
 pub(super) enum Layout {
     Fit,
     Vertical,
-    Pressed,
+    Arguments,
 }
 
 pub(super) enum Document {
@@ -26,46 +26,22 @@ pub(super) enum Document {
     },
 }
 
-pub(super) fn width(
-    document: &[Document],
-    tree: &vermis::tree::Tree<'_>,
-    quotes: &[Option<Vec<u8>>],
-    options: &instar_analysis::Options,
-    started: std::time::Instant,
-) -> Option<usize> {
-    document.iter().try_fold(0usize, |width, item| {
-        if options.interrupted(started).is_some() {
-            return None;
-        }
-
-        let length = match item {
-            Document::Token(index) => {
-                let bytes = quotes[index.get()]
-                    .as_deref()
-                    .unwrap_or_else(|| tree.token(*index).bytes(tree.source));
-
-                if bytes.contains(&b'\n') {
-                    return None;
-                }
-
-                bytes.len()
-            }
-
-            Document::Symbol(_) | Document::Space => 1,
-            Document::Soft(spaces) => *spaces,
-            Document::TrailingComma => 0,
-
-            Document::Line(_)
-            | Document::Group {
+impl Document {
+    pub(super) fn multiline(&self, tree: &vermis::tree::Tree<'_>) -> bool {
+        match self {
+            Self::Line(_)
+            | Self::Group {
                 layout: Layout::Vertical,
                 ..
-            } => return None,
+            } => true,
 
-            Document::Group { content, .. } | Document::Indent { content, .. } => {
-                self::width(content, tree, quotes, options, started)?
+            Self::Token(index) => tree.token(*index).bytes(tree.source).contains(&b'\n'),
+
+            Self::Group { content, .. } | Self::Indent { content, .. } => {
+                content.iter().any(|item| item.multiline(tree))
             }
-        };
 
-        width.checked_add(length)
-    })
+            _ => false,
+        }
+    }
 }

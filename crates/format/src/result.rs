@@ -1,9 +1,10 @@
 use instar_analysis::{Completion, Reason};
+use serde::{Deserialize, Serialize};
 
 use crate::Diagnostic;
 
 /// Formatting output and explicit operation completeness.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Result {
     /// Complete formatted source, available only when formatting succeeds.
     pub output: Option<Vec<u8>>,
