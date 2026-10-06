@@ -230,8 +230,9 @@ mod boundary {
     use crate::frontend::{Cancellation, Host};
 
     pub(super) use native::{
-        NativeCompletion, NativeConfiguration, NativeDefinition, NativeFrontend, NativeKind,
-        NativeSite, NativeSource, create, create_frontend,
+        NativeCompletion, NativeConfiguration, NativeDefinition, NativeDiagnostic, NativeFactKind,
+        NativeFrontend, NativeKind, NativeLocation, NativeSite, NativeSource, create,
+        create_frontend,
     };
 
     #[cxx::bridge(namespace = "instar")]
@@ -336,6 +337,32 @@ mod boundary {
             completion: NativeCompletion,
         }
 
+        struct NativeWarning {
+            location: NativeLocation,
+            code: i32,
+            name: String,
+            message: String,
+            fatal: bool,
+        }
+
+        enum NativeFactKind {
+            ImplicitAnyLocal,
+            ImplicitAnyParameter,
+        }
+
+        struct NativeFact {
+            location: NativeLocation,
+            kind: NativeFactKind,
+            message: String,
+        }
+
+        struct NativeLintResult {
+            warnings: Vec<NativeWarning>,
+            facts: Vec<NativeFact>,
+            diagnostics: Vec<NativeDiagnostic>,
+            completion: NativeCompletion,
+        }
+
         extern "Rust" {
             type Host;
             fn read_source(self: &Host, name: &str) -> NativeSource;
@@ -371,6 +398,15 @@ mod boundary {
                 names: &[String],
                 cancellation: &Cancellation,
             ) -> Result<NativeCheck>;
+            fn lint(
+                self: Pin<&mut NativeFrontend>,
+                host: &Host,
+                entries: &[String],
+                timeout_seconds: f64,
+                names: &[String],
+                cancellation: &Cancellation,
+                semantic_modules: &[String],
+            ) -> Result<NativeLintResult>;
 
             fn create() -> Result<UniquePtr<NativeConfiguration>>;
             fn apply(
