@@ -1,0 +1,12 @@
+[package]
+name = "instar-bridge"
+version.workspace = true
+edition.workspace = true
+description = "Native Luau bridge"
+repository.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true

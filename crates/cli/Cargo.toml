@@ -1,0 +1,16 @@
+[package]
+name = "instar-cli"
+version.workspace = true
+edition.workspace = true
+description = "Command-line interface for the Luau toolchain"
+repository.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "instar"
+path = "src/main.rs"
+
+[lints]
+workspace = true
