@@ -1,0 +1,20 @@
+[
+  {
+    "error": "$ROOT/caller.luau: require \"./.config\": .config.luau is not an importable module"
+  },
+  {
+    "error": "$ROOT/caller.luau: require \"./.config.luau\": .config.luau is not an importable module"
+  },
+  {
+    "error": "$ROOT/caller.luau: require \"@configuration\": .config.luau is not an importable module"
+  },
+  {
+    "error": "$ROOT/.config.luau: require \"./caller\": .config.luau is not an importable module"
+  },
+  {
+    "module": {
+      "path": "$ROOT/package",
+      "source": "$ROOT/package/init.luau"
+    }
+  }
+]

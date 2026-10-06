@@ -1,0 +1,50 @@
+[
+  {
+    "source": "child/caller.luau",
+    "request": "./sibling"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": "../parent"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": ".\\sibling"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": "./missing/../sibling"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": "sibling"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": "/target"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": "C:/target"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": "//server/target"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": "./sibling.luau"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": "./"
+  },
+  {
+    "source": "child/caller.luau",
+    "request": "."
+  },
+  {
+    "source": "child/caller.luau",
+    "request": ".."
+  }
+]

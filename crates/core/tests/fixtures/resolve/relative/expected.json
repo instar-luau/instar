@@ -1,0 +1,47 @@
+[
+  {
+    "module": {
+      "path": "$ROOT/child/sibling",
+      "source": "$ROOT/child/sibling.luau"
+    }
+  },
+  {
+    "module": {
+      "path": "$ROOT/parent",
+      "source": "$ROOT/parent.lua"
+    }
+  },
+  {
+    "module": {
+      "path": "$ROOT/child/sibling",
+      "source": "$ROOT/child/sibling.luau"
+    }
+  },
+  {
+    "error": "$ROOT/child/caller.luau: require \"./missing/../sibling\": module path not found: $ROOT/child/missing"
+  },
+  {
+    "error": "$ROOT/child/caller.luau: require \"sibling\": require path must start with ./, ../, or @"
+  },
+  {
+    "error": "$ROOT/child/caller.luau: require \"/target\": require path must start with ./, ../, or @"
+  },
+  {
+    "error": "$ROOT/child/caller.luau: require \"C:/target\": require path must start with ./, ../, or @"
+  },
+  {
+    "error": "$ROOT/child/caller.luau: require \"//server/target\": require path must start with ./, ../, or @"
+  },
+  {
+    "error": "$ROOT/child/caller.luau: require \"./sibling.luau\": module path not found: $ROOT/child/sibling.luau"
+  },
+  {
+    "error": "$ROOT/child/caller.luau: require \"./\": directory has no module source: $ROOT/child"
+  },
+  {
+    "error": "$ROOT/child/caller.luau: require \".\": require path must start with ./, ../, or @"
+  },
+  {
+    "error": "$ROOT/child/caller.luau: require \"..\": require path must start with ./, ../, or @"
+  }
+]

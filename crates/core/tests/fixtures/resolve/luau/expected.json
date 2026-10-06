@@ -1,0 +1,50 @@
+[
+  {
+    "module": {
+      "path": "$ROOT/child/local/leaf",
+      "source": "$ROOT/child/local/leaf.lua"
+    }
+  },
+  {
+    "module": {
+      "path": "$ROOT/child/local/leaf",
+      "source": "$ROOT/child/local/leaf.lua"
+    }
+  },
+  {
+    "module": {
+      "path": "$ROOT/parent",
+      "source": "$ROOT/parent.lua"
+    }
+  },
+  {
+    "module": {
+      "path": "$ROOT/library/leaf",
+      "source": "$ROOT/library/leaf.luau"
+    }
+  },
+  {
+    "module": {
+      "path": "$ROOT/parent",
+      "source": "$ROOT/parent.lua"
+    }
+  },
+  {
+    "error": "$ROOT/child/caller.luau: require \"@down/leaf\": unknown alias @childonly"
+  },
+  {
+    "error": "$ROOT/child/caller.luau: require \"@first\": alias cycle: $ROOT:@first -> $ROOT:@second -> $ROOT:@first"
+  },
+  {
+    "module": {
+      "path": "$ROOT/library/leaf",
+      "source": "$ROOT/library/leaf.luau"
+    }
+  },
+  {
+    "module": {
+      "path": "$ROOT/library/leaf",
+      "source": "$ROOT/library/leaf.luau"
+    }
+  }
+]

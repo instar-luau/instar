@@ -1,0 +1,22 @@
+[
+  {
+    "source": "caller.luau",
+    "request": "./dual"
+  },
+  {
+    "source": "caller.luau",
+    "request": "./init"
+  },
+  {
+    "source": "caller.luau",
+    "request": "./directory"
+  },
+  {
+    "source": "caller.luau",
+    "request": "@self"
+  },
+  {
+    "source": "caller.luau",
+    "request": "@self/../dual"
+  }
+]

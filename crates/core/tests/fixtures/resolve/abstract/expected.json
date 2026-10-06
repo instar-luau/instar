@@ -1,0 +1,62 @@
+[
+  {
+    "module": {
+      "path": "$ROOT/outer",
+      "source": "$ROOT/outer.luau"
+    }
+  },
+  {
+    "module": {
+      "path": "$ROOT/package/outer",
+      "source": "$ROOT/package/outer.luau"
+    }
+  },
+  {
+    "module": {
+      "path": "$ROOT/package/outer",
+      "source": "$ROOT/package/outer.luau"
+    }
+  },
+  {
+    "module": {
+      "path": "$ROOT/outer",
+      "source": "$ROOT/outer.luau"
+    }
+  },
+  {
+    "module": {
+      "path": "$ROOT/package/outer",
+      "source": "$ROOT/package/outer.luau"
+    }
+  },
+  {
+    "module": {
+      "path": "$ROOT/outer",
+      "source": "$ROOT/outer.luau"
+    }
+  },
+  {
+    "module": {
+      "path": "$ROOT/package/child/leaf",
+      "source": "$ROOT/package/child/leaf.luau"
+    }
+  },
+  {
+    "module": {
+      "path": "$ROOT/package/child",
+      "source": "$ROOT/package/child/init.lua"
+    }
+  },
+  {
+    "module": {
+      "path": "$ROOT/package/child",
+      "source": "$ROOT/package/child/init.lua"
+    }
+  },
+  {
+    "error": "$ROOT/caller.luau: require \"./package/init\": module path not found: $ROOT/package/init"
+  },
+  {
+    "error": "$ROOT/caller.luau: require \"./package/child/init\": module path not found: $ROOT/package/child/init"
+  }
+]

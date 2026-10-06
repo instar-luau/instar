@@ -1,0 +1,38 @@
+[
+  {
+    "module": {
+      "path": "$ROOT/package/inside",
+      "source": "$ROOT/package/inside.lua"
+    }
+  },
+  {
+    "module": {
+      "path": "$ROOT/package/inside",
+      "source": "$ROOT/package/inside.lua"
+    }
+  },
+  {
+    "module": {
+      "path": "$ROOT/outside",
+      "source": "$ROOT/outside.luau"
+    }
+  },
+  {
+    "module": {
+      "path": "$ROOT/outside",
+      "source": "$ROOT/outside.luau"
+    }
+  },
+  {
+    "module": {
+      "path": "$ROOT/outside",
+      "source": "$ROOT/outside.luau"
+    }
+  },
+  {
+    "module": {
+      "path": "$ROOT/package/inside",
+      "source": "$ROOT/package/inside.lua"
+    }
+  }
+]

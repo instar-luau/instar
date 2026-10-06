@@ -1,0 +1,46 @@
+[
+  {
+    "source": "package/init.luau",
+    "request": "./outer"
+  },
+  {
+    "source": "package/init.luau",
+    "request": "@self/outer"
+  },
+  {
+    "source": "package/init.luau",
+    "request": "./package/outer"
+  },
+  {
+    "source": "package/init.luau",
+    "request": "@SeLf/../outer"
+  },
+  {
+    "source": "package/child/init.lua",
+    "request": "./outer"
+  },
+  {
+    "source": "package/child/init.lua",
+    "request": "../outer"
+  },
+  {
+    "source": "package/child/init.lua",
+    "request": "@self/leaf"
+  },
+  {
+    "source": "package/child/init.lua",
+    "request": "@self"
+  },
+  {
+    "source": "caller.luau",
+    "request": "./package/child"
+  },
+  {
+    "source": "caller.luau",
+    "request": "./package/init"
+  },
+  {
+    "source": "caller.luau",
+    "request": "./package/child/init"
+  }
+]

@@ -1,0 +1,23 @@
+[
+  {
+    "error": "$ROOT/caller.luau: require \"./dual\": ambiguous module $ROOT/dual: $ROOT/dual.luau, $ROOT/dual.lua"
+  },
+  {
+    "module": {
+      "path": "$ROOT/init",
+      "source": "$ROOT/init/init.luau"
+    }
+  },
+  {
+    "error": "$ROOT/caller.luau: require \"./directory\": directory has no module source: $ROOT/directory"
+  },
+  {
+    "module": {
+      "path": "$ROOT/caller",
+      "source": "$ROOT/caller.luau"
+    }
+  },
+  {
+    "error": "$ROOT/caller.luau: require \"@self/../dual\": ambiguous module $ROOT/dual: $ROOT/dual.luau, $ROOT/dual.lua"
+  }
+]
