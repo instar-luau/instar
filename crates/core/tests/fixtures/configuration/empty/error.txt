@@ -1,0 +1,1 @@
+group names must not be empty

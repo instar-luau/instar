@@ -1,0 +1,88 @@
+include = ["src/**/*.luau"]
+exclude = ["src/generated/**"]
+
+[check]
+include = []
+exclude = []
+
+[format]
+include = ["src/**"]
+exclude = []
+width = 88
+indent_style = "spaces"
+indent_width = 2
+line_ending = "crlf"
+quote_style = "prefer_single"
+
+[format.requires]
+order = "grouped"
+groups = [
+    { name = "services", patterns = ["@services/**"] },
+    "alias",
+    "relative",
+    "other",
+]
+blank_lines = "none"
+
+[lint]
+include = ["src/**"]
+exclude = ["src/vendor/**"]
+compare_nan = { level = "deny" }
+constant_condition = { level = "info" }
+implicit_any_local = {}
+
+[lint.unused_variable]
+level = "info"
+parameters = true
+ignore_pattern = "^(_|ignored)"
+
+[lint.high_cyclomatic_complexity]
+level = "warn"
+maximum_complexity = 12
+
+[lint.prefer_const]
+level = "info"
+mutated_tables_stay_local = true
+
+[lint.deprecated]
+paths = { "old.call" = "new.call" }
+ambiguous_methods = true
+
+[lint.restricted_globals]
+level = "deny"
+names = { print = "Use logger" }
+
+[lint.restricted_module_paths]
+paths = { "legacy/**" = "Use new modules" }
+
+[editor.diagnostics]
+scope = "workspace"
+
+[editor.index]
+include = ["src/**"]
+exclude = []
+
+[editor.completion]
+snippets = false
+
+[editor.imports]
+enabled = false
+include = ["modules/**"]
+exclude = ["modules/private/**"]
+require = "instance"
+binding = "local"
+
+[editor.hints]
+variable_types = true
+parameter_names = true
+return_types = true
+hide_obvious = false
+
+[environment]
+definitions = ["types.d.luau"]
+documentation = ["docs.json"]
+
+[roblox]
+enabled = true
+sourcemaps = ["sourcemap.json"]
+security = "plugin"

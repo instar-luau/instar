@@ -1,0 +1,6 @@
+include = ["root/**"]
+exclude = ["generated/**"]
+[format]
+include = ["formatted/**"]
+[editor.imports]
+exclude = ["private/**"]

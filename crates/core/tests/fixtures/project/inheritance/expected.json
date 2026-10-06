@@ -1,0 +1,39 @@
+{
+  "/configuration/include": [
+    "$ROOT/source/**"
+  ],
+  "/configuration/exclude": [],
+  "/configuration/check/include": [
+    "$ROOT/source/**"
+  ],
+  "/configuration/format/width": 100,
+  "/configuration/format/indent_style": "spaces",
+  "/configuration/format/quote_style": "prefer_double",
+  "/configuration/format/requires/order": "grouped",
+  "/configuration/format/requires/groups": [
+    "relative",
+    "other"
+  ],
+  "/configuration/lint/restricted_globals/names": {
+    "old": "child",
+    "kept": "root"
+  },
+  "/configuration/editor/hints/variable_types": true,
+  "/configuration/editor/hints/parameter_names": true,
+  "/configuration/environment/definitions": [
+    "$ROOT/types.luau"
+  ],
+  "/configuration/environment/documentation": [
+    "$ROOT/child/child.json"
+  ],
+  "/configuration/roblox/enabled": false,
+  "/native/mode": "strict",
+  "/native/globals": [
+    "child1",
+    "child2"
+  ],
+  "/native/aliases/base/value": "./modules",
+  "/native/aliases/base/directory": "$ROOT",
+  "/native/aliases/child/directory": "$ROOT/child",
+  "/native/lint/LocalUnused/enabled": true
+}

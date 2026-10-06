@@ -1,0 +1,15 @@
+include = ["source/**"]
+exclude = ["generated/**"]
+[format]
+width = 100
+[format.requires]
+order = "grouped"
+groups = ["alias", "other"]
+[lint.restricted_globals.names]
+old = "root"
+kept = "root"
+[editor.hints]
+variable_types = true
+[environment]
+definitions = ["types.luau"]
+documentation = ["docs.json"]

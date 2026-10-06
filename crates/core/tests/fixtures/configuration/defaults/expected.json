@@ -1,0 +1,77 @@
+{
+  "check": {},
+  "format": {
+    "width": 120,
+    "indent_style": "tabs",
+    "indent_width": 4,
+    "line_ending": "lf",
+    "quote_style": "prefer_double",
+    "requires": {
+      "order": "preserve",
+      "groups": ["alias", "relative", "other"],
+      "blank_lines": "between_groups"
+    }
+  },
+  "lint": {
+    "almost_swapped": { "level": "warn" },
+    "bad_string_escape": { "level": "warn" },
+    "compare_nan": { "level": "warn" },
+    "constant_condition": { "level": "warn" },
+    "constant_table_comparison": { "level": "warn" },
+    "length_as_condition": { "level": "warn" },
+    "mismatched_argument_count": { "level": "warn" },
+    "must_use": { "level": "warn" },
+    "zero_step_loop": { "level": "warn" },
+    "divide_by_zero": { "level": "warn" },
+    "self_assignment": { "level": "warn" },
+    "empty_if": { "level": "warn" },
+    "empty_loop": { "level": "warn" },
+    "if_same_then_else": { "level": "warn" },
+    "ignored_pcall_result": { "level": "warn" },
+    "mixed_table": { "level": "warn" },
+    "unscoped_variables": { "level": "warn" },
+    "roblox_incorrect_color3_new_bounds": { "level": "warn" },
+    "roblox_manual_fromscale_or_fromoffset": { "level": "warn" },
+    "roblox_prefer_get_players": { "level": "warn" },
+    "roblox_suspicious_udim2_new": { "level": "warn" },
+    "implicit_any_local": { "level": "allow" },
+    "implicit_any_parameter": { "level": "allow" },
+    "and_or_conditional": { "level": "allow" },
+    "collapsible_if": { "level": "allow" },
+    "else_after_return": { "level": "allow" },
+    "if_expression_assignment": { "level": "allow" },
+    "negated_condition": { "level": "allow" },
+    "non_const_require": { "level": "allow" },
+    "parenthesized_conditions": { "level": "allow" },
+    "global_usage": { "level": "allow" },
+    "type_check_inside_call": { "level": "allow" },
+    "loop_invariant_call": { "level": "allow" },
+    "manual_table_clone": { "level": "allow" },
+    "string_concat_in_loop": { "level": "allow" },
+    "unused_variable": {
+      "level": "warn",
+      "parameters": false,
+      "loop_variables": false,
+      "ignore_pattern": "^_"
+    },
+    "high_cyclomatic_complexity": { "level": "allow", "maximum_complexity": 40 },
+    "prefer_const": { "level": "allow", "mutated_tables_stay_local": false },
+    "deprecated": { "level": "warn", "paths": {}, "ambiguous_methods": false },
+    "restricted_globals": { "level": "warn", "names": {} },
+    "restricted_module_paths": { "level": "warn", "paths": {} }
+  },
+  "editor": {
+    "diagnostics": { "scope": "open_files" },
+    "index": {},
+    "completion": { "snippets": true },
+    "imports": { "enabled": true, "require": "string", "binding": "const" },
+    "hints": {
+      "variable_types": false,
+      "parameter_names": false,
+      "return_types": false,
+      "hide_obvious": true
+    }
+  },
+  "environment": { "definitions": [], "documentation": [] },
+  "roblox": { "security": "none" }
+}

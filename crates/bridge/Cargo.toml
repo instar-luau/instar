@@ -8,5 +8,14 @@ license.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[dependencies]
+cxx = "1"
+serde.workspace = true
+
+[build-dependencies]
+cmake = "0.1"
+cxx-build = "1"
+serde_json.workspace = true
+
 [lints]
 workspace = true

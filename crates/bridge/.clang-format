@@ -1,0 +1,13 @@
+AlignAfterOpenBracket: DontAlign
+AllowAllArgumentsOnNextLine: false
+AllowShortFunctionsOnASingleLine:
+  Other: false
+BreakAfterOpenBracketFunction: true
+BreakBeforeCloseBracketFunction: true
+ColumnLimit: 120
+IndentExternBlock: Indent
+IndentWidth: 4
+InsertBraces: true
+NamespaceIndentation: All
+PackArguments:
+  BinPack: OnePerLine
