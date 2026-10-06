@@ -1,6 +1,11 @@
 //! Native analysis preparation from the Rust-owned graph.
 
-use crate::{configuration::invalid, project::Project, resolve::Identity};
+use crate::{
+    configuration::invalid,
+    project::Project,
+    resolve::{Identity, Module},
+};
+
 use instar_bridge::frontend::{Frontend, Link, Site};
 use std::{io, path::Path};
 
@@ -13,12 +18,25 @@ pub fn name(identity: &Identity) -> String {
 impl Project {
     /// Prepares reachable native ASTs using Rust sources, settings and resolved sites.
     ///
-    /// No checker runs. Native analysis receives exact contextual identities and
+    /// No project source is typechecked. Native analysis receives exact identities and
     /// validates every static Rust request against its parsed argument and call ranges.
     ///
     /// # Errors
     /// Returns graph discovery, source/configuration or native agreement failures.
     pub fn prepare(&mut self, source: &Path, context: Option<&Identity>) -> io::Result<Vec<Link>> {
+        let entry = self.install(source, context)?;
+
+        self.frontend
+            .as_mut()
+            .ok_or_else(|| invalid("native frontend is unavailable"))?
+            .parse(&name(&entry.identity))
+    }
+
+    pub(crate) fn install(
+        &mut self,
+        source: &Path,
+        context: Option<&Identity>,
+    ) -> io::Result<Module> {
         let entry = self.links(source, context)?.module.clone();
         let identities = self.discover(source, context)?;
 
@@ -62,7 +80,7 @@ impl Project {
                 )?;
             }
 
-            frontend.parse(&name(&entry.identity))
+            Ok(entry)
         })();
 
         self.frontend = Some(frontend);

@@ -188,6 +188,7 @@ dependencies = [
  "cmake",
  "cxx",
  "cxx-build",
+ "instar-check",
  "serde",
  "serde_json",
 ]

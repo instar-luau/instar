@@ -186,6 +186,23 @@ impl Project {
 
     fn analyze(&mut self, module: Module) -> io::Result<Rc<Node>> {
         let document = self.source(&module.source)?;
+
+        let directory = module
+            .source
+            .parent()
+            .ok_or_else(|| crate::configuration::invalid("module source has no directory"))?;
+
+        let settings = self.configuration(directory)?;
+
+        self.view.consulted.extend(
+            settings
+                .configuration
+                .environment
+                .definitions
+                .iter()
+                .cloned(),
+        );
+
         let (mut sites, problems) = extract(&document.text, document.revision);
         let shared = self.view.consulted.clone();
 
