@@ -1,13 +1,14 @@
 //! Native analysis preparation from the Rust-owned graph.
 
+use std::{io, path::Path};
+
+use instar_analysis::error::invalid;
+use instar_bridge::frontend::{Frontend, Link, Site};
+
 use crate::{
-    configuration::invalid,
     project::Project,
     resolve::{Identity, Module},
 };
-
-use instar_bridge::frontend::{Frontend, Link, Site};
-use std::{io, path::Path};
 
 /// Encodes an exact Rust identity as an opaque native module name.
 #[must_use]

@@ -1,17 +1,19 @@
 //! Rust-owned lazy module graph and source-revision require sites.
 
-use crate::{
-    extract::extract,
-    project::Project,
-    resolve::{Identity, Module, Request},
-    source::{Document, Failure, related},
-};
-
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
     path::{Path, PathBuf},
     rc::Rc,
+};
+
+use instar_analysis::error::invalid;
+
+use crate::{
+    extract::extract,
+    project::Project,
+    resolve::{Identity, Module, Request},
+    source::{Document, Failure, related},
 };
 
 /// A syntax parsing problem, independent of checker diagnostics.
@@ -190,7 +192,7 @@ impl Project {
         let directory = module
             .source
             .parent()
-            .ok_or_else(|| crate::configuration::invalid("module source has no directory"))?;
+            .ok_or_else(|| invalid("module source has no directory"))?;
 
         let settings = self.configuration(directory)?;
 

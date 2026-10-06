@@ -10,15 +10,16 @@ categories.workspace = true
 
 [dependencies]
 glob.workspace = true
+instar-analysis = { path = "../analysis" }
 instar-bridge = { path = "../bridge" }
-instar-check = { path = "../check" }
 instar-format = { path = "../format" }
 instar-lint = { path = "../lint" }
+instar-syntax = { path = "../syntax" }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
-vermis = "0.7"
+vermis.workspace = true
 
 [lints]
 workspace = true

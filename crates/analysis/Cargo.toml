@@ -1,16 +1,15 @@
 [package]
-name = "instar-check"
+name = "instar-analysis"
 version.workspace = true
 edition.workspace = true
-description = "Luau type checking"
+description = "Shared source analysis contracts"
 repository.workspace = true
 license.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-schemars.workspace = true
-serde.workspace = true
+glob.workspace = true
 
 [lints]
 workspace = true

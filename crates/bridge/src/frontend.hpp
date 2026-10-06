@@ -34,7 +34,7 @@ namespace instar {
       private:
         NativeCheck analyze(
             const Host &host, rust::Slice<const rust::String> entries, double timeout_seconds,
-            rust::Slice<const rust::String> names, const Cancellation &cancellation, bool retain_types, bool typecheck
+            rust::Slice<const rust::String> names, const Cancellation &cancellation, bool typecheck
         );
 
         struct State;

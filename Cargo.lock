@@ -182,23 +182,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "instar-analysis"
+version = "0.7.2"
+dependencies = [
+ "glob",
+]
+
+[[package]]
 name = "instar-bridge"
 version = "0.7.2"
 dependencies = [
  "cmake",
  "cxx",
  "cxx-build",
- "instar-check",
+ "instar-analysis",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "instar-check"
-version = "0.7.2"
-dependencies = [
- "schemars",
- "serde",
 ]
 
 [[package]]
@@ -210,10 +209,11 @@ name = "instar-core"
 version = "0.7.2"
 dependencies = [
  "glob",
+ "instar-analysis",
  "instar-bridge",
- "instar-check",
  "instar-format",
  "instar-lint",
+ "instar-syntax",
  "schemars",
  "serde",
  "serde_json",
@@ -226,6 +226,8 @@ name = "instar-format"
 version = "0.7.2"
 dependencies = [
  "glob",
+ "instar-analysis",
+ "instar-syntax",
  "schemars",
  "serde",
  "toml",
@@ -236,8 +238,8 @@ dependencies = [
 name = "instar-lint"
 version = "0.7.2"
 dependencies = [
- "glob",
- "instar-check",
+ "instar-analysis",
+ "instar-syntax",
  "regex",
  "schemars",
  "serde",
@@ -248,6 +250,14 @@ dependencies = [
 [[package]]
 name = "instar-server"
 version = "0.7.2"
+
+[[package]]
+name = "instar-syntax"
+version = "0.7.2"
+dependencies = [
+ "instar-analysis",
+ "vermis",
+]
 
 [[package]]
 name = "itoa"

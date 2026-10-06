@@ -1,16 +1,17 @@
 //! Tracked filesystem and sourcemap module resolution.
 
-use crate::{
-    configuration::invalid,
-    project::Project,
-    source::{Failure, Kind, normalize},
-};
-
 use std::{
     collections::BTreeSet,
     io,
     path::{Path, PathBuf},
     rc::Rc,
+};
+
+use instar_analysis::error::invalid;
+
+use crate::{
+    project::Project,
+    source::{Failure, Kind, normalize},
 };
 
 /// A module identity independent of its backing source.

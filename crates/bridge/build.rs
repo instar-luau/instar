@@ -14,7 +14,7 @@ fn main() {
     );
 
     let libraries = output.join("libraries");
-    let generated = cxx_build::bridge("src/lib.rs");
+    let generated = cxx_build::bridge("src/boundary.rs");
 
     let source = generated
         .get_files()
@@ -75,12 +75,13 @@ fn main() {
     }
 
     println!("cargo:rerun-if-changed=CMakeLists.txt");
-    println!("cargo:rerun-if-changed=src/lib.rs");
+    println!("cargo:rerun-if-changed=src/boundary.rs");
     println!("cargo:rerun-if-changed=src/configuration.hpp");
     println!("cargo:rerun-if-changed=src/configuration.cpp");
     println!("cargo:rerun-if-changed=src/frontend.rs");
     println!("cargo:rerun-if-changed=src/frontend.hpp");
     println!("cargo:rerun-if-changed=src/frontend.cpp");
+    println!("cargo:rerun-if-changed=src/frontend");
     println!("cargo:rerun-if-changed=vendor/luau");
 }
 

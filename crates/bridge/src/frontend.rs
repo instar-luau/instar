@@ -1,12 +1,13 @@
 //! Native analysis snapshots adapted from host-owned resolution results.
 
-use crate::{Configuration, Snapshot, boundary};
-use instar_check::{Completion, Diagnostic, Kind, Location, Options, Reason, Related};
-
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
 };
+
+use instar_analysis::{Completion, Diagnostic, Kind, Location, Options, Reason, Related};
+
+use crate::{Configuration, Snapshot, boundary};
 
 /// One host-extracted require site, anchored to immutable source bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,7 +65,7 @@ struct Source {
     definitions: Vec<Definition>,
 }
 
-pub(crate) struct Cancellation(instar_check::Cancellation);
+pub(crate) struct Cancellation(instar_analysis::Cancellation);
 
 impl Cancellation {
     pub(crate) fn requested(&self) -> bool {
@@ -219,7 +220,10 @@ fn location(value: boundary::NativeLocation) -> Location<String> {
 
 fn diagnostic(value: boundary::NativeDiagnostic) -> io::Result<Diagnostic<String>> {
     let kind = match value.kind {
-        boundary::NativeKind::Syntax => Kind::Syntax { code: value.code },
+        boundary::NativeKind::Syntax => Kind::Syntax {
+            code: Some(value.code),
+        },
+
         boundary::NativeKind::Type => Kind::Type { code: value.code },
 
         boundary::NativeKind::Resolution => Kind::Resolution {
@@ -443,7 +447,7 @@ impl Frontend {
         &mut self,
         entries: &[String],
         options: &Options,
-    ) -> io::Result<instar_check::Result<String>> {
+    ) -> io::Result<instar_analysis::Result<String>> {
         let names = self.names(entries)?;
 
         let result = self
@@ -466,7 +470,7 @@ impl Frontend {
             .map(diagnostic)
             .collect::<io::Result<Vec<_>>>()?;
 
-        Ok(instar_check::Result {
+        Ok(instar_analysis::Result {
             modules: names,
             diagnostics,
             completion,

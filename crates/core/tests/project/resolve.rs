@@ -1,73 +1,18 @@
 //! Synthetic require resolution fixtures with independent expected outcomes.
 
-use std::{
-    fs, io,
-    path::{Path, PathBuf},
-    sync::atomic::{AtomicUsize, Ordering},
-    time::Duration,
-};
+use std::{fs, io, path::Path, time::Duration};
 
 use instar_core::project::Project;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-static NEXT: AtomicUsize = AtomicUsize::new(0);
-
-struct Directory(PathBuf);
-
-impl Directory {
-    fn new() -> io::Result<Self> {
-        let path = std::env::temp_dir().join(format!(
-            "instar-require-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-
-        fs::create_dir(&path)?;
-
-        Ok(Self(path))
-    }
-}
-
-impl Drop for Directory {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.0).expect("remove synthetic require fixture");
-    }
-}
+use crate::support::{Directory, copy, normalize};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Request {
     source: String,
     request: String,
-}
-
-fn copy(source: &Path, target: &Path, root: &str) -> io::Result<()> {
-    for entry in fs::read_dir(source)? {
-        let entry = entry?;
-        let destination = target.join(entry.file_name());
-
-        if entry.file_type()?.is_dir() {
-            fs::create_dir(&destination)?;
-            copy(&entry.path(), &destination, root)?;
-        } else {
-            fs::write(
-                destination,
-                fs::read_to_string(entry.path())?.replace("$ROOT", root),
-            )?;
-        }
-    }
-
-    Ok(())
-}
-
-fn normalize(value: &mut Value, root: &str) {
-    match value {
-        Value::String(text) => *text = text.replace('\\', "/").replace(root, "$ROOT"),
-        Value::Array(values) => values.iter_mut().for_each(|value| normalize(value, root)),
-        Value::Object(values) => values.values_mut().for_each(|value| normalize(value, root)),
-        _ => {}
-    }
 }
 
 #[test]
@@ -81,9 +26,9 @@ fn require_fixtures() -> Result<(), Box<dyn std::error::Error>> {
     cases.sort();
 
     for case in cases {
-        let directory = Directory::new()?;
-        let root = directory.0.to_string_lossy().replace('\\', "/");
-        copy(&case.join("input"), &directory.0, &root)?;
+        let directory = Directory::new(None)?;
+        let root = directory.path.to_string_lossy().replace('\\', "/");
+        copy(&case.join("input"), &directory.path, Some(&root))?;
         let mut project = Project::new(Duration::from_secs(2));
 
         let requests: Vec<Request> =
@@ -106,7 +51,7 @@ fn require_fixtures() -> Result<(), Box<dyn std::error::Error>> {
         );
 
         for (request, expected) in requests.iter().zip(expected) {
-            let source = directory.0.join(&request.source);
+            let source = directory.path.join(&request.source);
             let argument = request.request.replace("$ROOT", &root);
 
             let mut output = match project.resolve_source(&source, &argument).result {

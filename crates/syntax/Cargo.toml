@@ -1,0 +1,16 @@
+[package]
+name = "instar-syntax"
+version.workspace = true
+edition.workspace = true
+description = "Shared Luau syntax operations"
+repository.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+instar-analysis = { path = "../analysis" }
+vermis.workspace = true
+
+[lints]
+workspace = true
