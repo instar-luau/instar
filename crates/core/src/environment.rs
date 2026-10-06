@@ -57,6 +57,7 @@ impl Project {
 
                         environment.definitions.push(Definition {
                             name,
+                            namespace: "@roblox".to_owned(),
                             revision: document.revision,
                             text: document.text.to_string(),
                         });
@@ -100,7 +101,12 @@ impl Project {
             );
         }
 
-        for path in &configuration.environment.definitions {
+        for (namespace, path) in configuration.environment.iter().flat_map(|environment| {
+            environment
+                .definitions
+                .iter()
+                .map(|path| (&environment.namespace, path))
+        }) {
             if let Some(reason) = options.interrupted(started) {
                 environment.completion = Completion::Incomplete(reason);
                 break;
@@ -133,10 +139,11 @@ impl Project {
             if !environment
                 .definitions
                 .iter()
-                .any(|definition| definition.name == name)
+                .any(|definition| definition.name == name && &definition.namespace == namespace)
             {
                 environment.definitions.push(Definition {
                     name,
+                    namespace: namespace.clone(),
                     revision: document.revision,
                     text: document.text.to_string(),
                 });

@@ -1,6 +1,10 @@
 //! The Instar configuration contract and its JSON Schema.
 
-use std::{io, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+    path::PathBuf,
+};
 
 use instar_analysis::error::invalid;
 use schemars::JsonSchema;
@@ -32,8 +36,11 @@ pub struct Configuration {
     /// Editor preferences, independent of protocol capability advertisement.
     pub editor: Editor,
 
-    /// Local declarations and documentation.
-    pub environment: Environment,
+    /// Ordered, namespaced declaration and documentation groups.
+    pub environment: Vec<Environment>,
+
+    /// Process-wide native Luau flag overrides.
+    pub luau: Luau,
 
     /// Roblox integration.
     pub roblox: Roblox,
@@ -58,6 +65,20 @@ impl Configuration {
     pub fn validate(&self) -> io::Result<()> {
         self.format.validate()?;
         self.lint.validate()?;
+        self.luau.native()?;
+        let mut namespaces = BTreeSet::new();
+
+        for environment in &self.environment {
+            instar_bridge::frontend::validate_namespace(&environment.namespace)?;
+
+            if matches!(environment.namespace.as_str(), "@luau" | "@roblox")
+                || !namespaces.insert(&environment.namespace)
+            {
+                return Err(invalid(
+                    "environment namespaces must be unique and cannot use @luau or @roblox",
+                ));
+            }
+        }
 
         for patterns in [
             &self.include,
@@ -77,9 +98,13 @@ impl Configuration {
 
         for path in self
             .environment
-            .definitions
             .iter()
-            .chain(&self.environment.documentation)
+            .flat_map(|environment| {
+                environment
+                    .definitions
+                    .iter()
+                    .chain(&environment.documentation)
+            })
             .chain(self.roblox.sourcemaps.iter().flatten())
         {
             let text = path
@@ -338,15 +363,60 @@ impl From<HintFilter> for bool {
     }
 }
 
-/// Local files extending analysis and editor information.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
-#[serde(default, deny_unknown_fields)]
+/// One ordered namespace of local declaration and documentation files.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Environment {
-    /// Declaration paths relative to the defining configuration; lists replace.
+    /// Documentation namespace, including its leading at sign.
+    pub namespace: String,
+
+    /// Declaration paths relative to the defining configuration, loaded in order.
+    #[serde(default)]
     pub definitions: Vec<PathBuf>,
 
-    /// Local documentation paths relative to the defining configuration; lists replace.
+    /// Documentation paths relative to the defining configuration.
+    #[serde(default)]
     pub documentation: Vec<PathBuf>,
+}
+
+/// Native Luau settings independent of upstream source configuration.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Luau {
+    /// Registered boolean flags and integer limits.
+    pub flags: BTreeMap<String, Flag>,
+}
+
+/// A typed native Luau flag override.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum Flag {
+    /// Boolean fast flag.
+    Boolean(bool),
+
+    /// Integer fast limit.
+    Integer(i32),
+}
+
+impl Luau {
+    pub(crate) fn native(&self) -> io::Result<BTreeMap<String, instar_bridge::flags::Value>> {
+        let flags = self
+            .flags
+            .iter()
+            .map(|(name, value)| {
+                let value = match value {
+                    Flag::Boolean(value) => instar_bridge::flags::Value::Boolean(*value),
+                    Flag::Integer(value) => instar_bridge::flags::Value::Integer(*value),
+                };
+
+                (name.clone(), value)
+            })
+            .collect();
+
+        instar_bridge::flags::validate(&flags)?;
+
+        Ok(flags)
+    }
 }
 
 /// Roblox integration settings.

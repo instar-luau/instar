@@ -200,8 +200,13 @@ impl Project {
             settings
                 .configuration
                 .environment
-                .definitions
                 .iter()
+                .flat_map(|environment| {
+                    environment
+                        .definitions
+                        .iter()
+                        .chain(&environment.documentation)
+                })
                 .cloned(),
         );
 

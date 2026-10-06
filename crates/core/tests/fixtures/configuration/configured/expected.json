@@ -93,6 +93,7 @@
       "hide_obvious": false
     }
   },
-  "environment": { "definitions": ["types.d.luau"], "documentation": ["docs.json"] },
+  "environment": [{ "namespace": "@custom", "definitions": ["types.d.luau"], "documentation": ["docs.json"] }],
+  "luau": { "flags": {} },
   "roblox": { "enabled": true, "sourcemaps": ["sourcemap.json"], "security": "plugin" }
 }

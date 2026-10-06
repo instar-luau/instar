@@ -185,7 +185,12 @@ fn syntax_only_rules_do_not_load_declaration_environments() -> io::Result<()> {
     ))?;
 
     directory.file(".luaurc", r#"{"lint":{"*":false}}"#)?;
-    directory.file("instar.toml", "[environment]\ndefinitions=['missing.luau']")?;
+
+    directory.file(
+        "instar.toml",
+        "[[environment]]\nnamespace='@custom'\ndefinitions=['missing.luau']",
+    )?;
+
     let entry = directory.file("entry.luau", "return 1/0")?;
     let result = project().lint(&[Entry::new(entry)], &options())?;
     assert_eq!(result.completion, Completion::Complete);
@@ -271,7 +276,11 @@ fn missing_and_invalid_definitions_remain_explicit_with_syntax_findings() -> io:
         r#"{"languageMode":"strict","lint":{"*":false,"LocalUnused":true}}"#,
     ))?;
 
-    directory.file("instar.toml", "[environment]\ndefinitions=['globals.luau']")?;
+    directory.file(
+        "instar.toml",
+        "[[environment]]\nnamespace='@custom'\ndefinitions=['globals.luau']",
+    )?;
+
     let entry = directory.file("entry.luau", "local unused=1\nreturn 1/0")?;
     let mut project = project();
     let missing = project.lint(&[Entry::new(entry.clone())], &options())?;
@@ -370,7 +379,7 @@ fn source_updates_and_contexts_keep_exact_revision_identity() -> io::Result<()> 
 
     directory.file(
         "instar.toml",
-        "[roblox]\nenabled=true\n[environment]\ndefinitions=['globals.luau']",
+        "[roblox]\nenabled=true\n[[environment]]\nnamespace='@custom'\ndefinitions=['globals.luau']",
     )?;
 
     directory.file("globals.luau", "declare script: any")?;
@@ -491,7 +500,7 @@ fn native_analysis_identity_survives_lint_conversion() -> io::Result<()> {
 
     project.change(Change::Overlay {
         path: directory.path.join("instar.toml"),
-        text: Some("[environment]\ndefinitions=['globals.luau']".to_owned()),
+        text: Some("[[environment]]\nnamespace='@custom'\ndefinitions=['globals.luau']".to_owned()),
     })?;
 
     for declaration in ["declare configured:", "declare configured: MissingType"] {

@@ -108,6 +108,7 @@ struct Access {
 pub(crate) struct Assets {
     pub(crate) definitions: Vec<(PathBuf, Document)>,
     pub(crate) classes: Vec<instar_bridge::frontend::Class>,
+    pub(crate) documentation: crate::documentation::Index,
 }
 
 impl Project {
@@ -160,12 +161,8 @@ impl Project {
         let documentation = self.source(&directory.join("documentation.json"))?;
         verify(&documentation.text, &metadata.documentation)?;
 
-        let documentation: serde_json::Value =
-            serde_json::from_str(&documentation.text).map_err(invalid)?;
-
-        if !documentation.is_object() {
-            return Err(invalid("Roblox documentation must be an object"));
-        }
+        let documentation =
+            crate::documentation::Index::parse(&documentation.text, &["@luau", "@roblox"])?;
 
         let services = names(&metadata.services)?;
         let creatable = names(&metadata.creatable_instances)?;
@@ -214,6 +211,7 @@ impl Project {
         Ok(Assets {
             definitions: vec![(path, document), (enumeration_path, enumerations)],
             classes: classes.into_values().collect(),
+            documentation,
         })
     }
 }

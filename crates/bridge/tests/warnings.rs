@@ -190,6 +190,7 @@ fn invalid_definitions_retain_available_syntax_warnings_and_diagnostics() -> io:
         "entry",
         &[Definition {
             name: "broken".to_owned(),
+            namespace: "@custom".to_owned(),
             revision: 3,
             text: "declare broken:".to_owned(),
         }],

@@ -28,7 +28,7 @@ impl Project {
     ///
     /// Instar patterns select entries only. Native configuration controls language
     /// modes and type error visibility; native lint warnings are never emitted.
-    /// Roblox environments load the configured generated asset bundle.
+    /// Roblox environments use automatically downloaded and verified assets.
     /// Native analysis is isolated in a cancellable worker process.
     /// Missing declaration files use revision zero and an empty source range.
     ///

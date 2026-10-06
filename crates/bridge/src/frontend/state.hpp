@@ -35,7 +35,7 @@ namespace instar {
         Luau::Frontend frontend{Luau::SolverMode::New, &resolver, &resolver};
 
         using Signature = std::pair<
-            std::vector<std::tuple<std::string, uint64_t, std::string>>,
+            std::vector<std::tuple<std::string, uint64_t, std::string, std::string>>,
             std::vector<std::tuple<std::string, bool, bool, std::vector<std::tuple<std::string, bool, bool>>>>>;
 
         std::map<std::string, Signature> definitions;

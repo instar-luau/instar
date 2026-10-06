@@ -78,7 +78,8 @@ parameter_names = true
 return_types = true
 hide_obvious = false
 
-[environment]
+[[environment]]
+namespace = "@custom"
 definitions = ["types.d.luau"]
 documentation = ["docs.json"]
 

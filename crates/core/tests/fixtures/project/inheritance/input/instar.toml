@@ -10,6 +10,7 @@ old = "root"
 kept = "root"
 [editor.hints]
 variable_types = true
-[environment]
+[[environment]]
+namespace = "@root"
 definitions = ["types.luau"]
 documentation = ["docs.json"]

@@ -93,7 +93,7 @@ fn variants(schema: &Value, node: &Value) -> Vec<String> {
 }
 
 #[test]
-fn schema_contract() -> Result<(), Box<dyn Error>> {
+fn schema_fields() -> Result<(), Box<dyn Error>> {
     let schema = serde_json::to_value(schema())?;
     let properties = schema["properties"].as_object().expect("root properties");
 
@@ -107,9 +107,18 @@ fn schema_contract() -> Result<(), Box<dyn Error>> {
             "format",
             "include",
             "lint",
+            "luau",
             "roblox"
         ]
     );
+
+    Ok(())
+}
+
+#[test]
+fn schema_contract() -> Result<(), Box<dyn Error>> {
+    let schema = serde_json::to_value(schema())?;
+    let properties = schema["properties"].as_object().expect("root properties");
 
     let check = definition(&schema, &properties["check"]);
     let format = definition(&schema, &properties["format"]);
@@ -134,7 +143,8 @@ fn schema_contract() -> Result<(), Box<dyn Error>> {
         complexity,
         index,
         imports,
-        definition(&schema, &properties["environment"]),
+        definition(&schema, &properties["environment"]["items"]),
+        definition(&schema, &properties["luau"]),
         definition(&schema, &properties["roblox"]),
     ] {
         assert_eq!(object["additionalProperties"], false);
