@@ -8,6 +8,7 @@ namespace instar {
     struct Host;
     struct Cancellation;
     struct NativeCheck;
+    struct NativeLintResult;
     struct NativeLink;
     class NativeConfiguration;
 
@@ -24,7 +25,18 @@ namespace instar {
             rust::Slice<const rust::String> names, const Cancellation &cancellation
         );
 
+        NativeLintResult lint(
+            const Host &host, rust::Slice<const rust::String> entries, double timeout_seconds,
+            rust::Slice<const rust::String> names, const Cancellation &cancellation,
+            rust::Slice<const rust::String> semantic_modules
+        );
+
       private:
+        NativeCheck analyze(
+            const Host &host, rust::Slice<const rust::String> entries, double timeout_seconds,
+            rust::Slice<const rust::String> names, const Cancellation &cancellation, bool retain_types, bool typecheck
+        );
+
         struct State;
         std::unique_ptr<State> state;
     };
