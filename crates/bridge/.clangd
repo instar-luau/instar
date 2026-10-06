@@ -3,9 +3,27 @@ CompileFlags:
     - -std=c++17
     - -fexceptions
     - -fcxx-exceptions
+---
+If:
+  PathMatch: src/[^/]+
+CompileFlags:
+  Add:
     - -I../../../target/cxxbridge
     - -I..
     - -I../vendor/luau/Config/include
     - -I../vendor/luau/Ast/include
     - -I../vendor/luau/Common/include
     - -I../vendor/luau/VM/include
+    - -I../vendor/luau/Analysis/include
+---
+If:
+  PathMatch: src/frontend/[^/]+
+CompileFlags:
+  Add:
+    - -I../../../../target/cxxbridge
+    - -I../..
+    - -I../../vendor/luau/Config/include
+    - -I../../vendor/luau/Ast/include
+    - -I../../vendor/luau/Common/include
+    - -I../../vendor/luau/VM/include
+    - -I../../vendor/luau/Analysis/include
