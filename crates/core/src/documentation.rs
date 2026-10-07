@@ -266,7 +266,7 @@ impl Project {
 
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 let files = assets::fetch(
-                    format!("{}/luau/{}", assets::HOST, assets::VERSION),
+                    format!("{}/luau", assets::HOST),
                     &options.remaining(started),
                     download,
                 )?;

@@ -11,7 +11,7 @@ use instar_analysis::{Options, error::invalid};
 use serde::Deserialize;
 
 use crate::{
-    assets::{self, HOST, VERSION, fetch, install, verify},
+    assets::{self, HOST, fetch, install, verify},
     configuration::Security,
     project::{Change, Project},
     source::Document,
@@ -81,7 +81,7 @@ impl Project {
 
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 let files = fetch(
-                    format!("{HOST}/roblox/{VERSION}"),
+                    format!("{HOST}/roblox"),
                     &options.remaining(started),
                     download,
                 )?;
