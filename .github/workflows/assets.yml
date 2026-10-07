@@ -4,14 +4,19 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+  pages: write
+  id-token: write
 
 concurrency:
   group: assets
 
 jobs:
   assets:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -20,8 +25,8 @@ jobs:
       - uses: hustcer/setup-nu@95cd3bfe252450ef7d35dd9a7ddecf3484341134
       - name: generate assets
         run: nu scripts/assets.nu
-      - uses: peaceiris/actions-gh-pages@84c30a85c19949d7eee79c4ff27748b70285e453
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: target/pages
-          keep_files: true
+          path: target/pages
+      - uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346
+        id: deployment
