@@ -79,7 +79,7 @@ impl Index {
     }
 
     pub(crate) fn parse(source: &str, namespaces: &[&str]) -> io::Result<Self> {
-        let index: Self = serde_json::from_str(source).map_err(invalid)?;
+        let index: Self = assets::parse(source)?;
 
         for symbol in index.0.keys() {
             if !symbol
@@ -282,7 +282,7 @@ impl Project {
         }
 
         let metadata = self.source(&directory.join("metadata.json"))?;
-        let metadata: Metadata = serde_json::from_str(&metadata.text).map_err(invalid)?;
+        let metadata: Metadata = assets::parse(&metadata.text)?;
         assets::revision(&metadata.revision)?;
         let document = self.source(&directory.join("documentation.json"))?;
         assets::verify(&document.text, &metadata.documentation)?;
@@ -308,7 +308,7 @@ fn download(url: &str, options: &Options) -> io::Result<BTreeMap<String, String>
         .new_agent();
 
     let metadata = assets::get(&agent, &format!("{url}/metadata.json"), options, started)?;
-    let parsed: Metadata = serde_json::from_str(&metadata).map_err(invalid)?;
+    let parsed: Metadata = assets::parse(&metadata)?;
     assets::revision(&parsed.revision)?;
 
     let documentation = assets::get(

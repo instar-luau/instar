@@ -1,14 +1,12 @@
 use std::{
     fs, io,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicUsize, Ordering},
     time::Duration,
 };
 
 use instar_analysis::Options;
 use instar_core::project::Project;
 use serde_json::Value;
-static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) struct Directory {
     pub(crate) path: PathBuf,
@@ -16,13 +14,7 @@ pub(crate) struct Directory {
 
 impl Directory {
     pub(crate) fn new(configuration: Option<&str>) -> io::Result<Self> {
-        let path = std::env::temp_dir().join(format!(
-            "instar-project-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed),
-        ));
-
-        fs::create_dir(&path)?;
+        let path = tempfile::tempdir()?.keep();
         let directory = Self { path };
 
         if let Some(configuration) = configuration {

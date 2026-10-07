@@ -1,8 +1,6 @@
 use std::{
-    fs,
     io::{BufRead, BufReader, Write},
     net::TcpListener,
-    sync::atomic::{AtomicU64, Ordering},
     thread,
     time::Duration,
 };
@@ -10,8 +8,6 @@ use std::{
 use sha2::{Digest, Sha256};
 
 use super::*;
-
-static NEXT: AtomicU64 = AtomicU64::new(0);
 
 fn files() -> BTreeMap<String, String> {
     let mut files = BTreeMap::new();
@@ -104,13 +100,8 @@ fn downloads_verified_profiles_and_loads_cache_without_server() -> io::Result<()
     server.join().expect("asset server")?;
     assert_eq!(downloaded, expected);
 
-    let directory = std::env::temp_dir().join(format!(
-        "instar-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-
-    install(&directory, downloaded)?;
+    let directory = tempfile::tempdir()?;
+    install(directory.path(), downloaded)?;
 
     let result = (|| -> io::Result<()> {
         let mut project = Project::new(Duration::from_secs(1));
@@ -121,7 +112,7 @@ fn downloads_verified_profiles_and_loads_cache_without_server() -> io::Result<()
             ("plugin", Security::Plugin),
             ("roblox", Security::Roblox),
         ] {
-            let assets = project.load_assets(&directory, security)?;
+            let assets = project.load_assets(directory.path(), security)?;
 
             assert_eq!(
                 assets.definitions[0].1.text.as_ref(),
@@ -132,7 +123,7 @@ fn downloads_verified_profiles_and_loads_cache_without_server() -> io::Result<()
         Ok(())
     })();
 
-    fs::remove_dir_all(directory)?;
+    directory.close()?;
 
     result
 }

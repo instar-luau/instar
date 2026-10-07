@@ -2,33 +2,20 @@ use std::{
     collections::BTreeMap,
     fs, io,
     path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        mpsc,
-    },
+    sync::mpsc,
     thread,
     time::{Duration, Instant},
 };
 
 use instar_analysis::{Options, error::invalid};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub(crate) const HOST: &str = "https://instar-luau.github.io/instar";
-static NEXT: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn directory(namespace: &str) -> io::Result<PathBuf> {
-    let base = if cfg!(target_os = "windows") {
-        std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
-    } else if cfg!(target_os = "macos") {
-        std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Caches"))
-    } else {
-        std::env::var_os("XDG_CACHE_HOME")
-            .filter(|path| Path::new(path).is_absolute())
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
-    }
-    .ok_or_else(|| {
+    let base = dirs::cache_dir().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
             "user cache directory is unavailable",
@@ -40,6 +27,14 @@ pub(crate) fn directory(namespace: &str) -> io::Result<PathBuf> {
     }
 
     Ok(base.join("instar").join(namespace).join(VERSION))
+}
+
+pub(crate) fn parse<'source, T: Deserialize<'source>>(source: &'source str) -> io::Result<T> {
+    let mut deserializer = serde_json::Deserializer::from_str(source);
+    let value = serde_path_to_error::deserialize(&mut deserializer).map_err(invalid)?;
+    deserializer.end().map_err(invalid)?;
+
+    Ok(value)
 }
 
 pub(crate) fn verify(source: &str, expected: &str) -> io::Result<()> {
@@ -111,20 +106,14 @@ pub(crate) fn install(directory: &Path, mut files: BTreeMap<String, String>) -> 
 
     fs::create_dir_all(directory)?;
 
-    let staging = directory.join(format!(
-        ".download-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-
-    fs::create_dir(&staging)?;
+    let staging = tempfile::tempdir_in(directory)?;
 
     let result = (|| {
         for (name, text) in files
             .into_iter()
             .chain([("metadata.json".to_owned(), metadata)])
         {
-            let path = staging.join(&name);
+            let path = staging.path().join(&name);
             fs::write(&path, text)?;
             fs::rename(path, directory.join(name))?;
         }
@@ -132,7 +121,7 @@ pub(crate) fn install(directory: &Path, mut files: BTreeMap<String, String>) -> 
         Ok(())
     })();
 
-    let cleanup = fs::remove_dir_all(staging);
+    let cleanup = staging.close();
 
     result.and(cleanup)
 }

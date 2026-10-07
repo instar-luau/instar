@@ -33,7 +33,7 @@ struct Metadata {
 
 impl Metadata {
     fn parse(source: &str) -> io::Result<Self> {
-        let metadata: Self = serde_json::from_str(source).map_err(invalid)?;
+        let metadata: Self = assets::parse(source)?;
 
         assets::revision(&metadata.revision)?;
 

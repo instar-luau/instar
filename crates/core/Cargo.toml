@@ -9,6 +9,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+dirs = "7"
 glob.workspace = true
 instar-analysis = { path = "../analysis" }
 instar-bridge = { path = "../bridge" }
@@ -18,10 +19,16 @@ instar-syntax = { path = "../syntax" }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_path_to_error = "0.1"
 sha2 = "0.10"
+tempfile = "3"
+thiserror = "2"
 toml.workspace = true
 ureq = "3"
 vermis.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+similar-asserts = "2.0.0"

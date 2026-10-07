@@ -20,7 +20,8 @@ pub struct Document {
 }
 
 /// A retained filesystem or configuration failure.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{message}")]
 pub struct Failure {
     /// Original error category.
     pub kind: io::ErrorKind,
@@ -49,14 +50,6 @@ impl Failure {
         io::Error::new(self.kind, self.message.clone())
     }
 }
-
-impl std::fmt::Display for Failure {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for Failure {}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind {

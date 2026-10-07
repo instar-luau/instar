@@ -4,6 +4,7 @@ use std::{fs, io, path::Path, time::Duration};
 use instar_core::project::Project;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use similar_asserts::assert_eq;
 
 use crate::support::{Directory, copy, normalize};
 

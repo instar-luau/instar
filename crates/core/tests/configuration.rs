@@ -3,6 +3,7 @@ use std::{error::Error, fs, path::Path};
 
 use instar_core::configuration::{Configuration, schema};
 use serde_json::{Value, json};
+use similar_asserts::assert_eq;
 
 #[test]
 fn fixtures() -> Result<(), Box<dyn Error>> {
