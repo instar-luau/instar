@@ -47,9 +47,11 @@ namespace instar::frontend {
             modules.emplace_back(name);
         }
 
+        host.progress("Preparing native graph", "", 0, modules.size());
         frontend.parseModules(modules);
 
         rust::Vec<NativeLink> links;
+        size_t completed = 0;
 
         for (const std::string &name : modules) {
             const NativeSource source = host.read_source(name);
@@ -115,6 +117,7 @@ namespace instar::frontend {
             }
 
             frontend.requireTrace.insert_or_assign(name, std::move(trace));
+            host.progress("Preparing native graph", name, ++completed, modules.size());
         }
 
         for (const auto &entry : frontend.sourceNodes) {

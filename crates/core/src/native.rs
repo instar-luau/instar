@@ -109,3 +109,36 @@ impl Project {
 pub fn name(identity: &Identity) -> String {
     format!("{identity:?}")
 }
+
+pub(crate) fn progress(
+    options: &instar_analysis::Options,
+    modules: &[crate::analysis::Origin],
+) -> instar_analysis::Options {
+    let mut limits = options.clone();
+
+    if let Some(observer) = &options.progress {
+        let observer = std::sync::Arc::clone(observer);
+
+        let sources = modules
+            .iter()
+            .filter_map(|origin| match origin {
+                crate::analysis::Origin::Module(module) => Some((
+                    name(&module.identity),
+                    module.source.to_string_lossy().into_owned(),
+                )),
+
+                crate::analysis::Origin::Definition(_) => None,
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        limits.progress = Some(std::sync::Arc::new(move |mut event| {
+            if let Some(source) = event.source.as_ref().and_then(|source| sources.get(source)) {
+                event.source = Some(source.clone());
+            }
+
+            observer(event);
+        }));
+    }
+
+    limits
+}

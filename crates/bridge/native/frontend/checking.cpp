@@ -95,8 +95,11 @@ namespace instar::frontend {
         } dirty{state, result};
 
         try {
+            size_t prepared = 0;
+
             for (const rust::String &opaque : names) {
                 const std::string name(opaque);
+                host.progress("Loading declarations", name, prepared++, names.size());
                 const NativeSource source = host.read_source(name);
                 Signature signature;
 
@@ -234,6 +237,8 @@ namespace instar::frontend {
                 state.definitions.insert_or_assign(name, std::move(signature));
             }
 
+            host.progress("Loading declarations", "", prepared, names.size());
+
             result.completion = interruption.status();
 
             if (result.completion != NativeCompletion::Complete) {
@@ -271,6 +276,17 @@ namespace instar::frontend {
                 ~Reset() { resolver.host = nullptr; }
             } reset{state.resolver};
 
+            size_t completed = 0;
+            size_t total = 0;
+
+            for (const rust::String &name : names) {
+                if (frontend.isDirty(std::string(name))) {
+                    ++total;
+                }
+            }
+
+            host.progress("Checking", "", 0, total);
+
             for (const rust::String &entry : entries) {
                 result.completion = interruption.status();
 
@@ -282,6 +298,13 @@ namespace instar::frontend {
                 options.cancellationToken = interruption.token;
                 options.moduleTimeLimitSec = interruption.remaining();
                 options.retainFullTypeGraphs = true;
+
+                options.customModuleCheck = [&](const Luau::SourceModule &source, const Luau::Module &module) {
+                    if (!module.cancelled) {
+                        host.progress("Checking", source.name, ++completed, total);
+                    }
+                };
+
                 const Luau::CheckResult checked = frontend.check(std::string(entry), options);
 
                 if (!checked.timeoutHits.empty()) {

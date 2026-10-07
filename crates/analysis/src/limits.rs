@@ -90,7 +90,7 @@ impl Cancellation {
 }
 
 /// Caller-supplied limits for one project analysis.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Options {
     /// Total elapsed budget, including host preparation and declarations.
     ///
@@ -101,9 +101,41 @@ pub struct Options {
 
     /// Shared cancellation signal.
     pub cancellation: Cancellation,
+
+    /// Optional synchronous progress observer, preserved across remaining budgets.
+    pub progress: Option<Arc<dyn Fn(crate::Progress) + Send + Sync>>,
+}
+
+impl std::fmt::Debug for Options {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Options")
+            .field("timeout", &self.timeout)
+            .field("cancellation", &self.cancellation)
+            .field("progress", &self.progress.is_some())
+            .finish()
+    }
 }
 
 impl Options {
+    /// Reports an observed phase boundary without changing analysis state.
+    pub fn report(
+        &self,
+        phase: &str,
+        completed: usize,
+        total: Option<usize>,
+        source: Option<&str>,
+    ) {
+        if let Some(observer) = &self.progress {
+            observer(crate::Progress {
+                phase: phase.to_owned(),
+                completed,
+                total,
+                source: source.map(str::to_owned),
+            });
+        }
+    }
+
     /// Checks cancellation and the elapsed operation budget.
     ///
     /// # Errors
@@ -133,6 +165,7 @@ impl Options {
         Self {
             timeout: self.timeout.saturating_sub(started.elapsed()),
             cancellation: self.cancellation.clone(),
+            progress: self.progress.clone(),
         }
     }
 
@@ -142,6 +175,7 @@ impl Options {
         Self {
             timeout,
             cancellation: Cancellation::default(),
+            progress: None,
         }
     }
 }

@@ -451,6 +451,7 @@ impl Frontend {
             operation,
             timeout: options.timeout.saturating_sub(started.elapsed()),
             flags,
+            progress: options.progress.is_some(),
         };
 
         let result = self

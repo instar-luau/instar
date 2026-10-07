@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{Options, Reason};
 
@@ -18,7 +18,7 @@ use crate::{Options, Reason};
 pub struct Process<Request, Response> {
     child: Child,
     requests: Option<SyncSender<Request>>,
-    responses: Receiver<io::Result<Response>>,
+    responses: Receiver<io::Result<Message<Response>>>,
     transport: Option<JoinHandle<()>>,
 }
 
@@ -29,6 +29,16 @@ pub enum Outcome<Response> {
 
     /// The worker was stopped before completing the request.
     Interrupted(Reason),
+}
+
+/// A streamed worker update or its terminal response.
+#[derive(Deserialize, Serialize)]
+pub enum Message<Response> {
+    /// An observed work boundary before the terminal response.
+    Progress(crate::Progress),
+
+    /// The final result of one request.
+    Response(Result<Response, crate::error::Failure>),
 }
 
 impl<Request, Response> Process<Request, Response> {
@@ -64,10 +74,11 @@ impl<Request, Response> Process<Request, Response> {
             let mut output = BufReader::new(output);
 
             while let Ok(request) = incoming.recv() {
-                let result = exchange(&request, &mut input, &mut output);
-                let failed = result.is_err();
+                if let Err(error) = exchange(&request, &mut input, &mut output, &outgoing) {
+                    if outgoing.send(Err(error)).is_err() {
+                        return;
+                    }
 
-                if outgoing.send(result).is_err() || failed {
                     break;
                 }
             }
@@ -123,7 +134,16 @@ impl<Request, Response> Process<Request, Response> {
                         return Ok(Outcome::Interrupted(reason));
                     }
 
-                    return response.map(Outcome::Response);
+                    match response? {
+                        Message::Progress(progress) => {
+                            if let Some(observer) = &options.progress {
+                                observer(progress);
+                            }
+                        }
+
+                        Message::Response(Ok(response)) => return Ok(Outcome::Response(response)),
+                        Message::Response(Err(error)) => return Err(io::Error::try_from(error)?),
+                    }
                 }
 
                 Err(RecvTimeoutError::Timeout) => {}
@@ -137,6 +157,7 @@ impl<Request, Response> Process<Request, Response> {
 
     fn stop(&mut self) -> io::Result<()> {
         self.requests.take();
+        self.responses = mpsc::sync_channel(1).1;
 
         let killed = match self.child.try_wait()? {
             Some(_) => Ok(()),
@@ -167,24 +188,32 @@ fn exchange<Request: Serialize, Response: DeserializeOwned>(
     request: &Request,
     input: &mut impl Write,
     output: &mut impl BufRead,
-) -> io::Result<Response> {
+    outgoing: &SyncSender<io::Result<Message<Response>>>,
+) -> io::Result<()> {
     serde_json::to_writer(&mut *input, request)?;
     input.write_all(b"\n")?;
     input.flush()?;
-    let mut line = String::new();
 
-    if output.read_line(&mut line)? == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "analysis worker exited without a response",
-        ));
-    }
+    loop {
+        let mut line = String::new();
 
-    let result: Result<Response, crate::error::Failure> = serde_json::from_str(&line)?;
+        if output.read_line(&mut line)? == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "analysis worker exited without a response",
+            ));
+        }
 
-    match result {
-        Ok(response) => Ok(response),
-        Err(error) => Err(io::Error::try_from(error)?),
+        let message: Message<Response> = serde_json::from_str(&line)?;
+        let finished = matches!(message, Message::Response(_));
+
+        outgoing
+            .send(Ok(message))
+            .map_err(|_| io::Error::other("worker receiver stopped"))?;
+
+        if finished {
+            return Ok(());
+        }
     }
 }
 

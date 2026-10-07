@@ -53,13 +53,20 @@ impl Project {
         let mut identities = BTreeSet::new();
 
         let preparation = self.during(&options.remaining(started), |project| {
-            for entry in entries {
+            for (completed, entry) in entries.iter().enumerate() {
                 if let Some(reason) = options.interrupted(started) {
                     result.completion = Completion::Incomplete(reason);
                     break;
                 }
 
                 let source = absolute(&entry.source)?;
+
+                options.report(
+                    "Discovering dependencies",
+                    completed,
+                    Some(entries.len()),
+                    Some(&source.to_string_lossy()),
+                );
 
                 let directory = source
                     .parent()
@@ -76,12 +83,26 @@ impl Project {
                     settings.configuration.check.exclude.as_deref(),
                     false,
                 )? {
+                    options.report(
+                        "Discovering dependencies",
+                        completed + 1,
+                        Some(entries.len()),
+                        Some(&source.to_string_lossy()),
+                    );
+
                     continue;
                 }
 
                 let module = project.install(&source, entry.context.as_ref())?;
                 roots.insert(native::name(&module.identity));
                 identities.extend(project.discover(&source, entry.context.as_ref())?);
+
+                options.report(
+                    "Discovering dependencies",
+                    completed + 1,
+                    Some(entries.len()),
+                    Some(&source.to_string_lossy()),
+                );
             }
 
             Ok(())
@@ -105,23 +126,7 @@ impl Project {
 
         let mut analysis = Analysis::default();
 
-        for identity in &identities {
-            let node = self
-                .graph
-                .node(identity)
-                .ok_or_else(|| invalid("checker module is missing from the Rust graph"))?;
-
-            result.modules.push(analysis.report.collect(&node));
-        }
-
-        for identity in identities {
-            if let Some(reason) = options.interrupted(started) {
-                result.completion = Completion::Incomplete(reason);
-                break;
-            }
-
-            self.check_module(&identity, options, started, &mut analysis, &mut result)?;
-        }
+        self.check_modules(identities, &mut analysis, &mut result, options, started)?;
 
         if result.completion != Completion::Complete {
             result.diagnostics = analysis.report.diagnostics;
@@ -138,7 +143,7 @@ impl Project {
             frontend.definitions(name, &environment.definitions)?;
         }
 
-        let remaining = options.remaining(started);
+        let remaining = native::progress(options, &result.modules).remaining(started);
         let checked = frontend.check(&roots.into_iter().collect::<Vec<_>>(), &remaining)?;
         result.completion = result.completion.combine(checked.completion);
 
@@ -153,6 +158,55 @@ impl Project {
         }
 
         Ok(result)
+    }
+
+    fn check_modules(
+        &mut self,
+        identities: BTreeSet<Identity>,
+        analysis: &mut Analysis,
+        result: &mut instar_analysis::Result<Origin>,
+        options: &Options,
+        started: Instant,
+    ) -> io::Result<()> {
+        for identity in &identities {
+            let node = self
+                .graph
+                .node(identity)
+                .ok_or_else(|| invalid("checker module is missing from the Rust graph"))?;
+
+            result.modules.push(analysis.report.collect(&node));
+        }
+
+        let total = identities.len();
+
+        for (completed, identity) in identities.into_iter().enumerate() {
+            if let Some(reason) = options.interrupted(started) {
+                result.completion = Completion::Incomplete(reason);
+                break;
+            }
+
+            let source = result.modules[completed].source().to_string_lossy();
+
+            options.report(
+                "Preparing environments",
+                completed,
+                Some(total),
+                Some(&source),
+            );
+
+            self.check_module(&identity, options, started, analysis, result)?;
+
+            if result.completion == Completion::Complete {
+                options.report(
+                    "Preparing environments",
+                    completed + 1,
+                    Some(total),
+                    Some(&result.modules[completed].source().to_string_lossy()),
+                );
+            }
+        }
+
+        Ok(())
     }
 
     fn check_module(

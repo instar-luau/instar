@@ -12,6 +12,7 @@ pub(crate) struct Request {
     pub(crate) operation: Operation,
     pub(crate) timeout: Duration,
     pub(crate) flags: BTreeMap<String, crate::flags::Value>,
+    pub(crate) progress: bool,
 }
 
 #[derive(Deserialize, Serialize)]

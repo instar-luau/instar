@@ -169,6 +169,13 @@ mod native {
 
     extern "Rust" {
         type Host;
+        fn progress(
+            self: &Host,
+            phase: &str,
+            source: &str,
+            completed: usize,
+            total: usize,
+        ) -> Result<()>;
         fn read_source(self: &Host, name: &str) -> NativeSource;
         fn read_document(self: &Host, name: &str) -> NativeDocument;
         fn require(self: &Host, name: &str, start: usize, end: usize) -> bool;

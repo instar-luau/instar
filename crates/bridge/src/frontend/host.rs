@@ -1,4 +1,7 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    io::{self, Write},
+};
 
 use super::source::Source;
 use crate::boundary;
@@ -13,9 +16,44 @@ impl Cancellation {
 #[derive(Default)]
 pub(crate) struct Host {
     pub(crate) sources: BTreeMap<String, Source>,
+    pub(crate) progress: bool,
 }
 
 impl Host {
+    pub(crate) fn progress(
+        &self,
+        phase: &str,
+        source: &str,
+        completed: usize,
+        total: usize,
+    ) -> io::Result<()> {
+        if completed > total || (!source.is_empty() && !self.sources.contains_key(source)) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid native progress event",
+            ));
+        }
+
+        if !self.progress {
+            return Ok(());
+        }
+
+        let event = instar_analysis::process::Message::<crate::protocol::Response>::Progress(
+            instar_analysis::Progress {
+                phase: phase.to_owned(),
+                completed,
+                total: Some(total),
+                source: (!source.is_empty()).then(|| source.to_owned()),
+            },
+        );
+
+        let mut output = io::stdout().lock();
+        serde_json::to_writer(&mut output, &event)?;
+        output.write_all(b"\n")?;
+
+        output.flush()
+    }
+
     pub(crate) fn read_document(&self, name: &str) -> boundary::NativeDocument {
         let document = self
             .sources

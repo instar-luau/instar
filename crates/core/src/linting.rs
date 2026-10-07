@@ -144,13 +144,20 @@ impl Project {
     ) -> io::Result<()> {
         let mut identities = BTreeSet::new();
 
-        for entry in entries {
+        for (completed, entry) in entries.iter().enumerate() {
             if let Some(reason) = options.interrupted(started) {
                 result.completion = Completion::Incomplete(reason);
                 break;
             }
 
             let source = absolute(&entry.source)?;
+
+            options.report(
+                "Discovering dependencies",
+                completed,
+                Some(entries.len()),
+                Some(&source.to_string_lossy()),
+            );
 
             let directory = source
                 .parent()
@@ -159,6 +166,13 @@ impl Project {
             let settings = self.configuration(directory)?;
 
             if !eligible(&source, &settings)? {
+                options.report(
+                    "Discovering dependencies",
+                    completed + 1,
+                    Some(entries.len()),
+                    Some(&source.to_string_lossy()),
+                );
+
                 continue;
             }
 
@@ -169,6 +183,13 @@ impl Project {
                 .insert(native::name(&node.module.identity), node.module.clone());
 
             identities.extend(self.discover(&source, entry.context.as_ref())?);
+
+            options.report(
+                "Discovering dependencies",
+                completed + 1,
+                Some(entries.len()),
+                Some(&source.to_string_lossy()),
+            );
         }
 
         for identity in identities {
@@ -253,7 +274,7 @@ impl Project {
         }
 
         let roots = analysis.roots.keys().cloned().collect::<Vec<_>>();
-        let limits = options.remaining(started);
+        let limits = native::progress(options, &result.modules).remaining(started);
 
         let native = if semantic.is_empty() {
             frontend.lint(&roots, &limits)?
@@ -273,7 +294,14 @@ impl Project {
         options: &Options,
         started: Instant,
     ) {
-        for (name, module) in &analysis.modules {
+        for (completed, (name, module)) in analysis.modules.iter().enumerate() {
+            options.report(
+                "Preparing environments",
+                completed,
+                Some(analysis.modules.len()),
+                Some(&module.node.module.source.to_string_lossy()),
+            );
+
             let environment = self.environment(
                 &module.node,
                 &module.settings,
@@ -294,6 +322,15 @@ impl Project {
             if options.interrupted(started).is_some() {
                 return;
             }
+
+            if result.completion == Completion::Complete {
+                options.report(
+                    "Preparing environments",
+                    completed + 1,
+                    Some(analysis.modules.len()),
+                    Some(&module.node.module.source.to_string_lossy()),
+                );
+            }
         }
     }
 }
@@ -306,12 +343,19 @@ impl Analysis {
         options: &Options,
         started: Instant,
     ) -> io::Result<()> {
-        for (name, module) in &self.modules {
+        for (completed, (name, module)) in self.modules.iter().enumerate() {
             if let Some(reason) = options.interrupted(started) {
                 result.completion = Completion::Incomplete(reason);
 
                 return Ok(());
             }
+
+            options.report(
+                "Syntax linting",
+                completed,
+                Some(self.modules.len()),
+                Some(&module.node.module.source.to_string_lossy()),
+            );
 
             let requires = module
                 .node
@@ -363,6 +407,15 @@ impl Analysis {
                 if !result.diagnostics.contains(&diagnostic) {
                     result.diagnostics.push(diagnostic);
                 }
+            }
+
+            if syntax.completion == Completion::Complete {
+                options.report(
+                    "Syntax linting",
+                    completed + 1,
+                    Some(self.modules.len()),
+                    Some(&module.node.module.source.to_string_lossy()),
+                );
             }
         }
 

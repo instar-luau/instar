@@ -23,7 +23,11 @@ pub fn run() -> io::Result<()> {
         )
         .map_err(instar_analysis::error::Failure::from);
 
-        serde_json::to_writer(&mut output, &response)?;
+        serde_json::to_writer(
+            &mut output,
+            &instar_analysis::process::Message::Response(response),
+        )?;
+
         output.write_all(b"\n")?;
         output.flush()?;
     }

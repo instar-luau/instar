@@ -127,6 +127,9 @@ namespace instar::frontend {
 
         prepare(state, host, names);
 
+        size_t completed = 0;
+        host.progress("Native linting", "", completed, names.size());
+
         for (const rust::String &opaque : names) {
             if (status() != NativeCompletion::Complete) {
                 result.completion = status();
@@ -135,6 +138,7 @@ namespace instar::frontend {
             }
 
             const std::string name(opaque);
+            host.progress("Native linting", name, completed, names.size());
             auto &frontend = state.frontend;
             const auto *source = frontend.getSourceModule(name);
 
@@ -231,6 +235,10 @@ namespace instar::frontend {
                 }
             } else if (semantic && typed && source->parseErrors.empty()) {
                 facts(host, name, *module, result);
+            }
+
+            if (status() == NativeCompletion::Complete) {
+                host.progress("Native linting", name, ++completed, names.size());
             }
         }
 

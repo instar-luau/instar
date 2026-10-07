@@ -5,10 +5,12 @@ pub mod error;
 mod limits;
 mod location;
 pub mod process;
+mod progress;
 mod result;
 pub mod selection;
 
 pub use diagnostic::{Diagnostic, Kind};
 pub use limits::{Cancellation, Completion, Options, Reason};
 pub use location::{Location, Related};
+pub use progress::Progress;
 pub use result::Result;
