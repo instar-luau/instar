@@ -197,7 +197,6 @@ def member [value: record, mappings: record]: nothing -> string {
 
     match $value.MemberType {
         Property => $"($name): ($value.ValueType | resolve $mappings)"
-
         Function => {
             let arguments = $value.Parameters | parameters $mappings
 
@@ -205,12 +204,10 @@ def member [value: record, mappings: record]: nothing -> string {
 
             $"function ($name)\(($arguments)\): (returns $value $mappings)"
         }
-
         Callback => {
             let arguments = $value.Parameters | parameters $mappings | str replace --all '...: ' ...
             $"($name): \(($arguments)\) -> (returns $value $mappings)"
         }
-
         Event => {
             let payload = returns {
                 TupleReturns: ($value.Parameters | get Type)
@@ -218,7 +215,6 @@ def member [value: record, mappings: record]: nothing -> string {
 
             $"($name): RBXScriptSignal<($payload)>"
         }
-
         _ => { error make $"Unsupported member kind: ($value.MemberType)" }
     }
 }
@@ -620,13 +616,11 @@ def main [
     mut metadata = {
         revision: $revision
         properties: {}
-
         services: (
             $classes
             | where ('Service' in ($it.Tags? | default []))
             | get Name
         )
-
         creatable_instances: (
             $classes
             | where ('NotCreatable' not-in ($it.Tags? | default []) and 'Service' not-in ($it.Tags? | default []))
@@ -677,28 +671,48 @@ def main [
     }
 
     let roblox_roots = $definitions | values | each {|source| blocks $source | where key starts-with value: | get name } | flatten | uniq
-    let documentation = canonical $documentation {luau: $luau_roots, roblox: $roblox_roots} | to json --raw
+    let canonical = canonical $documentation {luau: $luau_roots, roblox: $roblox_roots}
+
+    if ($canonical | columns | any {|symbol| not ($symbol starts-with @luau/ or $symbol starts-with @roblox/) }) {
+        error make 'Unrecognized documentation namespace'
+    }
+
+    let documents = [luau roblox] | reduce --fold {} {|namespace, result|
+        let symbols = $canonical | transpose key value | where key starts-with $"@($namespace)/" | reduce --fold {} {|entry, symbols|
+            $symbols | insert $entry.key $entry.value
+        }
+
+        $result | insert $namespace ($symbols | to json --raw)
+    }
 
     let profiles = $definitions | transpose name source | reduce --fold {} {|entry, result|
         $result | upsert $entry.name ($entry.source | hash sha256)
     }
 
-    $metadata = $metadata | insert profiles $profiles | insert documentation ($documentation | hash sha256) | insert enumerations ($namespace | hash sha256)
+    $metadata = $metadata | insert profiles $profiles | insert documentation ($documents.roblox | hash sha256) | insert enumerations ($namespace | hash sha256)
 
     if ($destination | path exists) {
         error make 'Generation requires a new destination directory'
     }
 
-    mkdir $destination
+    let roblox = $destination | path join roblox
+    let luau = $destination | path join luau
+    mkdir $roblox $luau
 
     try {
         for entry in ($definitions | transpose file source) {
-            $entry.source | save ($destination | path join $"($entry.file).d.luau")
+            $entry.source | save ($roblox | path join $"($entry.file).d.luau")
         }
 
-        $documentation | save ($destination | path join documentation.json)
-        $namespace | save ($destination | path join enumerations.d.luau)
-        $metadata | to json --raw | save ($destination | path join metadata.json)
+        $documents.roblox | save ($roblox | path join documentation.json)
+        $namespace | save ($roblox | path join enumerations.d.luau)
+        $metadata | to json --raw | save ($roblox | path join metadata.json)
+        $documents.luau | save ($luau | path join documentation.json)
+
+        {
+            revision: $revision
+            documentation: ($documents.luau | hash sha256)
+        } | to json --raw | save ($luau | path join metadata.json)
 
         let validation = cargo run --offline --manifest-path (
             $DATA

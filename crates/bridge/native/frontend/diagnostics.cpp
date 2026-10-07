@@ -3,13 +3,13 @@
 #include <stdexcept>
 
 namespace instar::frontend {
-    size_t offset(const std::string &source, Luau::Position position) {
+    size_t offset(std::string_view source, Luau::Position position) {
         size_t start = 0;
 
         for (unsigned int line = 0; line < position.line; ++line) {
             const size_t newline = source.find('\n', start);
 
-            if (newline == std::string::npos) {
+            if (newline == std::string_view::npos) {
                 throw std::runtime_error("native source position exceeds host revision");
             }
 
@@ -24,13 +24,13 @@ namespace instar::frontend {
     }
 
     NativeLocation location(const Host &host, const Luau::ModuleName &name, Luau::Location range) {
-        const NativeSource source = host.read_source(name);
+        const NativeDocument source = host.read_document(name);
 
         if (!source.found) {
             throw std::runtime_error("native diagnostic source is unavailable: " + name);
         }
 
-        const std::string bytes(source.text);
+        const std::string_view bytes(source.text.data(), source.text.size());
 
         return NativeLocation{rust::String(name),
             source.revision,
@@ -69,13 +69,8 @@ namespace instar::frontend {
 
         if (Luau::get<Luau::GenericError>(error) ||
             (count && count->context == Luau::CountMismatch::Arg && count->expected == 1 && count->actual != 1)) {
-            const NativeSource source = host.read_source(name);
-
-            for (const NativeSite &site : source.sites) {
-                if (site.call_start == result.location.start && site.call_end == result.location.end) {
-                    result.kind = NativeKind::Resolution;
-                    break;
-                }
+            if (host.require(name, result.location.start, result.location.end)) {
+                result.kind = NativeKind::Resolution;
             }
         }
 

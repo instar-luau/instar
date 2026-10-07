@@ -1,7 +1,7 @@
-use std::{collections::BTreeMap, time::Instant};
+use std::{collections::BTreeMap, path::PathBuf, rc::Rc, time::Instant};
 
 use instar_analysis::{Completion, Diagnostic, Kind, Location, Options, Reason};
-use instar_bridge::frontend::Definition;
+use instar_bridge::frontend::{Class, Definition};
 
 use crate::{
     analysis::Origin,
@@ -10,10 +10,12 @@ use crate::{
     source::Document,
 };
 
+#[derive(Clone)]
 pub(crate) struct Environment {
     pub(crate) definitions: Vec<Definition>,
     pub(crate) diagnostics: Vec<Diagnostic<Origin>>,
     pub(crate) completion: Completion,
+    classes: Vec<Class>,
 }
 
 impl Environment {
@@ -37,6 +39,53 @@ impl Project {
         node: &Node,
         settings: &Settings,
         sources: &mut BTreeMap<String, (Origin, Document)>,
+        prepared: &mut BTreeMap<PathBuf, Rc<Environment>>,
+        options: &Options,
+        started: Instant,
+    ) -> Rc<Environment> {
+        let directory = node
+            .module
+            .source
+            .parent()
+            .expect("module source directory");
+
+        let mut environment = if let Some(environment) = prepared.get(directory) {
+            Rc::clone(environment)
+        } else {
+            let environment =
+                Rc::new(self.load_environment(node, settings, sources, options, started));
+
+            if environment.completion == Completion::Complete {
+                prepared.insert(directory.to_owned(), Rc::clone(&environment));
+            }
+
+            environment
+        };
+
+        if let Some(frontend) = &mut self.frontend
+            && let Err(error) = frontend.classes(
+                &crate::native::name(&node.module.identity),
+                &environment.classes,
+            )
+        {
+            Rc::make_mut(&mut environment).failure(
+                Location {
+                    module: Origin::Module(node.module.clone()),
+                    revision: node.document.revision,
+                    range: [0, 0],
+                },
+                &error,
+            );
+        }
+
+        environment
+    }
+
+    fn load_environment(
+        &mut self,
+        node: &Node,
+        settings: &Settings,
+        sources: &mut BTreeMap<String, (Origin, Document)>,
         options: &Options,
         started: Instant,
     ) -> Environment {
@@ -44,11 +93,12 @@ impl Project {
             definitions: Vec::new(),
             diagnostics: Vec::new(),
             completion: Completion::Complete,
+            classes: Vec::new(),
         };
 
         let configuration = &settings.configuration;
 
-        let classes = if configuration.roblox.enabled == Some(true) {
+        environment.classes = if configuration.roblox.enabled == Some(true) {
             match self.roblox_assets(configuration.roblox.security, options, started) {
                 Ok(assets) => {
                     for (path, document) in assets.definitions {
@@ -86,20 +136,6 @@ impl Project {
         } else {
             Vec::new()
         };
-
-        if let Some(frontend) = &mut self.frontend
-            && let Err(error) =
-                frontend.classes(&crate::native::name(&node.module.identity), &classes)
-        {
-            environment.failure(
-                Location {
-                    module: Origin::Module(node.module.clone()),
-                    revision: node.document.revision,
-                    range: [0, 0],
-                },
-                &error,
-            );
-        }
 
         for (namespace, path) in configuration.environment.iter().flat_map(|environment| {
             environment

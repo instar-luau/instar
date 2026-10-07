@@ -16,6 +16,10 @@ pub enum Value {
     Integer(i32),
 }
 
+/// Validated canonical overrides relative to native defaults.
+#[derive(Clone, Debug, Default)]
+pub struct Overrides(pub(crate) BTreeMap<String, Value>);
+
 pub(crate) fn native(flags: &BTreeMap<String, Value>) -> Vec<boundary::NativeFlag> {
     flags
         .iter()
@@ -31,31 +35,29 @@ pub(crate) fn native(flags: &BTreeMap<String, Value>) -> Vec<boundary::NativeFla
         .collect()
 }
 
-/// Validates flag names and types without modifying native process state.
+/// Validates and canonicalizes overrides without modifying native process state.
 ///
 /// # Errors
 /// Rejects unknown registry names and mismatched value types.
-pub fn validate(flags: &BTreeMap<String, Value>) -> io::Result<()> {
-    boundary::validate_flags(&native(flags)).map_err(io::Error::other)
-}
-
-pub(crate) fn normalize(flags: &BTreeMap<String, Value>) -> io::Result<BTreeMap<String, Value>> {
-    Ok(boundary::normalize_flags(&native(flags))
-        .map_err(io::Error::other)?
-        .into_iter()
-        .map(|flag| {
-            (
-                flag.name,
-                if flag.is_boolean {
-                    Value::Boolean(flag.boolean)
-                } else {
-                    Value::Integer(flag.integer)
-                },
-            )
-        })
-        .collect())
+pub fn validate(flags: &BTreeMap<String, Value>) -> io::Result<Overrides> {
+    Ok(Overrides(
+        boundary::normalize_flags(&native(flags))
+            .map_err(instar_analysis::error::invalid)?
+            .into_iter()
+            .map(|flag| {
+                (
+                    flag.name,
+                    if flag.is_boolean {
+                        Value::Boolean(flag.boolean)
+                    } else {
+                        Value::Integer(flag.integer)
+                    },
+                )
+            })
+            .collect(),
+    ))
 }
 
 pub(crate) fn apply(flags: &BTreeMap<String, Value>) -> io::Result<()> {
-    boundary::apply_flags(&native(flags)).map_err(io::Error::other)
+    boundary::apply_flags(&native(flags)).map_err(instar_analysis::error::invalid)
 }

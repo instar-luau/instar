@@ -2,30 +2,22 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs, io,
+    io,
     path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        mpsc,
-    },
-    thread,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
-use instar_analysis::{Options, Reason, error::invalid};
+use instar_analysis::{Options, error::invalid};
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 
 use crate::{
+    assets::{self, HOST, VERSION, fetch, install, verify},
     configuration::Security,
     project::{Change, Project},
     source::Document,
 };
 
-const VERSION: &str = env!("CARGO_PKG_VERSION");
-const HOST: &str = "https://instar-luau.github.io/instar/roblox";
 const PROFILES: [&str; 4] = ["none", "local", "plugin", "roblox"];
-static NEXT: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -43,14 +35,7 @@ impl Metadata {
     fn parse(source: &str) -> io::Result<Self> {
         let metadata: Self = serde_json::from_str(source).map_err(invalid)?;
 
-        if metadata.revision.len() != 40
-            || !metadata
-                .revision
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit())
-        {
-            return Err(invalid("invalid Roblox tracker revision"));
-        }
+        assets::revision(&metadata.revision)?;
 
         names(&metadata.services)?;
         names(&metadata.creatable_instances)?;
@@ -95,8 +80,13 @@ impl Project {
             Ok(_) => {}
 
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                let files = fetch(format!("{HOST}/{VERSION}"), &options.remaining(started))?;
-                interrupted(options, started)?;
+                let files = fetch(
+                    format!("{HOST}/roblox/{VERSION}"),
+                    &options.remaining(started),
+                    download,
+                )?;
+
+                options.check(started)?;
                 install(&directory, files)?;
 
                 self.view
@@ -132,8 +122,7 @@ impl Project {
         let documentation = self.source(&directory.join("documentation.json"))?;
         verify(&documentation.text, &metadata.documentation)?;
 
-        let documentation =
-            crate::documentation::Index::parse(&documentation.text, &["@luau", "@roblox"])?;
+        let documentation = crate::documentation::Index::parse(&documentation.text, &["@roblox"])?;
 
         let services = names(&metadata.services)?;
         let creatable = names(&metadata.creatable_instances)?;
@@ -192,28 +181,7 @@ impl Project {
 /// # Errors
 /// Returns an error when the operating system's user cache directory is unavailable.
 pub fn cache_directory() -> io::Result<PathBuf> {
-    let base = if cfg!(target_os = "windows") {
-        std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
-    } else if cfg!(target_os = "macos") {
-        std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Caches"))
-    } else {
-        std::env::var_os("XDG_CACHE_HOME")
-            .filter(|path| Path::new(path).is_absolute())
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
-    }
-    .ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            "user cache directory is unavailable",
-        )
-    })?;
-
-    if !base.is_absolute() {
-        return Err(invalid("user cache directory must be absolute"));
-    }
-
-    Ok(base.join("instar").join("roblox").join(VERSION))
+    assets::directory("roblox")
 }
 
 fn names(values: &[String]) -> io::Result<BTreeSet<&str>> {
@@ -233,56 +201,6 @@ fn names(values: &[String]) -> io::Result<BTreeSet<&str>> {
     Ok(names)
 }
 
-fn verify(source: &str, expected: &str) -> io::Result<()> {
-    if format!("{:x}", Sha256::digest(source.as_bytes())) != expected {
-        return Err(invalid("Roblox assets do not match their metadata"));
-    }
-
-    Ok(())
-}
-
-fn interrupted(options: &Options, started: Instant) -> io::Result<()> {
-    match options.interrupted(started) {
-        Some(Reason::Cancelled) => Err(io::Error::new(
-            io::ErrorKind::Interrupted,
-            "Roblox asset download cancelled",
-        )),
-
-        Some(_) => Err(io::Error::new(
-            io::ErrorKind::TimedOut,
-            "Roblox asset download timed out",
-        )),
-
-        None => Ok(()),
-    }
-}
-
-fn fetch(url: String, options: &Options) -> io::Result<BTreeMap<String, String>> {
-    let started = Instant::now();
-    interrupted(options, started)?;
-    let (sender, receiver) = mpsc::sync_channel(1);
-    let limits = options.clone();
-
-    thread::Builder::new()
-        .name("roblox".to_owned())
-        .spawn(move || {
-            drop(sender.send(download(&url, &limits)));
-        })?;
-
-    loop {
-        interrupted(options, started)?;
-
-        match receiver.recv_timeout(Duration::from_millis(10)) {
-            Ok(result) => return result,
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return Err(io::Error::other("Roblox asset download stopped"));
-            }
-        }
-    }
-}
-
 fn download(url: &str, options: &Options) -> io::Result<BTreeMap<String, String>> {
     let started = Instant::now();
 
@@ -291,22 +209,7 @@ fn download(url: &str, options: &Options) -> io::Result<BTreeMap<String, String>
         .build()
         .new_agent();
 
-    let get = |name: &str| -> io::Result<String> {
-        interrupted(options, started)?;
-
-        let bytes = agent
-            .get(format!("{url}/{name}"))
-            .config()
-            .timeout_global(Some(options.timeout.saturating_sub(started.elapsed())))
-            .build()
-            .call()
-            .map_err(io::Error::other)?
-            .body_mut()
-            .read_to_vec()
-            .map_err(io::Error::other)?;
-
-        String::from_utf8(bytes).map_err(invalid)
-    };
+    let get = |name: &str| assets::get(&agent, &format!("{url}/{name}"), options, started);
 
     let source = get("metadata.json")?;
     let metadata = Metadata::parse(&source)?;
@@ -326,12 +229,8 @@ fn download(url: &str, options: &Options) -> io::Result<BTreeMap<String, String>
         let text = get(name)?;
         verify(&text, hash)?;
 
-        if name == "documentation.json"
-            && !serde_json::from_str::<serde_json::Value>(&text)
-                .map_err(invalid)?
-                .is_object()
-        {
-            return Err(invalid("Roblox documentation must be an object"));
+        if name == "documentation.json" {
+            crate::documentation::Index::parse(&text, &["@roblox"])?;
         }
 
         files.insert(name.to_owned(), text);
@@ -340,39 +239,6 @@ fn download(url: &str, options: &Options) -> io::Result<BTreeMap<String, String>
     files.insert("metadata.json".to_owned(), source);
 
     Ok(files)
-}
-
-fn install(directory: &Path, mut files: BTreeMap<String, String>) -> io::Result<()> {
-    let metadata = files
-        .remove("metadata.json")
-        .ok_or_else(|| invalid("missing Roblox metadata"))?;
-
-    fs::create_dir_all(directory)?;
-
-    let staging = directory.join(format!(
-        ".download-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-
-    fs::create_dir(&staging)?;
-
-    let result = (|| {
-        for (name, text) in files
-            .into_iter()
-            .chain([("metadata.json".to_owned(), metadata)])
-        {
-            let path = staging.join(&name);
-            fs::write(&path, text)?;
-            fs::rename(path, directory.join(name))?;
-        }
-
-        Ok(())
-    })();
-
-    let cleanup = fs::remove_dir_all(staging);
-
-    result.and(cleanup)
 }
 
 #[cfg(test)]

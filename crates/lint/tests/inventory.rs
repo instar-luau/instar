@@ -663,3 +663,52 @@ fn service_rules_use_literal_values_and_byte_escapes_remain_valid() -> io::Resul
 
     Ok(())
 }
+
+#[test]
+fn cancellation_during_diagnostic_construction_updates_completion() -> io::Result<()> {
+    struct Module<'signal> {
+        copies: &'signal std::cell::Cell<usize>,
+        cancellation: &'signal instar_lint::Cancellation,
+    }
+
+    impl Clone for Module<'_> {
+        fn clone(&self) -> Self {
+            self.copies.set(self.copies.get() + 1);
+
+            if self.copies.get() == 2 {
+                self.cancellation.cancel();
+            }
+
+            Self {
+                copies: self.copies,
+                cancellation: self.cancellation,
+            }
+        }
+    }
+
+    let options = Options::new(Duration::from_secs(5));
+    let copies = std::cell::Cell::new(0);
+    let configuration = configured(Rule::DivideByZero);
+
+    let result = instar_lint::lint(
+        Module {
+            copies: &copies,
+            cancellation: &options.cancellation,
+        },
+        &Source {
+            text: "return 1/0",
+            revision: 1,
+            configuration: &configuration,
+            globals: &[],
+            roblox: false,
+            requires: &[],
+            inferred: None,
+        },
+        &options,
+    )?;
+
+    assert!(copies.get() >= 2);
+    assert_eq!(result.completion, Completion::Incomplete(Reason::Cancelled));
+
+    Ok(())
+}

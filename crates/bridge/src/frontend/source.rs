@@ -95,6 +95,18 @@ pub(crate) struct Source {
     pub(crate) flags: BTreeMap<String, flags::Value>,
 }
 
+impl From<crate::boundary::NativeLink> for Link {
+    fn from(link: crate::boundary::NativeLink) -> Self {
+        Self {
+            module: link.module,
+            revision: link.revision,
+            call: [link.call_start, link.call_end],
+            argument: [link.argument_start, link.argument_end],
+            target: link.target,
+        }
+    }
+}
+
 /// Validates the namespace component of a native documentation identifier.
 ///
 /// # Errors

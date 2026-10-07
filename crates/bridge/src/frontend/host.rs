@@ -16,18 +16,40 @@ pub(crate) struct Host {
 }
 
 impl Host {
+    pub(crate) fn read_document(&self, name: &str) -> boundary::NativeDocument {
+        let document = self
+            .sources
+            .get(name)
+            .map(|source| (&source.text, source.revision))
+            .or_else(|| {
+                self.sources
+                    .values()
+                    .flat_map(|source| &source.definitions)
+                    .find(|definition| definition.name == name)
+                    .map(|definition| (&definition.text, definition.revision))
+            });
+
+        boundary::NativeDocument {
+            found: document.is_some(),
+            text: document.map_or_else(String::new, |(text, _)| text.clone()),
+            revision: document.map_or(0, |(_, revision)| revision),
+        }
+    }
+
+    pub(crate) fn require(&self, name: &str, start: usize, end: usize) -> bool {
+        self.sources
+            .get(name)
+            .is_some_and(|source| source.sites.iter().any(|site| site.call == [start, end]))
+    }
+
     pub(crate) fn read_source(&self, name: &str) -> boundary::NativeSource {
         let Some(source) = self.sources.get(name) else {
-            let definition = self
-                .sources
-                .values()
-                .flat_map(|source| &source.definitions)
-                .find(|definition| definition.name == name);
+            let document = self.read_document(name);
 
             return boundary::NativeSource {
-                found: definition.is_some(),
-                text: definition.map_or_else(String::new, |definition| definition.text.clone()),
-                revision: definition.map_or(0, |definition| definition.revision),
+                found: document.found,
+                text: document.text,
+                revision: document.revision,
                 sites: Vec::new(),
                 definitions: Vec::new(),
                 classes: Vec::new(),

@@ -19,23 +19,23 @@ namespace instar {
 
             return nullptr;
         }
-    }
 
-    void validate_flags(rust::Slice<const NativeFlag> flags) {
-        std::unordered_set<const void *> registered;
+        void validate_flags(rust::Slice<const NativeFlag> flags) {
+            std::unordered_set<const void *> registered;
 
-        for (const auto &flag : flags) {
-            const std::string name(flag.name);
+            for (const auto &flag : flags) {
+                const std::string name(flag.name);
 
-            const void *found = flag.is_boolean ? static_cast<const void *>(registered_flag<bool>(name))
-                                                : static_cast<const void *>(registered_flag<int>(name));
+                const void *found = flag.is_boolean ? static_cast<const void *>(registered_flag<bool>(name))
+                                                    : static_cast<const void *>(registered_flag<int>(name));
 
-            if (!found) {
-                throw std::invalid_argument("unknown Luau flag or incorrect value type: " + name);
-            }
+                if (!found) {
+                    throw std::invalid_argument("unknown Luau flag or incorrect value type: " + name);
+                }
 
-            if (!registered.insert(found).second) {
-                throw std::invalid_argument("duplicate Luau flag alias: " + name);
+                if (!registered.insert(found).second) {
+                    throw std::invalid_argument("duplicate Luau flag alias: " + name);
+                }
             }
         }
     }

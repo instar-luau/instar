@@ -11,8 +11,12 @@ use super::{
 use crate::Rule;
 
 impl Context<'_, '_> {
-    pub(super) fn requires(&mut self) {
+    pub(super) fn requires(&mut self, options: &crate::Options, started: std::time::Instant) {
         for site in self.source.requires {
+            if options.interrupted(started).is_some() {
+                break;
+            }
+
             if !site.constant {
                 self.emit(
                     Span {

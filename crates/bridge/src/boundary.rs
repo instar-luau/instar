@@ -1,8 +1,9 @@
 pub(super) use native::{
-    NativeAlias, NativeClass, NativeCompletion, NativeConfiguration, NativeDefinition,
-    NativeDiagnostic, NativeFact, NativeFactKind, NativeFlag, NativeFrontend, NativeKind,
-    NativeLint, NativeLocation, NativeProperty, NativeSite, NativeSnapshot, NativeSource,
-    apply_flags, create, create_frontend, normalize_flags, validate_flags,
+    NativeAlias, NativeCheck, NativeClass, NativeCompletion, NativeConfiguration, NativeDefinition,
+    NativeDiagnostic, NativeDocument, NativeFact, NativeFactKind, NativeFlag, NativeFrontend,
+    NativeKind, NativeLink, NativeLint, NativeLintResult, NativeLocation, NativeProperty,
+    NativeSite, NativeSnapshot, NativeSource, apply_flags, create, create_frontend,
+    normalize_flags,
 };
 
 use crate::frontend::{Cancellation, Host};
@@ -43,6 +44,12 @@ mod native {
         argument_end: usize,
         static_request: bool,
         target: String,
+    }
+
+    struct NativeDocument {
+        found: bool,
+        text: String,
+        revision: u64,
     }
 
     struct NativeSource {
@@ -163,6 +170,8 @@ mod native {
     extern "Rust" {
         type Host;
         fn read_source(self: &Host, name: &str) -> NativeSource;
+        fn read_document(self: &Host, name: &str) -> NativeDocument;
+        fn require(self: &Host, name: &str, start: usize, end: usize) -> bool;
         fn resolve(self: &Host, name: &str, start: usize, end: usize) -> String;
         type Cancellation;
         fn requested(self: &Cancellation) -> bool;
@@ -174,7 +183,6 @@ mod native {
         include!("native/frontend.hpp");
         type NativeConfiguration;
         type NativeFrontend;
-        fn validate_flags(flags: &[NativeFlag]) -> Result<()>;
         fn apply_flags(flags: &[NativeFlag]) -> Result<()>;
         fn normalize_flags(flags: &[NativeFlag]) -> Result<Vec<NativeFlag>>;
         fn create_frontend() -> Result<UniquePtr<NativeFrontend>>;

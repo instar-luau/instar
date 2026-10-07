@@ -118,3 +118,100 @@ fn project_flags_follow_configuration_changes() -> io::Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn parent_environment_paths_invalidate_consumers() -> io::Result<()> {
+    let directory = Directory::new(None)?;
+
+    directory.file(
+        "nested/instar.toml",
+        "[roblox]\nenabled=false\n[[environment]]\nnamespace='@custom'\ndefinitions=['../types.luau']\ndocumentation=['../docs.json']",
+    )?;
+
+    let entry = directory.file("nested/entry.luau", "return value")?;
+    let definitions = directory.file("types.luau", "declare value: number")?;
+    let documentation = directory.file("docs.json", "{}")?;
+    let mut project = project();
+
+    for path in [definitions, documentation] {
+        let identity = project.links(&entry, None)?.module.identity.clone();
+        assert!(project.watch_inputs().contains(&path));
+        let affected = project.change(Change::Disk(path))?;
+        assert!(affected.contains(&identity));
+    }
+
+    Ok(())
+}
+
+#[test]
+fn cancelled_preparation_and_documentation_do_not_load_sources() -> io::Result<()> {
+    let directory = Directory::new(None)?;
+    let entry = directory.file("entry.luau", "return 1")?;
+    let mut project = project();
+    let limits = options();
+    limits.cancellation.cancel();
+
+    assert_eq!(
+        project
+            .prepare(&entry, None, &limits)
+            .expect_err("cancelled preparation")
+            .kind(),
+        io::ErrorKind::Interrupted
+    );
+
+    assert!(project.graph().is_empty());
+
+    assert_eq!(
+        project
+            .documentation(&entry, &limits)
+            .expect_err("cancelled documentation")
+            .kind(),
+        io::ErrorKind::Interrupted
+    );
+
+    Ok(())
+}
+
+#[test]
+fn builtin_documentation_loads_without_roblox_assets() -> io::Result<()> {
+    let directory = Directory::new(None)?;
+    directory.file("instar.toml", "[roblox]\nenabled=false")?;
+    let entry = directory.file("entry.luau", "print('hello')")?;
+    let mut project = project();
+
+    project.change(Change::Overlay {
+        path: instar_core::roblox::cache_directory()?.join("metadata.json"),
+        text: Some("invalid Roblox metadata".to_owned()),
+    })?;
+
+    let documentation = project.documentation(&entry, &options())?;
+
+    assert_eq!(
+        documentation
+            .get("@luau/global/print")
+            .expect("builtin documentation")
+            .documentation
+            .as_deref(),
+        Some("Prints values.")
+    );
+
+    assert!(documentation.get("@roblox/global/game").is_none());
+
+    Ok(())
+}
+
+#[test]
+fn deserialization_enforces_documentation_semantics() {
+    for source in [
+        r#"{"@custom/global/value":{}}"#,
+        r#"{"custom/global/value":{"documentation":"text"}}"#,
+        r#"{"@custom/":{"documentation":"text"}}"#,
+        r#"{"@custom/global/value":{"documentation":"text","keys":{"member":"invalid"}}}"#,
+        r#"{"@custom/global/value":{"documentation":"text","params":[{"name":"","documentation":"@custom/global/parameter"}]}}"#,
+    ] {
+        assert!(
+            serde_json::from_str::<instar_core::documentation::Index>(source).is_err(),
+            "{source}"
+        );
+    }
+}

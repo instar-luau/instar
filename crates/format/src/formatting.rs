@@ -19,12 +19,6 @@ pub(crate) struct Request {
     pub(crate) timeout: Duration,
 }
 
-#[derive(Deserialize, Serialize)]
-pub(crate) enum Response {
-    Formatted(Result),
-    InvalidConfiguration(String),
-}
-
 /// Formats source in an isolated, cancellable worker.
 ///
 /// Interrupted requests never return partial output.
@@ -42,7 +36,7 @@ pub fn format(
         return Ok(Result::interrupted(reason));
     }
 
-    let mut process = Process::start("formatter")?;
+    let mut process = Process::<Request, Result>::start("formatter")?;
 
     let request = Request {
         source: source.to_vec(),
@@ -51,11 +45,7 @@ pub fn format(
     };
 
     match process.request(request, options, started)? {
-        Outcome::Response(Response::Formatted(result)) => Ok(result),
-
-        Outcome::Response(Response::InvalidConfiguration(message)) => {
-            Err(instar_analysis::error::invalid(message))
-        }
+        Outcome::Response(result) => Ok(result),
 
         Outcome::Interrupted(reason) => Ok(Result::interrupted(reason)),
     }

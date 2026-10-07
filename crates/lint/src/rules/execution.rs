@@ -23,11 +23,17 @@ impl Context<'_, '_> {
         &mut self,
         module: &Module,
         result: &mut Result<Module>,
+        options: &Options,
+        started: Instant,
     ) -> io::Result<()> {
         let source = self.source;
 
         if let Some(inferred) = source.inferred {
             for inference in inferred {
+                if options.interrupted(started).is_some() {
+                    break;
+                }
+
                 if !valid_range(source.text, inference.range) {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -140,10 +146,14 @@ pub fn lint<Module: Clone>(
             });
         }
 
+        if let Some(reason) = options.interrupted(started) {
+            result.completion = Completion::Incomplete(reason);
+        }
+
         return Ok(result);
     }
 
-    let bindings = Bindings::analyze(&tree, options, started);
+    let bindings = Bindings::analyze(&tree, Some((options, started)));
 
     if let Some(reason) = bindings.interruption {
         result.completion = Completion::Incomplete(reason);
@@ -182,8 +192,8 @@ pub fn lint<Module: Clone>(
         }
     }
 
-    context.requires();
-    context.inferences(&module, &mut result)?;
+    context.requires(options, started);
+    context.inferences(&module, &mut result, options, started)?;
 
     context
         .findings
@@ -203,6 +213,10 @@ pub fn lint<Module: Clone>(
             message,
             related: Vec::new(),
         });
+    }
+
+    if let Some(reason) = options.interrupted(started) {
+        result.completion = Completion::Incomplete(reason);
     }
 
     Ok(result)

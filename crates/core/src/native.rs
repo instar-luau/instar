@@ -23,6 +23,17 @@ impl Project {
         context: Option<&Identity>,
         options: &instar_analysis::Options,
     ) -> io::Result<Vec<Link>> {
+        self.during(options, |project| {
+            project.preparation(source, context, options)
+        })
+    }
+
+    fn preparation(
+        &mut self,
+        source: &Path,
+        context: Option<&Identity>,
+        options: &instar_analysis::Options,
+    ) -> io::Result<Vec<Link>> {
         let started = std::time::Instant::now();
         let entry = self.install(source, context)?;
 
@@ -47,6 +58,8 @@ impl Project {
 
         let result = (|| {
             for identity in identities {
+                self.interrupted()?;
+
                 let node = self
                     .graph
                     .node(&identity)
@@ -79,7 +92,7 @@ impl Project {
                     &sites,
                 )?;
 
-                frontend.flags(&name(&identity), &settings.configuration.luau.native()?)?;
+                frontend.flags(&name(&identity), &settings.flags)?;
             }
 
             Ok(entry)

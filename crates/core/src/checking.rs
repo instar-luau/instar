@@ -3,14 +3,16 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
+    path::PathBuf,
+    rc::Rc,
     time::Instant,
 };
 
 use instar_analysis::{Completion, Options, error::invalid};
-use instar_bridge::frontend::Definition;
 
 use crate::{
     analysis::{Entry, Origin, Report},
+    environment::Environment,
     native,
     project::{Project, absolute},
     resolve::Identity,
@@ -19,7 +21,8 @@ use crate::{
 #[derive(Default)]
 struct Analysis {
     report: Report,
-    environments: BTreeMap<String, Vec<Definition>>,
+    environments: BTreeMap<String, Rc<Environment>>,
+    prepared: BTreeMap<PathBuf, Rc<Environment>>,
 }
 
 impl Project {
@@ -49,35 +52,47 @@ impl Project {
         let mut roots = BTreeSet::new();
         let mut identities = BTreeSet::new();
 
-        for entry in entries {
+        let preparation = self.during(&options.remaining(started), |project| {
+            for entry in entries {
+                if let Some(reason) = options.interrupted(started) {
+                    result.completion = Completion::Incomplete(reason);
+                    break;
+                }
+
+                let source = absolute(&entry.source)?;
+
+                let directory = source
+                    .parent()
+                    .ok_or_else(|| invalid("checker entry has no directory"))?;
+
+                let settings = project.configuration(directory)?;
+
+                if !instar_analysis::selection::matches(
+                    &source,
+                    settings.configuration.check.include.as_deref(),
+                    true,
+                )? || instar_analysis::selection::matches(
+                    &source,
+                    settings.configuration.check.exclude.as_deref(),
+                    false,
+                )? {
+                    continue;
+                }
+
+                let module = project.install(&source, entry.context.as_ref())?;
+                roots.insert(native::name(&module.identity));
+                identities.extend(project.discover(&source, entry.context.as_ref())?);
+            }
+
+            Ok(())
+        });
+
+        if let Err(error) = preparation {
             if let Some(reason) = options.interrupted(started) {
                 result.completion = Completion::Incomplete(reason);
-                break;
+            } else {
+                return Err(error);
             }
-
-            let source = absolute(&entry.source)?;
-
-            let directory = source
-                .parent()
-                .ok_or_else(|| invalid("checker entry has no directory"))?;
-
-            let settings = self.configuration(directory)?;
-
-            if !instar_analysis::selection::matches(
-                &source,
-                settings.configuration.check.include.as_deref(),
-                true,
-            )? || instar_analysis::selection::matches(
-                &source,
-                settings.configuration.check.exclude.as_deref(),
-                false,
-            )? {
-                continue;
-            }
-
-            let module = self.install(&source, entry.context.as_ref())?;
-            roots.insert(native::name(&module.identity));
-            identities.extend(self.discover(&source, entry.context.as_ref())?);
         }
 
         if roots.is_empty() {
@@ -119,8 +134,8 @@ impl Project {
             .as_mut()
             .ok_or_else(|| invalid("shared native frontend is unavailable"))?;
 
-        for (name, definitions) in &analysis.environments {
-            frontend.definitions(name, definitions)?;
+        for (name, environment) in &analysis.environments {
+            frontend.definitions(name, &environment.definitions)?;
         }
 
         let remaining = options.remaining(started);
@@ -167,17 +182,18 @@ impl Project {
             &node,
             &settings,
             &mut analysis.report.sources,
+            &mut analysis.prepared,
             options,
             started,
         );
 
         result.completion = result.completion.combine(environment.completion);
 
-        for diagnostic in environment.diagnostics {
+        for diagnostic in environment.diagnostics.iter().cloned() {
             analysis.report.record(diagnostic);
         }
 
-        analysis.environments.insert(name, environment.definitions);
+        analysis.environments.insert(name, environment);
 
         Ok(())
     }

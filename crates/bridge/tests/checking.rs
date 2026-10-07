@@ -201,7 +201,7 @@ fn native_interruption_does_not_cache_a_clean_answer() -> io::Result<()> {
 }
 
 #[test]
-fn worker_interruption_discards_native_state_and_allows_retry() -> io::Result<()> {
+fn interrupted_requests_return_promptly_and_allow_retry() -> io::Result<()> {
     use std::fmt::Write;
     let configuration = Configuration::new()?;
     let mut frontend = Frontend::new()?;
