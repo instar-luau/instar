@@ -7,6 +7,7 @@
 #include "instar-bridge/src/boundary.rs.h"
 
 #include <stdexcept>
+#include <tuple>
 
 namespace instar::frontend {
     std::optional<Luau::SourceCode> Resolver::readSource(const Luau::ModuleName &name) {
@@ -21,7 +22,6 @@ namespace instar::frontend {
         }
 
         active = name;
-        active_source = std::string(source.text);
 
         return Luau::SourceCode{std::string(source.text), Luau::SourceCode::Module};
     }
@@ -34,8 +34,8 @@ namespace instar::frontend {
 
         const rust::String target = host->resolve(
             active,
-            offset(active_source, expression->location.begin),
-            offset(active_source, expression->location.end)
+            offset(*host, active, expression->location.begin),
+            offset(*host, active, expression->location.end)
         );
 
         if (target.empty()) {
@@ -66,12 +66,19 @@ namespace instar::frontend {
     }
 
     bool Definition::operator==(const Definition &other) const {
-        return name == other.name && revision == other.revision && text == other.text &&
-               namespace_name == other.namespace_name;
+        return name == other.name && revision == other.revision && namespace_name == other.namespace_name;
+    }
+
+    bool Definition::operator<(const Definition &other) const {
+        return std::tie(name, revision, namespace_name) < std::tie(other.name, other.revision, other.namespace_name);
     }
 
     bool Property::operator==(const Property &other) const {
         return name == other.name && read == other.read && write == other.write;
+    }
+
+    bool Property::operator<(const Property &other) const {
+        return std::tie(name, read, write) < std::tie(other.name, other.read, other.write);
     }
 
     bool Class::operator==(const Class &other) const {
@@ -79,8 +86,17 @@ namespace instar::frontend {
                properties == other.properties;
     }
 
+    bool Class::operator<(const Class &other) const {
+        return std::tie(name, service, creatable, properties) <
+               std::tie(other.name, other.service, other.creatable, other.properties);
+    }
+
     bool Signature::operator==(const Signature &other) const {
         return definitions == other.definitions && classes == other.classes;
+    }
+
+    bool Signature::operator<(const Signature &other) const {
+        return std::tie(definitions, classes) < std::tie(other.definitions, other.classes);
     }
 
     State::State() {

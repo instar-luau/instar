@@ -19,34 +19,55 @@ pub(crate) struct Request {
     pub(crate) timeout: Duration,
 }
 
-/// Formats source in an isolated, cancellable worker.
-///
-/// Interrupted requests never return partial output.
-///
-/// # Errors
-/// Returns invalid configuration, unavailable worker, or transport failures.
-pub fn format(
-    source: &[u8],
-    configuration: &Configuration,
-    options: &Options,
-) -> io::Result<Result> {
-    let started = Instant::now();
+/// A reusable isolated formatting worker.
+#[derive(Default)]
+pub struct Formatter {
+    process: Option<Process<Request, Result>>,
+}
 
-    if let Some(reason) = options.interrupted(started) {
-        return Ok(Result::interrupted(reason));
-    }
+impl Formatter {
+    /// Formats source in an isolated, cancellable worker.
+    ///
+    /// Interrupted requests never return partial output.
+    ///
+    /// # Errors
+    /// Returns invalid configuration, unavailable worker, or transport failures.
+    pub fn format(
+        &mut self,
+        source: &[u8],
+        configuration: &Configuration,
+        options: &Options,
+    ) -> io::Result<Result> {
+        let started = Instant::now();
 
-    let mut process = Process::<Request, Result>::start("format")?;
+        if let Some(reason) = options.interrupted(started) {
+            return Ok(Result::interrupted(reason));
+        }
 
-    let request = Request {
-        source: source.to_vec(),
-        configuration: configuration.clone(),
-        timeout: options.timeout.saturating_sub(started.elapsed()),
-    };
+        if self.process.is_none() {
+            self.process = Some(Process::start("format")?);
+        }
 
-    match process.request(request, options, started)? {
-        Outcome::Response(result) => Ok(result),
+        let request = Request {
+            source: source.to_vec(),
+            configuration: configuration.clone(),
+            timeout: options.timeout.saturating_sub(started.elapsed()),
+        };
 
-        Outcome::Interrupted(reason) => Ok(Result::interrupted(reason)),
+        let outcome = self
+            .process
+            .as_mut()
+            .ok_or_else(|| io::Error::other("formatter worker is unavailable"))?
+            .request(request, options, started);
+
+        if !matches!(outcome, Ok(Outcome::Response(_))) {
+            self.process.take();
+        }
+
+        match outcome? {
+            Outcome::Response(result) => Ok(result),
+
+            Outcome::Interrupted(reason) => Ok(Result::interrupted(reason)),
+        }
     }
 }

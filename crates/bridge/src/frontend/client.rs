@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
+    sync::Arc,
     time::Instant,
 };
 
@@ -12,7 +13,9 @@ use instar_analysis::{
 use super::{
     host::Host,
     result::LintResult,
-    source::{Class, Definition, Link, Site, Source, validate_namespace},
+    source::{
+        Binding, Class, Declaration, Definition, Link, Site, Source, lines, validate_namespace,
+    },
 };
 
 use crate::{
@@ -20,7 +23,8 @@ use crate::{
     protocol::{Operation, Request, Response},
 };
 
-/// A native Luau Frontend whose resolution policy belongs exclusively to its host.
+/// A host-resolved Luau frontend whose isolated worker starts on the first request.
+#[derive(Default)]
 pub struct Frontend {
     process: Option<Process<Request, Response>>,
     host: Host,
@@ -28,18 +32,6 @@ pub struct Frontend {
 }
 
 impl Frontend {
-    /// Creates a host snapshot store for an isolated native frontend.
-    ///
-    /// # Errors
-    /// Returns worker startup failures.
-    pub fn new() -> io::Result<Self> {
-        Ok(Self {
-            process: Some(Process::start("analysis")?),
-            host: Host::default(),
-            flags: BTreeMap::new(),
-        })
-    }
-
     /// Installs an immutable source revision, effective native settings and host resolutions.
     ///
     /// # Errors
@@ -47,11 +39,13 @@ impl Frontend {
     pub fn insert(
         &mut self,
         name: &str,
-        text: &str,
+        text: impl Into<Arc<str>>,
         revision: u64,
         configuration: &Configuration,
         sites: &[Site],
     ) -> io::Result<()> {
+        let text = text.into();
+
         if name.is_empty() || name.contains('\0') {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -95,38 +89,23 @@ impl Frontend {
             return Ok(());
         }
 
+        self.host.remove(name);
+
         self.host.sources.insert(
             name.to_owned(),
             Source {
                 configuration: snapshot,
-                text: text.to_owned(),
+                text: Arc::clone(&text),
                 revision,
+                lines: lines(&text).into(),
                 sites: sites.to_vec(),
                 definitions: Vec::new(),
-                classes: Vec::new(),
+                environment: None,
                 flags: BTreeMap::new(),
             },
         );
 
         Ok(())
-    }
-
-    /// Parses a reachable host graph and validates static requests against native AST ranges.
-    ///
-    /// # Errors
-    /// Returns missing host targets, native parsing failures or host/native agreement errors.
-    pub fn parse(&mut self, entry: &str, options: &Options) -> io::Result<Vec<Link>> {
-        let started = Instant::now();
-        let entries = [entry.to_owned()];
-        let names = self.names(&entries)?;
-
-        match self.request(&entries, &names, Operation::Parse, options, started)? {
-            Outcome::Response(Response::Parsed(links)) => Ok(links),
-
-            Outcome::Interrupted(reason) => Err(reason.error()),
-
-            Outcome::Response(_) => Err(io::Error::other("unexpected native worker response")),
-        }
     }
 
     /// Installs declarations and atomically advances shared revisions across their consumers.
@@ -149,26 +128,19 @@ impl Frontend {
                 || definition.name.contains('\0')
                 || !names.insert(&definition.name)
                 || self.host.sources.contains_key(&definition.name)
-                || current.definitions.iter().any(|existing| {
-                    existing.name == definition.name
-                        && (existing.revision > definition.revision
-                            || (existing.revision == definition.revision
-                                && existing.text != definition.text))
-                })
                 || self
                     .host
-                    .sources
-                    .iter()
-                    .filter(|(module, _)| module.as_str() != name)
-                    .flat_map(|(_, source)| &source.definitions)
-                    .any(|existing| {
-                        existing.name == definition.name
-                            && (existing.revision != definition.revision
-                                || existing.text != definition.text)
-                            && !current.definitions.iter().any(|previous| {
-                                previous.name == definition.name
-                                    && definition.revision > existing.revision
-                            })
+                    .declarations
+                    .get(&definition.name)
+                    .is_some_and(|existing| {
+                        existing.revision > definition.revision
+                            || (existing.revision == definition.revision
+                                && existing.text != definition.text)
+                            || (existing.revision < definition.revision
+                                && !current
+                                    .definitions
+                                    .iter()
+                                    .any(|binding| binding.name == definition.name))
                     })
             {
                 return Err(io::Error::new(
@@ -178,28 +150,41 @@ impl Frontend {
             }
         }
 
-        let source = self
-            .host
+        self.host.detach(name);
+
+        let mut bindings = Vec::with_capacity(definitions.len());
+
+        for definition in definitions {
+            let declaration = self
+                .host
+                .declarations
+                .entry(definition.name.clone())
+                .or_insert_with(|| Declaration {
+                    revision: definition.revision,
+                    text: Arc::clone(&definition.text),
+                    lines: lines(&definition.text).into(),
+                    consumers: BTreeSet::new(),
+                });
+
+            if declaration.revision != definition.revision {
+                declaration.revision = definition.revision;
+                declaration.text = Arc::clone(&definition.text);
+                declaration.lines = lines(&definition.text).into();
+            }
+
+            declaration.consumers.insert(name.to_owned());
+
+            bindings.push(Binding {
+                name: definition.name.clone(),
+                namespace: definition.namespace.clone(),
+            });
+        }
+
+        self.host
             .sources
             .get_mut(name)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "module is unavailable"))?;
-
-        source.definitions = definitions.to_vec();
-
-        for (module, source) in &mut self.host.sources {
-            if module == name {
-                continue;
-            }
-
-            for existing in &mut source.definitions {
-                if let Some(replacement) =
-                    definitions.iter().find(|item| item.name == existing.name)
-                {
-                    existing.revision = replacement.revision;
-                    existing.text.clone_from(&replacement.text);
-                }
-            }
-        }
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "module is unavailable"))?
+            .definitions = bindings;
 
         Ok(())
     }
@@ -249,15 +234,32 @@ impl Frontend {
             }
         }
 
-        let source = self
-            .host
-            .sources
-            .get_mut(name)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "module is unavailable"))?;
+        self.host.environment(name, classes)
+    }
 
-        source.classes = classes.to_vec();
+    /// Removes changed module revisions from the host snapshot used by subsequent requests.
+    pub fn invalidate(&mut self, names: &[String]) {
+        for name in names {
+            self.host.remove(name);
+        }
+    }
 
-        Ok(())
+    /// Parses a reachable host graph and validates static requests against native AST ranges.
+    ///
+    /// # Errors
+    /// Returns missing host targets, worker startup, parsing or host/native agreement failures.
+    pub fn parse(&mut self, entry: &str, options: &Options) -> io::Result<Vec<Link>> {
+        let started = Instant::now();
+        let entries = [entry.to_owned()];
+        let names = self.names(&entries)?;
+
+        match self.request(&entries, &names, Operation::Parse, options, started)? {
+            Outcome::Response(Response::Parsed(links)) => Ok(links),
+
+            Outcome::Interrupted(reason) => Err(reason.error()),
+
+            Outcome::Response(_) => Err(io::Error::other("unexpected native worker response")),
+        }
     }
 
     /// Resolves a global or exported type path to its native documentation identifier.
@@ -294,7 +296,7 @@ impl Frontend {
     /// The worker is terminated if the deadline expires or cancellation is requested.
     ///
     /// # Errors
-    /// Returns missing host targets, host/native disagreement or native failures.
+    /// Returns missing host targets, host/native disagreement or worker failures.
     pub fn check(
         &mut self,
         entries: &[String],
@@ -321,7 +323,7 @@ impl Frontend {
     /// The worker is terminated if the deadline expires or cancellation is requested.
     ///
     /// # Errors
-    /// Returns missing host targets, host/native disagreement or native failures.
+    /// Returns missing host targets, host/native disagreement or worker failures.
     pub fn lint(&mut self, entries: &[String], options: &Options) -> io::Result<LintResult> {
         self.lint_inner(entries, &[], options)
     }
@@ -332,7 +334,7 @@ impl Frontend {
     ///
     /// # Errors
     /// Rejects semantic selections outside the reachable graph, missing host targets,
-    /// host/native disagreement or native failures.
+    /// host/native disagreement or worker failures.
     pub fn lint_semantic(
         &mut self,
         entries: &[String],
@@ -446,12 +448,15 @@ impl Frontend {
 
         let request = Request {
             sources: self.host.sources.clone(),
+            declarations: self.host.declarations.clone(),
+            environments: self.host.environments.clone(),
             entries: entries.to_vec(),
             modules: modules.to_vec(),
             operation,
             timeout: options.timeout.saturating_sub(started.elapsed()),
             flags,
             progress: options.progress.is_some(),
+            jobs: options.jobs,
         };
 
         let result = self
@@ -465,17 +470,5 @@ impl Frontend {
         }
 
         result
-    }
-
-    /// Removes changed module revisions from host and native analysis caches.
-    ///
-    /// # Errors
-    /// Returns native invalidation failures.
-    pub fn invalidate(&mut self, names: &[String]) -> io::Result<()> {
-        for name in names {
-            self.host.sources.remove(name);
-        }
-
-        Ok(())
     }
 }

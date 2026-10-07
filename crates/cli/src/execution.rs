@@ -1,20 +1,22 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
+    env,
     io::{self, IsTerminal, Write},
     path::PathBuf,
+    sync::{Arc, Mutex, mpsc},
     time::{Duration, Instant},
 };
 
 use codespan_reporting::term::termcolor::ColorChoice;
 use eyre::{Result, WrapErr, ensure};
-use instar_analysis::{Completion, Options, Reason};
+use instar_analysis::{Completion, Options, Reason, process, selection};
 
 use instar_core::{
     analysis::{Entry, Origin},
     project::Project,
 };
 
-use rayon::prelude::*;
+use instar_format::{Configuration, Formatter};
 
 use crate::{
     arguments::{Analysis, Arguments, Color},
@@ -35,7 +37,7 @@ enum Mode {
 }
 
 pub(crate) fn run(arguments: &Arguments, command: &Analysis) -> Result<bool> {
-    instar_analysis::process::set_host(&std::env::current_exe()?)?;
+    process::set_host(&env::current_exe()?)?;
 
     let mut options = Options::new(Duration::from_secs(arguments.timeout));
     let started = Instant::now();
@@ -47,7 +49,7 @@ pub(crate) fn run(arguments: &Arguments, command: &Analysis) -> Result<bool> {
         Color::Never => ColorChoice::Never,
 
         Color::Auto
-            if std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty())
+            if env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty())
                 || !io::stderr().is_terminal() =>
         {
             ColorChoice::Never
@@ -66,8 +68,11 @@ pub(crate) fn run(arguments: &Arguments, command: &Analysis) -> Result<bool> {
     reporter.phase("Discovering", None)?;
     options.progress = Some(reporter.observer()?);
 
-    let (Analysis::Check { files } | Analysis::Lint { files } | Analysis::Format { files, .. }) =
-        command;
+    let (Analysis::Check { files, jobs }
+    | Analysis::Lint { files, jobs }
+    | Analysis::Format { files, jobs, .. }) = command;
+
+    options.jobs = *jobs;
 
     let (paths, stdin) = inputs::load(
         files,
@@ -78,7 +83,7 @@ pub(crate) fn run(arguments: &Arguments, command: &Analysis) -> Result<bool> {
     )?;
 
     let completion = match command {
-        Analysis::Format { check, jobs, .. } => {
+        Analysis::Format { check, .. } => {
             ensure!(
                 !arguments.json || !stdin || *check,
                 "JSON formatting output from stdin requires --check"
@@ -92,10 +97,9 @@ pub(crate) fn run(arguments: &Arguments, command: &Analysis) -> Result<bool> {
                 Mode::Write
             };
 
-            let inputs = prepare(paths, &mut project, &options, started, &mut reporter, mode)?;
+            let inputs = prepare(paths, mode, &mut project, &mut reporter, &options, started)?;
 
-            let (completion, paths) =
-                format(&inputs, *jobs, &options, started, &mut reporter, mode)?;
+            let (completion, paths) = format(&inputs, mode, &mut reporter, &options, started)?;
 
             changed = paths;
 
@@ -177,12 +181,12 @@ fn entries(
 
 fn prepare(
     paths: Vec<PathBuf>,
+    mode: Mode,
     project: &mut Project,
+    reporter: &mut Reporter,
     options: &Options,
     started: Instant,
-    reporter: &mut Reporter,
-    mode: Mode,
-) -> Result<Vec<(PathBuf, String, instar_format::Configuration)>> {
+) -> Result<Vec<(PathBuf, Arc<str>, Configuration)>> {
     reporter.phase("Preparing", Some(paths.len()))?;
     let progress = reporter.progress();
     let mut inputs = Vec::new();
@@ -193,8 +197,8 @@ fn prepare(
         let settings = project.configuration(path.parent().expect("absolute source directory"))?;
         let configuration = settings.configuration.format.clone();
 
-        if !instar_analysis::selection::matches(&path, configuration.include.as_deref(), true)?
-            || instar_analysis::selection::matches(&path, configuration.exclude.as_deref(), false)?
+        if !selection::matches(&path, configuration.include.as_deref(), true)?
+            || selection::matches(&path, configuration.exclude.as_deref(), false)?
         {
             reporter.skipped += 1;
 
@@ -204,7 +208,7 @@ fn prepare(
                     .write_all(project.source(&path)?.text.as_bytes())?;
             }
         } else {
-            let source = project.source(&path)?.text.to_string();
+            let source = project.source(&path)?.text;
             inputs.push((path, source, configuration));
         }
 
@@ -215,43 +219,80 @@ fn prepare(
 }
 
 fn format(
-    inputs: &[(PathBuf, String, instar_format::Configuration)],
-    jobs: Option<std::num::NonZeroUsize>,
+    inputs: &[(PathBuf, Arc<str>, Configuration)],
+    mode: Mode,
+    reporter: &mut Reporter,
     options: &Options,
     started: Instant,
-    reporter: &mut Reporter,
-    mode: Mode,
 ) -> Result<(Completion, Vec<String>)> {
     reporter.phase("Formatting", Some(inputs.len()))?;
     let progress = reporter.progress();
     let mut builder = rayon::ThreadPoolBuilder::new();
 
-    if let Some(jobs) = jobs {
+    if let Some(jobs) = options.jobs {
         builder = builder.num_threads(jobs.get());
     }
 
     let pool = builder.build()?;
     let mut completion = Completion::Complete;
     let mut changed = Vec::new();
+    let (dispatch, receive) = mpsc::channel::<usize>();
+    let receive = Mutex::new(receive);
+    let (send, results) = mpsc::channel();
 
-    for batch in inputs.chunks(pool.current_num_threads()) {
-        let results = pool.install(|| {
-            batch
-                .par_iter()
-                .map(|(path, source, configuration)| {
+    let window = pool
+        .current_num_threads()
+        .saturating_mul(2)
+        .min(inputs.len());
+
+    pool.in_place_scope(|scope| -> Result<()> {
+        for _ in 0..pool.current_num_threads().min(inputs.len()) {
+            let send = send.clone();
+            let receive = &receive;
+            let progress = &progress;
+
+            scope.spawn(move |_| {
+                let mut worker = Formatter::default();
+
+                loop {
+                    let Ok(index) = receive.lock().expect("format dispatch lock").recv() else {
+                        break;
+                    };
+
+                    let (path, source, configuration) = &inputs[index];
                     progress.set_message(path.display().to_string());
 
-                    instar_format::format(
-                        source.as_bytes(),
-                        configuration,
-                        &options.remaining(started),
-                    )
-                    .wrap_err_with(|| format!("formatting {}", path.display()))
-                })
-                .collect::<Vec<_>>()
-        });
+                    let result = worker
+                        .format(
+                            source.as_bytes(),
+                            configuration,
+                            &options.remaining(started),
+                        )
+                        .wrap_err_with(|| format!("formatting {}", path.display()));
 
-        for ((path, source, _), result) in batch.iter().zip(results) {
+                    if send.send((index, result)).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+
+        drop(send);
+        let dispatch = dispatch;
+
+        for index in 0..window {
+            dispatch.send(index)?;
+        }
+
+        let mut pending = BTreeMap::new();
+
+        for (index, (path, source, _)) in inputs.iter().enumerate() {
+            while !pending.contains_key(&index) {
+                let (finished, result) = results.recv()?;
+                pending.insert(finished, result);
+            }
+
+            let result = pending.remove(&index).expect("ordered format result");
             let result = result?;
             completion = completion.combine(result.completion);
             reporter.formatting(path, source, &result);
@@ -284,12 +325,18 @@ fn format(
 
             reporter.processed += 1;
             progress.inc(1);
+
+            if completion != Completion::Complete {
+                break;
+            }
+
+            if index + window < inputs.len() {
+                dispatch.send(index + window)?;
+            }
         }
 
-        if completion != Completion::Complete {
-            break;
-        }
-    }
+        Ok(())
+    })?;
 
     Ok((completion, changed))
 }

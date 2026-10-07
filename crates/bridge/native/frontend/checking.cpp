@@ -1,6 +1,7 @@
 #include "checking.hpp"
 #include "diagnostics.hpp"
 #include "documentation.hpp"
+#include "linting.hpp"
 #include "parsing.hpp"
 #include "roblox.hpp"
 #include "state.hpp"
@@ -11,14 +12,80 @@
 #include "Luau/Scope.h"
 #include "Luau/TypeArena.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <deque>
 #include <exception>
+#include <functional>
+#include <mutex>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace instar::frontend {
     namespace {
+        struct Scheduler {
+            std::mutex mutex;
+            std::condition_variable ready;
+            std::deque<std::function<void()>> tasks;
+            bool stopped = false;
+            std::vector<std::thread> workers;
+
+            explicit Scheduler(size_t count) {
+                try {
+                    for (size_t index = 0; index < count; ++index) {
+                        workers.emplace_back([this] {
+                            for (;;) {
+                                std::function<void()> task;
+                                {
+                                    std::unique_lock<std::mutex> lock(mutex);
+                                    ready.wait(lock, [this] { return stopped || !tasks.empty(); });
+                                    if (tasks.empty()) {
+                                        return;
+                                    }
+                                    task = std::move(tasks.front());
+                                    tasks.pop_front();
+                                }
+                                task();
+                            }
+                        });
+                    }
+                } catch (...) {
+                    stop();
+                    throw;
+                }
+            }
+
+            ~Scheduler() { stop(); }
+
+            void stop() {
+                {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    stopped = true;
+                }
+
+                ready.notify_all();
+
+                for (auto &worker : workers) {
+                    worker.join();
+                }
+            }
+
+            void submit(std::vector<std::function<void()>> work) {
+                {
+                    std::lock_guard<std::mutex> lock(mutex);
+
+                    for (auto &task : work) {
+                        tasks.push_back(std::move(task));
+                    }
+                }
+
+                ready.notify_all();
+            }
+        };
+
         struct Interruption {
             const Cancellation &cancellation;
             std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
@@ -63,12 +130,14 @@ namespace instar::frontend {
             }
         };
 
-    } // namespace
+    }
 
     NativeCheck analyze(
         State &state, const Host &host, rust::Slice<const rust::String> entries, double timeout_seconds,
-        rust::Slice<const rust::String> names, const Cancellation &cancellation, bool typecheck
+        rust::Slice<const rust::String> names, const Cancellation &cancellation, bool typecheck, bool lint,
+        bool &graph_prepared
     ) {
+        graph_prepared = false;
         auto &frontend = state.frontend;
         Interruption interruption(cancellation, timeout_seconds);
         NativeCheck result{{}, interruption.status()};
@@ -86,6 +155,8 @@ namespace instar::frontend {
                     state.frontend.clearBuiltinEnvironments();
                     state.resolver.environments.clear();
                     state.definitions.clear();
+                    state.environments.clear();
+                    state.lints.clear();
 
                     for (const auto &[name, node] : state.frontend.sourceNodes) {
                         state.frontend.markDirty(name);
@@ -107,7 +178,6 @@ namespace instar::frontend {
                     signature.definitions.push_back(
                         Definition{std::string(definition.name),
                             definition.revision,
-                            std::string(definition.text),
                             std::string(definition.namespace_name)}
                     );
                 }
@@ -125,34 +195,28 @@ namespace instar::frontend {
                 }
 
                 if (const auto found = state.definitions.find(name);
-                    found != state.definitions.end() && found->second == signature) {
+                    found != state.definitions.end() && *found->second == signature) {
                     continue;
                 }
 
                 frontend.markDirty(name);
 
-                if (source.definitions.empty()) {
-                    state.resolver.environments.erase(name);
-                    state.definitions.insert_or_assign(name, std::move(signature));
+                if (const auto found = state.environments.find(signature); found != state.environments.end()) {
+                    state.definitions.insert_or_assign(name, &found->first);
+
+                    if (found->second.empty()) {
+                        state.resolver.environments.erase(name);
+                    } else {
+                        state.resolver.environments.insert_or_assign(name, found->second);
+                    }
+
                     continue;
                 }
 
-                bool reused = false;
-
-                for (const auto &[existing, definitions] : state.definitions) {
-                    if (definitions == signature) {
-                        const auto environment = state.resolver.environments.find(existing);
-
-                        if (environment != state.resolver.environments.end()) {
-                            state.resolver.environments.insert_or_assign(name, environment->second);
-                            reused = true;
-                            break;
-                        }
-                    }
-                }
-
-                if (reused) {
-                    state.definitions.insert_or_assign(name, std::move(signature));
+                if (source.definitions.empty()) {
+                    const auto inserted = state.environments.emplace(std::move(signature), std::string{});
+                    state.definitions.insert_or_assign(name, &inserted.first->first);
+                    state.resolver.environments.erase(name);
                     continue;
                 }
 
@@ -187,11 +251,16 @@ namespace instar::frontend {
                         }
 
                         const std::string definition_name(definition.name);
+                        const NativeDocument document = host.read_document(definition_name);
+
+                        if (!document.found || document.revision != definition.revision) {
+                            throw std::runtime_error("native declaration revision is unavailable: " + definition_name);
+                        }
 
                         const auto loaded = frontend.loadDefinitionFile(
                             frontend.globals,
                             scope,
-                            std::string(definition.text),
+                            std::string(document.text),
                             definition_name,
                             false
                         );
@@ -234,7 +303,8 @@ namespace instar::frontend {
                 }
 
                 state.resolver.environments.insert_or_assign(name, environment);
-                state.definitions.insert_or_assign(name, std::move(signature));
+                const auto inserted = state.environments.emplace(std::move(signature), environment);
+                state.definitions.insert_or_assign(name, &inserted.first->first);
             }
 
             host.progress("Loading declarations", "", prepared, names.size());
@@ -245,7 +315,20 @@ namespace instar::frontend {
                 return result;
             }
 
+            for (const rust::String &name : names) {
+                if (lint && state.lints.count(std::string(name)) == 0) {
+                    frontend.markDirty(std::string(name));
+                }
+            }
+
+            for (const rust::String &name : names) {
+                if (frontend.isDirty(std::string(name))) {
+                    state.lints.erase(std::string(name));
+                }
+            }
+
             prepare(state, host, names);
+            graph_prepared = true;
             result.completion = interruption.status();
 
             if (result.completion != NativeCompletion::Complete) {
@@ -288,30 +371,39 @@ namespace instar::frontend {
             host.progress("Checking", "", 0, total);
 
             for (const rust::String &entry : entries) {
-                result.completion = interruption.status();
-
-                if (result.completion != NativeCompletion::Complete) {
-                    return result;
-                }
-
-                Luau::FrontendOptions options;
-                options.cancellationToken = interruption.token;
-                options.moduleTimeLimitSec = interruption.remaining();
-                options.retainFullTypeGraphs = true;
-
-                options.customModuleCheck = [&](const Luau::SourceModule &source, const Luau::Module &module) {
-                    if (!module.cancelled) {
-                        host.progress("Checking", source.name, ++completed, total);
-                    }
-                };
-
-                const Luau::CheckResult checked = frontend.check(std::string(entry), options);
-
-                if (!checked.timeoutHits.empty()) {
-                    result.completion = NativeCompletion::Timeout;
-                    break;
-                }
+                frontend.queueModuleCheck(std::string(entry));
             }
+
+            std::mutex collection;
+            Luau::FrontendOptions options;
+            options.cancellationToken = interruption.token;
+            options.moduleTimeLimitSec = interruption.remaining();
+
+            options.customModuleCheck = [&](const Luau::SourceModule &source, const Luau::Module &module) {
+                if (!module.cancelled) {
+                    try {
+                        std::lock_guard<std::mutex> lock(collection);
+                        if (lint) {
+                            collect(state, host, source, module);
+                        }
+                        host.progress("Checking", source.name, ++completed, total);
+                    } catch (const std::exception &error) {
+                        throw Luau::InternalCompilerError(error.what(), source.name);
+                    }
+                }
+            };
+
+            const size_t requested = host.jobs();
+            const size_t jobs = requested ? requested : std::min(4u, std::max(1u, std::thread::hardware_concurrency()));
+            Scheduler scheduler(std::max(size_t(1), std::min(jobs, total)));
+
+            frontend.checkQueuedModules(
+                options,
+                [&](std::vector<std::function<void()>> tasks) { scheduler.submit(std::move(tasks)); },
+                [&](size_t, size_t) { return interruption.status() == NativeCompletion::Complete; }
+            );
+
+            result.completion = interruption.status();
 
             for (const rust::String &opaque : names) {
                 const std::string name(opaque);
@@ -322,6 +414,14 @@ namespace instar::frontend {
                         cancellation.requested() ? NativeCompletion::Cancelled : NativeCompletion::Timeout;
 
                     continue;
+                }
+
+                if (lint && module && !module->timeout && state.lints.count(name) == 0) {
+                    const auto *source = frontend.getSourceModule(name);
+
+                    if (source && source->root) {
+                        collect(state, host, *source, *module);
+                    }
                 }
 
                 const auto checked = frontend.getCheckResult(name, false);

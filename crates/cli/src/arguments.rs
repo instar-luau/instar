@@ -1,6 +1,11 @@
 use std::{num::NonZeroUsize, path::PathBuf};
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{
+    Parser, Subcommand, ValueEnum,
+    builder::{PossibleValue, PossibleValuesParser},
+};
+
+use clap_complete::Shell;
 
 #[derive(Parser)]
 #[command(version, about = "Format, lint, and check Luau sources")]
@@ -51,7 +56,11 @@ pub(crate) enum Command {
 #[derive(Subcommand)]
 pub(crate) enum Analysis {
     #[command(about = "Typecheck source files and their dependencies")]
-    Check { files: Vec<PathBuf> },
+    Check {
+        files: Vec<PathBuf>,
+        #[arg(long)]
+        jobs: Option<NonZeroUsize>,
+    },
 
     #[command(about = "Format files in place, check formatting, or format stdin to stdout")]
     Format {
@@ -63,7 +72,11 @@ pub(crate) enum Analysis {
     },
 
     #[command(about = "Lint source files and their dependencies")]
-    Lint { files: Vec<PathBuf> },
+    Lint {
+        files: Vec<PathBuf>,
+        #[arg(long)]
+        jobs: Option<NonZeroUsize>,
+    },
 }
 
 #[derive(Parser)]
@@ -72,11 +85,11 @@ pub(crate) enum Worker {
     Format,
 }
 
-fn shells() -> clap::builder::PossibleValuesParser {
-    clap::builder::PossibleValuesParser::new(
-        clap_complete::Shell::value_variants()
+fn shells() -> PossibleValuesParser {
+    PossibleValuesParser::new(
+        Shell::value_variants()
             .iter()
             .filter_map(ValueEnum::to_possible_value)
-            .chain([clap::builder::PossibleValue::new("nushell")]),
+            .chain([PossibleValue::new("nushell")]),
     )
 }

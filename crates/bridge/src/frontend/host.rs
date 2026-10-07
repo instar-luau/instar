@@ -1,10 +1,15 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io::{self, Write},
+    num::NonZeroUsize,
+    sync::Arc,
 };
 
-use super::source::Source;
-use crate::boundary;
+use instar_analysis::{Progress, process::Message};
+
+use super::source::{Class, Declaration, Environment, Source};
+use crate::{boundary, protocol::Response};
+
 pub(crate) struct Cancellation(pub(crate) instar_analysis::Cancellation);
 
 impl Cancellation {
@@ -16,10 +21,95 @@ impl Cancellation {
 #[derive(Default)]
 pub(crate) struct Host {
     pub(crate) sources: BTreeMap<String, Source>,
+    pub(crate) declarations: BTreeMap<String, Declaration>,
+    pub(crate) environments: BTreeMap<u64, Environment>,
+    classes: BTreeMap<Arc<[Class]>, u64>,
+    revision: u64,
     pub(crate) progress: bool,
+    pub(crate) jobs: Option<NonZeroUsize>,
 }
 
 impl Host {
+    pub(crate) fn jobs(&self) -> usize {
+        self.jobs.map_or(0, NonZeroUsize::get)
+    }
+
+    pub(crate) fn detach(&mut self, name: &str) {
+        if let Some(source) = self.sources.get_mut(name) {
+            for binding in source.definitions.drain(..) {
+                let declaration = self
+                    .declarations
+                    .get_mut(&binding.name)
+                    .expect("registered declaration");
+
+                declaration.consumers.remove(name);
+
+                if declaration.consumers.is_empty() {
+                    self.declarations.remove(&binding.name);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn environment(&mut self, name: &str, classes: &[Class]) -> io::Result<()> {
+        let previous = self
+            .sources
+            .get(name)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "module is unavailable"))?
+            .environment;
+
+        let identity = if classes.is_empty() {
+            None
+        } else if let Some(identity) = self.classes.get(classes) {
+            Some(*identity)
+        } else {
+            self.revision = self
+                .revision
+                .checked_add(1)
+                .ok_or_else(|| io::Error::other("environment revision exhausted"))?;
+
+            let classes: Arc<[Class]> = Arc::from(classes);
+            self.classes.insert(Arc::clone(&classes), self.revision);
+
+            self.environments.insert(
+                self.revision,
+                Environment {
+                    classes,
+                    consumers: BTreeSet::new(),
+                },
+            );
+
+            Some(self.revision)
+        };
+
+        if identity == previous {
+            return Ok(());
+        }
+
+        self.release(name);
+
+        if let Some(identity) = identity {
+            self.environments
+                .get_mut(&identity)
+                .expect("registered environment")
+                .consumers
+                .insert(name.to_owned());
+        }
+
+        self.sources
+            .get_mut(name)
+            .expect("available module")
+            .environment = identity;
+
+        Ok(())
+    }
+
+    pub(crate) fn remove(&mut self, name: &str) {
+        self.detach(name);
+        self.release(name);
+        self.sources.remove(name);
+    }
+
     pub(crate) fn progress(
         &self,
         phase: &str,
@@ -38,14 +128,12 @@ impl Host {
             return Ok(());
         }
 
-        let event = instar_analysis::process::Message::<crate::protocol::Response>::Progress(
-            instar_analysis::Progress {
-                phase: phase.to_owned(),
-                completed,
-                total: Some(total),
-                source: (!source.is_empty()).then(|| source.to_owned()),
-            },
-        );
+        let event = Message::<Response>::Progress(Progress {
+            phase: phase.to_owned(),
+            completed,
+            total: Some(total),
+            source: (!source.is_empty()).then(|| source.to_owned()),
+        });
 
         let mut output = io::stdout().lock();
         serde_json::to_writer(&mut output, &event)?;
@@ -60,18 +148,38 @@ impl Host {
             .get(name)
             .map(|source| (&source.text, source.revision))
             .or_else(|| {
-                self.sources
-                    .values()
-                    .flat_map(|source| &source.definitions)
-                    .find(|definition| definition.name == name)
-                    .map(|definition| (&definition.text, definition.revision))
+                self.declarations
+                    .get(name)
+                    .map(|declaration| (&declaration.text, declaration.revision))
             });
 
         boundary::NativeDocument {
             found: document.is_some(),
-            text: document.map_or_else(String::new, |(text, _)| text.clone()),
+            text: document.map_or_else(String::new, |(text, _)| text.to_string()),
             revision: document.map_or(0, |(_, revision)| revision),
         }
+    }
+
+    pub(crate) fn offset(&self, name: &str, line: usize, column: usize) -> io::Result<usize> {
+        let (text, lines) = self
+            .sources
+            .get(name)
+            .map(|source| (&source.text, &source.lines))
+            .or_else(|| {
+                self.declarations
+                    .get(name)
+                    .map(|source| (&source.text, &source.lines))
+            })
+            .ok_or_else(|| io::Error::other("native source is unavailable"))?;
+
+        let start = *lines
+            .get(line)
+            .ok_or_else(|| io::Error::other("native source position exceeds host revision"))?;
+
+        start
+            .checked_add(column)
+            .filter(|&offset| offset <= text.len())
+            .ok_or_else(|| io::Error::other("native source column exceeds host revision"))
     }
 
     pub(crate) fn require(&self, name: &str, start: usize, end: usize) -> bool {
@@ -96,11 +204,12 @@ impl Host {
 
         boundary::NativeSource {
             found: true,
-            text: source.text.clone(),
+            text: source.text.to_string(),
             revision: source.revision,
             classes: source
-                .classes
-                .iter()
+                .environment
+                .into_iter()
+                .flat_map(|identity| self.environments[&identity].classes.iter())
                 .map(|class| boundary::NativeClass {
                     name: class.name.clone(),
                     service: class.service,
@@ -119,11 +228,14 @@ impl Host {
             definitions: source
                 .definitions
                 .iter()
-                .map(|definition| boundary::NativeDefinition {
-                    name: definition.name.clone(),
-                    namespace: definition.namespace.clone(),
-                    text: definition.text.clone(),
-                    revision: definition.revision,
+                .map(|binding| {
+                    let declaration = &self.declarations[&binding.name];
+
+                    boundary::NativeDefinition {
+                        name: binding.name.clone(),
+                        namespace: binding.namespace.clone(),
+                        revision: declaration.revision,
+                    }
                 })
                 .collect(),
             sites: source
@@ -152,5 +264,25 @@ impl Host {
             })
             .and_then(|site| site.target.clone())
             .unwrap_or_default()
+    }
+
+    fn release(&mut self, name: &str) {
+        if let Some(identity) = self
+            .sources
+            .get_mut(name)
+            .and_then(|source| source.environment.take())
+        {
+            let environment = self
+                .environments
+                .get_mut(&identity)
+                .expect("registered environment");
+
+            environment.consumers.remove(name);
+
+            if environment.consumers.is_empty() {
+                self.classes.remove(environment.classes.as_ref());
+                self.environments.remove(&identity);
+            }
+        }
     }
 }

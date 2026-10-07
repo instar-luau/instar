@@ -2,16 +2,23 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io,
+    io, mem,
     path::{Path, PathBuf},
     rc::Rc,
     time::{Duration, Instant},
 };
 
+use glob::Pattern;
 use instar_analysis::{Options, error::invalid};
+use instar_bridge::{self as bridge, Snapshot, flags, frontend::Frontend};
+use toml::{Value, map};
 
 use crate::{
     configuration::Configuration,
+    graph::Graph,
+    native,
+    resolve::Identity,
+    roblox::Assets,
     source::{Document, Failure, Kind, View, normalize, related},
     sourcemap::Map,
 };
@@ -22,7 +29,7 @@ pub struct Settings {
     pub configuration: Configuration,
 
     /// Independently inherited native Luau settings.
-    pub native: instar_bridge::Configuration,
+    pub native: bridge::Configuration,
 
     /// Configuration files applied in ancestor-to-descendant order.
     pub files: Vec<PathBuf>,
@@ -31,16 +38,16 @@ pub struct Settings {
     pub inputs: BTreeSet<PathBuf>,
 
     /// Detached effective upstream settings.
-    pub snapshot: instar_bridge::Snapshot,
+    pub snapshot: Snapshot,
 
     /// Validated effective native flag overrides.
-    pub flags: instar_bridge::flags::Overrides,
+    pub flags: flags::Overrides,
 }
 
 impl Settings {
     fn load(
-        view: &mut View,
         directory: &Path,
+        view: &mut View,
         timeout: Duration,
         operation: Option<&(Options, Instant)>,
     ) -> io::Result<Self> {
@@ -53,8 +60,8 @@ impl Settings {
 
         let mut ancestors = directory.ancestors().collect::<Vec<_>>();
         ancestors.reverse();
-        let mut merged = toml::Value::Table(toml::map::Map::new());
-        let mut native = instar_bridge::Configuration::new()?;
+        let mut merged = Value::Table(map::Map::new());
+        let mut native = bridge::Configuration::new()?;
         let mut files = Vec::new();
         let mut discovered_map = None;
 
@@ -68,11 +75,11 @@ impl Settings {
             if let Some(source) = view.read(&manifest)? {
                 Configuration::parse(&source.text).map_err(|error| located(&manifest, &error))?;
 
-                let mut layer = toml::from_str::<toml::Value>(&source.text)
+                let mut layer = toml::from_str::<Value>(&source.text)
                     .map_err(|error| located(&manifest, &invalid(error)))?;
 
-                anchor(&mut layer, ancestor).map_err(|error| located(&manifest, &error))?;
-                merge(&mut merged, layer);
+                anchor(ancestor, &mut layer).map_err(|error| located(&manifest, &error))?;
+                merge(layer, &mut merged);
                 files.push(manifest);
             }
 
@@ -177,34 +184,12 @@ pub struct Project {
     pub(crate) operation: Option<(Options, Instant)>,
     settings: BTreeMap<PathBuf, CachedSettings>,
     maps: BTreeMap<PathBuf, Result<Rc<Map>, Failure>>,
-    pub(crate) graph: crate::graph::Graph,
-    pub(crate) frontend: Option<instar_bridge::frontend::Frontend>,
+    pub(crate) graph: Graph,
+    pub(crate) frontend: Option<Frontend>,
+    pub(crate) roblox: BTreeMap<[u64; 4], Rc<Assets>>,
 }
 
 impl Project {
-    pub(crate) fn during<T>(
-        &mut self,
-        options: &Options,
-        action: impl FnOnce(&mut Self) -> io::Result<T>,
-    ) -> io::Result<T> {
-        let started = Instant::now();
-        options.check(started)?;
-        let previous = self.operation.replace((options.clone(), started));
-        let result = action(self);
-        self.operation = previous;
-        options.check(started)?;
-
-        result
-    }
-
-    pub(crate) fn interrupted(&self) -> io::Result<()> {
-        if let Some((options, started)) = &self.operation {
-            options.check(*started)?;
-        }
-
-        Ok(())
-    }
-
     /// Creates an empty project view with a native configuration execution timeout.
     #[must_use]
     pub fn new(timeout: Duration) -> Self {
@@ -214,8 +199,9 @@ impl Project {
             operation: None,
             settings: BTreeMap::new(),
             maps: BTreeMap::new(),
-            graph: crate::graph::Graph::default(),
+            graph: Graph::default(),
             frontend: None,
+            roblox: BTreeMap::new(),
         }
     }
 
@@ -244,16 +230,16 @@ impl Project {
         let directory = absolute(directory)?;
 
         if let Some(settings) = self.settings.get(&directory) {
-            self.view.consulted.extend(settings.inputs.iter().cloned());
+            self.view.consult(&settings.inputs);
 
             return settings.result.clone().map_err(|error| error.error());
         }
 
-        let outer = std::mem::take(&mut self.view.consulted);
+        let outer = mem::take(&mut self.view.consulted);
 
         let result = Settings::load(
-            &mut self.view,
             &directory,
+            &mut self.view,
             self.timeout,
             self.operation.as_ref(),
         )
@@ -261,16 +247,16 @@ impl Project {
         .map_err(Failure::from);
 
         if let Err(error) = self.interrupted() {
-            let inputs = std::mem::take(&mut self.view.consulted);
+            let inputs = mem::take(&mut self.view.consulted);
             self.view.consulted = outer;
-            self.view.consulted.extend(inputs);
+            self.view.consult(&inputs);
 
             return Err(error);
         }
 
-        let inputs = std::mem::take(&mut self.view.consulted);
+        let inputs = mem::take(&mut self.view.consulted);
         self.view.consulted = outer;
-        self.view.consulted.extend(inputs.iter().cloned());
+        self.view.consult(&inputs);
 
         self.settings.insert(
             directory,
@@ -281,6 +267,72 @@ impl Project {
         );
 
         result.map_err(|error| error.error())
+    }
+
+    /// Applies a host event, evicting affected resolutions and reverse dependents.
+    ///
+    /// # Errors
+    /// Rejects relative event paths.
+    pub fn change(&mut self, change: Change) -> io::Result<BTreeSet<Identity>> {
+        let path = match &change {
+            Change::Disk(path) | Change::Close(path) | Change::Overlay { path, .. } => path,
+        };
+
+        let path = absolute(path)?;
+        let changed = self.view.changes(&path);
+        self.view.change(&path, change);
+        self.roblox.clear();
+
+        self.settings.retain(|_, settings| {
+            !settings
+                .inputs
+                .iter()
+                .any(|input| changed.iter().any(|path| related(input, path)))
+        });
+
+        self.maps
+            .retain(|candidate, _| !changed.iter().any(|path| related(candidate, path)));
+
+        let mut affected = BTreeSet::new();
+
+        for path in changed {
+            affected.extend(self.graph.invalidate(&path));
+        }
+
+        if let Some(frontend) = &mut self.frontend {
+            frontend.invalidate(&affected.iter().map(native::name).collect::<Vec<_>>());
+        }
+
+        Ok(affected)
+    }
+
+    /// Returns every consulted present and absent host watch input.
+    #[must_use]
+    pub fn watch_inputs(&self) -> BTreeSet<PathBuf> {
+        self.view.consulted.clone()
+    }
+
+    pub(crate) fn during<Output>(
+        &mut self,
+        action: impl FnOnce(&mut Self) -> io::Result<Output>,
+        options: &Options,
+    ) -> io::Result<Output> {
+        let started = Instant::now();
+        options.check(started)?;
+        let previous = self.operation.replace((options.clone(), started));
+        let result = action(self);
+        self.operation = previous;
+        options.check(started)?;
+
+        result
+    }
+
+    pub(crate) fn interrupted(&self) -> io::Result<()> {
+        if let Some((options, started)) = &self.operation {
+            options.check(*started)?;
+        }
+
+        Ok(())
     }
 
     pub(crate) fn map(&mut self, path: &Path) -> io::Result<Rc<Map>> {
@@ -318,48 +370,6 @@ impl Project {
 
         Ok(maps)
     }
-
-    /// Applies a host event, evicting affected resolutions and reverse dependents.
-    ///
-    /// # Errors
-    /// Rejects relative event paths.
-    pub fn change(&mut self, change: Change) -> io::Result<BTreeSet<crate::resolve::Identity>> {
-        let path = match &change {
-            Change::Disk(path) | Change::Close(path) | Change::Overlay { path, .. } => path,
-        };
-
-        let path = absolute(path)?;
-        let changed = self.view.changes(&path);
-        self.view.change(&path, change);
-
-        self.settings.retain(|_, settings| {
-            !settings
-                .inputs
-                .iter()
-                .any(|input| changed.iter().any(|path| related(input, path)))
-        });
-
-        self.maps
-            .retain(|candidate, _| !changed.iter().any(|path| related(candidate, path)));
-
-        let mut affected = BTreeSet::new();
-
-        for path in changed {
-            affected.extend(self.graph.invalidate(&path));
-        }
-
-        if let Some(frontend) = &mut self.frontend {
-            frontend.invalidate(&affected.iter().map(crate::native::name).collect::<Vec<_>>())?;
-        }
-
-        Ok(affected)
-    }
-
-    /// Returns every consulted present and absent host watch input.
-    #[must_use]
-    pub fn watch_inputs(&self) -> BTreeSet<PathBuf> {
-        self.view.consulted.clone()
-    }
 }
 
 pub(crate) fn absolute(path: &Path) -> io::Result<PathBuf> {
@@ -374,12 +384,12 @@ fn located(path: &Path, error: &io::Error) -> io::Error {
     io::Error::new(error.kind(), format!("{}: {error}", path.display()))
 }
 
-fn merge(parent: &mut toml::Value, child: toml::Value) {
+fn merge(child: Value, parent: &mut Value) {
     match (parent, child) {
-        (toml::Value::Table(parent), toml::Value::Table(child)) => {
+        (Value::Table(parent), Value::Table(child)) => {
             for (name, value) in child {
                 match parent.get_mut(&name) {
-                    Some(inherited) => merge(inherited, value),
+                    Some(inherited) => merge(value, inherited),
 
                     None => {
                         parent.insert(name, value);
@@ -392,7 +402,7 @@ fn merge(parent: &mut toml::Value, child: toml::Value) {
     }
 }
 
-fn anchor(layer: &mut toml::Value, directory: &Path) -> io::Result<()> {
+fn anchor(directory: &Path, layer: &mut Value) -> io::Result<()> {
     for section in [
         &[][..],
         &["check"],
@@ -402,16 +412,16 @@ fn anchor(layer: &mut toml::Value, directory: &Path) -> io::Result<()> {
         &["editor", "imports"],
     ] {
         for field in ["include", "exclude"] {
-            anchor_list(layer, section, field, directory, true)?;
+            anchor_list(section, field, directory, layer, true)?;
         }
     }
 
-    anchor_list(layer, &["roblox"], "sourcemaps", directory, false)?;
+    anchor_list(&["roblox"], "sourcemaps", directory, layer, false)?;
 
-    if let Some(toml::Value::Array(environments)) = layer.get_mut("environment") {
+    if let Some(Value::Array(environments)) = layer.get_mut("environment") {
         for environment in environments {
             for field in ["definitions", "documentation"] {
-                anchor_list(environment, &[], field, directory, false)?;
+                anchor_list(&[], field, directory, environment, false)?;
             }
         }
     }
@@ -420,10 +430,10 @@ fn anchor(layer: &mut toml::Value, directory: &Path) -> io::Result<()> {
 }
 
 fn anchor_list(
-    layer: &mut toml::Value,
     section: &[&str],
     field: &str,
     directory: &Path,
+    layer: &mut Value,
     pattern: bool,
 ) -> io::Result<()> {
     let mut value = layer;
@@ -436,12 +446,12 @@ fn anchor_list(
         value = child;
     }
 
-    let Some(toml::Value::Array(values)) = value.get_mut(field) else {
+    let Some(Value::Array(values)) = value.get_mut(field) else {
         return Ok(());
     };
 
     for value in values {
-        let toml::Value::String(text) = value else {
+        let Value::String(text) = value else {
             return Err(invalid("file references must be strings"));
         };
 
@@ -464,7 +474,7 @@ fn anchor_list(
             .to_str()
             .ok_or_else(|| invalid("configuration directories must be UTF-8"))?;
 
-        let prefix = glob::Pattern::escape(&directory.replace('\\', "/"));
+        let prefix = Pattern::escape(&directory.replace('\\', "/"));
 
         *text = format!("{prefix}/{text}");
     }

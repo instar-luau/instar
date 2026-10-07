@@ -8,7 +8,7 @@ use std::{
     time::Instant,
 };
 
-use instar_analysis::{Completion, Options, error::invalid};
+use instar_analysis::{self as analysis, Completion, Options, error::invalid, selection};
 
 use crate::{
     analysis::{Entry, Origin, Report},
@@ -40,10 +40,10 @@ impl Project {
         &mut self,
         entries: &[Entry],
         options: &Options,
-    ) -> io::Result<instar_analysis::Result<Origin>> {
+    ) -> io::Result<analysis::Result<Origin>> {
         let started = Instant::now();
 
-        let mut result = instar_analysis::Result {
+        let mut result = analysis::Result {
             modules: Vec::new(),
             diagnostics: Vec::new(),
             completion: Completion::Complete,
@@ -52,61 +52,64 @@ impl Project {
         let mut roots = BTreeSet::new();
         let mut identities = BTreeSet::new();
 
-        let preparation = self.during(&options.remaining(started), |project| {
-            for (completed, entry) in entries.iter().enumerate() {
-                if let Some(reason) = options.interrupted(started) {
-                    result.completion = Completion::Incomplete(reason);
-                    break;
-                }
+        let preparation = self.during(
+            |project| {
+                for (completed, entry) in entries.iter().enumerate() {
+                    if let Some(reason) = options.interrupted(started) {
+                        result.completion = Completion::Incomplete(reason);
+                        break;
+                    }
 
-                let source = absolute(&entry.source)?;
+                    let source = absolute(&entry.source)?;
 
-                options.report(
-                    "Discovering dependencies",
-                    completed,
-                    Some(entries.len()),
-                    Some(&source.to_string_lossy()),
-                );
+                    options.report(
+                        "Discovering dependencies",
+                        completed,
+                        Some(entries.len()),
+                        Some(&source.to_string_lossy()),
+                    );
 
-                let directory = source
-                    .parent()
-                    .ok_or_else(|| invalid("checker entry has no directory"))?;
+                    let directory = source
+                        .parent()
+                        .ok_or_else(|| invalid("checker entry has no directory"))?;
 
-                let settings = project.configuration(directory)?;
+                    let settings = project.configuration(directory)?;
 
-                if !instar_analysis::selection::matches(
-                    &source,
-                    settings.configuration.check.include.as_deref(),
-                    true,
-                )? || instar_analysis::selection::matches(
-                    &source,
-                    settings.configuration.check.exclude.as_deref(),
-                    false,
-                )? {
+                    if !selection::matches(
+                        &source,
+                        settings.configuration.check.include.as_deref(),
+                        true,
+                    )? || selection::matches(
+                        &source,
+                        settings.configuration.check.exclude.as_deref(),
+                        false,
+                    )? {
+                        options.report(
+                            "Discovering dependencies",
+                            completed + 1,
+                            Some(entries.len()),
+                            Some(&source.to_string_lossy()),
+                        );
+
+                        continue;
+                    }
+
+                    let module = project.install(&source, entry.context.as_ref())?;
+                    roots.insert(native::name(&module.identity));
+                    identities.extend(project.discover(&source, entry.context.as_ref())?);
+
                     options.report(
                         "Discovering dependencies",
                         completed + 1,
                         Some(entries.len()),
                         Some(&source.to_string_lossy()),
                     );
-
-                    continue;
                 }
 
-                let module = project.install(&source, entry.context.as_ref())?;
-                roots.insert(native::name(&module.identity));
-                identities.extend(project.discover(&source, entry.context.as_ref())?);
-
-                options.report(
-                    "Discovering dependencies",
-                    completed + 1,
-                    Some(entries.len()),
-                    Some(&source.to_string_lossy()),
-                );
-            }
-
-            Ok(())
-        });
+                Ok(())
+            },
+            &options.remaining(started),
+        );
 
         if let Err(error) = preparation {
             if let Some(reason) = options.interrupted(started) {
@@ -139,11 +142,16 @@ impl Project {
             .as_mut()
             .ok_or_else(|| invalid("shared native frontend is unavailable"))?;
 
-        for (name, environment) in &analysis.environments {
-            frontend.definitions(name, &environment.definitions)?;
+        result.completion =
+            native::definitions(&analysis.environments, frontend, options, started)?;
+
+        if result.completion != Completion::Complete {
+            result.diagnostics = analysis.report.diagnostics;
+
+            return Ok(result);
         }
 
-        let remaining = native::progress(options, &result.modules).remaining(started);
+        let remaining = native::progress(&result.modules, options).remaining(started);
         let checked = frontend.check(&roots.into_iter().collect::<Vec<_>>(), &remaining)?;
         result.completion = result.completion.combine(checked.completion);
 
@@ -164,7 +172,7 @@ impl Project {
         &mut self,
         identities: BTreeSet<Identity>,
         analysis: &mut Analysis,
-        result: &mut instar_analysis::Result<Origin>,
+        result: &mut analysis::Result<Origin>,
         options: &Options,
         started: Instant,
     ) -> io::Result<()> {
@@ -194,7 +202,7 @@ impl Project {
                 Some(&source),
             );
 
-            self.check_module(&identity, options, started, analysis, result)?;
+            self.check_module(&identity, analysis, result, options, started)?;
 
             if result.completion == Completion::Complete {
                 options.report(
@@ -212,10 +220,10 @@ impl Project {
     fn check_module(
         &mut self,
         identity: &Identity,
+        analysis: &mut Analysis,
+        result: &mut analysis::Result<Origin>,
         options: &Options,
         started: Instant,
-        analysis: &mut Analysis,
-        result: &mut instar_analysis::Result<Origin>,
     ) -> io::Result<()> {
         let node = self
             .graph

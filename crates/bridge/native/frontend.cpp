@@ -13,15 +13,11 @@ namespace instar {
             return std::string(value.data(), value.size());
         }
 
-    } // namespace
+    }
 
     NativeFrontend::NativeFrontend() : state(std::make_unique<frontend::State>()) {}
 
     NativeFrontend::~NativeFrontend() = default;
-
-    std::unique_ptr<NativeFrontend> create_frontend() {
-        return std::make_unique<NativeFrontend>();
-    }
 
     void NativeFrontend::configure(rust::Str name, const NativeConfiguration &configuration) {
         const std::string module = text(name);
@@ -31,25 +27,6 @@ namespace instar {
 
     rust::Vec<NativeLink> NativeFrontend::prepare(const Host &host, rust::Slice<const rust::String> names) {
         return frontend::prepare(*state, host, names);
-    }
-
-    NativeCheck NativeFrontend::check(
-        const Host &host, rust::Slice<const rust::String> entries, double timeout_seconds,
-        rust::Slice<const rust::String> names, const Cancellation &cancellation
-    ) {
-        return frontend::analyze(*state, host, entries, timeout_seconds, names, cancellation, true);
-    }
-
-    NativeLintResult NativeFrontend::lint(
-        const Host &host, rust::Slice<const rust::String> entries, double timeout_seconds,
-        rust::Slice<const rust::String> names, const Cancellation &cancellation,
-        rust::Slice<const rust::String> semantic_modules
-    ) {
-        return frontend::lint(*state, host, entries, timeout_seconds, names, cancellation, semantic_modules);
-    }
-
-    rust::String NativeFrontend::documentation(rust::Str module, rust::Str symbol) const {
-        return frontend::documentation(*state, module, symbol);
     }
 
     void NativeFrontend::invalidate(rust::Slice<const rust::String> names) {
@@ -69,9 +46,36 @@ namespace instar {
         state->frontend.clearBuiltinEnvironments();
         state->resolver.environments.clear();
         state->definitions.clear();
+        state->environments.clear();
+        state->lints.clear();
 
         for (const auto &[name, node] : state->frontend.sourceNodes) {
             state->frontend.markDirty(name);
         }
     }
-} // namespace instar
+
+    rust::String NativeFrontend::documentation(rust::Str module, rust::Str symbol) const {
+        return frontend::documentation(*state, module, symbol);
+    }
+
+    NativeCheck NativeFrontend::check(
+        const Host &host, rust::Slice<const rust::String> entries, double timeout_seconds,
+        rust::Slice<const rust::String> names, const Cancellation &cancellation
+    ) {
+        bool prepared = false;
+
+        return frontend::analyze(*state, host, entries, timeout_seconds, names, cancellation, true, false, prepared);
+    }
+
+    NativeLintResult NativeFrontend::lint(
+        const Host &host, rust::Slice<const rust::String> entries, double timeout_seconds,
+        rust::Slice<const rust::String> names, const Cancellation &cancellation,
+        rust::Slice<const rust::String> semantic_modules
+    ) {
+        return frontend::lint(*state, host, entries, timeout_seconds, names, cancellation, semantic_modules);
+    }
+
+    std::unique_ptr<NativeFrontend> create_frontend() {
+        return std::make_unique<NativeFrontend>();
+    }
+}

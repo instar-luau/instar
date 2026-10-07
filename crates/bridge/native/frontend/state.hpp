@@ -3,6 +3,7 @@
 
 #include "Luau/ConfigResolver.h"
 #include "Luau/Frontend.h"
+#include "instar-bridge/src/boundary.rs.h"
 
 #include <cstdint>
 #include <map>
@@ -18,7 +19,6 @@ namespace instar::frontend {
     struct Resolver final : Luau::FileResolver, Luau::ConfigResolver {
         const Host *host = nullptr;
         std::string active;
-        std::string active_source;
         std::map<std::string, Luau::Config> configurations;
         std::map<std::string, std::string> environments;
 
@@ -34,10 +34,10 @@ namespace instar::frontend {
     struct Definition {
         std::string name;
         uint64_t revision;
-        std::string text;
         std::string namespace_name;
 
         bool operator==(const Definition &other) const;
+        bool operator<(const Definition &other) const;
     };
 
     struct Property {
@@ -46,6 +46,7 @@ namespace instar::frontend {
         bool write;
 
         bool operator==(const Property &other) const;
+        bool operator<(const Property &other) const;
     };
 
     struct Class {
@@ -55,6 +56,7 @@ namespace instar::frontend {
         std::vector<Property> properties;
 
         bool operator==(const Class &other) const;
+        bool operator<(const Class &other) const;
     };
 
     struct Signature {
@@ -62,12 +64,15 @@ namespace instar::frontend {
         std::vector<Class> classes;
 
         bool operator==(const Signature &other) const;
+        bool operator<(const Signature &other) const;
     };
 
     struct State {
         Resolver resolver;
         Luau::Frontend frontend{Luau::SolverMode::New, &resolver, &resolver};
-        std::map<std::string, Signature> definitions;
+        std::map<Signature, std::string> environments;
+        std::map<std::string, const Signature *> definitions;
+        std::map<std::string, NativeLintResult> lints;
         uint64_t environment_revision = 0;
 
         State();

@@ -1,4 +1,6 @@
 use std::{
+    fmt, io,
+    num::NonZeroUsize,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -7,6 +9,8 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+
+use crate::Progress;
 
 /// Why analysis could not produce a complete answer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -30,16 +34,16 @@ pub enum Reason {
 impl Reason {
     /// Converts an incomplete operation into an error for fallible entry points.
     #[must_use]
-    pub fn error(self) -> std::io::Error {
+    pub fn error(self) -> io::Error {
         let kind = match self {
-            Self::Cancelled => std::io::ErrorKind::Interrupted,
-            Self::Timeout => std::io::ErrorKind::TimedOut,
-            Self::Unsupported => std::io::ErrorKind::Unsupported,
-            Self::Environment => std::io::ErrorKind::InvalidData,
-            Self::Analysis => std::io::ErrorKind::Other,
+            Self::Cancelled => io::ErrorKind::Interrupted,
+            Self::Timeout => io::ErrorKind::TimedOut,
+            Self::Unsupported => io::ErrorKind::Unsupported,
+            Self::Environment => io::ErrorKind::InvalidData,
+            Self::Analysis => io::ErrorKind::Other,
         };
 
-        std::io::Error::new(kind, format!("operation incomplete: {self:?}"))
+        io::Error::new(kind, format!("operation incomplete: {self:?}"))
     }
 }
 
@@ -99,18 +103,22 @@ pub struct Options {
     /// individual parser and native configuration calls are not forcibly interrupted.
     pub timeout: Duration,
 
+    /// Maximum concurrent analysis jobs; absent uses the service default.
+    pub jobs: Option<NonZeroUsize>,
+
     /// Shared cancellation signal.
     pub cancellation: Cancellation,
 
     /// Optional synchronous progress observer, preserved across remaining budgets.
-    pub progress: Option<Arc<dyn Fn(crate::Progress) + Send + Sync>>,
+    pub progress: Option<Arc<dyn Fn(Progress) + Send + Sync>>,
 }
 
-impl std::fmt::Debug for Options {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for Options {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("Options")
             .field("timeout", &self.timeout)
+            .field("jobs", &self.jobs)
             .field("cancellation", &self.cancellation)
             .field("progress", &self.progress.is_some())
             .finish()
@@ -118,6 +126,17 @@ impl std::fmt::Debug for Options {
 }
 
 impl Options {
+    /// Creates limits with a fresh cancellation signal.
+    #[must_use]
+    pub fn new(timeout: Duration) -> Self {
+        Self {
+            timeout,
+            jobs: None,
+            cancellation: Cancellation::default(),
+            progress: None,
+        }
+    }
+
     /// Reports an observed phase boundary without changing analysis state.
     pub fn report(
         &self,
@@ -127,7 +146,7 @@ impl Options {
         source: Option<&str>,
     ) {
         if let Some(observer) = &self.progress {
-            observer(crate::Progress {
+            observer(Progress {
                 phase: phase.to_owned(),
                 completed,
                 total,
@@ -140,7 +159,7 @@ impl Options {
     ///
     /// # Errors
     /// Returns interrupted or timed-out errors when the operation must stop.
-    pub fn check(&self, started: Instant) -> std::io::Result<()> {
+    pub fn check(&self, started: Instant) -> io::Result<()> {
         match self.interrupted(started) {
             Some(reason) => Err(reason.error()),
             None => Ok(()),
@@ -164,18 +183,9 @@ impl Options {
     pub fn remaining(&self, started: Instant) -> Self {
         Self {
             timeout: self.timeout.saturating_sub(started.elapsed()),
+            jobs: self.jobs,
             cancellation: self.cancellation.clone(),
             progress: self.progress.clone(),
-        }
-    }
-
-    /// Creates limits with a fresh cancellation signal.
-    #[must_use]
-    pub fn new(timeout: Duration) -> Self {
-        Self {
-            timeout,
-            cancellation: Cancellation::default(),
-            progress: None,
         }
     }
 }

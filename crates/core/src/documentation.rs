@@ -8,15 +8,18 @@ use std::{
 };
 
 use instar_analysis::{Options, error::invalid};
+use instar_bridge::frontend;
 
 use serde::{
     Deserialize, Deserializer,
-    de::{MapAccess, Visitor},
+    de::{self, MapAccess, Visitor},
 };
+
+use ureq::Agent;
 
 use crate::{
     assets,
-    project::{Change, Project},
+    project::{Change, Project, absolute},
 };
 
 /// Documentation attached to one native symbol.
@@ -64,20 +67,7 @@ pub struct Parameter {
 #[derive(Clone, Debug, Default)]
 pub struct Index(BTreeMap<String, Entry>);
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Metadata {
-    revision: String,
-    documentation: String,
-}
-
 impl Index {
-    /// Looks up an exact native documentation identifier.
-    #[must_use]
-    pub fn get(&self, symbol: &str) -> Option<&Entry> {
-        self.0.get(symbol)
-    }
-
     pub(crate) fn parse(source: &str, namespaces: &[&str]) -> io::Result<Self> {
         let index: Self = assets::parse(source)?;
 
@@ -95,13 +85,19 @@ impl Index {
         Ok(index)
     }
 
+    /// Looks up an exact native documentation identifier.
+    #[must_use]
+    pub fn get(&self, symbol: &str) -> Option<&Entry> {
+        self.0.get(symbol)
+    }
+
     fn validate(&self) -> io::Result<()> {
         for (symbol, entry) in &self.0 {
             let (namespace, path) = symbol
                 .split_once('/')
                 .ok_or_else(|| invalid("documentation key requires a namespace and symbol path"))?;
 
-            instar_bridge::frontend::validate_namespace(namespace)?;
+            frontend::validate_namespace(namespace)?;
 
             if path.is_empty() || symbol.contains('\0') {
                 return Err(invalid(format!(
@@ -131,7 +127,7 @@ impl Index {
                     .split_once('/')
                     .ok_or_else(|| invalid("invalid documentation reference"))?;
 
-                instar_bridge::frontend::validate_namespace(namespace)?;
+                frontend::validate_namespace(namespace)?;
 
                 if path.is_empty() || reference.contains('\0') {
                     return Err(invalid("invalid documentation reference"));
@@ -170,18 +166,23 @@ impl Index {
     }
 }
 
-impl<'de> Deserialize<'de> for Index {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+impl<'source> Deserialize<'source> for Index {
+    fn deserialize<Decoder: Deserializer<'source>>(
+        deserializer: Decoder,
+    ) -> Result<Self, Decoder::Error> {
         struct Symbols;
 
-        impl<'de> Visitor<'de> for Symbols {
+        impl<'source> Visitor<'source> for Symbols {
             type Value = Index;
 
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
                 formatter.write_str("an object of unique documentation symbols")
             }
 
-            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Index, A::Error> {
+            fn visit_map<Access: MapAccess<'source>>(
+                self,
+                mut map: Access,
+            ) -> Result<Index, Access::Error> {
                 let mut entries = BTreeMap::new();
 
                 while let Some((symbol, entry)) = map.next_entry::<String, Entry>()? {
@@ -191,7 +192,7 @@ impl<'de> Deserialize<'de> for Index {
                         }
 
                         MapEntry::Occupied(slot) => {
-                            return Err(serde::de::Error::custom(format!(
+                            return Err(de::Error::custom(format!(
                                 "duplicate documentation symbol: {}",
                                 slot.key()
                             )));
@@ -200,7 +201,7 @@ impl<'de> Deserialize<'de> for Index {
                 }
 
                 let index = Index(entries);
-                index.validate().map_err(serde::de::Error::custom)?;
+                index.validate().map_err(de::Error::custom)?;
 
                 Ok(index)
             }
@@ -210,20 +211,28 @@ impl<'de> Deserialize<'de> for Index {
     }
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Metadata {
+    revision: String,
+    documentation: String,
+}
+
 impl Project {
     /// Loads documentation for a source file's effective environment.
     ///
     /// # Errors
     /// Returns configuration, download, malformed-documentation, duplicate-symbol or interruption errors.
     pub fn documentation(&mut self, source: &Path, options: &Options) -> io::Result<Index> {
-        self.during(options, |project| {
-            project.documentation_index(source, options)
-        })
+        self.during(
+            |project| project.documentation_index(source, options),
+            options,
+        )
     }
 
     fn documentation_index(&mut self, source: &Path, options: &Options) -> io::Result<Index> {
         let started = Instant::now();
-        let source = crate::project::absolute(source)?;
+        let source = absolute(source)?;
 
         let directory = source
             .parent()
@@ -236,7 +245,8 @@ impl Project {
         if settings.configuration.roblox.enabled == Some(true) {
             index.merge(
                 self.roblox_assets(settings.configuration.roblox.security, options, started)?
-                    .documentation,
+                    .documentation
+                    .clone(),
             )?;
         }
 
@@ -267,8 +277,8 @@ impl Project {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 let files = assets::fetch(
                     format!("{}/luau", assets::HOST),
-                    &options.remaining(started),
                     download,
+                    &options.remaining(started),
                 )?;
 
                 assets::install(&directory, files, options, started)?;
@@ -301,7 +311,7 @@ pub fn cache_directory() -> io::Result<PathBuf> {
 fn download(url: &str, options: &Options) -> io::Result<BTreeMap<String, String>> {
     let started = Instant::now();
 
-    let agent = ureq::Agent::config_builder()
+    let agent = Agent::config_builder()
         .https_only(url.starts_with("https://"))
         .build()
         .new_agent();

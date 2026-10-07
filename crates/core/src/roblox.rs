@@ -4,15 +4,20 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io,
     path::{Path, PathBuf},
+    rc::Rc,
+    sync::Arc,
     time::Instant,
 };
 
 use instar_analysis::{Options, error::invalid};
+use instar_bridge::frontend::{Class, Property};
 use serde::Deserialize;
+use ureq::Agent;
 
 use crate::{
     assets::{self, HOST, fetch, install, verify},
     configuration::Security,
+    documentation::Index,
     project::{Change, Project},
     source::Document,
 };
@@ -63,8 +68,8 @@ struct Access {
 
 pub(crate) struct Assets {
     pub(crate) definitions: Vec<(PathBuf, Document)>,
-    pub(crate) classes: Vec<instar_bridge::frontend::Class>,
-    pub(crate) documentation: crate::documentation::Index,
+    pub(crate) classes: Arc<[Class]>,
+    pub(crate) documentation: Index,
 }
 
 impl Project {
@@ -73,7 +78,7 @@ impl Project {
         security: Security,
         options: &Options,
         started: Instant,
-    ) -> io::Result<Assets> {
+    ) -> io::Result<Rc<Assets>> {
         let directory = cache_directory()?;
 
         match self.source(&directory.join("metadata.json")) {
@@ -82,8 +87,8 @@ impl Project {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 let files = fetch(
                     format!("{HOST}/roblox"),
-                    &options.remaining(started),
                     download,
+                    &options.remaining(started),
                 )?;
 
                 install(&directory, files, options, started)?;
@@ -98,9 +103,8 @@ impl Project {
         self.load_assets(&directory, security)
     }
 
-    fn load_assets(&mut self, directory: &Path, security: Security) -> io::Result<Assets> {
+    fn load_assets(&mut self, directory: &Path, security: Security) -> io::Result<Rc<Assets>> {
         let metadata = self.source(&directory.join("metadata.json"))?;
-        let metadata = Metadata::parse(&metadata.text)?;
 
         let profile = match security {
             Security::None => "none",
@@ -111,6 +115,22 @@ impl Project {
 
         let path = directory.join(format!("{profile}.d.luau"));
         let document = self.source(&path)?;
+        let documentation = self.source(&directory.join("documentation.json"))?;
+        let enumeration_path = directory.join("enumerations.d.luau");
+        let enumerations = self.source(&enumeration_path)?;
+
+        let revisions = [
+            metadata.revision,
+            document.revision,
+            documentation.revision,
+            enumerations.revision,
+        ];
+
+        if let Some(assets) = self.roblox.get(&revisions) {
+            return Ok(Rc::clone(assets));
+        }
+
+        let metadata = Metadata::parse(&metadata.text)?;
 
         let expected = metadata
             .profiles
@@ -118,10 +138,9 @@ impl Project {
             .ok_or_else(|| invalid("missing Roblox security profile hash"))?;
 
         verify(&document.text, expected)?;
-        let documentation = self.source(&directory.join("documentation.json"))?;
         verify(&documentation.text, &metadata.documentation)?;
 
-        let documentation = crate::documentation::Index::parse(&documentation.text, &["@roblox"])?;
+        let documentation = Index::parse(&documentation.text, &["@roblox"])?;
 
         let services = names(&metadata.services)?;
         let creatable = names(&metadata.creatable_instances)?;
@@ -131,7 +150,7 @@ impl Project {
             .map(|name| {
                 (
                     (*name).to_owned(),
-                    instar_bridge::frontend::Class {
+                    Class {
                         name: (*name).to_owned(),
                         service: services.contains(name),
                         creatable: creatable.contains(name),
@@ -147,31 +166,33 @@ impl Project {
             .ok_or_else(|| invalid("missing Roblox property access profile"))?;
 
         for property in access {
-            let class = classes.entry(property.class.clone()).or_insert_with(|| {
-                instar_bridge::frontend::Class {
+            let class = classes
+                .entry(property.class.clone())
+                .or_insert_with(|| Class {
                     name: property.class.clone(),
                     service: false,
                     creatable: false,
                     properties: Vec::new(),
-                }
-            });
+                });
 
-            class.properties.push(instar_bridge::frontend::Property {
+            class.properties.push(Property {
                 name: property.name.clone(),
                 read: property.read,
                 write: property.write,
             });
         }
 
-        let enumeration_path = directory.join("enumerations.d.luau");
-        let enumerations = self.source(&enumeration_path)?;
         verify(&enumerations.text, &metadata.enumerations)?;
 
-        Ok(Assets {
+        let assets = Rc::new(Assets {
             definitions: vec![(path, document), (enumeration_path, enumerations)],
             classes: classes.into_values().collect(),
             documentation,
-        })
+        });
+
+        self.roblox.insert(revisions, Rc::clone(&assets));
+
+        Ok(assets)
     }
 }
 
@@ -203,7 +224,7 @@ fn names(values: &[String]) -> io::Result<BTreeSet<&str>> {
 fn download(url: &str, options: &Options) -> io::Result<BTreeMap<String, String>> {
     let started = Instant::now();
 
-    let agent = ureq::Agent::config_builder()
+    let agent = Agent::config_builder()
         .https_only(url.starts_with("https://"))
         .build()
         .new_agent();
@@ -229,7 +250,7 @@ fn download(url: &str, options: &Options) -> io::Result<BTreeMap<String, String>
         verify(&text, hash)?;
 
         if name == "documentation.json" {
-            crate::documentation::Index::parse(&text, &["@roblox"])?;
+            Index::parse(&text, &["@roblox"])?;
         }
 
         files.insert(name.to_owned(), text);

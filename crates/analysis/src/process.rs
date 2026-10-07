@@ -1,8 +1,8 @@
 //! Cancellable typed requests to isolated analysis workers.
 
 use std::{
-    env,
-    io::{self, BufRead, BufReader, Write},
+    env::{self, consts::EXE_SUFFIX},
+    io::{self, BufRead, BufReader, BufWriter, Write},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
@@ -15,7 +15,7 @@ use std::{
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use crate::{Options, Reason};
+use crate::{Options, Progress, Reason, error::Failure};
 
 static HOST: OnceLock<PathBuf> = OnceLock::new();
 
@@ -40,10 +40,10 @@ pub enum Outcome<Response> {
 #[derive(Deserialize, Serialize)]
 pub enum Message<Response> {
     /// An observed work boundary before the terminal response.
-    Progress(crate::Progress),
+    Progress(Progress),
 
     /// The final result of one request.
-    Response(Result<Response, crate::error::Failure>),
+    Response(Result<Response, Failure>),
 }
 
 impl<Request, Response> Process<Request, Response> {
@@ -68,7 +68,7 @@ impl<Request, Response> Process<Request, Response> {
 
         tracing::debug!(worker = name, process = child.id(), "Worker started");
 
-        let mut input = child
+        let input = child
             .stdin
             .take()
             .ok_or_else(|| io::Error::other("worker input is unavailable"))?;
@@ -82,10 +82,11 @@ impl<Request, Response> Process<Request, Response> {
         let (outgoing, responses) = mpsc::sync_channel(1);
 
         let transport = thread::spawn(move || {
+            let mut input = BufWriter::new(input);
             let mut output = BufReader::new(output);
 
             while let Ok(request) = incoming.recv() {
-                if let Err(error) = exchange(&request, &mut input, &mut output, &outgoing) {
+                if let Err(error) = exchange(request, &mut input, &mut output, &outgoing) {
                     if outgoing.send(Err(error)).is_err() {
                         return;
                     }
@@ -232,14 +233,15 @@ pub fn set_host(path: &Path) -> io::Result<()> {
 }
 
 fn exchange<Request: Serialize, Response: DeserializeOwned>(
-    request: &Request,
+    request: Request,
     input: &mut impl Write,
     output: &mut impl BufRead,
     outgoing: &SyncSender<io::Result<Message<Response>>>,
 ) -> io::Result<()> {
-    serde_json::to_writer(&mut *input, request)?;
+    serde_json::to_writer(&mut *input, &request)?;
     input.write_all(b"\n")?;
     input.flush()?;
+    drop(request);
 
     loop {
         let mut line = String::new();
@@ -292,7 +294,7 @@ fn executable() -> io::Result<PathBuf> {
     }
     .ok_or_else(|| io::Error::other("worker executable directory is unavailable"))?;
 
-    let worker = directory.join(format!("instar{}", env::consts::EXE_SUFFIX));
+    let worker = directory.join(format!("instar{EXE_SUFFIX}"));
 
     if !worker.is_file() {
         return Err(io::Error::new(

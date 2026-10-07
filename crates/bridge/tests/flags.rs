@@ -1,4 +1,5 @@
 //! Typed native flags and worker lifetime contracts.
+
 use std::{collections::BTreeMap, io, time::Duration};
 
 use instar_analysis::{Kind, Options};
@@ -35,9 +36,9 @@ fn flags_validate_registry_names_types_and_aliases() {
 
 #[test]
 fn integer_changes_restart_cached_analysis_and_defaults_are_restored() -> io::Result<()> {
-    let mut frontend = Frontend::new()?;
+    let mut frontend = Frontend::default();
     let source = format!("return {}1{}", "(".repeat(40), ")".repeat(40));
-    frontend.insert("entry", &source, 1, &Configuration::new()?, &[])?;
+    frontend.insert("entry", source.as_str(), 1, &Configuration::new()?, &[])?;
     let options = Options::new(Duration::from_secs(5));
     let roots = ["entry".to_owned()];
     assert_eq!(frontend.check(&roots, &options)?.diagnostics, Vec::new());
@@ -66,7 +67,7 @@ fn integer_changes_restart_cached_analysis_and_defaults_are_restored() -> io::Re
 
 #[test]
 fn reachable_modules_require_consistent_effective_flags() -> io::Result<()> {
-    let mut frontend = Frontend::new()?;
+    let mut frontend = Frontend::default();
     let configuration = Configuration::new()?;
     let source = "return require('dependency')";
 

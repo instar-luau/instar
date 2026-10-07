@@ -1,8 +1,12 @@
-use std::{collections::BTreeMap, io};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io, iter,
+    sync::Arc,
+};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Snapshot, flags};
+use crate::{Snapshot, boundary, flags};
 
 /// One host-extracted require site, anchored to immutable source bytes.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -39,6 +43,18 @@ pub struct Link {
     pub target: String,
 }
 
+impl From<boundary::NativeLink> for Link {
+    fn from(link: boundary::NativeLink) -> Self {
+        Self {
+            module: link.module,
+            revision: link.revision,
+            call: [link.call_start, link.call_end],
+            argument: [link.argument_start, link.argument_end],
+            target: link.target,
+        }
+    }
+}
+
 /// Immutable declaration file used to establish a module's native environment.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Definition {
@@ -52,11 +68,11 @@ pub struct Definition {
     pub revision: u64,
 
     /// Declaration source bytes.
-    pub text: String,
+    pub text: Arc<str>,
 }
 
 /// A Roblox class capability supplied by the asset metadata.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 pub struct Class {
     /// Declared class name.
     pub name: String,
@@ -72,7 +88,7 @@ pub struct Class {
 }
 
 /// Independent read and write access to a declared Roblox property.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 pub struct Property {
     /// Exact property name.
     pub name: String,
@@ -85,26 +101,35 @@ pub struct Property {
 }
 
 #[derive(Clone, Deserialize, Serialize)]
-pub(crate) struct Source {
-    pub(crate) configuration: Snapshot,
-    pub(crate) text: String,
+pub(crate) struct Declaration {
     pub(crate) revision: u64,
-    pub(crate) sites: Vec<Site>,
-    pub(crate) definitions: Vec<Definition>,
-    pub(crate) classes: Vec<Class>,
-    pub(crate) flags: BTreeMap<String, flags::Value>,
+    pub(crate) text: Arc<str>,
+    pub(crate) lines: Arc<[usize]>,
+    pub(crate) consumers: BTreeSet<String>,
 }
 
-impl From<crate::boundary::NativeLink> for Link {
-    fn from(link: crate::boundary::NativeLink) -> Self {
-        Self {
-            module: link.module,
-            revision: link.revision,
-            call: [link.call_start, link.call_end],
-            argument: [link.argument_start, link.argument_end],
-            target: link.target,
-        }
-    }
+#[derive(Clone, Deserialize, Serialize)]
+pub(crate) struct Environment {
+    pub(crate) classes: Arc<[Class]>,
+    pub(crate) consumers: BTreeSet<String>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub(crate) struct Binding {
+    pub(crate) name: String,
+    pub(crate) namespace: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub(crate) struct Source {
+    pub(crate) configuration: Snapshot,
+    pub(crate) text: Arc<str>,
+    pub(crate) revision: u64,
+    pub(crate) lines: Arc<[usize]>,
+    pub(crate) sites: Vec<Site>,
+    pub(crate) definitions: Vec<Binding>,
+    pub(crate) environment: Option<u64>,
+    pub(crate) flags: BTreeMap<String, flags::Value>,
 }
 
 /// Validates the namespace component of a native documentation identifier.
@@ -127,4 +152,14 @@ pub fn validate_namespace(namespace: &str) -> io::Result<()> {
     }
 
     Ok(())
+}
+
+pub(crate) fn lines(text: &str) -> Vec<usize> {
+    iter::once(0)
+        .chain(
+            text.bytes()
+                .enumerate()
+                .filter_map(|(offset, byte)| (byte == b'\n').then_some(offset + 1)),
+        )
+        .collect()
 }

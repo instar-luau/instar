@@ -1,8 +1,8 @@
 //! Formatter fixture syntax and lossless emission contracts.
-use std::{error::Error, fs, io, path::Path, time::Duration};
+use std::{error::Error, fs, io, path::Path, str, time::Duration};
 
 use instar_analysis::{Completion, Options, Reason};
-use instar_format::configuration::{Configuration, LineEnding};
+use instar_format::{Configuration, Diagnostic, Formatter, configuration::LineEnding};
 
 use vermis::{
     emitter::{Emitter, LineEnding as EmittedLineEnding},
@@ -38,12 +38,15 @@ fn fixtures() -> Result<(), Box<dyn Error>> {
         let input = fs::read(case.join("input.luau"))?;
         let expected = fs::read(case.join("expected.luau"))?;
 
-        let actual = instar_format::format(
-            &input,
-            &configuration,
-            &Options::new(Duration::from_secs(5)),
-        )
-        .map_err(|error| format!("{}: {error}", case.display()))?;
+        let mut formatter = Formatter::default();
+
+        let actual = formatter
+            .format(
+                &input,
+                &configuration,
+                &Options::new(Duration::from_secs(5)),
+            )
+            .map_err(|error| format!("{}: {error}", case.display()))?;
 
         assert_eq!(actual.completion, Completion::Complete);
         assert_eq!(actual.diagnostics, Vec::new());
@@ -56,12 +59,13 @@ fn fixtures() -> Result<(), Box<dyn Error>> {
             case.display()
         );
 
-        let repeated = instar_format::format(
-            &expected,
-            &configuration,
-            &Options::new(Duration::from_secs(5)),
-        )
-        .map_err(|error| format!("{}: {error}", case.display()))?;
+        let repeated = formatter
+            .format(
+                &expected,
+                &configuration,
+                &Options::new(Duration::from_secs(5)),
+            )
+            .map_err(|error| format!("{}: {error}", case.display()))?;
 
         assert_eq!(repeated.completion, Completion::Complete);
         assert_eq!(repeated.diagnostics, Vec::new());
@@ -79,7 +83,7 @@ fn fixtures() -> Result<(), Box<dyn Error>> {
             .parent()
             .is_some_and(|parent| parent.ends_with("identity"))
         {
-            let output = std::str::from_utf8(&actual)?;
+            let output = str::from_utf8(&actual)?;
 
             assert!(
                 output.find("./z").expect("first call") < output.find("./a").expect("second call"),
@@ -171,7 +175,9 @@ fn failures_and_limits_never_return_partial_output() -> Result<(), Box<dyn Error
     let configuration = Configuration::default();
     let source = b"local =";
 
-    let failed = instar_format::format(
+    let mut formatter = Formatter::default();
+
+    let failed = formatter.format(
         source,
         &configuration,
         &Options::new(Duration::from_secs(5)),
@@ -186,7 +192,7 @@ fn failures_and_limits_never_return_partial_output() -> Result<(), Box<dyn Error
         parsed
             .diagnostics
             .iter()
-            .map(|diagnostic| instar_format::Diagnostic {
+            .map(|diagnostic| Diagnostic {
                 range: [diagnostic.span.start, diagnostic.span.end],
                 message: diagnostic.message.to_owned(),
             })
@@ -201,7 +207,7 @@ fn failures_and_limits_never_return_partial_output() -> Result<(), Box<dyn Error
         (cancelled, Reason::Cancelled),
         (Options::new(Duration::ZERO), Reason::Timeout),
     ] {
-        let result = instar_format::format(b"return 1", &configuration, &options)?;
+        let result = formatter.format(b"return 1", &configuration, &options)?;
         assert_eq!(result.completion, Completion::Incomplete(reason));
         assert_eq!(result.output, None);
         assert_eq!(result.diagnostics, Vec::new());

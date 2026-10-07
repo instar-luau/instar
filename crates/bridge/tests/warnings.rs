@@ -1,4 +1,5 @@
 //! Native lint warnings, semantic facts and shared-session boundaries.
+
 use std::{collections::BTreeMap, io, path::Path, time::Duration};
 
 use instar_analysis::{Completion, Kind, Options, Reason};
@@ -26,7 +27,7 @@ fn warning_codes_fatal_bits_and_utf8_ranges_preserve_checker_results() -> io::Re
         ".luaurc",
     )?;
 
-    let mut frontend = Frontend::new()?;
+    let mut frontend = Frontend::default();
     let source = include_str!("fixtures/warnings/warning/input.luau");
     frontend.insert("entry", source, 8, &configuration, &[])?;
     let entries = ["entry".to_owned()];
@@ -66,7 +67,7 @@ fn executable_layers_directives_and_reconfiguration_control_warnings() -> io::Re
         ".config.luau",
     )?;
 
-    let mut frontend = Frontend::new()?;
+    let mut frontend = Frontend::default();
     let entries = ["entry".to_owned()];
 
     frontend.insert(
@@ -123,7 +124,7 @@ fn typed_native_warnings_use_the_shared_type_graph() -> io::Result<()> {
         ".luaurc",
     )?;
 
-    let mut frontend = Frontend::new()?;
+    let mut frontend = Frontend::default();
     let source = include_str!("fixtures/warnings/typed/input.luau");
     frontend.insert("entry", source, 5, &configuration, &[])?;
     let entries = ["entry".to_owned()];
@@ -157,7 +158,7 @@ fn host_dependency_contexts_retain_their_warning_revisions() -> io::Result<()> {
         ".luaurc",
     )?;
 
-    let mut frontend = Frontend::new()?;
+    let mut frontend = Frontend::default();
     let source = include_str!("fixtures/warnings/host/input.luau");
     let call = source.find("loader(").expect("call");
     let argument = source.find("'./").expect("argument");
@@ -207,7 +208,7 @@ fn invalid_definitions_retain_available_syntax_warnings_and_diagnostics() -> io:
         ".luaurc",
     )?;
 
-    let mut frontend = Frontend::new()?;
+    let mut frontend = Frontend::default();
 
     frontend.insert(
         "entry",
@@ -223,7 +224,7 @@ fn invalid_definitions_retain_available_syntax_warnings_and_diagnostics() -> io:
             name: "broken".to_owned(),
             namespace: "@custom".to_owned(),
             revision: 3,
-            text: include_str!("fixtures/warnings/invalid/invalid.luau").to_owned(),
+            text: include_str!("fixtures/warnings/invalid/invalid.luau").into(),
         }],
     )?;
 
@@ -267,7 +268,7 @@ fn invalid_definitions_retain_available_syntax_warnings_and_diagnostics() -> io:
 #[test]
 fn inferred_any_facts_exclude_annotations_and_inferred_numbers() -> io::Result<()> {
     let configuration = Configuration::new()?;
-    let mut frontend = Frontend::new()?;
+    let mut frontend = Frontend::default();
     let source = include_str!("fixtures/warnings/inferred/input.luau");
     frontend.insert("entry", source, 6, &configuration, &[])?;
     let entries = ["entry".to_owned()];
@@ -300,7 +301,7 @@ fn inferred_any_facts_exclude_annotations_and_inferred_numbers() -> io::Result<(
 #[test]
 fn generic_for_any_facts_preserve_binding_identity_and_exclusions() -> io::Result<()> {
     let configuration = Configuration::new()?;
-    let mut frontend = Frontend::new()?;
+    let mut frontend = Frontend::default();
     let source = include_str!("fixtures/warnings/loops/input.luau");
     frontend.insert("entry", source, 7, &configuration, &[])?;
     let entries = ["entry".to_owned()];
@@ -350,7 +351,7 @@ fn nocheck_and_interruption_have_explicit_completion_without_stale_warnings() ->
         ".luaurc",
     )?;
 
-    let mut frontend = Frontend::new()?;
+    let mut frontend = Frontend::default();
 
     frontend.insert(
         "entry",
@@ -411,7 +412,7 @@ fn syntax_diagnostics_are_retained_without_leaking_source_type_errors() -> io::R
         ".luaurc",
     )?;
 
-    let mut frontend = Frontend::new()?;
+    let mut frontend = Frontend::default();
     let entries = ["entry".to_owned()];
 
     frontend.insert(

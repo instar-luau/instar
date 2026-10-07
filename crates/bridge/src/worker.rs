@@ -1,9 +1,13 @@
-use std::io::{self, BufRead, Write};
+use std::{
+    collections::BTreeMap,
+    io::{self, BufRead, Write},
+    mem,
+};
 
-use instar_analysis::Completion;
+use instar_analysis::{Completion, error::Failure, process::Message};
 
 use crate::{
-    Configuration, boundary,
+    Configuration, boundary, flags,
     frontend::{Cancellation, Host, Link, LintResult, checking, completion},
     protocol::{Operation, Request, Response},
 };
@@ -11,12 +15,12 @@ use crate::{
 struct Session {
     native: cxx::UniquePtr<boundary::NativeFrontend>,
     host: Host,
-    flags: std::collections::BTreeMap<String, crate::flags::Value>,
+    flags: BTreeMap<String, flags::Value>,
 }
 
 impl Session {
-    fn new(flags: std::collections::BTreeMap<String, crate::flags::Value>) -> io::Result<Self> {
-        crate::flags::apply(&flags)?;
+    fn new(flags: BTreeMap<String, flags::Value>) -> io::Result<Self> {
+        flags::apply(&flags)?;
         let native = boundary::create_frontend().map_err(io::Error::other)?;
 
         if native.is_null() {
@@ -30,7 +34,7 @@ impl Session {
         })
     }
 
-    fn synchronize(&mut self, request: &Request) -> io::Result<()> {
+    fn synchronize(&mut self, request: &mut Request) -> io::Result<()> {
         let removed = self
             .host
             .sources
@@ -67,8 +71,11 @@ impl Session {
                 .map_err(io::Error::other)?;
         }
 
-        self.host.sources = request.sources.clone();
+        self.host.sources = mem::take(&mut request.sources);
+        self.host.declarations = mem::take(&mut request.declarations);
+        self.host.environments = mem::take(&mut request.environments);
         self.host.progress = request.progress;
+        self.host.jobs = request.jobs;
 
         Ok(())
     }
@@ -107,12 +114,12 @@ impl Session {
         ))
     }
 
-    fn execute(&mut self, request: Request) -> io::Result<Response> {
+    fn execute(&mut self, mut request: Request) -> io::Result<Response> {
         if self.flags != request.flags {
             return Err(io::Error::other("native worker flag configuration changed"));
         }
 
-        self.synchronize(&request)?;
+        self.synchronize(&mut request)?;
         let cancellation = Cancellation(instar_analysis::Cancellation::default());
 
         match &request.operation {
@@ -176,7 +183,6 @@ impl Session {
 pub fn run() -> io::Result<()> {
     let mut session = None;
     let input = io::stdin().lock();
-    let mut output = io::stdout().lock();
 
     for line in input.lines() {
         let request: Request = serde_json::from_str(&line?)?;
@@ -191,12 +197,11 @@ pub fn run() -> io::Result<()> {
                 .ok_or_else(|| io::Error::other("native worker is unavailable"))?
                 .execute(request)
         })()
-        .map_err(instar_analysis::error::Failure::from);
+        .map_err(Failure::from);
 
-        serde_json::to_writer(
-            &mut output,
-            &instar_analysis::process::Message::Response(response),
-        )?;
+        let mut output = io::stdout().lock();
+
+        serde_json::to_writer(&mut output, &Message::Response(response))?;
 
         output.write_all(b"\n")?;
         output.flush()?;

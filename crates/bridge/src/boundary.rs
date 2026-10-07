@@ -84,7 +84,6 @@ mod native {
         #[cxx_name = "namespace_name"]
         namespace: String,
 
-        text: String,
         revision: u64,
     }
 
@@ -169,6 +168,7 @@ mod native {
 
     extern "Rust" {
         type Host;
+        fn jobs(self: &Host) -> usize;
         fn progress(
             self: &Host,
             phase: &str,
@@ -178,6 +178,7 @@ mod native {
         ) -> Result<()>;
         fn read_source(self: &Host, name: &str) -> NativeSource;
         fn read_document(self: &Host, name: &str) -> NativeDocument;
+        fn offset(self: &Host, name: &str, line: usize, column: usize) -> Result<usize>;
         fn require(self: &Host, name: &str, start: usize, end: usize) -> bool;
         fn resolve(self: &Host, name: &str, start: usize, end: usize) -> String;
         type Cancellation;

@@ -1,18 +1,24 @@
-use std::{collections::BTreeMap, time::Duration};
+use std::{collections::BTreeMap, num::NonZeroUsize, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
-use crate::frontend::{Link, LintResult, Source};
+use crate::{
+    flags,
+    frontend::{Declaration, Environment, Link, LintResult, Source},
+};
 
 #[derive(Deserialize, Serialize)]
 pub(crate) struct Request {
     pub(crate) sources: BTreeMap<String, Source>,
+    pub(crate) declarations: BTreeMap<String, Declaration>,
+    pub(crate) environments: BTreeMap<u64, Environment>,
     pub(crate) entries: Vec<String>,
     pub(crate) modules: Vec<String>,
     pub(crate) operation: Operation,
     pub(crate) timeout: Duration,
-    pub(crate) flags: BTreeMap<String, crate::flags::Value>,
+    pub(crate) flags: BTreeMap<String, flags::Value>,
     pub(crate) progress: bool,
+    pub(crate) jobs: Option<NonZeroUsize>,
 }
 
 #[derive(Deserialize, Serialize)]

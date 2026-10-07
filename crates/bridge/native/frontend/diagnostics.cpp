@@ -3,39 +3,8 @@
 #include <stdexcept>
 
 namespace instar::frontend {
-    size_t offset(std::string_view source, Luau::Position position) {
-        size_t start = 0;
-
-        for (unsigned int line = 0; line < position.line; ++line) {
-            const size_t newline = source.find('\n', start);
-
-            if (newline == std::string_view::npos) {
-                throw std::runtime_error("native source position exceeds host revision");
-            }
-
-            start = newline + 1;
-        }
-
-        if (position.column > source.size() - start) {
-            throw std::runtime_error("native source column exceeds host revision");
-        }
-
-        return start + position.column;
-    }
-
-    NativeLocation location(const Host &host, const Luau::ModuleName &name, Luau::Location range) {
-        const NativeDocument source = host.read_document(name);
-
-        if (!source.found) {
-            throw std::runtime_error("native diagnostic source is unavailable: " + name);
-        }
-
-        const std::string_view bytes(source.text.data(), source.text.size());
-
-        return NativeLocation{rust::String(name),
-            source.revision,
-            offset(bytes, range.begin),
-            offset(bytes, range.end)};
+    size_t offset(const Host &host, const std::string &name, Luau::Position position) {
+        return host.offset(name, position.line, position.column);
     }
 
     NativeKind kind(const Luau::TypeError &error) {
@@ -54,6 +23,19 @@ namespace instar::frontend {
         }
 
         return NativeKind::Type;
+    }
+
+    NativeLocation location(const Host &host, const Luau::ModuleName &name, Luau::Location range) {
+        const NativeDocument source = host.read_document(name);
+
+        if (!source.found) {
+            throw std::runtime_error("native diagnostic source is unavailable: " + name);
+        }
+
+        return NativeLocation{rust::String(name),
+            source.revision,
+            offset(host, name, range.begin),
+            offset(host, name, range.end)};
     }
 
     NativeDiagnostic diagnostic(const Host &host, const Luau::TypeError &error, const std::string &fallback) {
@@ -99,4 +81,4 @@ namespace instar::frontend {
 
         return result;
     }
-} // namespace instar::frontend
+}

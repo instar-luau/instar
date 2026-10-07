@@ -1,14 +1,22 @@
 use std::{
+    collections::BTreeMap,
     fs,
-    io::{BufRead, BufReader, Write},
+    io::{self, BufRead, BufReader, Write},
     net::TcpListener,
     path::Path,
     sync::mpsc,
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
-use super::*;
+use instar_analysis::Options;
+
+use crate::{
+    assets::{fetch, install},
+    configuration::Security,
+    project::{Change, Project},
+    roblox::download,
+};
 
 fn files(name: &str) -> io::Result<BTreeMap<String, String>> {
     fs::read_dir(
@@ -82,7 +90,7 @@ fn server(
 fn downloads_verified_profiles_and_loads_cache_without_server() -> io::Result<()> {
     let expected = files("original")?;
     let (url, server) = server(expected.clone(), expected.len(), Duration::ZERO)?;
-    let downloaded = fetch(url, &Options::new(Duration::from_secs(5)), download)?;
+    let downloaded = fetch(url, download, &Options::new(Duration::from_secs(5)))?;
     server.join().expect("asset server")?;
     assert_eq!(downloaded, expected);
 
@@ -131,7 +139,7 @@ fn cold_publishers_preserve_the_first_bundle_and_reader_snapshot() -> io::Result
 
     for bundle in [expected.clone(), replacement] {
         let (url, server) = server(bundle.clone(), bundle.len(), Duration::ZERO)?;
-        downloaded.push(fetch(url, &options, download)?);
+        downloaded.push(fetch(url, download, &options)?);
         server.join().expect("asset server")?;
     }
 
@@ -241,7 +249,7 @@ fn rejects_corrupt_downloads_and_http_failures() -> io::Result<()> {
     let (url, server) = server(corrupted, 2, Duration::ZERO)?;
 
     assert_eq!(
-        fetch(url, &Options::new(Duration::from_secs(5)), download)
+        fetch(url, download, &Options::new(Duration::from_secs(5)))
             .expect_err("hash mismatch")
             .kind(),
         io::ErrorKind::InvalidData
@@ -249,7 +257,7 @@ fn rejects_corrupt_downloads_and_http_failures() -> io::Result<()> {
 
     server.join().expect("asset server")?;
     let (url, server) = self::server(BTreeMap::new(), 1, Duration::ZERO)?;
-    assert!(fetch(url, &Options::new(Duration::from_secs(5)), download).is_err());
+    assert!(fetch(url, download, &Options::new(Duration::from_secs(5))).is_err());
     server.join().expect("asset server")?;
 
     Ok(())
@@ -261,7 +269,7 @@ fn download_obeys_deadline_and_cancellation() -> io::Result<()> {
     let started = Instant::now();
 
     assert_eq!(
-        fetch(url, &Options::new(Duration::from_millis(50)), download)
+        fetch(url, download, &Options::new(Duration::from_millis(50)))
             .expect_err("deadline")
             .kind(),
         io::ErrorKind::TimedOut
@@ -273,7 +281,7 @@ fn download_obeys_deadline_and_cancellation() -> io::Result<()> {
     options.cancellation.cancel();
 
     assert_eq!(
-        fetch("http://127.0.0.1:1".to_owned(), &options, download)
+        fetch("http://127.0.0.1:1".to_owned(), download, &options)
             .expect_err("cancellation")
             .kind(),
         io::ErrorKind::Interrupted

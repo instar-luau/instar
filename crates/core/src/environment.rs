@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, path::PathBuf, rc::Rc, time::Instant};
+use std::{collections::BTreeMap, io, path::PathBuf, rc::Rc, sync::Arc, time::Instant};
 
 use instar_analysis::{Completion, Diagnostic, Kind, Location, Options, Reason};
 use instar_bridge::frontend::{Class, Definition};
@@ -6,6 +6,7 @@ use instar_bridge::frontend::{Class, Definition};
 use crate::{
     analysis::Origin,
     graph::Node,
+    native,
     project::{Project, Settings},
     source::Document,
 };
@@ -15,11 +16,11 @@ pub(crate) struct Environment {
     pub(crate) definitions: Vec<Definition>,
     pub(crate) diagnostics: Vec<Diagnostic<Origin>>,
     pub(crate) completion: Completion,
-    classes: Vec<Class>,
+    classes: Arc<[Class]>,
 }
 
 impl Environment {
-    fn failure(&mut self, location: Location<Origin>, error: &std::io::Error) {
+    fn failure(&mut self, location: Location<Origin>, error: &io::Error) {
         self.diagnostics.push(Diagnostic {
             location,
             kind: Kind::Analysis { code: None },
@@ -63,10 +64,8 @@ impl Project {
         };
 
         if let Some(frontend) = &mut self.frontend
-            && let Err(error) = frontend.classes(
-                &crate::native::name(&node.module.identity),
-                &environment.classes,
-            )
+            && let Err(error) =
+                frontend.classes(&native::name(&node.module.identity), &environment.classes)
         {
             Rc::make_mut(&mut environment).failure(
                 Location {
@@ -93,7 +92,7 @@ impl Project {
             definitions: Vec::new(),
             diagnostics: Vec::new(),
             completion: Completion::Complete,
-            classes: Vec::new(),
+            classes: Arc::from([]),
         };
 
         let configuration = &settings.configuration;
@@ -101,19 +100,23 @@ impl Project {
         environment.classes = if configuration.roblox.enabled == Some(true) {
             match self.roblox_assets(configuration.roblox.security, options, started) {
                 Ok(assets) => {
-                    for (path, document) in assets.definitions {
+                    for (path, document) in &assets.definitions {
                         let name = format!("Definition({})", path.display());
-                        sources.insert(name.clone(), (Origin::Definition(path), document.clone()));
+
+                        sources.insert(
+                            name.clone(),
+                            (Origin::Definition(path.clone()), document.clone()),
+                        );
 
                         environment.definitions.push(Definition {
                             name,
                             namespace: "@roblox".to_owned(),
                             revision: document.revision,
-                            text: document.text.to_string(),
+                            text: Arc::clone(&document.text),
                         });
                     }
 
-                    assets.classes
+                    Arc::clone(&assets.classes)
                 }
 
                 Err(error) => {
@@ -130,11 +133,11 @@ impl Project {
                         environment.completion = Completion::Incomplete(reason);
                     }
 
-                    Vec::new()
+                    Arc::from([])
                 }
             }
         } else {
-            Vec::new()
+            Arc::from([])
         };
 
         for (namespace, path) in configuration.environment.iter().flat_map(|environment| {
@@ -181,7 +184,7 @@ impl Project {
                     name,
                     namespace: namespace.clone(),
                     revision: document.revision,
-                    text: document.text.to_string(),
+                    text: Arc::clone(&document.text),
                 });
             }
         }

@@ -85,7 +85,84 @@ namespace instar::frontend {
                 result.facts.push_back(std::move(fact));
             }
         }
-    } // namespace
+
+        NativeLintResult
+        inspect(State &state, const Host &host, const Luau::SourceModule &source, const Luau::Module *module) {
+            const std::string &name = source.name;
+            auto &frontend = state.frontend;
+            NativeLintResult result{{}, {}, {}, NativeCompletion::Complete};
+            const Luau::Config &configuration = state.resolver.getConfig(name, {});
+            const Luau::Mode mode = source.mode.value_or(configuration.mode);
+            Luau::LintOptions options = configuration.enabledLint;
+            options.warningMask &= ~Luau::LintWarning::parseMask(source.hotcomments);
+
+            if (mode != Luau::Mode::NoCheck) {
+                options.disableWarning(Luau::LintWarning::Code_UnknownGlobal);
+            }
+
+            if (mode == Luau::Mode::Strict) {
+                options.disableWarning(Luau::LintWarning::Code_ImplicitReturn);
+            }
+
+            Luau::ScopePtr environment = frontend.globals.globalScope;
+
+            if (module && module->hasModuleScope()) {
+                environment = module->getModuleScope()->parent;
+            }
+
+            if (!module) {
+                const auto found = state.resolver.environments.find(name);
+
+                if (found != state.resolver.environments.end()) {
+                    environment = frontend.getEnvironmentScope(found->second);
+                }
+
+                if (!configuration.globals.empty()) {
+                    environment = std::make_shared<Luau::Scope>(environment);
+
+                    for (const std::string &global : configuration.globals) {
+                        const Luau::AstName symbol = source.names->get(global.c_str());
+
+                        if (symbol.value) {
+                            environment->bindings[symbol].typeId = frontend.builtinTypes->anyType;
+                        }
+                    }
+                }
+            }
+
+            Luau::Module syntax(std::make_shared<Luau::TypeArena>());
+            syntax.checkedInNewSolver = true;
+
+            const auto warnings = Luau::lint(
+                source.root,
+                *source.names,
+                environment,
+                module ? module : &syntax,
+                source.hotcomments,
+                options
+            );
+
+            for (const Luau::LintWarning &warning : warnings) {
+                result.warnings.push_back(
+                    NativeWarning{location(host, name, warning.location),
+                        static_cast<int32_t>(warning.code),
+                        rust::String(Luau::LintWarning::getName(warning.code)),
+                        rust::String(warning.text),
+                        configuration.lintErrors || configuration.fatalLint.isEnabled(warning.code)}
+                );
+            }
+
+            if (module && mode != Luau::Mode::NoCheck && source.parseErrors.empty()) {
+                facts(host, name, *module, result);
+            }
+
+            return result;
+        }
+    }
+
+    void collect(State &state, const Host &host, const Luau::SourceModule &source, const Luau::Module &module) {
+        state.lints.insert_or_assign(source.name, inspect(state, host, source, &module));
+    }
 
     NativeLintResult lint(
         State &state, const Host &host, rust::Slice<const rust::String> entries, double timeout_seconds,
@@ -120,7 +197,11 @@ namespace instar::frontend {
                         enabled.isEnabled(Luau::LintWarning::Code_TableOperations);
         }
 
-        NativeCheck checked = analyze(state, host, entries, timeout_seconds, names, cancellation, typecheck);
+        bool prepared = false;
+
+        NativeCheck checked =
+            analyze(state, host, entries, timeout_seconds, names, cancellation, typecheck, true, prepared);
+
         NativeLintResult result{{}, {}, {}, checked.completion};
 
         for (NativeDiagnostic &error : checked.diagnostics) {
@@ -135,7 +216,9 @@ namespace instar::frontend {
             return result;
         }
 
-        prepare(state, host, names);
+        if (!prepared) {
+            prepare(state, host, names);
+        }
 
         size_t completed = 0;
         host.progress("Native linting", "", completed, names.size());
@@ -168,66 +251,20 @@ namespace instar::frontend {
             const bool typed =
                 typecheck && checked.completion == NativeCompletion::Complete && module && !module->cancelled;
 
-            const Luau::Config &configuration = state.resolver.getConfig(name, {});
-            const Luau::Mode mode = source->mode.value_or(configuration.mode);
-            Luau::LintOptions options = configuration.enabledLint;
-            options.warningMask &= ~Luau::LintWarning::parseMask(source->hotcomments);
-
-            if (mode != Luau::Mode::NoCheck) {
-                options.disableWarning(Luau::LintWarning::Code_UnknownGlobal);
-            }
-
-            if (mode == Luau::Mode::Strict) {
-                options.disableWarning(Luau::LintWarning::Code_ImplicitReturn);
-            }
-
-            Luau::ScopePtr environment = frontend.globals.globalScope;
-
-            if (typed && module->hasModuleScope()) {
-                environment = module->getModuleScope()->parent;
-            }
+            NativeLintResult fallback{{}, {}, {}, NativeCompletion::Complete};
 
             if (!typed) {
-                const auto found = state.resolver.environments.find(name);
-
-                if (found != state.resolver.environments.end()) {
-                    environment = frontend.getEnvironmentScope(found->second);
-                }
+                fallback = inspect(state, host, *source, nullptr);
             }
 
-            if (!typed && !configuration.globals.empty()) {
-                environment = std::make_shared<Luau::Scope>(environment);
+            const auto &observed = typed ? state.lints.at(name) : fallback;
 
-                for (const std::string &global : configuration.globals) {
-                    const Luau::AstName symbol = source->names->get(global.c_str());
-
-                    if (symbol.value) {
-                        environment->bindings[symbol].typeId = frontend.builtinTypes->anyType;
-                    }
-                }
+            for (const NativeWarning &warning : observed.warnings) {
+                result.warnings.push_back(warning);
             }
 
-            Luau::Module syntax(std::make_shared<Luau::TypeArena>());
-            syntax.checkedInNewSolver = true;
-
-            const auto warnings = Luau::lint(
-                source->root,
-                *source->names,
-                environment,
-                typed ? module.get() : &syntax,
-                source->hotcomments,
-                options
-            );
-
-            for (const Luau::LintWarning &warning : warnings) {
-                result.warnings.push_back(
-                    NativeWarning{location(host, name, warning.location),
-                        static_cast<int32_t>(warning.code),
-                        rust::String(Luau::LintWarning::getName(warning.code)),
-                        rust::String(warning.text),
-                        configuration.lintErrors || configuration.fatalLint.isEnabled(warning.code)}
-                );
-            }
+            const Luau::Config &configuration = state.resolver.getConfig(name, {});
+            const Luau::Mode mode = source->mode.value_or(configuration.mode);
 
             const bool semantic = semantics.count(name) != 0;
 
@@ -244,7 +281,9 @@ namespace instar::frontend {
                     result.completion = NativeCompletion::Analysis;
                 }
             } else if (semantic && typed && source->parseErrors.empty()) {
-                facts(host, name, *module, result);
+                for (const NativeFact &fact : observed.facts) {
+                    result.facts.push_back(fact);
+                }
             }
 
             if (status() == NativeCompletion::Complete) {

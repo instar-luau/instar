@@ -2,12 +2,13 @@
 
 use std::{
     collections::BTreeSet,
-    io,
+    io, mem,
     path::{Path, PathBuf},
     rc::Rc,
 };
 
 use instar_analysis::error::invalid;
+use instar_bridge::Snapshot;
 
 use crate::{
     project::Project,
@@ -217,7 +218,7 @@ impl Project {
     /// Resolves a string from an entry source through the same tracked policy as graph sites.
     #[must_use]
     pub fn resolve_source(&mut self, source: &Path, request: &str) -> Resolution {
-        let outer = std::mem::take(&mut self.view.consulted);
+        let outer = mem::take(&mut self.view.consulted);
 
         let result = (|| {
             validate_source(source)?;
@@ -233,9 +234,9 @@ impl Project {
             ))
         });
 
-        let inputs = std::mem::take(&mut self.view.consulted);
+        let inputs = mem::take(&mut self.view.consulted);
         self.view.consulted = outer;
-        self.view.consulted.extend(inputs.iter().cloned());
+        self.view.consult(&inputs);
 
         Resolution { result, inputs }
     }
@@ -243,13 +244,75 @@ impl Project {
     /// Resolves a static graph request and retains every consulted candidate on failure.
     #[must_use]
     pub fn resolve(&mut self, module: &Module, request: &Request) -> Resolution {
-        let outer = std::mem::take(&mut self.view.consulted);
+        let outer = mem::take(&mut self.view.consulted);
         let result = self.resolve_inner(module, request).map_err(Failure::from);
-        let inputs = std::mem::take(&mut self.view.consulted);
+        let inputs = mem::take(&mut self.view.consulted);
         self.view.consulted = outer;
-        self.view.consulted.extend(inputs.iter().cloned());
+        self.view.consult(&inputs);
 
         Resolution { result, inputs }
+    }
+
+    pub(crate) fn probe(&mut self, path: &Path) -> io::Result<Option<PathBuf>> {
+        if path.file_name().is_some_and(|name| name == ".config") {
+            return Err(invalid(".config.luau is not an importable module"));
+        }
+
+        let directory = self.view.kind(path)? == Some(Kind::Directory);
+        let mut sources = Vec::new();
+
+        if path.file_name().is_some_and(|name| name != "init") {
+            for suffix in [".luau", ".lua"] {
+                let mut filename = path.as_os_str().to_os_string();
+                filename.push(suffix);
+                let candidate = PathBuf::from(filename);
+
+                if self.view.kind(&candidate)? == Some(Kind::File) {
+                    sources.push(candidate);
+                }
+            }
+        }
+
+        let sibling = !sources.is_empty();
+
+        if directory {
+            if sibling {
+                sources.push(path.to_path_buf());
+            } else {
+                for filename in ["init.luau", "init.lua"] {
+                    let candidate = path.join(filename);
+
+                    if self.view.kind(&candidate)? == Some(Kind::File) {
+                        sources.push(candidate);
+                    }
+                }
+            }
+        }
+
+        if sources.len() > 1 {
+            return Err(invalid(format!(
+                "ambiguous module {}: {}",
+                path.display(),
+                sources
+                    .iter()
+                    .map(|source| source.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )));
+        }
+
+        if let Some(source) = sources.pop() {
+            return Ok(Some(source));
+        }
+
+        if directory {
+            return Ok(None);
+        }
+
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("module path not found: {}", path.display()),
+        ))
     }
 
     fn resolve_inner(&mut self, module: &Module, request: &Request) -> io::Result<Module> {
@@ -375,7 +438,7 @@ impl Project {
 
     fn alias(
         &mut self,
-        snapshot: &instar_bridge::Snapshot,
+        snapshot: &Snapshot,
         name: &str,
         module: &Path,
         stack: &mut Vec<(PathBuf, String)>,
@@ -468,68 +531,6 @@ impl Project {
         }
 
         Ok(path)
-    }
-
-    pub(crate) fn probe(&mut self, path: &Path) -> io::Result<Option<PathBuf>> {
-        if path.file_name().is_some_and(|name| name == ".config") {
-            return Err(invalid(".config.luau is not an importable module"));
-        }
-
-        let directory = self.view.kind(path)? == Some(Kind::Directory);
-        let mut sources = Vec::new();
-
-        if path.file_name().is_some_and(|name| name != "init") {
-            for suffix in [".luau", ".lua"] {
-                let mut filename = path.as_os_str().to_os_string();
-                filename.push(suffix);
-                let candidate = PathBuf::from(filename);
-
-                if self.view.kind(&candidate)? == Some(Kind::File) {
-                    sources.push(candidate);
-                }
-            }
-        }
-
-        let sibling = !sources.is_empty();
-
-        if directory {
-            if sibling {
-                sources.push(path.to_path_buf());
-            } else {
-                for filename in ["init.luau", "init.lua"] {
-                    let candidate = path.join(filename);
-
-                    if self.view.kind(&candidate)? == Some(Kind::File) {
-                        sources.push(candidate);
-                    }
-                }
-            }
-        }
-
-        if sources.len() > 1 {
-            return Err(invalid(format!(
-                "ambiguous module {}: {}",
-                path.display(),
-                sources
-                    .iter()
-                    .map(|source| source.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            )));
-        }
-
-        if let Some(source) = sources.pop() {
-            return Ok(Some(source));
-        }
-
-        if directory {
-            return Ok(None);
-        }
-
-        Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("module path not found: {}", path.display()),
-        ))
     }
 }
 

@@ -1,10 +1,12 @@
 //! Native analysis preparation from the Rust-owned graph.
-use std::{io, path::Path};
+use std::{collections::BTreeMap, io, path::Path, rc::Rc, sync::Arc, time::Instant};
 
-use instar_analysis::error::invalid;
+use instar_analysis::{Completion, Options, error::invalid};
 use instar_bridge::frontend::{Frontend, Link, Site};
 
 use crate::{
+    analysis::Origin,
+    environment::Environment,
     project::Project,
     resolve::{Identity, Module},
 };
@@ -21,26 +23,12 @@ impl Project {
         &mut self,
         source: &Path,
         context: Option<&Identity>,
-        options: &instar_analysis::Options,
+        options: &Options,
     ) -> io::Result<Vec<Link>> {
-        self.during(options, |project| {
-            project.preparation(source, context, options)
-        })
-    }
-
-    fn preparation(
-        &mut self,
-        source: &Path,
-        context: Option<&Identity>,
-        options: &instar_analysis::Options,
-    ) -> io::Result<Vec<Link>> {
-        let started = std::time::Instant::now();
-        let entry = self.install(source, context)?;
-
-        self.frontend
-            .as_mut()
-            .ok_or_else(|| invalid("native frontend is unavailable"))?
-            .parse(&name(&entry.identity), &options.remaining(started))
+        self.during(
+            |project| project.preparation(source, context, options),
+            options,
+        )
     }
 
     pub(crate) fn install(
@@ -51,10 +39,7 @@ impl Project {
         let entry = self.links(source, context)?.module.clone();
         let identities = self.discover(source, context)?;
 
-        let mut frontend = match self.frontend.take() {
-            Some(frontend) => frontend,
-            None => Frontend::new()?,
-        };
+        let mut frontend = self.frontend.take().unwrap_or_default();
 
         let result = (|| {
             for identity in identities {
@@ -86,7 +71,7 @@ impl Project {
 
                 frontend.insert(
                     &name(&identity),
-                    &node.document.text,
+                    Arc::clone(&node.document.text),
                     node.document.revision,
                     &settings.native,
                     &sites,
@@ -102,6 +87,21 @@ impl Project {
 
         result
     }
+
+    fn preparation(
+        &mut self,
+        source: &Path,
+        context: Option<&Identity>,
+        options: &Options,
+    ) -> io::Result<Vec<Link>> {
+        let started = Instant::now();
+        let entry = self.install(source, context)?;
+
+        self.frontend
+            .as_mut()
+            .ok_or_else(|| invalid("native frontend is unavailable"))?
+            .parse(&name(&entry.identity), &options.remaining(started))
+    }
 }
 
 /// Encodes an exact Rust identity as an opaque native module name.
@@ -110,28 +110,58 @@ pub fn name(identity: &Identity) -> String {
     format!("{identity:?}")
 }
 
-pub(crate) fn progress(
-    options: &instar_analysis::Options,
-    modules: &[crate::analysis::Origin],
-) -> instar_analysis::Options {
+pub(crate) fn definitions(
+    environments: &BTreeMap<String, Rc<Environment>>,
+    frontend: &mut Frontend,
+    options: &Options,
+    started: Instant,
+) -> io::Result<Completion> {
+    for (completed, (name, environment)) in environments.iter().enumerate() {
+        options.report(
+            "Registering declarations",
+            completed,
+            Some(environments.len()),
+            Some(name),
+        );
+
+        if let Some(reason) = options.interrupted(started) {
+            return Ok(Completion::Incomplete(reason));
+        }
+
+        frontend.definitions(name, &environment.definitions)?;
+    }
+
+    options.report(
+        "Registering declarations",
+        environments.len(),
+        Some(environments.len()),
+        None,
+    );
+
+    Ok(options
+        .interrupted(started)
+        .map_or(Completion::Complete, Completion::Incomplete))
+}
+
+pub(crate) fn progress(modules: &[Origin], options: &Options) -> Options {
     let mut limits = options.clone();
 
     if let Some(observer) = &options.progress {
-        let observer = std::sync::Arc::clone(observer);
+        let observer = Arc::clone(observer);
 
         let sources = modules
             .iter()
             .filter_map(|origin| match origin {
-                crate::analysis::Origin::Module(module) => Some((
+                Origin::Module(module) => Some((
                     name(&module.identity),
                     module.source.to_string_lossy().into_owned(),
                 )),
 
-                crate::analysis::Origin::Definition(_) => None,
+                Origin::Definition(_) => None,
             })
-            .collect::<std::collections::BTreeMap<_, _>>();
+            .collect::<BTreeMap<_, _>>();
 
-        limits.progress = Some(std::sync::Arc::new(move |mut event| {
+        limits.progress = Some(Arc::new(move |mut event| {
             if let Some(source) = event.source.as_ref().and_then(|source| sources.get(source)) {
                 event.source = Some(source.clone());
             }

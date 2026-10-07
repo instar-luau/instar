@@ -1,5 +1,10 @@
 //! Native checker diagnostics and interruption boundary fixtures.
-use std::{io, time::Duration};
+
+use std::{
+    fmt::Write,
+    io, thread,
+    time::{Duration, Instant},
+};
 
 use instar_analysis::{Completion, Kind, Options, Reason};
 
@@ -11,7 +16,7 @@ use instar_bridge::{
 #[test]
 fn native_type_codes_locations_and_related_data_are_retained() -> io::Result<()> {
     let configuration = Configuration::new()?;
-    let mut frontend = Frontend::new()?;
+    let mut frontend = Frontend::default();
     let source = include_str!("fixtures/checking/native/input.luau");
     frontend.insert("entry", source, 8, &configuration, &[])?;
     let result = frontend.check(&["entry".to_owned()], &Options::new(Duration::from_secs(5)))?;
@@ -43,7 +48,7 @@ fn native_type_codes_locations_and_related_data_are_retained() -> io::Result<()>
 #[test]
 fn lexical_loader_targets_supply_real_imported_types() -> io::Result<()> {
     let configuration = Configuration::new()?;
-    let mut frontend = Frontend::new()?;
+    let mut frontend = Frontend::default();
     let source = include_str!("fixtures/checking/lexical/input.luau");
     let call = source.find("loader(").expect("loader call");
     let argument = source.find("'./").expect("loader argument");
@@ -87,7 +92,7 @@ fn lexical_loader_targets_supply_real_imported_types() -> io::Result<()> {
 #[test]
 fn failed_definitions_do_not_pollute_other_environments() -> io::Result<()> {
     let configuration = Configuration::new()?;
-    let mut frontend = Frontend::new()?;
+    let mut frontend = Frontend::default();
 
     frontend.insert(
         "configured",
@@ -99,18 +104,36 @@ fn failed_definitions_do_not_pollute_other_environments() -> io::Result<()> {
 
     frontend.definitions(
         "configured",
+        &[Definition {
+            name: "first".to_owned(),
+            namespace: "@custom".to_owned(),
+            revision: 1,
+            text: include_str!("fixtures/checking/failed/definition.luau").into(),
+        }],
+    )?;
+
+    let warmed = frontend.check(
+        &["configured".to_owned()],
+        &Options::new(Duration::from_secs(5)),
+    )?;
+
+    assert_eq!(warmed.completion, Completion::Complete);
+    assert_eq!(warmed.diagnostics, Vec::new());
+
+    frontend.definitions(
+        "configured",
         &[
             Definition {
                 name: "first".to_owned(),
                 namespace: "@custom".to_owned(),
                 revision: 1,
-                text: include_str!("fixtures/checking/failed/definition.luau").to_owned(),
+                text: include_str!("fixtures/checking/failed/definition.luau").into(),
             },
             Definition {
                 name: "broken".to_owned(),
                 namespace: "@custom".to_owned(),
                 revision: 1,
-                text: include_str!("fixtures/checking/failed/invalid.luau").to_owned(),
+                text: include_str!("fixtures/checking/failed/invalid.luau").into(),
             },
         ],
     )?;
@@ -155,7 +178,7 @@ fn failed_definitions_do_not_pollute_other_environments() -> io::Result<()> {
             name: "first".to_owned(),
             namespace: "@custom".to_owned(),
             revision: 1,
-            text: include_str!("fixtures/checking/failed/definition.luau").to_owned(),
+            text: include_str!("fixtures/checking/failed/definition.luau").into(),
         }],
     )?;
 
@@ -175,7 +198,7 @@ fn failed_definitions_do_not_pollute_other_environments() -> io::Result<()> {
 #[test]
 fn native_interruption_does_not_cache_a_clean_answer() -> io::Result<()> {
     let configuration = Configuration::new()?;
-    let mut frontend = Frontend::new()?;
+    let mut frontend = Frontend::default();
 
     frontend.insert(
         "entry",
@@ -209,13 +232,12 @@ fn native_interruption_does_not_cache_a_clean_answer() -> io::Result<()> {
 
 #[test]
 fn interrupted_requests_return_promptly_and_allow_retry() -> io::Result<()> {
-    use std::fmt::Write;
     let configuration = Configuration::new()?;
-    let mut frontend = Frontend::new()?;
+    let mut frontend = Frontend::default();
     let source = "local value = 1\n".repeat(500_000);
-    frontend.insert("entry", &source, 1, &configuration, &[])?;
+    frontend.insert("entry", source.as_str(), 1, &configuration, &[])?;
     let options = Options::new(Duration::from_millis(20));
-    let started = std::time::Instant::now();
+    let started = Instant::now();
 
     let error = frontend
         .parse("entry", &options)
@@ -231,23 +253,25 @@ fn interrupted_requests_return_promptly_and_allow_retry() -> io::Result<()> {
             name: "definitions".to_owned(),
             namespace: "@custom".to_owned(),
             revision: 1,
-            text: (0..100_000).fold(String::new(), |mut text, number| {
-                writeln!(text, "declare value{number}: number").expect("string write");
+            text: (0..100_000)
+                .fold(String::new(), |mut text, number| {
+                    writeln!(text, "declare value{number}: number").expect("string write");
 
-                text
-            }),
+                    text
+                })
+                .into(),
         }],
     )?;
 
     let options = Options::new(Duration::from_secs(5));
     let cancellation = options.cancellation.clone();
 
-    let monitor = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(20));
+    let monitor = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(20));
         cancellation.cancel();
     });
 
-    let started = std::time::Instant::now();
+    let started = Instant::now();
     let interrupted = frontend.check(&["entry".to_owned()], &options)?;
     monitor.join().expect("cancellation thread");
 

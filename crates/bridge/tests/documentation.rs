@@ -1,4 +1,5 @@
 //! Native documentation namespace and declaration identity contracts.
+
 use std::{io, time::Duration};
 
 use instar_analysis::{Completion, Options};
@@ -10,7 +11,7 @@ use instar_bridge::{
 
 #[test]
 fn namespaces_preserve_builtins_members_and_file_diagnostics() -> io::Result<()> {
-    let mut frontend = Frontend::new()?;
+    let mut frontend = Frontend::default();
     frontend.insert("entry", "return 1", 1, &Configuration::new()?, &[])?;
     let options = Options::new(Duration::from_secs(5));
 
@@ -19,13 +20,13 @@ fn namespaces_preserve_builtins_members_and_file_diagnostics() -> io::Result<()>
             name: "types.d.luau".to_owned(),
             namespace: "@game".to_owned(),
             revision: 1,
-            text: include_str!("fixtures/documentation/namespaces/types.luau").to_owned(),
+            text: include_str!("fixtures/documentation/namespaces/types.luau").into(),
         },
         Definition {
             name: "globals.d.luau".to_owned(),
             namespace: "@game".to_owned(),
             revision: 1,
-            text: include_str!("fixtures/documentation/namespaces/globals.luau").to_owned(),
+            text: include_str!("fixtures/documentation/namespaces/globals.luau").into(),
         },
     ];
 
@@ -57,7 +58,7 @@ fn namespaces_preserve_builtins_members_and_file_diagnostics() -> io::Result<()>
         Some("@renamed/global/library.call")
     );
 
-    definitions[1].text = include_str!("fixtures/documentation/namespaces/invalid.luau").to_owned();
+    definitions[1].text = include_str!("fixtures/documentation/namespaces/invalid.luau").into();
     definitions[1].revision = 2;
     frontend.definitions("entry", &definitions)?;
     let result = frontend.check(&["entry".to_owned()], &options)?;
@@ -77,7 +78,7 @@ fn namespaces_preserve_builtins_members_and_file_diagnostics() -> io::Result<()>
 
 #[test]
 fn declaration_identity_is_shared_across_distinct_namespaces() -> io::Result<()> {
-    let mut frontend = Frontend::new()?;
+    let mut frontend = Frontend::default();
     let configuration = Configuration::new()?;
     let options = Options::new(Duration::from_secs(5));
 
@@ -90,7 +91,7 @@ fn declaration_identity_is_shared_across_distinct_namespaces() -> io::Result<()>
                 name: "shared.d.luau".to_owned(),
                 namespace: namespace.to_owned(),
                 revision: 1,
-                text: include_str!("fixtures/documentation/declaration/definition.luau").to_owned(),
+                text: include_str!("fixtures/documentation/declaration/definition.luau").into(),
             }],
         )?;
     }
@@ -112,7 +113,7 @@ fn declaration_identity_is_shared_across_distinct_namespaces() -> io::Result<()>
 
 #[test]
 fn shared_declaration_revisions_update_atomically() -> io::Result<()> {
-    let mut frontend = Frontend::new()?;
+    let mut frontend = Frontend::default();
     let configuration = Configuration::new()?;
     let options = Options::new(Duration::from_secs(5));
 
@@ -131,7 +132,7 @@ fn shared_declaration_revisions_update_atomically() -> io::Result<()> {
                 name: "shared".to_owned(),
                 namespace: format!("@{module}"),
                 revision: 1,
-                text: include_str!("fixtures/documentation/declaration/definition.luau").to_owned(),
+                text: include_str!("fixtures/documentation/declaration/definition.luau").into(),
             }],
         )?;
     }
@@ -140,7 +141,7 @@ fn shared_declaration_revisions_update_atomically() -> io::Result<()> {
         name: "shared".to_owned(),
         namespace: "@first".to_owned(),
         revision: 2,
-        text: include_str!("fixtures/documentation/shared/definition.luau").to_owned(),
+        text: include_str!("fixtures/documentation/shared/definition.luau").into(),
     };
 
     frontend.definitions("first", &[replacement.clone()])?;
@@ -156,8 +157,7 @@ fn shared_declaration_revisions_update_atomically() -> io::Result<()> {
         );
     }
 
-    replacement.text =
-        include_str!("fixtures/documentation/declaration/definition.luau").to_owned();
+    replacement.text = include_str!("fixtures/documentation/declaration/definition.luau").into();
 
     assert!(
         frontend
@@ -175,7 +175,7 @@ fn shared_declaration_revisions_update_atomically() -> io::Result<()> {
 
 #[test]
 fn documentation_preserves_interruption_and_environment_error_categories() -> io::Result<()> {
-    let mut frontend = Frontend::new()?;
+    let mut frontend = Frontend::default();
     frontend.insert("entry", "return 1", 1, &Configuration::new()?, &[])?;
     let cancelled = Options::new(Duration::from_secs(5));
     cancelled.cancellation.cancel();
@@ -202,7 +202,7 @@ fn documentation_preserves_interruption_and_environment_error_categories() -> io
             name: "invalid".to_owned(),
             namespace: "@custom".to_owned(),
             revision: 1,
-            text: include_str!("fixtures/documentation/documentation/invalid.luau").to_owned(),
+            text: include_str!("fixtures/documentation/documentation/invalid.luau").into(),
         }],
     )?;
 
@@ -223,7 +223,7 @@ fn documentation_preserves_interruption_and_environment_error_categories() -> io
 
 #[test]
 fn unrelated_type_errors_do_not_hide_builtin_documentation() -> io::Result<()> {
-    let mut frontend = Frontend::new()?;
+    let mut frontend = Frontend::default();
 
     frontend.insert(
         "entry",

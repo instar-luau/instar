@@ -1,5 +1,6 @@
 //! Host/native analysis agreement and invalidation fixtures.
-use std::{io, time::Duration};
+
+use std::{io, slice, time::Duration};
 
 use instar_analysis::Options;
 
@@ -11,7 +12,7 @@ use instar_bridge::{
 #[test]
 fn host_targets_are_authoritative_for_lexical_loader_aliases() -> io::Result<()> {
     let configuration = Configuration::new()?;
-    let mut frontend = Frontend::new()?;
+    let mut frontend = Frontend::default();
     let source = include_str!("fixtures/frontend/host/input.luau");
     let start = source.find("loader(").expect("loader call");
     let argument = source.find("'./").expect("argument");
@@ -23,13 +24,7 @@ fn host_targets_are_authoritative_for_lexical_loader_aliases() -> io::Result<()>
         target: Some("contextual-target".to_owned()),
     };
 
-    frontend.insert(
-        "entry",
-        source,
-        7,
-        &configuration,
-        std::slice::from_ref(&site),
-    )?;
+    frontend.insert("entry", source, 7, &configuration, slice::from_ref(&site))?;
 
     frontend.insert("contextual-target", "return 1", 3, &configuration, &[])?;
     let links = frontend.parse("entry", &Options::new(Duration::from_secs(5)))?;
@@ -38,7 +33,7 @@ fn host_targets_are_authoritative_for_lexical_loader_aliases() -> io::Result<()>
     assert_eq!(links[0].revision, 7);
     assert_eq!(links[0].argument, site.argument);
     assert_eq!(links[0].target, "contextual-target");
-    frontend.invalidate(&["entry".to_owned(), "contextual-target".to_owned()])?;
+    frontend.invalidate(&["entry".to_owned(), "contextual-target".to_owned()]);
 
     assert_eq!(
         frontend
@@ -63,7 +58,7 @@ fn host_targets_are_authoritative_for_lexical_loader_aliases() -> io::Result<()>
 #[test]
 fn static_argument_disagreement_is_an_error() -> io::Result<()> {
     let configuration = Configuration::new()?;
-    let mut frontend = Frontend::new()?;
+    let mut frontend = Frontend::default();
     let source = include_str!("fixtures/frontend/static/input.luau");
 
     frontend.insert(
@@ -93,7 +88,7 @@ fn static_argument_disagreement_is_an_error() -> io::Result<()> {
 #[test]
 fn missing_host_targets_and_invalid_ranges_are_not_guessed() -> io::Result<()> {
     let configuration = Configuration::new()?;
-    let mut frontend = Frontend::new()?;
+    let mut frontend = Frontend::default();
     let source = include_str!("fixtures/frontend/static/input.luau");
 
     let site = Site {
@@ -103,13 +98,7 @@ fn missing_host_targets_and_invalid_ranges_are_not_guessed() -> io::Result<()> {
         target: Some("missing-context".to_owned()),
     };
 
-    frontend.insert(
-        "entry",
-        source,
-        1,
-        &configuration,
-        std::slice::from_ref(&site),
-    )?;
+    frontend.insert("entry", source, 1, &configuration, slice::from_ref(&site))?;
 
     assert_eq!(
         frontend

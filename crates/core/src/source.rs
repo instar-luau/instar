@@ -4,7 +4,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs, io,
     path::{Component, Path, PathBuf},
-    rc::Rc,
+    sync::Arc,
 };
 
 use crate::project::Change;
@@ -16,7 +16,7 @@ pub struct Document {
     pub revision: u64,
 
     /// Source bytes decoded as UTF-8.
-    pub text: Rc<str>,
+    pub text: Arc<str>,
 }
 
 /// A retained filesystem or configuration failure.
@@ -60,7 +60,7 @@ pub(crate) enum Kind {
 
 #[derive(Default)]
 pub(crate) struct View {
-    overlays: BTreeMap<PathBuf, Option<Rc<str>>>,
+    overlays: BTreeMap<PathBuf, Option<Arc<str>>>,
     documents: BTreeMap<PathBuf, Result<Option<Document>, Failure>>,
     kinds: BTreeMap<PathBuf, Result<Option<Kind>, Failure>>,
     revision: u64,
@@ -68,6 +68,14 @@ pub(crate) struct View {
 }
 
 impl View {
+    pub(crate) fn consult<'paths>(&mut self, paths: impl IntoIterator<Item = &'paths PathBuf>) {
+        for path in paths {
+            if !self.consulted.contains(path) {
+                self.consulted.insert(path.clone());
+            }
+        }
+    }
+
     pub(crate) fn read(&mut self, path: &Path) -> io::Result<Option<Document>> {
         self.consulted.insert(path.to_path_buf());
 
@@ -79,7 +87,7 @@ impl View {
             Ok(overlay.clone())
         } else {
             match fs::read_to_string(path) {
-                Ok(text) => Ok(Some(Rc::from(text))),
+                Ok(text) => Ok(Some(Arc::from(text))),
 
                 Err(error)
                     if matches!(
@@ -186,7 +194,8 @@ impl View {
     pub(crate) fn change(&mut self, path: &Path, change: Change) {
         match change {
             Change::Overlay { text, .. } => {
-                self.overlays.insert(path.to_path_buf(), text.map(Rc::from));
+                self.overlays
+                    .insert(path.to_path_buf(), text.map(Arc::from));
             }
 
             Change::Close(_) => {

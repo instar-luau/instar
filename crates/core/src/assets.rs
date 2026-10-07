@@ -9,7 +9,9 @@ use std::{
 
 use instar_analysis::{Options, error::invalid};
 use serde::Deserialize;
+use serde_json::Deserializer;
 use sha2::{Digest, Sha256};
+use ureq::Agent;
 
 pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub(crate) const HOST: &str = "https://instar-luau.github.io/instar";
@@ -29,8 +31,10 @@ pub(crate) fn directory(namespace: &str) -> io::Result<PathBuf> {
     Ok(base.join("instar").join(namespace).join(VERSION))
 }
 
-pub(crate) fn parse<'source, T: Deserialize<'source>>(source: &'source str) -> io::Result<T> {
-    let mut deserializer = serde_json::Deserializer::from_str(source);
+pub(crate) fn parse<'source, Value: Deserialize<'source>>(
+    source: &'source str,
+) -> io::Result<Value> {
+    let mut deserializer = Deserializer::from_str(source);
     let value = serde_path_to_error::deserialize(&mut deserializer).map_err(invalid)?;
     deserializer.end().map_err(invalid)?;
 
@@ -47,8 +51,8 @@ pub(crate) fn verify(source: &str, expected: &str) -> io::Result<()> {
 
 pub(crate) fn fetch(
     url: String,
-    options: &Options,
     download: fn(&str, &Options) -> io::Result<BTreeMap<String, String>>,
+    options: &Options,
 ) -> io::Result<BTreeMap<String, String>> {
     let started = Instant::now();
     options.check(started)?;
@@ -86,7 +90,7 @@ pub(crate) fn fetch(
 }
 
 pub(crate) fn get(
-    agent: &ureq::Agent,
+    agent: &Agent,
     url: &str,
     options: &Options,
     started: Instant,

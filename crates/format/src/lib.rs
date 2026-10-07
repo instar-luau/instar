@@ -9,5 +9,5 @@ pub mod worker;
 
 pub use configuration::Configuration;
 pub use diagnostic::Diagnostic;
-pub use formatting::format;
+pub use formatting::Formatter;
 pub use result::Result;

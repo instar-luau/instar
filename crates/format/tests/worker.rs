@@ -6,15 +6,16 @@ use std::{
 };
 
 use instar_analysis::{Completion, Options, Reason};
-use instar_format::{Configuration, format};
+use instar_format::{Configuration, Formatter};
 
 #[test]
 fn interrupted_work_never_returns_output_and_allows_retry() -> io::Result<()> {
+    let mut formatter = Formatter::default();
     let source = "local value = 1\n".repeat(500_000);
     let configuration = Configuration::default();
     let started = Instant::now();
 
-    let result = format(
+    let result = formatter.format(
         source.as_bytes(),
         &configuration,
         &Options::new(Duration::from_millis(20)),
@@ -33,7 +34,7 @@ fn interrupted_work_never_returns_output_and_allows_retry() -> io::Result<()> {
     });
 
     let started = Instant::now();
-    let result = format(source.as_bytes(), &configuration, &options);
+    let result = formatter.format(source.as_bytes(), &configuration, &options);
     monitor.join().expect("cancellation thread");
     let result = result?;
     assert_eq!(result.completion, Completion::Incomplete(Reason::Cancelled));
@@ -41,7 +42,7 @@ fn interrupted_work_never_returns_output_and_allows_retry() -> io::Result<()> {
     assert_eq!(result.diagnostics, Vec::new());
     assert!(started.elapsed() < Duration::from_secs(2));
 
-    let result = format(
+    let result = formatter.format(
         b"return 1",
         &configuration,
         &Options::new(Duration::from_secs(5)),
@@ -61,12 +62,13 @@ fn worker_preserves_configuration_error_category() {
         ..Configuration::default()
     };
 
-    let error = format(
-        b"return 1",
-        &configuration,
-        &Options::new(Duration::from_secs(5)),
-    )
-    .expect_err("invalid configuration");
+    let error = Formatter::default()
+        .format(
+            b"return 1",
+            &configuration,
+            &Options::new(Duration::from_secs(5)),
+        )
+        .expect_err("invalid configuration");
 
     assert_eq!(error.kind(), io::ErrorKind::InvalidData);
 }

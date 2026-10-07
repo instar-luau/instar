@@ -2,7 +2,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io,
+    io, mem,
     path::{Path, PathBuf},
     rc::Rc,
 };
@@ -102,19 +102,6 @@ impl Graph {
         self.nodes.is_empty()
     }
 
-    fn insert(&mut self, node: Rc<Node>) {
-        for site in &node.sites {
-            if let Some(target) = &site.target {
-                self.reverse
-                    .entry(target.identity.clone())
-                    .or_default()
-                    .insert(node.module.identity.clone());
-            }
-        }
-
-        self.nodes.insert(node.module.identity.clone(), node);
-    }
-
     pub(crate) fn invalidate(&mut self, path: &Path) -> BTreeSet<Identity> {
         let mut affected = self
             .nodes
@@ -151,6 +138,19 @@ impl Graph {
 
         affected
     }
+
+    fn insert(&mut self, node: Rc<Node>) {
+        for site in &node.sites {
+            if let Some(target) = &site.target {
+                self.reverse
+                    .entry(target.identity.clone())
+                    .or_default()
+                    .insert(node.module.identity.clone());
+            }
+        }
+
+        self.nodes.insert(node.module.identity.clone(), node);
+    }
 }
 
 impl Project {
@@ -166,13 +166,13 @@ impl Project {
     /// Returns entry source, identity, configuration or map errors. Site failures are retained.
     pub fn links(&mut self, source: &Path, context: Option<&Identity>) -> io::Result<Rc<Node>> {
         self.interrupted()?;
-        let outer = std::mem::take(&mut self.view.consulted);
+        let outer = mem::take(&mut self.view.consulted);
 
         let result = (|| {
             let module = self.module(source, context)?;
 
             if let Some(node) = self.graph.node(&module.identity) {
-                self.view.consulted.extend(node.inputs.iter().cloned());
+                self.view.consult(&node.inputs);
 
                 return Ok(node);
             }
@@ -180,11 +180,38 @@ impl Project {
             self.analyze(module)
         })();
 
-        let inputs = std::mem::take(&mut self.view.consulted);
+        let inputs = mem::take(&mut self.view.consulted);
         self.view.consulted = outer;
-        self.view.consulted.extend(inputs);
+        self.view.consult(&inputs);
 
         result
+    }
+
+    /// Expands reachable modules on demand; failures and cycles remain graph data.
+    ///
+    /// # Errors
+    /// Returns errors identifying or loading the explicit entry or a resolved target.
+    pub fn discover(
+        &mut self,
+        source: &Path,
+        context: Option<&Identity>,
+    ) -> io::Result<BTreeSet<Identity>> {
+        let entry = self.links(source, context)?;
+        let mut seen = BTreeSet::new();
+        let mut pending = vec![entry.module.clone()];
+
+        while let Some(module) = pending.pop() {
+            self.interrupted()?;
+
+            if !seen.insert(module.identity.clone()) {
+                continue;
+            }
+
+            let node = self.links(&module.source, Some(&module.identity))?;
+            pending.extend(node.sites.iter().filter_map(|site| site.target.clone()));
+        }
+
+        Ok(seen)
     }
 
     fn analyze(&mut self, module: Module) -> io::Result<Rc<Node>> {
@@ -197,7 +224,7 @@ impl Project {
 
         let settings = self.configuration(directory)?;
 
-        self.view.consulted.extend(
+        self.view.consult(
             settings
                 .configuration
                 .environment
@@ -207,8 +234,7 @@ impl Project {
                         .definitions
                         .iter()
                         .chain(&environment.documentation)
-                })
-                .cloned(),
+                }),
         );
 
         let (mut sites, problems) =
@@ -248,32 +274,5 @@ impl Project {
         self.graph.insert(Rc::clone(&node));
 
         Ok(node)
-    }
-
-    /// Expands reachable modules on demand; failures and cycles remain graph data.
-    ///
-    /// # Errors
-    /// Returns errors identifying or loading the explicit entry or a resolved target.
-    pub fn discover(
-        &mut self,
-        source: &Path,
-        context: Option<&Identity>,
-    ) -> io::Result<BTreeSet<Identity>> {
-        let entry = self.links(source, context)?;
-        let mut seen = BTreeSet::new();
-        let mut pending = vec![entry.module.clone()];
-
-        while let Some(module) = pending.pop() {
-            self.interrupted()?;
-
-            if !seen.insert(module.identity.clone()) {
-                continue;
-            }
-
-            let node = self.links(&module.source, Some(&module.identity))?;
-            pending.extend(node.sites.iter().filter_map(|site| site.target.clone()));
-        }
-
-        Ok(seen)
     }
 }

@@ -8,7 +8,8 @@ namespace instar::frontend {
 
     NativeCheck analyze(
         State &state, const Host &host, rust::Slice<const rust::String> entries, double timeout_seconds,
-        rust::Slice<const rust::String> names, const Cancellation &cancellation, bool typecheck
+        rust::Slice<const rust::String> names, const Cancellation &cancellation, bool typecheck, bool lint,
+        bool &graph_prepared
     );
 }
 

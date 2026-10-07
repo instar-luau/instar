@@ -11,7 +11,7 @@ categories.workspace = true
 [dependencies]
 cxx = "1"
 instar-analysis.workspace = true
-serde.workspace = true
+serde = { workspace = true, features = ["rc"] }
 serde_json.workspace = true
 
 [build-dependencies]

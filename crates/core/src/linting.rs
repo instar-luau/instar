@@ -8,29 +8,30 @@ use std::{
     time::Instant,
 };
 
-use instar_analysis::error::invalid;
+use instar_analysis::{self as analysis, Completion, Options, error::invalid, selection};
 use instar_bridge::frontend::{FactKind, LintResult};
-use instar_lint::{Completion, Diagnostic, Inference, Kind, Level, Options, Require, Source};
+use instar_lint::{self as lint, Diagnostic, Inference, Kind, Level, Require, Source};
 
 use crate::{
     analysis::{Entry, Origin, Report, locate},
     environment::Environment,
+    graph::Node,
     native,
     project::{Project, Settings, absolute},
-    resolve::Request,
+    resolve::{self, Request},
 };
 
 struct Module {
-    node: Rc<crate::graph::Node>,
+    node: Rc<Node>,
     settings: Rc<Settings>,
 }
 
 #[derive(Default)]
 struct Analysis {
-    roots: BTreeMap<String, crate::resolve::Module>,
+    roots: BTreeMap<String, resolve::Module>,
     report: Report,
     modules: BTreeMap<String, Module>,
-    definitions: BTreeMap<String, Rc<Environment>>,
+    environments: BTreeMap<String, Rc<Environment>>,
     prepared: BTreeMap<PathBuf, Rc<Environment>>,
 }
 
@@ -51,10 +52,10 @@ impl Project {
         &mut self,
         entries: &[Entry],
         options: &Options,
-    ) -> io::Result<instar_lint::Result<Origin>> {
+    ) -> io::Result<lint::Result<Origin>> {
         let started = Instant::now();
 
-        let mut result = instar_lint::Result {
+        let mut result = lint::Result {
             modules: Vec::new(),
             diagnostics: Vec::new(),
             completion: Completion::Complete,
@@ -62,9 +63,10 @@ impl Project {
 
         let mut analysis = Analysis::default();
 
-        let preparation = self.during(&options.remaining(started), |project| {
-            project.lint_sources(entries, &mut analysis, &mut result, options, started)
-        });
+        let preparation = self.during(
+            |project| project.lint_sources(entries, &mut analysis, &mut result, options, started),
+            &options.remaining(started),
+        );
 
         if let Err(error) = preparation
             && options.interrupted(started).is_none()
@@ -100,9 +102,12 @@ impl Project {
             });
 
         let facts = if native_requested && !analysis.roots.is_empty() {
-            let prepared = self.during(&options.remaining(started), |project| {
-                project.lint_native(&mut analysis, &mut result, &semantic, options, started)
-            });
+            let prepared = self.during(
+                |project| {
+                    project.lint_native(&semantic, &mut analysis, &mut result, options, started)
+                },
+                &options.remaining(started),
+            );
 
             match prepared {
                 Ok(facts) => facts,
@@ -138,7 +143,7 @@ impl Project {
         &mut self,
         entries: &[Entry],
         analysis: &mut Analysis,
-        result: &mut instar_lint::Result<Origin>,
+        result: &mut lint::Result<Origin>,
         options: &Options,
         started: Instant,
     ) -> io::Result<()> {
@@ -211,11 +216,7 @@ impl Project {
         Ok(())
     }
 
-    fn lint_module(
-        &mut self,
-        node: Rc<crate::graph::Node>,
-        analysis: &mut Analysis,
-    ) -> io::Result<()> {
+    fn lint_module(&mut self, node: Rc<Node>, analysis: &mut Analysis) -> io::Result<()> {
         let directory = node
             .module
             .source
@@ -234,9 +235,9 @@ impl Project {
 
     fn lint_native(
         &mut self,
-        analysis: &mut Analysis,
-        result: &mut instar_lint::Result<Origin>,
         semantic: &[String],
+        analysis: &mut Analysis,
+        result: &mut lint::Result<Origin>,
         options: &Options,
         started: Instant,
     ) -> io::Result<BTreeMap<String, Vec<Inference>>> {
@@ -252,7 +253,7 @@ impl Project {
             self.install(&module.source, Some(&module.identity))?;
         }
 
-        self.lint_definitions(analysis, result, options, started);
+        self.lint_environments(analysis, result, options, started);
 
         if let Some(reason) = options.interrupted(started) {
             result.completion = Completion::Incomplete(reason);
@@ -269,12 +270,15 @@ impl Project {
             .as_mut()
             .ok_or_else(|| invalid("shared native frontend is unavailable"))?;
 
-        for (name, environment) in &analysis.definitions {
-            frontend.definitions(name, &environment.definitions)?;
+        result.completion =
+            native::definitions(&analysis.environments, frontend, options, started)?;
+
+        if result.completion != Completion::Complete {
+            return Ok(facts);
         }
 
         let roots = analysis.roots.keys().cloned().collect::<Vec<_>>();
-        let limits = native::progress(options, &result.modules).remaining(started);
+        let limits = native::progress(&result.modules, options).remaining(started);
 
         let native = if semantic.is_empty() {
             frontend.lint(&roots, &limits)?
@@ -287,10 +291,10 @@ impl Project {
         Ok(facts)
     }
 
-    fn lint_definitions(
+    fn lint_environments(
         &mut self,
         analysis: &mut Analysis,
-        result: &mut instar_lint::Result<Origin>,
+        result: &mut lint::Result<Origin>,
         options: &Options,
         started: Instant,
     ) {
@@ -317,7 +321,7 @@ impl Project {
                 analysis.report.record(diagnostic);
             }
 
-            analysis.definitions.insert(name.clone(), environment);
+            analysis.environments.insert(name.clone(), environment);
 
             if options.interrupted(started).is_some() {
                 return;
@@ -339,7 +343,7 @@ impl Analysis {
     fn syntax(
         &self,
         facts: &BTreeMap<String, Vec<Inference>>,
-        result: &mut instar_lint::Result<Origin>,
+        result: &mut lint::Result<Origin>,
         options: &Options,
         started: Instant,
     ) -> io::Result<()> {
@@ -374,7 +378,7 @@ impl Analysis {
 
             let inferred = facts.get(name).map(Vec::as_slice);
 
-            let syntax = instar_lint::lint(
+            let syntax = lint::lint(
                 Origin::Module(module.node.module.clone()),
                 &Source {
                     text: &module.node.document.text,
@@ -391,14 +395,14 @@ impl Analysis {
             result.completion = result.completion.combine(syntax.completion);
 
             let native_syntax = self.report.diagnostics.iter().any(|existing| {
-                matches!(existing.kind, instar_analysis::Kind::Syntax { .. })
+                matches!(existing.kind, analysis::Kind::Syntax { .. })
                     && existing.location.module == Origin::Module(module.node.module.clone())
             });
 
             for diagnostic in syntax.diagnostics {
                 if matches!(
                     diagnostic.kind,
-                    Kind::Analysis(instar_analysis::Kind::Syntax { .. })
+                    Kind::Analysis(analysis::Kind::Syntax { .. })
                 ) && native_syntax
                 {
                     continue;
@@ -426,7 +430,7 @@ impl Analysis {
         &mut self,
         native: LintResult,
         facts: &mut BTreeMap<String, Vec<Inference>>,
-        result: &mut instar_lint::Result<Origin>,
+        result: &mut lint::Result<Origin>,
     ) -> io::Result<()> {
         result.completion = result.completion.combine(native.completion);
 
@@ -474,7 +478,7 @@ impl Analysis {
         }
 
         for diagnostic in native.diagnostics {
-            if matches!(diagnostic.kind, instar_analysis::Kind::Type { .. })
+            if matches!(diagnostic.kind, analysis::Kind::Type { .. })
                 && !matches!(
                     self.report.sources.get(&diagnostic.location.module),
                     Some((Origin::Definition(_), _))
@@ -495,8 +499,6 @@ impl Analysis {
 fn eligible(source: &Path, settings: &Settings) -> io::Result<bool> {
     let lint = &settings.configuration.lint;
 
-    Ok(
-        instar_analysis::selection::matches(source, lint.include.as_deref(), true)?
-            && !instar_analysis::selection::matches(source, lint.exclude.as_deref(), false)?,
-    )
+    Ok(selection::matches(source, lint.include.as_deref(), true)?
+        && !selection::matches(source, lint.exclude.as_deref(), false)?)
 }

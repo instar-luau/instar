@@ -11,14 +11,15 @@
 namespace instar::frontend {
     namespace {
         struct Calls final : Luau::AstVisitor {
-            const std::string &source;
+            const Host &host;
+            const std::string &name;
             std::map<std::pair<size_t, size_t>, Luau::AstExprCall *> calls;
 
-            explicit Calls(const std::string &source) : source(source) {}
+            Calls(const Host &host, const std::string &name) : host(host), name(name) {}
 
             bool visit(Luau::AstExprCall *call) override {
                 calls.emplace(
-                    std::make_pair(offset(source, call->location.begin), offset(source, call->location.end)),
+                    std::make_pair(offset(host, name, call->location.begin), offset(host, name, call->location.end)),
                     call
                 );
 
@@ -62,9 +63,12 @@ namespace instar::frontend {
                 throw std::runtime_error("native module source is unavailable: " + name);
             }
 
-            const std::string bytes(source.text);
-            Calls calls(bytes);
-            module->root->visit(&calls);
+            Calls calls(host, name);
+
+            if (!source.sites.empty()) {
+                module->root->visit(&calls);
+            }
+
             Luau::RequireTraceResult trace;
             node->second->requireSet.clear();
             node->second->requireLocations.clear();
@@ -83,8 +87,9 @@ namespace instar::frontend {
                 Luau::AstExprCall *call = found->second;
 
                 if (site.static_request &&
-                    (call->args.size != 1 || offset(bytes, call->args.data[0]->location.begin) != site.argument_start ||
-                        offset(bytes, call->args.data[0]->location.end) != site.argument_end)) {
+                    (call->args.size != 1 ||
+                        offset(host, name, call->args.data[0]->location.begin) != site.argument_start ||
+                        offset(host, name, call->args.data[0]->location.end) != site.argument_end)) {
                     throw std::runtime_error("host/native static require argument disagreement: " + name);
                 }
 
