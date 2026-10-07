@@ -28,11 +28,11 @@ fn overlays_and_cached_settings() -> io::Result<()> {
     )?;
 
     let mut project = project();
-    let settings = project.configuration(&directory.path)?;
+    let settings = project.configuration(directory.path())?;
 
     assert!(Rc::ptr_eq(
         &settings,
-        &project.configuration(&directory.path)?
+        &project.configuration(directory.path())?
     ));
 
     assert_eq!(
@@ -49,7 +49,7 @@ fn overlays_and_cached_settings() -> io::Result<()> {
 
     assert!(Rc::ptr_eq(
         &settings,
-        &project.configuration(&directory.path)?
+        &project.configuration(directory.path())?
     ));
 
     let overlay = project.source(&caller)?;
@@ -100,7 +100,7 @@ fn missing_ambiguous_and_replaced_targets_invalidate_links() -> io::Result<()> {
     let mut project = project();
     let missing = project.links(&caller, None)?;
     assert!(missing.sites[0].failure.is_some());
-    let target = directory.path.join("target.luau");
+    let target = directory.path().join("target.luau");
     assert!(missing.sites[0].inputs.contains(&target));
     assert_eq!(project.graph().len(), 1);
     directory.file("target.luau", "return 1")?;
@@ -405,7 +405,7 @@ fn nearest_maps_and_explicit_disabling_follow_configuration_events() -> io::Resu
         matches!(project.module(&caller,None)?.identity, Identity::Instance { map, .. } if map == outer)
     );
 
-    let manifest = directory.path.join("nested/instar.toml");
+    let manifest = directory.path().join("nested/instar.toml");
 
     project.change(Change::Overlay {
         path: manifest.clone(),
@@ -498,7 +498,7 @@ fn configuration_failures_track_absent_conflicting_candidates() -> io::Result<()
 
     let mut project = project();
     let node = project.links(&caller, None)?;
-    let executable = directory.path.join(".config.luau");
+    let executable = directory.path().join(".config.luau");
     assert!(node.inputs.contains(&executable));
 
     project.change(Change::Overlay {
@@ -720,9 +720,9 @@ fn mapped_sources_outside_map_ancestors_keep_explicit_context() -> io::Result<()
 #[test]
 fn overlay_only_sources_and_configuration_need_no_disk_directories() -> io::Result<()> {
     let directory = Directory::new(None)?;
-    let caller = directory.path.join("virtual/caller.luau");
-    let target = directory.path.join("virtual/target.luau");
-    let aliases = directory.path.join("virtual/.luaurc");
+    let caller = directory.path().join("virtual/caller.luau");
+    let target = directory.path().join("virtual/target.luau");
+    let aliases = directory.path().join("virtual/.luaurc");
     let mut project = project();
 
     project.change(Change::Overlay {
@@ -808,7 +808,7 @@ fn file_creation_below_missing_navigation_directories_retries_failures() -> io::
     let mut project = project();
     let missing = project.links(&caller, None)?;
     assert!(missing.sites[0].failure.is_some());
-    assert!(missing.inputs.contains(&directory.path.join("created")));
+    assert!(missing.inputs.contains(&directory.path().join("created")));
     let target = directory.file("created/nested/target.luau", "return 1")?;
     let affected = project.change(Change::Disk(target.clone()))?;
     assert!(affected.contains(&missing.module.identity));

@@ -238,7 +238,7 @@ fn native_modes_and_lint_ownership() -> io::Result<()> {
         "../fixtures/checking/imported/strict.json"
     )))?;
 
-    let configuration = directory.path.join(".luaurc");
+    let configuration = directory.path().join(".luaurc");
 
     let entry = directory.file(
         "entry.luau",
@@ -505,7 +505,7 @@ fn executable_configuration_and_module_directives_control_modes() -> io::Result<
         "../fixtures/checking/imported/strict.json"
     )))?;
 
-    fs::remove_file(directory.path.join(".luaurc"))?;
+    fs::remove_file(directory.path().join(".luaurc"))?;
 
     directory.file(
         ".config.luau",

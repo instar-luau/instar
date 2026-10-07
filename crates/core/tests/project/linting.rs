@@ -53,7 +53,7 @@ fn native_and_instar_policies_are_independent_and_checker_stays_clean() -> io::R
     assert_eq!(project.check(&entries, &options())?, before);
 
     project.change(Change::Overlay {
-        path: directory.path.join(".luaurc"),
+        path: directory.path().join(".luaurc"),
         text: Some(include_str!("../fixtures/linting/native/fatal.json").to_owned()),
     })?;
 
@@ -255,7 +255,7 @@ fn inferred_any_uses_native_types_and_per_module_selection() -> io::Result<()> {
     assert!(!rule(&strict, Rule::ImplicitAnyParameter));
 
     project.change(Change::Overlay {
-        path: directory.path.join(".luaurc"),
+        path: directory.path().join(".luaurc"),
         text: Some(include_str!("../fixtures/linting/inferred/nonstrict.json").to_owned()),
     })?;
 
@@ -325,7 +325,7 @@ fn missing_and_invalid_definitions_remain_explicit_with_syntax_findings() -> io:
         Kind::Analysis(analysis::Kind::Analysis { .. })
     )));
 
-    let definition = directory.path.join("globals.luau");
+    let definition = directory.path().join("globals.luau");
 
     project.change(Change::Overlay {
         path: definition.clone(),
@@ -542,7 +542,7 @@ fn native_analysis_identity_survives_lint_conversion() -> io::Result<()> {
     })?;
 
     project.change(Change::Overlay {
-        path: directory.path.join("instar.toml"),
+        path: directory.path().join("instar.toml"),
         text: Some(include_str!("../fixtures/linting/missing/instar.toml").to_owned()),
     })?;
 
@@ -551,7 +551,7 @@ fn native_analysis_identity_survives_lint_conversion() -> io::Result<()> {
         include_str!("../fixtures/linting/conversion/definition.luau"),
     ] {
         project.change(Change::Overlay {
-            path: directory.path.join("globals.luau"),
+            path: directory.path().join("globals.luau"),
             text: Some(declaration.to_owned()),
         })?;
 

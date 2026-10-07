@@ -18,7 +18,7 @@ fn configuration_projects() -> Result<(), Box<dyn Error>> {
 
     for case in cases {
         let directory = Directory::new(None)?;
-        copy(&case.join("input"), &directory.path, None)?;
+        copy(&case.join("input"), directory.path(), None)?;
 
         let relative = match fs::read_to_string(case.join("path.txt")) {
             Ok(path) => path,
@@ -27,7 +27,7 @@ fn configuration_projects() -> Result<(), Box<dyn Error>> {
         };
 
         let mut view = Project::new(Duration::from_secs(2));
-        let result = view.configuration(&directory.path.join(relative.trim()));
+        let result = view.configuration(&directory.path().join(relative.trim()));
 
         if case.join("error.txt").exists() {
             let expected = fs::read_to_string(case.join("error.txt"))?;
@@ -40,7 +40,7 @@ fn configuration_projects() -> Result<(), Box<dyn Error>> {
             );
 
             assert!(
-                error.contains(&directory.path.to_string_lossy().to_string()),
+                error.contains(&directory.path().to_string_lossy().to_string()),
                 "{}: error must name its origin: {error}",
                 case.display()
             );
@@ -49,7 +49,7 @@ fn configuration_projects() -> Result<(), Box<dyn Error>> {
             let mut output = json!({"configuration": project.configuration, "native": project.native.snapshot()?});
 
             normalize(
-                &directory.path.to_string_lossy().replace('\\', "/"),
+                &directory.path().to_string_lossy().replace('\\', "/"),
                 &mut output,
             );
 

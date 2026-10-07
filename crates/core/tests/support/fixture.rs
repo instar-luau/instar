@@ -13,15 +13,17 @@ use instar_core::{
 };
 
 use serde_json::Value;
+use tempfile::TempDir;
 
 pub(crate) struct Directory {
-    pub(crate) path: PathBuf,
+    directory: TempDir,
 }
 
 impl Directory {
     pub(crate) fn new(configuration: Option<&str>) -> io::Result<Self> {
-        let path = tempfile::tempdir()?.keep();
-        let directory = Self { path };
+        let directory = Self {
+            directory: tempfile::tempdir()?,
+        };
 
         if let Some(configuration) = configuration {
             directory.file(".luaurc", configuration)?;
@@ -30,18 +32,16 @@ impl Directory {
         Ok(directory)
     }
 
+    pub(crate) fn path(&self) -> &Path {
+        self.directory.path()
+    }
+
     pub(crate) fn file(&self, name: &str, text: &str) -> io::Result<PathBuf> {
-        let path = self.path.join(name);
+        let path = self.path().join(name);
         fs::create_dir_all(path.parent().expect("fixture parent"))?;
         fs::write(&path, text)?;
 
         Ok(path)
-    }
-}
-
-impl Drop for Directory {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.path).expect("remove project fixture");
     }
 }
 

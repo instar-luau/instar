@@ -28,8 +28,8 @@ fn require_fixtures() -> Result<(), Box<dyn Error>> {
 
     for case in cases {
         let directory = Directory::new(None)?;
-        let root = directory.path.to_string_lossy().replace('\\', "/");
-        copy(&case.join("input"), &directory.path, Some(&root))?;
+        let root = directory.path().to_string_lossy().replace('\\', "/");
+        copy(&case.join("input"), directory.path(), Some(&root))?;
         let mut project = Project::new(Duration::from_secs(2));
 
         let requests: Vec<Request> =
@@ -52,7 +52,7 @@ fn require_fixtures() -> Result<(), Box<dyn Error>> {
         );
 
         for (request, expected) in requests.iter().zip(expected) {
-            let source = directory.path.join(&request.source);
+            let source = directory.path().join(&request.source);
             let argument = request.request.replace("$ROOT", &root);
 
             let mut output = match project.resolve_source(&source, &argument).result {
