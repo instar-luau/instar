@@ -111,33 +111,65 @@ pub(crate) fn get(
     String::from_utf8(bytes).map_err(invalid)
 }
 
-pub(crate) fn install(directory: &Path, mut files: BTreeMap<String, String>) -> io::Result<()> {
-    let metadata = files
-        .remove("metadata.json")
-        .ok_or_else(|| invalid("missing asset metadata"))?;
+pub(crate) fn install(
+    directory: &Path,
+    files: BTreeMap<String, String>,
+    options: &Options,
+    started: Instant,
+) -> io::Result<()> {
+    options.check(started)?;
 
-    tracing::debug!(path = %directory.display(), files = files.len() + 1, "Installing asset bundle");
+    if !files.contains_key("metadata.json") {
+        return Err(invalid("missing asset metadata"));
+    }
 
-    fs::create_dir_all(directory)?;
+    tracing::debug!(path = %directory.display(), files = files.len(), "Installing asset bundle");
 
-    let staging = tempfile::tempdir_in(directory)?;
+    let parent = directory
+        .parent()
+        .ok_or_else(|| invalid("asset directory has no parent"))?;
+
+    fs::create_dir_all(parent)?;
+
+    let staging = tempfile::tempdir_in(parent)?;
 
     let result = (|| {
-        for (name, text) in files
-            .into_iter()
-            .chain([("metadata.json".to_owned(), metadata)])
-        {
-            let path = staging.path().join(&name);
-            fs::write(&path, text)?;
-            fs::rename(path, directory.join(name))?;
+        for (name, text) in files {
+            options.check(started)?;
+            fs::write(staging.path().join(name), text)?;
         }
 
-        Ok(())
+        options.check(started)?;
+
+        match fs::rename(staging.path(), directory) {
+            Ok(()) => Ok(true),
+
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::AlreadyExists
+                        | io::ErrorKind::DirectoryNotEmpty
+                        | io::ErrorKind::PermissionDenied
+                ) && directory.join("metadata.json").is_file() =>
+            {
+                Ok(false)
+            }
+
+            Err(error) => Err(error),
+        }
     })();
 
-    let cleanup = staging.close();
+    let cleanup = if matches!(result, Ok(true)) {
+        drop(staging.keep());
 
-    result.and(cleanup)
+        Ok(())
+    } else {
+        staging.close()
+    };
+
+    result.map(|_| ()).and(cleanup)?;
+
+    options.check(started)
 }
 
 pub(crate) fn revision(value: &str) -> io::Result<()> {

@@ -86,8 +86,7 @@ impl Project {
                     download,
                 )?;
 
-                options.check(started)?;
-                install(&directory, files)?;
+                install(&directory, files, options, started)?;
 
                 self.view
                     .change(&directory, Change::Disk(directory.clone()));

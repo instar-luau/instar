@@ -2,7 +2,9 @@ use std::{
     collections::BTreeSet,
     io::{self, Read},
     path::{Path, PathBuf},
-    time::Instant,
+    sync::mpsc,
+    thread,
+    time::{Duration, Instant},
 };
 
 use eyre::{Result, WrapErr, ensure};
@@ -23,8 +25,7 @@ pub(crate) fn load(
         );
 
         let path = std::path::absolute(context.unwrap_or_else(|| Path::new("stdin.luau")))?;
-        let mut text = String::new();
-        io::stdin().read_to_string(&mut text)?;
+        let text = stdin(options, started)?;
         options.check(started)?;
 
         project.change(Change::Overlay {
@@ -115,6 +116,59 @@ pub(crate) fn load(
     }
 
     Ok((selected.into_iter().collect(), false))
+}
+
+fn stdin(options: &Options, started: Instant) -> Result<String> {
+    options.check(started)?;
+    let (sender, receiver) = mpsc::sync_channel(1);
+
+    thread::Builder::new()
+        .name("stdin".to_owned())
+        .spawn(move || {
+            let mut input = io::stdin().lock();
+            let mut buffer = [0; 8192];
+
+            loop {
+                let result = match input.read(&mut buffer) {
+                    Ok(count) => Ok(buffer[..count].to_vec()),
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(error) => Err(error),
+                };
+
+                let finished = result.as_ref().map_or(true, Vec::is_empty);
+
+                if sender.send(result).is_err() || finished {
+                    break;
+                }
+            }
+        })?;
+
+    let mut bytes = Vec::new();
+
+    loop {
+        options.check(started)?;
+        let remaining = options.timeout.saturating_sub(started.elapsed());
+
+        match receiver.recv_timeout(remaining.min(Duration::from_millis(10))) {
+            Ok(result) => {
+                options.check(started)?;
+                let chunk = result?;
+
+                if chunk.is_empty() {
+                    return String::from_utf8(bytes)
+                        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error).into());
+                }
+
+                bytes.extend(chunk);
+            }
+
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(io::Error::other("stdin reader stopped").into());
+            }
+        }
+    }
 }
 
 fn walk(

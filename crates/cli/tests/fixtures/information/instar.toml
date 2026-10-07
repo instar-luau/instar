@@ -1,0 +1,4 @@
+[roblox]
+enabled=false
+[lint.unused_variable]
+level='info'

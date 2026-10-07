@@ -1,5 +1,5 @@
 //! Native lint warnings, semantic facts and shared-session boundaries.
-use std::{io, path::Path, time::Duration};
+use std::{collections::BTreeMap, io, path::Path, time::Duration};
 
 use instar_analysis::{Completion, Kind, Options, Reason};
 
@@ -22,12 +22,12 @@ fn configuration(source: &str, path: &str) -> io::Result<Configuration> {
 #[test]
 fn warning_codes_fatal_bits_and_utf8_ranges_preserve_checker_results() -> io::Result<()> {
     let configuration = configuration(
-        r#"{"languageMode":"strict","lint":{"*":false,"LocalUnused":true},"lintErrors":true}"#,
+        include_str!("fixtures/warnings/warning/configuration.json"),
         ".luaurc",
     )?;
 
     let mut frontend = Frontend::new()?;
-    let source = "-- π\r\nlocal unused = 1\r\nreturn 2";
+    let source = include_str!("fixtures/warnings/warning/input.luau");
     frontend.insert("entry", source, 8, &configuration, &[])?;
     let entries = ["entry".to_owned()];
     let before = frontend.check(&entries, &options())?;
@@ -57,30 +57,58 @@ fn warning_codes_fatal_bits_and_utf8_ranges_preserve_checker_results() -> io::Re
 #[test]
 fn executable_layers_directives_and_reconfiguration_control_warnings() -> io::Result<()> {
     let enabled = configuration(
-        "return {luau={lint={['*']=false,LocalUnused=true},linterrors=true}}",
+        include_str!("fixtures/warnings/executable/enabled.luau"),
         ".config.luau",
     )?;
 
-    let disabled = configuration("return {luau={lint={['*']=false}}}", ".config.luau")?;
+    let disabled = configuration(
+        include_str!("fixtures/warnings/executable/disabled.luau"),
+        ".config.luau",
+    )?;
+
     let mut frontend = Frontend::new()?;
     let entries = ["entry".to_owned()];
-    frontend.insert("entry", "local unused = 1", 1, &enabled, &[])?;
+
+    frontend.insert(
+        "entry",
+        include_str!("fixtures/warnings/executable/input.luau"),
+        1,
+        &enabled,
+        &[],
+    )?;
+
     let warning = frontend.lint(&entries, &options())?;
     assert_eq!(warning.warnings.len(), 1);
     assert!(warning.warnings[0].fatal);
 
     frontend.insert(
         "entry",
-        "--!nolint LocalUnused\nlocal unused = 1",
+        include_str!("fixtures/warnings/executable/suppressed.luau"),
         2,
         &enabled,
         &[],
     )?;
 
     assert_eq!(frontend.lint(&entries, &options())?.warnings, Vec::new());
-    frontend.insert("entry", "local unused = 1", 3, &disabled, &[])?;
+
+    frontend.insert(
+        "entry",
+        include_str!("fixtures/warnings/executable/input.luau"),
+        3,
+        &disabled,
+        &[],
+    )?;
+
     assert_eq!(frontend.lint(&entries, &options())?.warnings, Vec::new());
-    frontend.insert("entry", "local unused = 1", 4, &enabled, &[])?;
+
+    frontend.insert(
+        "entry",
+        include_str!("fixtures/warnings/executable/input.luau"),
+        4,
+        &enabled,
+        &[],
+    )?;
+
     let restored = frontend.lint(&entries, &options())?;
     assert_eq!(restored.warnings.len(), 1);
     assert_eq!(restored.warnings[0].location.revision, 4);
@@ -91,12 +119,12 @@ fn executable_layers_directives_and_reconfiguration_control_warnings() -> io::Re
 #[test]
 fn typed_native_warnings_use_the_shared_type_graph() -> io::Result<()> {
     let configuration = configuration(
-        r#"{"languageMode":"strict","lint":{"*":false,"TableOperations":true}}"#,
+        include_str!("fixtures/warnings/typed/configuration.json"),
         ".luaurc",
     )?;
 
     let mut frontend = Frontend::new()?;
-    let source = "local record = {field = 1}\nreturn #record";
+    let source = include_str!("fixtures/warnings/typed/input.luau");
     frontend.insert("entry", source, 5, &configuration, &[])?;
     let entries = ["entry".to_owned()];
     let checked = frontend.check(&entries, &options())?;
@@ -124,9 +152,13 @@ fn typed_native_warnings_use_the_shared_type_graph() -> io::Result<()> {
 
 #[test]
 fn host_dependency_contexts_retain_their_warning_revisions() -> io::Result<()> {
-    let configuration = configuration(r#"{"lint":{"*":false,"LocalUnused":true}}"#, ".luaurc")?;
+    let configuration = configuration(
+        include_str!("fixtures/warnings/host/configuration.json"),
+        ".luaurc",
+    )?;
+
     let mut frontend = Frontend::new()?;
-    let source = "local loader = require\nreturn loader('./absent')";
+    let source = include_str!("fixtures/warnings/host/input.luau");
     let call = source.find("loader(").expect("call");
     let argument = source.find("'./").expect("argument");
 
@@ -145,7 +177,7 @@ fn host_dependency_contexts_retain_their_warning_revisions() -> io::Result<()> {
 
     frontend.insert(
         "contextual",
-        "--!nocheck\nlocal unused = 1\nreturn 3",
+        include_str!("fixtures/warnings/host/dependency.luau"),
         9,
         &configuration,
         &[],
@@ -171,7 +203,7 @@ fn host_dependency_contexts_retain_their_warning_revisions() -> io::Result<()> {
 #[test]
 fn invalid_definitions_retain_available_syntax_warnings_and_diagnostics() -> io::Result<()> {
     let configuration = configuration(
-        r#"{"lint":{"*":false,"LocalUnused":true,"TableLiteral":true}}"#,
+        include_str!("fixtures/warnings/invalid/configuration.json"),
         ".luaurc",
     )?;
 
@@ -179,7 +211,7 @@ fn invalid_definitions_retain_available_syntax_warnings_and_diagnostics() -> io:
 
     frontend.insert(
         "entry",
-        "type Row = {field: number, field: number}\nlocal unused = 1\nreturn 2",
+        include_str!("fixtures/warnings/invalid/input.luau"),
         1,
         &configuration,
         &[],
@@ -191,7 +223,7 @@ fn invalid_definitions_retain_available_syntax_warnings_and_diagnostics() -> io:
             name: "broken".to_owned(),
             namespace: "@custom".to_owned(),
             revision: 3,
-            text: "declare broken:".to_owned(),
+            text: include_str!("fixtures/warnings/invalid/invalid.luau").to_owned(),
         }],
     )?;
 
@@ -236,7 +268,7 @@ fn invalid_definitions_retain_available_syntax_warnings_and_diagnostics() -> io:
 fn inferred_any_facts_exclude_annotations_and_inferred_numbers() -> io::Result<()> {
     let configuration = Configuration::new()?;
     let mut frontend = Frontend::new()?;
-    let source = "--!strict\nlocal explicit: any = 1\nlocal inferred = explicit\nlocal known = 1\nlocal callback: (any) -> any = function(parameter) return parameter end\nreturn inferred, known, callback";
+    let source = include_str!("fixtures/warnings/inferred/input.luau");
     frontend.insert("entry", source, 6, &configuration, &[])?;
     let entries = ["entry".to_owned()];
     let checked = frontend.check(&entries, &options())?;
@@ -244,13 +276,18 @@ fn inferred_any_facts_exclude_annotations_and_inferred_numbers() -> io::Result<(
     assert_eq!(linted.completion, Completion::Complete);
     assert_eq!(linted.facts.len(), 2);
 
+    let expected: BTreeMap<String, [usize; 2]> =
+        serde_json::from_str(include_str!("fixtures/warnings/inferred/expected.json"))?;
+
     assert!(linted.facts.iter().any(|fact| {
         fact.kind == FactKind::ImplicitAnyLocal
+            && fact.location.range == expected["inferred"]
             && &source[fact.location.range[0]..fact.location.range[1]] == "inferred"
     }));
 
     assert!(linted.facts.iter().any(|fact| {
         fact.kind == FactKind::ImplicitAnyParameter
+            && fact.location.range == expected["parameter"]
             && &source[fact.location.range[0]..fact.location.range[1]] == "parameter"
     }));
 
@@ -261,13 +298,63 @@ fn inferred_any_facts_exclude_annotations_and_inferred_numbers() -> io::Result<(
 }
 
 #[test]
+fn generic_for_any_facts_preserve_binding_identity_and_exclusions() -> io::Result<()> {
+    let configuration = Configuration::new()?;
+    let mut frontend = Frontend::new()?;
+    let source = include_str!("fixtures/warnings/loops/input.luau");
+    frontend.insert("entry", source, 7, &configuration, &[])?;
+    let entries = ["entry".to_owned()];
+    let checked = frontend.check(&entries, &options())?;
+    assert_eq!(checked.diagnostics, Vec::new());
+    let linted = frontend.lint_semantic(&entries, &entries, &options())?;
+    assert_eq!(linted.completion, Completion::Complete);
+    assert_eq!(linted.diagnostics, Vec::new());
+
+    let expected: Vec<[usize; 2]> =
+        serde_json::from_str(include_str!("fixtures/warnings/loops/expected.json"))?;
+
+    assert_eq!(expected.len(), 2);
+
+    assert_eq!(
+        linted
+            .facts
+            .iter()
+            .map(|fact| fact.location.range)
+            .collect::<Vec<_>>(),
+        expected
+    );
+
+    assert!(linted.facts.iter().all(|fact| {
+        fact.kind == FactKind::ImplicitAnyLocal
+            && fact.location.module == "entry"
+            && fact.location.revision == 7
+            && &source[fact.location.range[0]..fact.location.range[1]] == "value"
+    }));
+
+    assert_eq!(frontend.check(&entries, &options())?, checked);
+
+    assert_eq!(
+        frontend
+            .lint_semantic(&entries, &entries, &options())?
+            .facts,
+        linted.facts
+    );
+
+    Ok(())
+}
+
+#[test]
 fn nocheck_and_interruption_have_explicit_completion_without_stale_warnings() -> io::Result<()> {
-    let configuration = configuration(r#"{"lint":{"*":false,"LocalUnused":true}}"#, ".luaurc")?;
+    let configuration = configuration(
+        include_str!("fixtures/warnings/host/configuration.json"),
+        ".luaurc",
+    )?;
+
     let mut frontend = Frontend::new()?;
 
     frontend.insert(
         "entry",
-        "--!nocheck\nlocal unused = 1",
+        include_str!("fixtures/warnings/nocheck/input.luau"),
         1,
         &configuration,
         &[],
@@ -320,7 +407,7 @@ fn nocheck_and_interruption_have_explicit_completion_without_stale_warnings() ->
 #[test]
 fn syntax_diagnostics_are_retained_without_leaking_source_type_errors() -> io::Result<()> {
     let configuration = configuration(
-        r#"{"languageMode":"strict","lint":{"*":false,"TableOperations":true}}"#,
+        include_str!("fixtures/warnings/typed/configuration.json"),
         ".luaurc",
     )?;
 
@@ -329,7 +416,7 @@ fn syntax_diagnostics_are_retained_without_leaking_source_type_errors() -> io::R
 
     frontend.insert(
         "entry",
-        "local number: number = 'bad'\nreturn number",
+        include_str!("fixtures/warnings/syntax/input.luau"),
         1,
         &configuration,
         &[],
@@ -344,7 +431,15 @@ fn syntax_diagnostics_are_retained_without_leaking_source_type_errors() -> io::R
     );
 
     assert_eq!(frontend.lint(&entries, &options())?.diagnostics, Vec::new());
-    frontend.insert("entry", "local = 1", 2, &configuration, &[])?;
+
+    frontend.insert(
+        "entry",
+        include_str!("fixtures/warnings/syntax/invalid.luau"),
+        2,
+        &configuration,
+        &[],
+    )?;
+
     let malformed = frontend.lint(&entries, &options())?;
 
     assert!(malformed.diagnostics.iter().any(|diagnostic| {

@@ -1,0 +1,4 @@
+[format]
+exclude=['nested/**']
+[roblox]
+enabled=false

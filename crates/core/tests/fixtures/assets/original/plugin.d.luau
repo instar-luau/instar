@@ -1,0 +1,1 @@
+declare plugin: string

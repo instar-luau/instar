@@ -271,8 +271,7 @@ impl Project {
                     download,
                 )?;
 
-                options.check(started)?;
-                assets::install(&directory, files)?;
+                assets::install(&directory, files, options, started)?;
 
                 self.view
                     .change(&directory, Change::Disk(directory.clone()));

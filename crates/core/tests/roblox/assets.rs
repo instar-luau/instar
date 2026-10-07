@@ -1,44 +1,30 @@
 use std::{
+    fs,
     io::{BufRead, BufReader, Write},
     net::TcpListener,
+    path::Path,
+    sync::mpsc,
     thread,
     time::Duration,
 };
 
-use sha2::{Digest, Sha256};
-
 use super::*;
 
-fn files() -> BTreeMap<String, String> {
-    let mut files = BTreeMap::new();
-    let mut profiles = BTreeMap::new();
-    let mut properties = BTreeMap::new();
+fn files(name: &str) -> io::Result<BTreeMap<String, String>> {
+    fs::read_dir(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/assets")
+            .join(name),
+    )?
+    .map(|entry| {
+        let entry = entry?;
 
-    for profile in PROFILES {
-        let text = format!("declare {profile}: string");
-        profiles.insert(profile, format!("{:x}", Sha256::digest(text.as_bytes())));
-        properties.insert(profile, Vec::<String>::new());
-        files.insert(format!("{profile}.d.luau"), text);
-    }
-
-    files.insert("enumerations.d.luau".to_owned(), String::new());
-    files.insert("documentation.json".to_owned(), "{}".to_owned());
-
-    files.insert(
-        "metadata.json".to_owned(),
-        serde_json::json!({
-            "revision": "0123456789012345678901234567890123456789",
-            "profiles": profiles,
-            "properties": properties,
-            "services": [],
-            "creatable_instances": [],
-            "enumerations": format!("{:x}", Sha256::digest(b"")),
-            "documentation": format!("{:x}", Sha256::digest(b"{}")),
-        })
-        .to_string(),
-    );
-
-    files
+        Ok((
+            entry.file_name().into_string().expect("fixture filename"),
+            fs::read_to_string(entry.path())?,
+        ))
+    })
+    .collect()
 }
 
 fn server(
@@ -94,14 +80,21 @@ fn server(
 
 #[test]
 fn downloads_verified_profiles_and_loads_cache_without_server() -> io::Result<()> {
-    let expected = files();
+    let expected = files("original")?;
     let (url, server) = server(expected.clone(), expected.len(), Duration::ZERO)?;
     let downloaded = fetch(url, &Options::new(Duration::from_secs(5)), download)?;
     server.join().expect("asset server")?;
     assert_eq!(downloaded, expected);
 
     let directory = tempfile::tempdir()?;
-    install(directory.path(), downloaded)?;
+    let cache = directory.path().join("bundle");
+
+    install(
+        &cache,
+        downloaded,
+        &Options::new(Duration::from_secs(5)),
+        Instant::now(),
+    )?;
 
     let result = (|| -> io::Result<()> {
         let mut project = Project::new(Duration::from_secs(1));
@@ -112,7 +105,7 @@ fn downloads_verified_profiles_and_loads_cache_without_server() -> io::Result<()
             ("plugin", Security::Plugin),
             ("roblox", Security::Roblox),
         ] {
-            let assets = project.load_assets(directory.path(), security)?;
+            let assets = project.load_assets(&cache, security)?;
 
             assert_eq!(
                 assets.definitions[0].1.text.as_ref(),
@@ -129,8 +122,121 @@ fn downloads_verified_profiles_and_loads_cache_without_server() -> io::Result<()
 }
 
 #[test]
+fn cold_publishers_preserve_the_first_bundle_and_reader_snapshot() -> io::Result<()> {
+    let expected = files("original")?;
+    let replacement = files("replacement")?;
+
+    let options = Options::new(Duration::from_secs(5));
+    let mut downloaded = Vec::new();
+
+    for bundle in [expected.clone(), replacement] {
+        let (url, server) = server(bundle.clone(), bundle.len(), Duration::ZERO)?;
+        downloaded.push(fetch(url, &options, download)?);
+        server.join().expect("asset server")?;
+    }
+
+    let replacement = downloaded.pop().expect("replacement bundle");
+    let original = downloaded.pop().expect("original bundle");
+    let directory = tempfile::tempdir()?;
+    let cache = directory.path().join("bundle");
+    let metadata = cache.join("metadata.json");
+    let (ready, prepared) = mpsc::sync_channel(1);
+    let (publish, release) = mpsc::sync_channel(1);
+
+    thread::scope(|scope| -> io::Result<()> {
+        let target = cache.clone();
+        let manifest = metadata.clone();
+        let limits = options.clone();
+
+        let publisher = scope.spawn(move || -> io::Result<()> {
+            let mut project = Project::new(Duration::from_secs(1));
+
+            assert_eq!(
+                project.source(&manifest).expect_err("cold cache").kind(),
+                io::ErrorKind::NotFound
+            );
+
+            ready.send(()).expect("publisher ready");
+
+            release
+                .recv_timeout(Duration::from_secs(5))
+                .expect("release publisher");
+
+            install(&target, replacement, &limits, Instant::now())?;
+            project.view.change(&target, Change::Disk(target.clone()));
+            project.load_assets(&target, Security::None)?;
+
+            Ok(())
+        });
+
+        let mut project = Project::new(Duration::from_secs(1));
+
+        assert_eq!(
+            project.source(&metadata).expect_err("cold cache").kind(),
+            io::ErrorKind::NotFound
+        );
+
+        prepared
+            .recv_timeout(Duration::from_secs(5))
+            .expect("both publishers cold");
+
+        install(&cache, original, &options, Instant::now())?;
+        project.view.change(&cache, Change::Disk(cache.clone()));
+        project.source(&metadata)?;
+        publish.send(()).expect("release publisher");
+        publisher.join().expect("asset publisher")?;
+
+        for (profile, security) in [
+            ("none", Security::None),
+            ("local", Security::Local),
+            ("plugin", Security::Plugin),
+            ("roblox", Security::Roblox),
+        ] {
+            let assets = project.load_assets(&cache, security)?;
+
+            assert_eq!(
+                assets.definitions[0].1.text.as_ref(),
+                expected[&format!("{profile}.d.luau")]
+            );
+        }
+
+        for (name, text) in expected {
+            assert_eq!(fs::read_to_string(cache.join(name))?, text);
+        }
+
+        assert_eq!(fs::read_dir(directory.path())?.count(), 1);
+
+        Ok(())
+    })?;
+
+    directory.close()
+}
+
+#[test]
+fn failed_publication_leaves_no_partial_bundle() -> io::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let cache = directory.path().join("bundle");
+    fs::create_dir_all(cache.join("plugin.d.luau"))?;
+
+    assert!(
+        install(
+            &cache,
+            files("original")?,
+            &Options::new(Duration::from_secs(5)),
+            Instant::now(),
+        )
+        .is_err()
+    );
+
+    assert_eq!(fs::read_dir(&cache)?.count(), 1);
+    assert_eq!(fs::read_dir(directory.path())?.count(), 1);
+
+    directory.close()
+}
+
+#[test]
 fn rejects_corrupt_downloads_and_http_failures() -> io::Result<()> {
-    let mut corrupted = files();
+    let mut corrupted = files("original")?;
     corrupted.insert("none.d.luau".to_owned(), "declare forged: any".to_owned());
     let (url, server) = server(corrupted, 2, Duration::ZERO)?;
 
@@ -151,7 +257,7 @@ fn rejects_corrupt_downloads_and_http_failures() -> io::Result<()> {
 
 #[test]
 fn download_obeys_deadline_and_cancellation() -> io::Result<()> {
-    let (url, server) = server(files(), 1, Duration::from_millis(300))?;
+    let (url, server) = server(files("original")?, 1, Duration::from_millis(300))?;
     let started = Instant::now();
 
     assert_eq!(

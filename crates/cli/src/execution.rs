@@ -92,7 +92,7 @@ pub(crate) fn run(arguments: &Arguments, command: &Analysis) -> Result<bool> {
                 Mode::Write
             };
 
-            let inputs = prepare(paths, &mut project, &options, started, &mut reporter)?;
+            let inputs = prepare(paths, &mut project, &options, started, &mut reporter, mode)?;
 
             let (completion, paths) =
                 format(&inputs, *jobs, &options, started, &mut reporter, mode)?;
@@ -103,7 +103,7 @@ pub(crate) fn run(arguments: &Arguments, command: &Analysis) -> Result<bool> {
         }
 
         Analysis::Check { .. } => {
-            let entries = paths.into_iter().map(Entry::new).collect::<Vec<_>>();
+            let entries = entries(paths, &mut project, &options, started)?;
             reporter.phase("Checking", None)?;
 
             let result = project.check(&entries, &options.remaining(started))?;
@@ -124,7 +124,7 @@ pub(crate) fn run(arguments: &Arguments, command: &Analysis) -> Result<bool> {
         }
 
         Analysis::Lint { .. } => {
-            let entries = paths.into_iter().map(Entry::new).collect::<Vec<_>>();
+            let entries = entries(paths, &mut project, &options, started)?;
             reporter.phase("Linting", None)?;
 
             let result = project.lint(&entries, &options.remaining(started))?;
@@ -155,12 +155,33 @@ pub(crate) fn run(arguments: &Arguments, command: &Analysis) -> Result<bool> {
         && (!matches!(command, Analysis::Format { check: true, .. }) || changed.is_empty()))
 }
 
+fn entries(
+    paths: Vec<PathBuf>,
+    project: &mut Project,
+    options: &Options,
+    started: Instant,
+) -> Result<Vec<Entry>> {
+    let mut entries = Vec::new();
+
+    for path in paths {
+        options.check(started)?;
+
+        entries.extend(project.contexts(&path)?.into_iter().map(|module| Entry {
+            source: module.source,
+            context: Some(module.identity),
+        }));
+    }
+
+    Ok(entries)
+}
+
 fn prepare(
     paths: Vec<PathBuf>,
     project: &mut Project,
     options: &Options,
     started: Instant,
     reporter: &mut Reporter,
+    mode: Mode,
 ) -> Result<Vec<(PathBuf, String, instar_format::Configuration)>> {
     reporter.phase("Preparing", Some(paths.len()))?;
     let progress = reporter.progress();
@@ -176,6 +197,12 @@ fn prepare(
             || instar_analysis::selection::matches(&path, configuration.exclude.as_deref(), false)?
         {
             reporter.skipped += 1;
+
+            if matches!(mode, Mode::Stdout) {
+                io::stdout()
+                    .lock()
+                    .write_all(project.source(&path)?.text.as_bytes())?;
+            }
         } else {
             let source = project.source(&path)?.text.to_string();
             inputs.push((path, source, configuration));

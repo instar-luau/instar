@@ -1,0 +1,19 @@
+{
+  "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "profiles": {
+    "none": "8cd9914b2fe30cfbea4d8af6213bff76c1ffb01985f257db85ad0f6f3d3c44ce",
+    "local": "41171c8eb22654646cdc8cc2ad6b5ec356c5b43f793bb55077f19e561664b8e0",
+    "plugin": "dba4707779a0a741047610602b616de8fa6e5cd9905e218fc3d7979b4077caf7",
+    "roblox": "6d475c30c947d1d253b7917165a662186a90b6f30293ffc5e14d04ac8e3f5ee0"
+  },
+  "properties": {
+    "none": [],
+    "local": [],
+    "plugin": [],
+    "roblox": []
+  },
+  "services": [],
+  "creatable_instances": [],
+  "enumerations": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "documentation": "844748c489b73871a4856962ea763fcbde432fa2f8e626771900c1ffe5e20bbb"
+}

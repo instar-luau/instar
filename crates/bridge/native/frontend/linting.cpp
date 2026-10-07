@@ -31,6 +31,16 @@ namespace instar::frontend {
                 return true;
             }
 
+            bool visit(Luau::AstStatForIn *node) override {
+                for (Luau::AstLocal *local : node->vars) {
+                    if (!local->annotation) {
+                        bindings.emplace(local, NativeFactKind::ImplicitAnyLocal);
+                    }
+                }
+
+                return true;
+            }
+
             bool visit(Luau::AstExprFunction *node) override {
                 for (Luau::AstLocal *local : node->args) {
                     if (!local->annotation) {

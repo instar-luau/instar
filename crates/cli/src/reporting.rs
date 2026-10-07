@@ -228,10 +228,13 @@ impl Reporter {
             }
         }
 
-        let record = if error {
-            Diagnostic::error()
-        } else {
-            Diagnostic::warning()
+        let (severity, record) = match diagnostic.level {
+            instar_lint::Level::Info => ("info", Diagnostic::note()),
+            instar_lint::Level::Deny => ("error", Diagnostic::error()),
+
+            instar_lint::Level::Allow | instar_lint::Level::Warn => {
+                ("warning", Diagnostic::warning())
+            }
         };
 
         self.diagnostics.push(
@@ -243,7 +246,7 @@ impl Reporter {
                 ]),
         );
 
-        self.records.push(json!({"path": diagnostic.location.module.source(), "revision": diagnostic.location.revision, "range": diagnostic.location.range, "kind": format!("{:?}", diagnostic.kind), "severity": if error {"error"} else {"warning"}, "message": diagnostic.message, "related": diagnostic.related.iter().map(related).collect::<Vec<_>>() }));
+        self.records.push(json!({"path": diagnostic.location.module.source(), "revision": diagnostic.location.revision, "range": diagnostic.location.range, "kind": format!("{:?}", diagnostic.kind), "severity": severity, "message": diagnostic.message, "related": diagnostic.related.iter().map(related).collect::<Vec<_>>() }));
 
         Ok(())
     }

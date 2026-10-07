@@ -1,0 +1,1 @@
+declare roblox: string
