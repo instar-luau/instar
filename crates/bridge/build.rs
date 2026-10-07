@@ -9,10 +9,6 @@ use std::{
 fn main() {
     let output = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo must provide OUT_DIR"));
 
-    let manifest = PathBuf::from(
-        env::var_os("CARGO_MANIFEST_DIR").expect("Cargo must provide CARGO_MANIFEST_DIR"),
-    );
-
     let libraries = output.join("libraries");
     let generated = cxx_build::bridge("src/boundary.rs");
 
@@ -56,7 +52,7 @@ fn main() {
 
     export_database(
         &destination.join("build/compile_commands.json"),
-        &manifest.join("compile_commands.json"),
+        &output.join("compile_commands.json"),
     );
 
     println!("cargo:rustc-link-search=native={}", libraries.display());
