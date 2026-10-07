@@ -34,7 +34,7 @@ impl Frontend {
     /// Returns worker startup failures.
     pub fn new() -> io::Result<Self> {
         Ok(Self {
-            process: Some(Process::start("worker")?),
+            process: Some(Process::start("analysis")?),
             host: Host::default(),
             flags: BTreeMap::new(),
         })
@@ -441,7 +441,7 @@ impl Frontend {
         }
 
         if self.process.is_none() {
-            self.process = Some(Process::start("worker")?);
+            self.process = Some(Process::start("analysis")?);
         }
 
         let request = Request {

@@ -692,6 +692,7 @@ dependencies = [
  "ignore",
  "indicatif",
  "instar-analysis",
+ "instar-bridge",
  "instar-core",
  "instar-format",
  "instar-lint",

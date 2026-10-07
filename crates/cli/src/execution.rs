@@ -35,6 +35,8 @@ enum Mode {
 }
 
 pub(crate) fn run(arguments: &Arguments, command: &Analysis) -> Result<bool> {
+    instar_analysis::process::set_host(&std::env::current_exe()?)?;
+
     let mut options = Options::new(Duration::from_secs(arguments.timeout));
     let started = Instant::now();
     let mut project = Project::new(options.timeout);

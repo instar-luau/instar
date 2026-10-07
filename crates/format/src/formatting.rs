@@ -36,7 +36,7 @@ pub fn format(
         return Ok(Result::interrupted(reason));
     }
 
-    let mut process = Process::<Request, Result>::start("formatter")?;
+    let mut process = Process::<Request, Result>::start("format")?;
 
     let request = Request {
         source: source.to_vec(),

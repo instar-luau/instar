@@ -12,11 +12,28 @@ use std::{
     process::ExitCode,
 };
 
-use arguments::{Arguments, Command};
-use clap::{CommandFactory, FromArgMatches};
+use arguments::{Arguments, Command, Worker};
+use clap::{CommandFactory, FromArgMatches, Parser};
 
 fn main() -> ExitCode {
     let values = std::env::args_os().collect::<Vec<_>>();
+
+    if values.get(1).is_some_and(|value| value == "worker") {
+        let result = match Worker::parse_from(values.into_iter().skip(1)) {
+            Worker::Analysis => instar_bridge::worker::run(),
+            Worker::Format => instar_format::worker::run(),
+        };
+
+        return match result {
+            Ok(()) => ExitCode::SUCCESS,
+
+            Err(error) => {
+                eprintln!("{error}");
+
+                ExitCode::from(2)
+            }
+        };
+    }
 
     let boundary = values
         .iter()

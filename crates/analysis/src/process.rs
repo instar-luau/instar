@@ -3,9 +3,12 @@
 use std::{
     env,
     io::{self, BufRead, BufReader, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender},
+    sync::{
+        OnceLock,
+        mpsc::{self, Receiver, RecvTimeoutError, SyncSender},
+    },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -13,6 +16,8 @@ use std::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{Options, Reason};
+
+static HOST: OnceLock<PathBuf> = OnceLock::new();
 
 /// An isolated worker with deadline-aware request transport.
 pub struct Process<Request, Response> {
@@ -42,7 +47,7 @@ pub enum Message<Response> {
 }
 
 impl<Request, Response> Process<Request, Response> {
-    /// Starts a sibling worker executable.
+    /// Starts an isolated worker mode in the host executable.
     ///
     /// # Errors
     /// Returns executable discovery, process creation, or transport failures.
@@ -51,10 +56,11 @@ impl<Request, Response> Process<Request, Response> {
         Request: Serialize + Send + 'static,
         Response: DeserializeOwned + Send + 'static,
     {
-        let path = executable(name)?;
+        let path = executable()?;
         tracing::debug!(worker = name, path = %path.display(), "Starting worker");
 
         let mut child = Command::new(path)
+            .args(["worker", name])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -212,6 +218,19 @@ impl<Request, Response> Drop for Process<Request, Response> {
     }
 }
 
+/// Selects the executable that serves isolated worker requests.
+///
+/// # Errors
+/// Returns path resolution failures or an error if the host is already selected.
+pub fn set_host(path: &Path) -> io::Result<()> {
+    HOST.set(path.canonicalize()?).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "worker host is already selected",
+        )
+    })
+}
+
 fn exchange<Request: Serialize, Response: DeserializeOwned>(
     request: &Request,
     input: &mut impl Write,
@@ -245,7 +264,11 @@ fn exchange<Request: Serialize, Response: DeserializeOwned>(
     }
 }
 
-fn executable(name: &str) -> io::Result<PathBuf> {
+fn executable() -> io::Result<PathBuf> {
+    if let Some(path) = HOST.get() {
+        return Ok(path.clone());
+    }
+
     let executable = env::current_exe()?;
 
     let directory = executable
@@ -269,12 +292,12 @@ fn executable(name: &str) -> io::Result<PathBuf> {
     }
     .ok_or_else(|| io::Error::other("worker executable directory is unavailable"))?;
 
-    let worker = directory.join(format!("{name}{}", env::consts::EXE_SUFFIX));
+    let worker = directory.join(format!("instar{}", env::consts::EXE_SUFFIX));
 
     if !worker.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("analysis worker is unavailable: {}", worker.display()),
+            format!("worker host is unavailable: {}", worker.display()),
         ));
     }
 

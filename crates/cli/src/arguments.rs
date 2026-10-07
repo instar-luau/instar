@@ -66,6 +66,12 @@ pub(crate) enum Analysis {
     Lint { files: Vec<PathBuf> },
 }
 
+#[derive(Parser)]
+pub(crate) enum Worker {
+    Analysis,
+    Format,
+}
+
 fn shells() -> clap::builder::PossibleValuesParser {
     clap::builder::PossibleValuesParser::new(
         clap_complete::Shell::value_variants()
