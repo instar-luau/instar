@@ -19,7 +19,7 @@ use instar_core::{analysis::Origin, project::Project};
 use serde_json::{Value, json};
 use tracing_subscriber::{filter::Targets, layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::arguments::Command;
+use crate::arguments::Analysis;
 
 pub(crate) struct Reporter {
     files: SimpleFiles<String, String>,
@@ -275,7 +275,7 @@ impl Reporter {
 
     pub(crate) fn finish(
         &mut self,
-        command: &Command,
+        command: &Analysis,
         completion: Completion,
         changed: &[String],
     ) -> Result<()> {
@@ -291,9 +291,9 @@ impl Reporter {
             writeln!(io::stdout().lock())?;
         } else {
             let operation = match command {
-                Command::Format { .. } => "Formatting",
-                Command::Check { .. } => "Checking",
-                Command::Lint { .. } => "Linting",
+                Analysis::Format { .. } => "Formatting",
+                Analysis::Check { .. } => "Checking",
+                Analysis::Lint { .. } => "Linting",
             };
 
             let state = if completion == Completion::Complete {
@@ -303,7 +303,7 @@ impl Reporter {
             };
 
             let details = match command {
-                Command::Format { check, .. } => format!(
+                Analysis::Format { check, .. } => format!(
                     ", {} {}, {} unchanged, {} unsuccessful, {} skipped",
                     self.formatted,
                     if *check { "would change" } else { "formatted" },

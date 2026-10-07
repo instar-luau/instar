@@ -1,6 +1,7 @@
 //! Command-line interface for the Luau toolchain.
 
 mod arguments;
+mod completion;
 mod execution;
 mod inputs;
 mod reporting;
@@ -11,7 +12,7 @@ use std::{
     process::ExitCode,
 };
 
-use arguments::Arguments;
+use arguments::{Arguments, Command};
 use clap::{CommandFactory, FromArgMatches};
 
 fn main() -> ExitCode {
@@ -70,7 +71,12 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
-    match execution::run(&arguments) {
+    let result = match &arguments.command {
+        Command::Analysis(command) => execution::run(&arguments, command),
+        Command::Completions { shell } => completion::generate(shell).map(|()| true),
+    };
+
+    match result {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
 

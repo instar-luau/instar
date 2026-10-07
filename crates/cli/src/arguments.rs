@@ -38,6 +38,18 @@ pub(crate) enum Color {
 
 #[derive(Subcommand)]
 pub(crate) enum Command {
+    #[command(flatten)]
+    Analysis(Analysis),
+
+    #[command(about = "Generate a shell completion script")]
+    Completions {
+        #[arg(value_parser = shells())]
+        shell: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum Analysis {
     #[command(about = "Typecheck source files and their dependencies")]
     Check { files: Vec<PathBuf> },
 
@@ -52,4 +64,13 @@ pub(crate) enum Command {
 
     #[command(about = "Lint source files and their dependencies")]
     Lint { files: Vec<PathBuf> },
+}
+
+fn shells() -> clap::builder::PossibleValuesParser {
+    clap::builder::PossibleValuesParser::new(
+        clap_complete::Shell::value_variants()
+            .iter()
+            .filter_map(ValueEnum::to_possible_value)
+            .chain([clap::builder::PossibleValue::new("nushell")]),
+    )
 }

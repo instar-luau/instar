@@ -17,7 +17,7 @@ use instar_core::{
 use rayon::prelude::*;
 
 use crate::{
-    arguments::{Arguments, Color, Command},
+    arguments::{Analysis, Arguments, Color},
     inputs,
     reporting::Reporter,
     writing,
@@ -34,7 +34,7 @@ enum Mode {
     Stdout,
 }
 
-pub(crate) fn run(arguments: &Arguments) -> Result<bool> {
+pub(crate) fn run(arguments: &Arguments, command: &Analysis) -> Result<bool> {
     let mut options = Options::new(Duration::from_secs(arguments.timeout));
     let started = Instant::now();
     let mut project = Project::new(options.timeout);
@@ -64,8 +64,8 @@ pub(crate) fn run(arguments: &Arguments) -> Result<bool> {
     reporter.phase("Discovering", None)?;
     options.progress = Some(reporter.observer()?);
 
-    let (Command::Check { files } | Command::Lint { files } | Command::Format { files, .. }) =
-        &arguments.command;
+    let (Analysis::Check { files } | Analysis::Lint { files } | Analysis::Format { files, .. }) =
+        command;
 
     let (paths, stdin) = inputs::load(
         files,
@@ -75,8 +75,8 @@ pub(crate) fn run(arguments: &Arguments) -> Result<bool> {
         started,
     )?;
 
-    let completion = match &arguments.command {
-        Command::Format { check, jobs, .. } => {
+    let completion = match command {
+        Analysis::Format { check, jobs, .. } => {
             ensure!(
                 !arguments.json || !stdin || *check,
                 "JSON formatting output from stdin requires --check"
@@ -100,7 +100,7 @@ pub(crate) fn run(arguments: &Arguments) -> Result<bool> {
             completion
         }
 
-        Command::Check { .. } => {
+        Analysis::Check { .. } => {
             let entries = paths.into_iter().map(Entry::new).collect::<Vec<_>>();
             reporter.phase("Checking", None)?;
 
@@ -121,7 +121,7 @@ pub(crate) fn run(arguments: &Arguments) -> Result<bool> {
             result.completion
         }
 
-        Command::Lint { .. } => {
+        Analysis::Lint { .. } => {
             let entries = paths.into_iter().map(Entry::new).collect::<Vec<_>>();
             reporter.phase("Linting", None)?;
 
@@ -143,15 +143,14 @@ pub(crate) fn run(arguments: &Arguments) -> Result<bool> {
         }
     };
 
-    reporter.finish(&arguments.command, completion, &changed)?;
+    reporter.finish(command, completion, &changed)?;
 
     if let Completion::Incomplete(reason) = completion {
         return Err(Incomplete(reason).into());
     }
 
     Ok(!reporter.failed
-        && (!matches!(arguments.command, Command::Format { check: true, .. })
-            || changed.is_empty()))
+        && (!matches!(command, Analysis::Format { check: true, .. }) || changed.is_empty()))
 }
 
 fn prepare(
