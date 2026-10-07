@@ -165,6 +165,7 @@ impl Project {
     /// # Errors
     /// Returns entry source, identity, configuration or map errors. Site failures are retained.
     pub fn links(&mut self, source: &Path, context: Option<&Identity>) -> io::Result<Rc<Node>> {
+        self.interrupted()?;
         let outer = std::mem::take(&mut self.view.consulted);
 
         let result = (|| {
@@ -210,10 +211,13 @@ impl Project {
                 .cloned(),
         );
 
-        let (mut sites, problems) = extract(&document.text, document.revision);
+        let (mut sites, problems) =
+            extract(&document.text, document.revision, self.operation.as_ref())?;
+
         let shared = self.view.consulted.clone();
 
         for site in &mut sites {
+            self.interrupted()?;
             site.inputs.extend(shared.iter().cloned());
 
             if let Some(request) = &site.request {
@@ -240,6 +244,7 @@ impl Project {
             inputs: self.view.consulted.clone(),
         });
 
+        self.interrupted()?;
         self.graph.insert(Rc::clone(&node));
 
         Ok(node)
@@ -259,6 +264,8 @@ impl Project {
         let mut pending = vec![entry.module.clone()];
 
         while let Some(module) = pending.pop() {
+            self.interrupted()?;
+
             if !seen.insert(module.identity.clone()) {
                 continue;
             }

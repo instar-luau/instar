@@ -98,26 +98,27 @@ namespace instar::frontend {
             for (const rust::String &opaque : names) {
                 const std::string name(opaque);
                 const NativeSource source = host.read_source(name);
-                State::Signature signature;
+                Signature signature;
 
                 for (const NativeDefinition &definition : source.definitions) {
-                    signature.first.emplace_back(
-                        std::string(definition.name),
-                        definition.revision,
-                        std::string(definition.text),
-                        std::string(definition.namespace_name)
+                    signature.definitions.push_back(
+                        Definition{std::string(definition.name),
+                            definition.revision,
+                            std::string(definition.text),
+                            std::string(definition.namespace_name)}
                     );
                 }
 
                 for (const NativeClass &klass : source.classes) {
-                    std::vector<std::tuple<std::string, bool, bool>> properties;
+                    std::vector<Property> properties;
 
                     for (const NativeProperty &property : klass.properties) {
-                        properties.emplace_back(std::string(property.name), property.read, property.write);
+                        properties.push_back(Property{std::string(property.name), property.read, property.write});
                     }
 
-                    signature.second
-                        .emplace_back(std::string(klass.name), klass.service, klass.creatable, std::move(properties));
+                    signature.classes.push_back(
+                        Class{std::string(klass.name), klass.service, klass.creatable, std::move(properties)}
+                    );
                 }
 
                 if (const auto found = state.definitions.find(name);

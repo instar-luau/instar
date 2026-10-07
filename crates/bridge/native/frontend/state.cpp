@@ -14,7 +14,7 @@ namespace instar::frontend {
             throw std::runtime_error("host callbacks are unavailable");
         }
 
-        const NativeSource source = host->read_source(name);
+        const NativeDocument source = host->read_document(name);
 
         if (!source.found) {
             return std::nullopt;
@@ -63,6 +63,24 @@ namespace instar::frontend {
         }
 
         return found->second;
+    }
+
+    bool Definition::operator==(const Definition &other) const {
+        return name == other.name && revision == other.revision && text == other.text &&
+               namespace_name == other.namespace_name;
+    }
+
+    bool Property::operator==(const Property &other) const {
+        return name == other.name && read == other.read && write == other.write;
+    }
+
+    bool Class::operator==(const Class &other) const {
+        return name == other.name && service == other.service && creatable == other.creatable &&
+               properties == other.properties;
+    }
+
+    bool Signature::operator==(const Signature &other) const {
+        return definitions == other.definitions && classes == other.classes;
     }
 
     State::State() {

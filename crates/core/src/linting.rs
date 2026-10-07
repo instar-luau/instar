@@ -3,17 +3,18 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
-    path::Path,
+    path::{Path, PathBuf},
     rc::Rc,
     time::Instant,
 };
 
 use instar_analysis::error::invalid;
-use instar_bridge::frontend::{Definition, FactKind, LintResult};
+use instar_bridge::frontend::{FactKind, LintResult};
 use instar_lint::{Completion, Diagnostic, Inference, Kind, Level, Options, Require, Source};
 
 use crate::{
     analysis::{Entry, Origin, Report, locate},
+    environment::Environment,
     native,
     project::{Project, Settings, absolute},
     resolve::Request,
@@ -29,7 +30,8 @@ struct Analysis {
     roots: BTreeMap<String, crate::resolve::Module>,
     report: Report,
     modules: BTreeMap<String, Module>,
-    definitions: BTreeMap<String, Vec<Definition>>,
+    definitions: BTreeMap<String, Rc<Environment>>,
+    prepared: BTreeMap<PathBuf, Rc<Environment>>,
 }
 
 impl Project {
@@ -59,7 +61,16 @@ impl Project {
         };
 
         let mut analysis = Analysis::default();
-        self.lint_sources(entries, &mut analysis, &mut result, options, started)?;
+
+        let preparation = self.during(&options.remaining(started), |project| {
+            project.lint_sources(entries, &mut analysis, &mut result, options, started)
+        });
+
+        if let Err(error) = preparation
+            && options.interrupted(started).is_none()
+        {
+            return Err(error);
+        }
 
         if let Some(reason) = options.interrupted(started) {
             result.completion = Completion::Incomplete(reason);
@@ -89,7 +100,23 @@ impl Project {
             });
 
         let facts = if native_requested && !analysis.roots.is_empty() {
-            self.lint_native(&mut analysis, &mut result, &semantic, options, started)?
+            let prepared = self.during(&options.remaining(started), |project| {
+                project.lint_native(&mut analysis, &mut result, &semantic, options, started)
+            });
+
+            match prepared {
+                Ok(facts) => facts,
+
+                Err(error) => {
+                    if let Some(reason) = options.interrupted(started) {
+                        result.completion = Completion::Incomplete(reason);
+
+                        BTreeMap::new()
+                    } else {
+                        return Err(error);
+                    }
+                }
+            }
         } else {
             BTreeMap::new()
         };
@@ -221,8 +248,8 @@ impl Project {
             .as_mut()
             .ok_or_else(|| invalid("shared native frontend is unavailable"))?;
 
-        for (name, definitions) in &analysis.definitions {
-            frontend.definitions(name, definitions)?;
+        for (name, environment) in &analysis.definitions {
+            frontend.definitions(name, &environment.definitions)?;
         }
 
         let roots = analysis.roots.keys().cloned().collect::<Vec<_>>();
@@ -251,19 +278,18 @@ impl Project {
                 &module.node,
                 &module.settings,
                 &mut analysis.report.sources,
+                &mut analysis.prepared,
                 options,
                 started,
             );
 
             result.completion = result.completion.combine(environment.completion);
 
-            for diagnostic in environment.diagnostics {
+            for diagnostic in environment.diagnostics.iter().cloned() {
                 analysis.report.record(diagnostic);
             }
 
-            analysis
-                .definitions
-                .insert(name.clone(), environment.definitions);
+            analysis.definitions.insert(name.clone(), environment);
 
             if options.interrupted(started).is_some() {
                 return;

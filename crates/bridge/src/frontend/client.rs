@@ -123,24 +123,23 @@ impl Frontend {
         match self.request(&entries, &names, Operation::Parse, options, started)? {
             Outcome::Response(Response::Parsed(links)) => Ok(links),
 
-            Outcome::Interrupted(reason) => Err(io::Error::new(
-                if reason == instar_analysis::Reason::Timeout {
-                    io::ErrorKind::TimedOut
-                } else {
-                    io::ErrorKind::Interrupted
-                },
-                format!("native parsing interrupted: {reason:?}"),
-            )),
+            Outcome::Interrupted(reason) => Err(reason.error()),
 
             Outcome::Response(_) => Err(io::Error::other("unexpected native worker response")),
         }
     }
 
-    /// Installs declaration snapshots for an already inserted module.
+    /// Installs declarations and atomically advances shared revisions across their consumers.
     ///
     /// # Errors
-    /// Rejects unavailable modules or invalid declaration identities.
+    /// Rejects unavailable modules, conflicting snapshots, stale revisions and invalid identities.
     pub fn definitions(&mut self, name: &str, definitions: &[Definition]) -> io::Result<()> {
+        let current = self
+            .host
+            .sources
+            .get(name)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "module is unavailable"))?;
+
         let mut names = BTreeSet::new();
 
         for definition in definitions {
@@ -150,6 +149,12 @@ impl Frontend {
                 || definition.name.contains('\0')
                 || !names.insert(&definition.name)
                 || self.host.sources.contains_key(&definition.name)
+                || current.definitions.iter().any(|existing| {
+                    existing.name == definition.name
+                        && (existing.revision > definition.revision
+                            || (existing.revision == definition.revision
+                                && existing.text != definition.text))
+                })
                 || self
                     .host
                     .sources
@@ -160,6 +165,10 @@ impl Frontend {
                         existing.name == definition.name
                             && (existing.revision != definition.revision
                                 || existing.text != definition.text)
+                            && !current.definitions.iter().any(|previous| {
+                                previous.name == definition.name
+                                    && definition.revision > existing.revision
+                            })
                     })
             {
                 return Err(io::Error::new(
@@ -177,23 +186,36 @@ impl Frontend {
 
         source.definitions = definitions.to_vec();
 
+        for (module, source) in &mut self.host.sources {
+            if module == name {
+                continue;
+            }
+
+            for existing in &mut source.definitions {
+                if let Some(replacement) =
+                    definitions.iter().find(|item| item.name == existing.name)
+                {
+                    existing.revision = replacement.revision;
+                    existing.text.clone_from(&replacement.text);
+                }
+            }
+        }
+
         Ok(())
     }
 
     /// Installs process-wide flag overrides for an inserted module.
     ///
     /// # Errors
-    /// Rejects invalid flag names, types, and unavailable modules.
-    pub fn flags(&mut self, name: &str, flags: &BTreeMap<String, flags::Value>) -> io::Result<()> {
-        let flags = flags::normalize(flags)?;
-
+    /// Rejects unavailable modules.
+    pub fn flags(&mut self, name: &str, flags: &flags::Overrides) -> io::Result<()> {
         let source = self
             .host
             .sources
             .get_mut(name)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "module is unavailable"))?;
 
-        source.flags = flags;
+        source.flags.clone_from(&flags.0);
 
         Ok(())
     }
@@ -261,9 +283,7 @@ impl Frontend {
         )? {
             Outcome::Response(Response::Documentation(symbol)) => Ok(symbol),
 
-            Outcome::Interrupted(reason) => Err(io::Error::other(format!(
-                "documentation analysis interrupted: {reason:?}"
-            ))),
+            Outcome::Interrupted(reason) => Err(reason.error()),
 
             Outcome::Response(_) => Err(io::Error::other("unexpected native worker response")),
         }

@@ -64,8 +64,11 @@ pub struct Bindings {
     /// Unbound name references.
     pub globals: BTreeSet<usize>,
 
-    /// Global names assigned or mutated in this source.
-    pub global_writes: BTreeSet<String>,
+    /// Global names reassigned in this source.
+    pub global_assignments: BTreeSet<String>,
+
+    /// Global values whose members are mutated in this source.
+    pub global_mutations: BTreeSet<String>,
 
     /// Known function argument counts and variadic status at references.
     pub arities: BTreeMap<usize, (usize, bool)>,
@@ -79,12 +82,12 @@ pub struct Bindings {
 }
 
 impl Bindings {
-    /// Analyzes lexical identity within the supplied operation budget.
+    /// Analyzes lexical identity with an optional operation budget.
     #[must_use]
-    pub fn analyze(tree: &Tree<'_>, options: &Options, started: Instant) -> Self {
+    pub fn analyze(tree: &Tree<'_>, operation: Option<(&Options, Instant)>) -> Self {
         let mut bindings = Self {
             scopes: vec![BTreeMap::new()],
-            limits: Some((options.clone(), started)),
+            limits: operation.map(|(options, started)| (options.clone(), started)),
             ..Self::default()
         };
 
@@ -96,7 +99,9 @@ impl Bindings {
     /// Whether a reference names an unchanged global.
     #[must_use]
     pub fn global(&self, tree: &Tree<'_>, node: NodeIndex) -> bool {
-        self.globals.contains(&node.get()) && !self.global_writes.contains(&text(tree, node))
+        self.globals.contains(&node.get())
+            && !self.global_assignments.contains(&text(tree, node))
+            && !self.global_mutations.contains(&text(tree, node))
     }
 
     /// Returns the declaration referenced by a syntax node.
@@ -209,7 +214,7 @@ impl Bindings {
                 self.functions.remove(&index);
             } else {
                 self.globals.insert(node.get());
-                self.global_writes.insert(text(tree, node));
+                self.global_assignments.insert(text(tree, node));
             }
         } else {
             self.mutate(tree, node);
@@ -235,7 +240,7 @@ impl Bindings {
                     .expect("resolved mutation")
                     .mutated = true;
             } else {
-                self.global_writes.insert(text(tree, *receiver));
+                self.global_mutations.insert(text(tree, *receiver));
             }
         } else {
             self.mutate(tree, *receiver);
@@ -307,7 +312,7 @@ impl Bindings {
                                 .expect("function receiver")
                                 .mutated = true;
                         } else {
-                            self.global_writes.insert(text(tree, first.node));
+                            self.global_mutations.insert(text(tree, first.node));
                         }
                     }
                 }

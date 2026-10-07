@@ -1,9 +1,17 @@
 use std::{
+    fs,
     io::{BufRead, BufReader, Write},
     net::TcpListener,
+    sync::atomic::{AtomicU64, Ordering},
+    thread,
+    time::Duration,
 };
 
+use sha2::{Digest, Sha256};
+
 use super::*;
+
+static NEXT: AtomicU64 = AtomicU64::new(0);
 
 fn files() -> BTreeMap<String, String> {
     let mut files = BTreeMap::new();
@@ -92,7 +100,7 @@ fn server(
 fn downloads_verified_profiles_and_loads_cache_without_server() -> io::Result<()> {
     let expected = files();
     let (url, server) = server(expected.clone(), expected.len(), Duration::ZERO)?;
-    let downloaded = fetch(url, &Options::new(Duration::from_secs(5)))?;
+    let downloaded = fetch(url, &Options::new(Duration::from_secs(5)), download)?;
     server.join().expect("asset server")?;
     assert_eq!(downloaded, expected);
 
@@ -136,7 +144,7 @@ fn rejects_corrupt_downloads_and_http_failures() -> io::Result<()> {
     let (url, server) = server(corrupted, 2, Duration::ZERO)?;
 
     assert_eq!(
-        fetch(url, &Options::new(Duration::from_secs(5)))
+        fetch(url, &Options::new(Duration::from_secs(5)), download)
             .expect_err("hash mismatch")
             .kind(),
         io::ErrorKind::InvalidData
@@ -144,7 +152,7 @@ fn rejects_corrupt_downloads_and_http_failures() -> io::Result<()> {
 
     server.join().expect("asset server")?;
     let (url, server) = self::server(BTreeMap::new(), 1, Duration::ZERO)?;
-    assert!(fetch(url, &Options::new(Duration::from_secs(5))).is_err());
+    assert!(fetch(url, &Options::new(Duration::from_secs(5)), download).is_err());
     server.join().expect("asset server")?;
 
     Ok(())
@@ -156,7 +164,7 @@ fn download_obeys_deadline_and_cancellation() -> io::Result<()> {
     let started = Instant::now();
 
     assert_eq!(
-        fetch(url, &Options::new(Duration::from_millis(50)))
+        fetch(url, &Options::new(Duration::from_millis(50)), download)
             .expect_err("deadline")
             .kind(),
         io::ErrorKind::TimedOut
@@ -168,7 +176,7 @@ fn download_obeys_deadline_and_cancellation() -> io::Result<()> {
     options.cancellation.cancel();
 
     assert_eq!(
-        fetch("http://127.0.0.1:1".to_owned(), &options)
+        fetch("http://127.0.0.1:1".to_owned(), &options, download)
             .expect_err("cancellation")
             .kind(),
         io::ErrorKind::Interrupted

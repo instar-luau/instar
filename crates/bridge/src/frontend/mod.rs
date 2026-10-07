@@ -8,5 +8,6 @@ mod source;
 pub use client::Frontend;
 pub(crate) use host::{Cancellation, Host};
 pub use result::{Fact, FactKind, LintResult, Warning};
+pub(crate) use result::{checking, completion};
 pub(crate) use source::Source;
 pub use source::{Class, Definition, Link, Property, Site, validate_namespace};

@@ -136,5 +136,25 @@ fn assets(project: &mut Project) -> io::Result<()> {
         .to_string(),
     )?;
 
+    let directory = instar_core::documentation::cache_directory()?;
+    let documentation = r#"{"@luau/global/print":{"documentation":"Prints values."}}"#;
+
+    for (name, text) in [
+        ("documentation.json", documentation.to_owned()),
+        (
+            "metadata.json",
+            serde_json::json!({
+                "revision": "0123456789012345678901234567890123456789",
+                "documentation": format!("{:x}", Sha256::digest(documentation.as_bytes())),
+            })
+            .to_string(),
+        ),
+    ] {
+        project.change(instar_core::project::Change::Overlay {
+            path: directory.join(name),
+            text: Some(text),
+        })?;
+    }
+
     Ok(())
 }

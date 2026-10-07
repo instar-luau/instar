@@ -180,9 +180,12 @@ fn exchange<Request: Serialize, Response: DeserializeOwned>(
         ));
     }
 
-    let result: Result<Response, String> = serde_json::from_str(&line)?;
+    let result: Result<Response, crate::error::Failure> = serde_json::from_str(&line)?;
 
-    result.map_err(io::Error::other)
+    match result {
+        Ok(response) => Ok(response),
+        Err(error) => Err(io::Error::try_from(error)?),
+    }
 }
 
 fn executable(name: &str) -> io::Result<PathBuf> {

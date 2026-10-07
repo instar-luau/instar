@@ -45,7 +45,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         options: &'tree Options,
         started: Instant,
     ) -> Result<Plan, Reason> {
-        let bindings = Bindings::analyze(tree, options, started);
+        let bindings = Bindings::analyze(tree, Some((options, started)));
 
         if let Some(reason) = bindings.interruption {
             return Err(reason);

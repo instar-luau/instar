@@ -1,4 +1,5 @@
 use std::{
+    cell::OnceCell,
     collections::BTreeMap,
     fmt, io,
     path::{Path, PathBuf},
@@ -12,6 +13,7 @@ use crate::boundary;
 /// An opaque configuration initialized and layered using upstream Luau APIs.
 pub struct Configuration {
     pub(crate) native: cxx::UniquePtr<boundary::NativeConfiguration>,
+    snapshot: OnceCell<Snapshot>,
 }
 
 impl fmt::Debug for Configuration {
@@ -90,7 +92,10 @@ impl Configuration {
             return Err(io::Error::other("native configuration allocation failed"));
         }
 
-        Ok(Self { native })
+        Ok(Self {
+            native,
+            snapshot: OnceCell::new(),
+        })
     }
 
     /// Applies a `.luaurc` or `.config.luau` layer transactionally.
@@ -138,6 +143,8 @@ impl Configuration {
             .map_err(|error| source_error(path, io::ErrorKind::Other, error))?;
 
         if outcome.message.is_empty() {
+            self.snapshot.take();
+
             return Ok(());
         }
 
@@ -155,6 +162,10 @@ impl Configuration {
     /// # Errors
     /// Returns an error if native snapshot allocation or conversion fails.
     pub fn snapshot(&self) -> io::Result<Snapshot> {
+        if let Some(snapshot) = self.snapshot.get() {
+            return Ok(snapshot.clone());
+        }
+
         let native = self
             .native
             .as_ref()
@@ -170,7 +181,7 @@ impl Configuration {
             _ => return Err(io::Error::other("unknown upstream language mode")),
         };
 
-        Ok(Snapshot {
+        let snapshot = Snapshot {
             mode,
             lint: native
                 .lint
@@ -206,7 +217,9 @@ impl Configuration {
                     )
                 })
                 .collect(),
-        })
+        };
+
+        Ok(self.snapshot.get_or_init(|| snapshot).clone())
     }
 }
 

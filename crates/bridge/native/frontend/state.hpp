@@ -8,8 +8,6 @@
 #include <map>
 #include <optional>
 #include <string>
-#include <tuple>
-#include <utility>
 #include <vector>
 
 namespace instar {
@@ -33,11 +31,40 @@ namespace instar::frontend {
         const Luau::Config &getConfig(const Luau::ModuleName &name, const Luau::TypeCheckLimits &) const override;
     };
 
-    struct State {
-        using Signature = std::pair<
-            std::vector<std::tuple<std::string, uint64_t, std::string, std::string>>,
-            std::vector<std::tuple<std::string, bool, bool, std::vector<std::tuple<std::string, bool, bool>>>>>;
+    struct Definition {
+        std::string name;
+        uint64_t revision;
+        std::string text;
+        std::string namespace_name;
 
+        bool operator==(const Definition &other) const;
+    };
+
+    struct Property {
+        std::string name;
+        bool read;
+        bool write;
+
+        bool operator==(const Property &other) const;
+    };
+
+    struct Class {
+        std::string name;
+        bool service;
+        bool creatable;
+        std::vector<Property> properties;
+
+        bool operator==(const Class &other) const;
+    };
+
+    struct Signature {
+        std::vector<Definition> definitions;
+        std::vector<Class> classes;
+
+        bool operator==(const Signature &other) const;
+    };
+
+    struct State {
         Resolver resolver;
         Luau::Frontend frontend{Luau::SolverMode::New, &resolver, &resolver};
         std::map<std::string, Signature> definitions;

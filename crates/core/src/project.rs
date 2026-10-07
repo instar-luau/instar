@@ -5,10 +5,10 @@ use std::{
     io,
     path::{Path, PathBuf},
     rc::Rc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
-use instar_analysis::error::invalid;
+use instar_analysis::{Options, error::invalid};
 
 use crate::{
     configuration::Configuration,
@@ -32,10 +32,18 @@ pub struct Settings {
 
     /// Detached effective upstream settings.
     pub snapshot: instar_bridge::Snapshot,
+
+    /// Validated effective native flag overrides.
+    pub flags: instar_bridge::flags::Overrides,
 }
 
 impl Settings {
-    fn load(view: &mut View, directory: &Path, timeout: Duration) -> io::Result<Self> {
+    fn load(
+        view: &mut View,
+        directory: &Path,
+        timeout: Duration,
+        operation: Option<&(Options, Instant)>,
+    ) -> io::Result<Self> {
         if view.kind(directory)? != Some(Kind::Directory) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -51,15 +59,19 @@ impl Settings {
         let mut discovered_map = None;
 
         for ancestor in ancestors {
+            if let Some((options, started)) = operation {
+                options.check(*started)?;
+            }
+
             let manifest = ancestor.join("instar.toml");
 
             if let Some(source) = view.read(&manifest)? {
-                Configuration::parse(&source.text).map_err(|error| located(&manifest, error))?;
+                Configuration::parse(&source.text).map_err(|error| located(&manifest, &error))?;
 
                 let mut layer = toml::from_str::<toml::Value>(&source.text)
-                    .map_err(|error| located(&manifest, error))?;
+                    .map_err(|error| located(&manifest, &invalid(error)))?;
 
-                anchor(&mut layer, ancestor).map_err(|error| located(&manifest, error))?;
+                anchor(&mut layer, ancestor).map_err(|error| located(&manifest, &error))?;
                 merge(&mut merged, layer);
                 files.push(manifest);
             }
@@ -78,12 +90,20 @@ impl Settings {
                 }
 
                 (Some(source), None) => {
-                    native.apply(&source.text, &json, timeout)?;
+                    let remaining = operation.map_or(timeout, |(options, started)| {
+                        timeout.min(options.timeout.saturating_sub(started.elapsed()))
+                    });
+
+                    native.apply(&source.text, &json, remaining)?;
                     files.push(json);
                 }
 
                 (None, Some(source)) => {
-                    native.apply(&source.text, &luau, timeout)?;
+                    let remaining = operation.map_or(timeout, |(options, started)| {
+                        timeout.min(options.timeout.saturating_sub(started.elapsed()))
+                    });
+
+                    native.apply(&source.text, &luau, remaining)?;
                     files.push(luau);
                 }
 
@@ -114,10 +134,11 @@ impl Settings {
             );
         }
 
-        configuration.validate()?;
+        let flags = configuration.validate()?;
 
         Ok(Self {
             configuration,
+            flags,
             snapshot: native.snapshot()?,
             native,
             files,
@@ -153,6 +174,7 @@ struct CachedSettings {
 pub struct Project {
     pub(crate) view: View,
     timeout: Duration,
+    pub(crate) operation: Option<(Options, Instant)>,
     settings: BTreeMap<PathBuf, CachedSettings>,
     maps: BTreeMap<PathBuf, Result<Rc<Map>, Failure>>,
     pub(crate) graph: crate::graph::Graph,
@@ -160,12 +182,36 @@ pub struct Project {
 }
 
 impl Project {
+    pub(crate) fn during<T>(
+        &mut self,
+        options: &Options,
+        action: impl FnOnce(&mut Self) -> io::Result<T>,
+    ) -> io::Result<T> {
+        let started = Instant::now();
+        options.check(started)?;
+        let previous = self.operation.replace((options.clone(), started));
+        let result = action(self);
+        self.operation = previous;
+        options.check(started)?;
+
+        result
+    }
+
+    pub(crate) fn interrupted(&self) -> io::Result<()> {
+        if let Some((options, started)) = &self.operation {
+            options.check(*started)?;
+        }
+
+        Ok(())
+    }
+
     /// Creates an empty project view with a native configuration execution timeout.
     #[must_use]
     pub fn new(timeout: Duration) -> Self {
         Self {
             view: View::default(),
             timeout,
+            operation: None,
             settings: BTreeMap::new(),
             maps: BTreeMap::new(),
             graph: crate::graph::Graph::default(),
@@ -178,6 +224,7 @@ impl Project {
     /// # Errors
     /// Returns source loading errors or rejects relative paths.
     pub fn source(&mut self, path: &Path) -> io::Result<Document> {
+        self.interrupted()?;
         let path = absolute(path)?;
 
         self.view.read(&path)?.ok_or_else(|| {
@@ -193,6 +240,7 @@ impl Project {
     /// # Errors
     /// Returns configuration discovery, parsing or native execution errors.
     pub fn configuration(&mut self, directory: &Path) -> io::Result<Rc<Settings>> {
+        self.interrupted()?;
         let directory = absolute(directory)?;
 
         if let Some(settings) = self.settings.get(&directory) {
@@ -203,9 +251,22 @@ impl Project {
 
         let outer = std::mem::take(&mut self.view.consulted);
 
-        let result = Settings::load(&mut self.view, &directory, self.timeout)
-            .map(Rc::new)
-            .map_err(Failure::from);
+        let result = Settings::load(
+            &mut self.view,
+            &directory,
+            self.timeout,
+            self.operation.as_ref(),
+        )
+        .map(Rc::new)
+        .map_err(Failure::from);
+
+        if let Err(error) = self.interrupted() {
+            let inputs = std::mem::take(&mut self.view.consulted);
+            self.view.consulted = outer;
+            self.view.consulted.extend(inputs);
+
+            return Err(error);
+        }
 
         let inputs = std::mem::take(&mut self.view.consulted);
         self.view.consulted = outer;
@@ -309,8 +370,8 @@ pub(crate) fn absolute(path: &Path) -> io::Result<PathBuf> {
     Ok(normalize(path))
 }
 
-fn located(path: &Path, error: impl std::fmt::Display) -> io::Error {
-    invalid(format!("{}: {error}", path.display()))
+fn located(path: &Path, error: &io::Error) -> io::Error {
+    io::Error::new(error.kind(), format!("{}: {error}", path.display()))
 }
 
 fn merge(parent: &mut toml::Value, child: toml::Value) {
@@ -384,6 +445,17 @@ fn anchor_list(
             return Err(invalid("file references must be strings"));
         };
 
+        if !pattern {
+            let path = normalize(&directory.join(&*text));
+
+            *text = path
+                .to_str()
+                .ok_or_else(|| invalid("configuration paths must be UTF-8"))?
+                .replace('\\', "/");
+
+            continue;
+        }
+
         if Path::new(text).is_absolute() {
             continue;
         }
@@ -392,11 +464,7 @@ fn anchor_list(
             .to_str()
             .ok_or_else(|| invalid("configuration directories must be UTF-8"))?;
 
-        let prefix = if pattern {
-            glob::Pattern::escape(&directory.replace('\\', "/"))
-        } else {
-            directory.replace('\\', "/")
-        };
+        let prefix = glob::Pattern::escape(&directory.replace('\\', "/"));
 
         *text = format!("{prefix}/{text}");
     }

@@ -1,10 +1,10 @@
 use std::io::{self, BufRead, Write};
 
-use instar_analysis::{Completion, Diagnostic, Kind, Location, Related};
+use instar_analysis::Completion;
 
 use crate::{
     Configuration, boundary,
-    frontend::{Cancellation, Fact, FactKind, Host, Link, LintResult, Warning},
+    frontend::{Cancellation, Host, Link, LintResult, checking, completion},
     protocol::{Operation, Request, Response},
 };
 
@@ -87,11 +87,8 @@ impl Session {
             )
             .map_err(io::Error::other)?;
 
-        if completion(result.completion)? != Completion::Complete || !result.diagnostics.is_empty()
-        {
-            return Err(io::Error::other(
-                "documentation requires complete native analysis",
-            ));
+        if let Completion::Incomplete(reason) = completion(result.completion)? {
+            return Err(reason.error());
         }
 
         let entry = request
@@ -128,16 +125,7 @@ impl Session {
                     .map_err(io::Error::other)?;
 
                 Ok(Response::Parsed(
-                    links
-                        .into_iter()
-                        .map(|link| Link {
-                            module: link.module,
-                            revision: link.revision,
-                            call: [link.call_start, link.call_end],
-                            argument: [link.argument_start, link.argument_end],
-                            target: link.target,
-                        })
-                        .collect(),
+                    links.into_iter().map(Link::from).collect(),
                 ))
             }
 
@@ -154,15 +142,7 @@ impl Session {
                     )
                     .map_err(io::Error::other)?;
 
-                Ok(Response::Checked(instar_analysis::Result {
-                    modules: request.modules,
-                    diagnostics: result
-                        .diagnostics
-                        .into_iter()
-                        .map(diagnostic)
-                        .collect::<io::Result<_>>()?,
-                    completion: completion(result.completion)?,
-                }))
+                Ok(Response::Checked(checking(request.modules, result)?))
             }
 
             Operation::Lint(semantic) => {
@@ -179,31 +159,10 @@ impl Session {
                     )
                     .map_err(io::Error::other)?;
 
-                Ok(Response::Linted(LintResult {
-                    modules: request.modules,
-                    warnings: result
-                        .warnings
-                        .into_iter()
-                        .map(|warning| Warning {
-                            location: location(warning.location),
-                            code: warning.code,
-                            name: warning.name,
-                            message: warning.message,
-                            fatal: warning.fatal,
-                        })
-                        .collect(),
-                    facts: result
-                        .facts
-                        .into_iter()
-                        .map(fact)
-                        .collect::<io::Result<_>>()?,
-                    diagnostics: result
-                        .diagnostics
-                        .into_iter()
-                        .map(diagnostic)
-                        .collect::<io::Result<_>>()?,
-                    completion: completion(result.completion)?,
-                }))
+                Ok(Response::Linted(LintResult::from_native(
+                    request.modules,
+                    result,
+                )?))
             }
         }
     }
@@ -221,15 +180,17 @@ pub fn run() -> io::Result<()> {
     for line in input.lines() {
         let request: Request = serde_json::from_str(&line?)?;
 
-        if session.is_none() {
-            session = Some(Session::new(request.flags.clone())?);
-        }
+        let response = (|| {
+            if session.is_none() {
+                session = Some(Session::new(request.flags.clone())?);
+            }
 
-        let response = session
-            .as_mut()
-            .ok_or_else(|| io::Error::other("native worker is unavailable"))?
-            .execute(request)
-            .map_err(|error| error.to_string());
+            session
+                .as_mut()
+                .ok_or_else(|| io::Error::other("native worker is unavailable"))?
+                .execute(request)
+        })()
+        .map_err(instar_analysis::error::Failure::from);
 
         serde_json::to_writer(&mut output, &response)?;
         output.write_all(b"\n")?;
@@ -237,73 +198,4 @@ pub fn run() -> io::Result<()> {
     }
 
     Ok(())
-}
-
-fn completion(value: boundary::NativeCompletion) -> io::Result<Completion> {
-    use instar_analysis::Reason;
-
-    match value {
-        boundary::NativeCompletion::Complete => Ok(Completion::Complete),
-        boundary::NativeCompletion::Cancelled => Ok(Completion::Incomplete(Reason::Cancelled)),
-        boundary::NativeCompletion::Timeout => Ok(Completion::Incomplete(Reason::Timeout)),
-        boundary::NativeCompletion::Environment => Ok(Completion::Incomplete(Reason::Environment)),
-        boundary::NativeCompletion::Analysis => Ok(Completion::Incomplete(Reason::Analysis)),
-        _ => Err(io::Error::other("unknown native completion status")),
-    }
-}
-
-fn fact(value: boundary::NativeFact) -> io::Result<Fact> {
-    let kind = match value.kind {
-        boundary::NativeFactKind::ImplicitAnyLocal => FactKind::ImplicitAnyLocal,
-        boundary::NativeFactKind::ImplicitAnyParameter => FactKind::ImplicitAnyParameter,
-        _ => return Err(io::Error::other("unknown native semantic fact kind")),
-    };
-
-    Ok(Fact {
-        location: location(value.location),
-        kind,
-        message: value.message,
-    })
-}
-
-fn location(value: boundary::NativeLocation) -> Location<String> {
-    Location {
-        module: value.module,
-        revision: value.revision,
-        range: [value.start, value.end],
-    }
-}
-
-fn diagnostic(value: boundary::NativeDiagnostic) -> io::Result<Diagnostic<String>> {
-    let kind = match value.kind {
-        boundary::NativeKind::Syntax => Kind::Syntax {
-            code: Some(value.code),
-        },
-
-        boundary::NativeKind::Type => Kind::Type { code: value.code },
-
-        boundary::NativeKind::Resolution => Kind::Resolution {
-            code: Some(value.code),
-        },
-
-        boundary::NativeKind::Analysis => Kind::Analysis {
-            code: (value.code != 0).then_some(value.code),
-        },
-
-        _ => return Err(io::Error::other("unknown native diagnostic kind")),
-    };
-
-    Ok(Diagnostic {
-        location: location(value.location),
-        kind,
-        message: value.message,
-        related: value
-            .related
-            .into_iter()
-            .map(|related| Related {
-                location: location(related.location),
-                message: related.message,
-            })
-            .collect(),
-    })
 }

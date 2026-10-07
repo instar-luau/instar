@@ -1,4 +1,11 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+    time::Instant,
+};
+
+use instar_analysis::Options;
+use instar_syntax::bindings::Bindings;
 
 use vermis::{
     token::{Keyword, Symbol, TokenKind},
@@ -20,18 +27,11 @@ enum Value {
     Instance(Root, Vec<Step>),
 }
 
-#[derive(Clone)]
-struct Binding {
-    declaration: usize,
-    value: Value,
-}
-
 struct Extractor<'tree, 'source> {
     tree: &'tree Tree<'source>,
-    scopes: Vec<BTreeMap<String, Binding>>,
-    writes: BTreeSet<usize>,
-    globals: BTreeSet<String>,
-    writing: bool,
+    operation: Option<&'tree (Options, Instant)>,
+    bindings: Bindings,
+    values: BTreeMap<usize, Value>,
     revision: u64,
     sites: Vec<Site>,
 }
@@ -44,21 +44,26 @@ impl Extractor<'_, '_> {
     fn lookup(&self, node: NodeIndex) -> Value {
         let name = self.name(node);
 
-        for scope in self.scopes.iter().rev() {
-            if let Some(binding) = scope.get(&name) {
-                return if self.writes.contains(&binding.declaration) {
-                    Value::Other
-                } else {
-                    binding.value.clone()
-                };
-            }
+        if let Some(binding) = self.bindings.declaration(node) {
+            return if binding.assigned {
+                Value::Other
+            } else {
+                self.values
+                    .get(&binding.name.get())
+                    .cloned()
+                    .unwrap_or(Value::Other)
+            };
+        }
+
+        if !self.bindings.globals.contains(&node.get()) {
+            return Value::Other;
         }
 
         if name == "require" {
-            return Value::Loader(!self.globals.contains(&name));
+            return Value::Loader(!self.bindings.global_assignments.contains(&name));
         }
 
-        if self.globals.contains(&name) {
+        if self.bindings.global_assignments.contains(&name) {
             return Value::Other;
         }
 
@@ -186,15 +191,6 @@ impl Extractor<'_, '_> {
         Value::Instance(root, steps)
     }
 
-    fn bind_name(&mut self, name: NodeIndex, value: Value) {
-        let declaration = self.tree.node(name).span.start;
-        let name = self.name(name);
-
-        if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name, Binding { declaration, value });
-        }
-    }
-
     fn bind(&mut self, node: NodeIndex, value: Value) {
         match &self.tree.node(node).kind {
             NodeKind::Binding {
@@ -204,7 +200,7 @@ impl Extractor<'_, '_> {
                     self.visit(*annotation);
                 }
 
-                self.bind_name(*name, value);
+                self.values.insert(name.get(), value);
             }
 
             NodeKind::Variadic {
@@ -214,26 +210,6 @@ impl Extractor<'_, '_> {
 
             _ => {}
         }
-    }
-
-    fn assign(&mut self, node: NodeIndex) {
-        if !self.writing || !matches!(self.tree.node(node).kind, NodeKind::Name { .. }) {
-            return;
-        }
-
-        let name = self.name(node);
-
-        if let Some(binding) = self.scopes.iter().rev().find_map(|scope| scope.get(&name)) {
-            self.writes.insert(binding.declaration);
-        } else {
-            self.globals.insert(name);
-        }
-    }
-
-    fn scoped(&mut self, node: NodeIndex) {
-        self.scopes.push(BTreeMap::new());
-        self.visit(node);
-        self.scopes.pop();
     }
 
     fn local(&mut self, bindings: &NodeList, values: &NodeList) {
@@ -256,78 +232,8 @@ impl Extractor<'_, '_> {
         }
     }
 
-    fn function(&mut self, node: NodeIndex) {
-        let NodeKind::Function {
-            prefix,
-            name,
-            parameters,
-            returns,
-            body,
-            ..
-        } = &self.tree.node(node).kind
-        else {
-            return;
-        };
-
-        let local = prefix.is_some_and(|prefix| {
-            self.tree.token(prefix).kind == TokenKind::Keyword(Keyword::Local)
-                || self.tree.token(prefix).bytes(self.tree.source) == b"const"
-        });
-
-        let mut method = false;
-
-        if let Some(name) = name {
-            if local {
-                self.bind_name(*name, Value::Other);
-            } else if let NodeKind::FunctionName {
-                path,
-                method: member,
-                ..
-            } = &self.tree.node(*name).kind
-            {
-                method = member.is_some();
-                let path = self.tree.list(path);
-
-                if path.len() == 1 && !method {
-                    self.assign(path[0].node);
-                }
-            } else {
-                self.assign(*name);
-            }
-        }
-
-        self.scopes.push(BTreeMap::new());
-
-        if method && let Some(scope) = self.scopes.last_mut() {
-            scope.insert(
-                "self".to_owned(),
-                Binding {
-                    declaration: self.tree.node(node).span.start,
-                    value: Value::Other,
-                },
-            );
-        }
-
-        if let NodeKind::Parameters { parameters, .. } = &self.tree.node(*parameters).kind {
-            for parameter in self.tree.list(parameters) {
-                self.bind(parameter.node, Value::Other);
-            }
-        }
-
-        if let Some(returns) = returns {
-            self.visit(*returns);
-        }
-
-        if let Some(body) = body {
-            self.visit(*body);
-        }
-
-        self.scopes.pop();
-    }
-
     fn call(&mut self, node: NodeIndex, callee: NodeIndex, arguments: NodeIndex) {
-        if !self.writing
-            && let Value::Loader(stable) = self.value(callee)
+        if let Value::Loader(stable) = self.value(callee)
             && let NodeKind::Arguments { values, .. } = &self.tree.node(arguments).kind
         {
             let values = self.tree.list(values);
@@ -372,101 +278,14 @@ impl Extractor<'_, '_> {
         }
     }
 
-    fn control(&mut self, node: NodeIndex) {
-        let tree = self.tree;
-
-        match &tree.node(node).kind {
-            NodeKind::If {
-                branches,
-                otherwise,
-                ..
-            } => {
-                for branch in tree.list(branches) {
-                    self.scoped(branch.node);
-                }
-
-                if let Some(otherwise) = otherwise {
-                    self.scoped(*otherwise);
-                }
-            }
-
-            NodeKind::Conditional {
-                condition,
-                truthy,
-                falsy,
-                ..
-            } => {
-                self.scopes.push(BTreeMap::new());
-                self.visit(*condition);
-                self.visit(*truthy);
-                self.scopes.pop();
-                self.visit(*falsy);
-            }
-
-            NodeKind::While {
-                condition, body, ..
-            } => {
-                self.scopes.push(BTreeMap::new());
-                self.visit(*condition);
-                self.visit(*body);
-                self.scopes.pop();
-            }
-
-            NodeKind::Repeat {
-                body, condition, ..
-            } => {
-                self.scopes.push(BTreeMap::new());
-                self.visit(*body);
-                self.visit(*condition);
-                self.scopes.pop();
-            }
-
-            NodeKind::NumericFor {
-                binding,
-                start,
-                end,
-                step,
-                body,
-                ..
-            } => {
-                self.visit(*start);
-                self.visit(*end);
-
-                if let Some(step) = step {
-                    self.visit(*step);
-                }
-
-                self.scopes.push(BTreeMap::new());
-                self.bind(*binding, Value::Other);
-                self.visit(*body);
-                self.scopes.pop();
-            }
-
-            NodeKind::GenericFor {
-                bindings,
-                values,
-                body,
-                ..
-            } => {
-                for value in tree.list(values) {
-                    self.visit(value.node);
-                }
-
-                self.scopes.push(BTreeMap::new());
-
-                for binding in tree.list(bindings) {
-                    self.bind(binding.node, Value::Other);
-                }
-
-                self.visit(*body);
-                self.scopes.pop();
-            }
-
-            _ => {}
-        }
-    }
-
     fn visit(&mut self, node: NodeIndex) {
+        if self
+            .operation
+            .is_some_and(|(options, started)| options.interrupted(*started).is_some())
+        {
+            return;
+        }
+
         let tree = self.tree;
 
         match &tree.node(node).kind {
@@ -477,39 +296,11 @@ impl Extractor<'_, '_> {
                 bindings, values, ..
             } => self.local(bindings, values),
 
-            NodeKind::Assignment { targets, .. } => {
-                for target in tree.list(targets) {
-                    self.assign(target.node);
-                }
-
-                for child in tree.children(node) {
-                    self.visit(child);
-                }
-            }
-
-            NodeKind::CompoundAssignment { target, .. } => {
-                self.assign(*target);
-
-                for child in tree.children(node) {
-                    self.visit(child);
-                }
-            }
-
             NodeKind::Function {
                 prefix: Some(prefix),
                 ..
             } if tree.token(*prefix).bytes(tree.source) == b"type" => {}
 
-            NodeKind::Function { .. } => self.function(node),
-
-            NodeKind::If { .. }
-            | NodeKind::Conditional { .. }
-            | NodeKind::While { .. }
-            | NodeKind::Repeat { .. }
-            | NodeKind::NumericFor { .. }
-            | NodeKind::GenericFor { .. } => self.control(node),
-
-            NodeKind::Do { body, .. } => self.scoped(*body),
             NodeKind::Call { callee, arguments } => self.call(node, *callee, *arguments),
 
             _ => {
@@ -521,23 +312,41 @@ impl Extractor<'_, '_> {
     }
 }
 
-pub(crate) fn extract(source: &str, revision: u64) -> (Vec<Site>, Vec<Problem>) {
+pub(crate) fn extract(
+    source: &str,
+    revision: u64,
+    operation: Option<&(Options, Instant)>,
+) -> io::Result<(Vec<Site>, Vec<Problem>)> {
+    if let Some((options, started)) = operation {
+        options.check(*started)?;
+    }
+
     let tree = vermis::parse(source.as_bytes());
+
+    let bindings = Bindings::analyze(
+        &tree,
+        operation.map(|(options, started)| (options, *started)),
+    );
+
+    if let Some(reason) = bindings.interruption {
+        return Err(reason.error());
+    }
 
     let mut extractor = Extractor {
         tree: &tree,
-        scopes: vec![BTreeMap::new()],
-        writes: BTreeSet::new(),
-        globals: BTreeSet::new(),
-        writing: true,
+        operation,
+        bindings,
+        values: BTreeMap::new(),
         revision,
         sites: Vec::new(),
     };
 
     extractor.visit(tree.root);
-    extractor.scopes = vec![BTreeMap::new()];
-    extractor.writing = false;
-    extractor.visit(tree.root);
+
+    if let Some((options, started)) = operation {
+        options.check(*started)?;
+    }
+
     extractor.sites.sort_by_key(|site| site.range);
 
     let problems = tree
@@ -549,5 +358,5 @@ pub(crate) fn extract(source: &str, revision: u64) -> (Vec<Site>, Vec<Problem>) 
         })
         .collect();
 
-    (extractor.sites, problems)
+    Ok((extractor.sites, problems))
 }

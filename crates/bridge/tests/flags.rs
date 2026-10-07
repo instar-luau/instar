@@ -16,7 +16,12 @@ fn flags_validate_registry_names_types_and_aliases() {
         ("LuauRecursionLimit", Value::Boolean(true)),
         ("LuauExportValueSyntax", Value::Integer(1)),
     ] {
-        assert!(flags::validate(&BTreeMap::from([(name.to_owned(), value)])).is_err());
+        assert_eq!(
+            flags::validate(&BTreeMap::from([(name.to_owned(), value)]))
+                .expect_err("invalid flag")
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
     }
 
     assert!(
@@ -39,7 +44,10 @@ fn integer_changes_restart_cached_analysis_and_defaults_are_restored() -> io::Re
 
     frontend.flags(
         "entry",
-        &BTreeMap::from([("LuauRecursionLimit".to_owned(), Value::Integer(20))]),
+        &flags::validate(&BTreeMap::from([(
+            "LuauRecursionLimit".to_owned(),
+            Value::Integer(20),
+        )]))?,
     )?;
 
     assert!(
@@ -50,7 +58,7 @@ fn integer_changes_restart_cached_analysis_and_defaults_are_restored() -> io::Re
             .any(|diagnostic| matches!(diagnostic.kind, Kind::Syntax { .. }))
     );
 
-    frontend.flags("entry", &BTreeMap::new())?;
+    frontend.flags("entry", &flags::Overrides::default())?;
     assert_eq!(frontend.check(&roots, &options)?.diagnostics, Vec::new());
 
     Ok(())
@@ -79,12 +87,20 @@ fn reachable_modules_require_consistent_effective_flags() -> io::Result<()> {
     frontend.insert("unreachable", "return 1", 1, &configuration, &[])?;
     let options = Options::new(Duration::from_secs(5));
     let roots = ["entry".to_owned()];
-    let changed = BTreeMap::from([("LuauRecursionLimit".to_owned(), Value::Integer(20))]);
+
+    let changed = flags::validate(&BTreeMap::from([(
+        "LuauRecursionLimit".to_owned(),
+        Value::Integer(20),
+    )]))?;
+
     frontend.flags("unreachable", &changed)?;
 
     frontend.flags(
         "entry",
-        &BTreeMap::from([("LuauRecursionLimit".to_owned(), Value::Integer(1000))]),
+        &flags::validate(&BTreeMap::from([(
+            "LuauRecursionLimit".to_owned(),
+            Value::Integer(1000),
+        )]))?,
     )?;
 
     assert_eq!(frontend.check(&roots, &options)?.diagnostics, Vec::new());
@@ -103,12 +119,18 @@ fn reachable_modules_require_consistent_effective_flags() -> io::Result<()> {
 
     frontend.flags(
         "entry",
-        &BTreeMap::from([("LuauExportValueSyntax".to_owned(), Value::Boolean(true))]),
+        &flags::validate(&BTreeMap::from([(
+            "LuauExportValueSyntax".to_owned(),
+            Value::Boolean(true),
+        )]))?,
     )?;
 
     frontend.flags(
         "dependency",
-        &BTreeMap::from([("LuauExportValueSyntax5".to_owned(), Value::Boolean(true))]),
+        &flags::validate(&BTreeMap::from([(
+            "LuauExportValueSyntax5".to_owned(),
+            Value::Boolean(true),
+        )]))?,
     )?;
 
     assert_eq!(frontend.check(&roots, &options)?.diagnostics, Vec::new());

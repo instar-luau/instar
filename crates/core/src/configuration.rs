@@ -58,14 +58,14 @@ impl Configuration {
         Ok(configuration)
     }
 
-    /// Checks patterns, rule options, and local file references.
+    /// Validates settings and returns canonical native flag overrides.
     ///
     /// # Errors
     /// Returns an error for invalid configuration values.
-    pub fn validate(&self) -> io::Result<()> {
+    pub fn validate(&self) -> io::Result<instar_bridge::flags::Overrides> {
         self.format.validate()?;
         self.lint.validate()?;
-        self.luau.native()?;
+        let flags = self.luau.native()?;
         let mut namespaces = BTreeSet::new();
 
         for environment in &self.environment {
@@ -118,7 +118,7 @@ impl Configuration {
             }
         }
 
-        Ok(())
+        Ok(flags)
     }
 
     pub(crate) fn inherit_selection(&mut self) {
@@ -393,7 +393,7 @@ pub enum Flag {
 }
 
 impl Luau {
-    pub(crate) fn native(&self) -> io::Result<BTreeMap<String, instar_bridge::flags::Value>> {
+    fn native(&self) -> io::Result<instar_bridge::flags::Overrides> {
         let flags = self
             .flags
             .iter()
@@ -407,9 +407,7 @@ impl Luau {
             })
             .collect();
 
-        instar_bridge::flags::validate(&flags)?;
-
-        Ok(flags)
+        instar_bridge::flags::validate(&flags)
     }
 }
 

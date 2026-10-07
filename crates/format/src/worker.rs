@@ -3,7 +3,7 @@ use std::io::{self, BufRead, Write};
 
 use instar_analysis::Options;
 
-use crate::formatting::{Request, Response};
+use crate::formatting::Request;
 
 /// Processes formatter requests over standard input and output.
 ///
@@ -16,16 +16,14 @@ pub fn run() -> io::Result<()> {
     for line in input.lock().lines() {
         let request: Request = serde_json::from_str(&line?)?;
 
-        let response = match crate::formatter::format(
+        let response = crate::formatter::format(
             &request.source,
             &request.configuration,
             &Options::new(request.timeout),
-        ) {
-            Ok(result) => Response::Formatted(result),
-            Err(error) => Response::InvalidConfiguration(error.to_string()),
-        };
+        )
+        .map_err(instar_analysis::error::Failure::from);
 
-        serde_json::to_writer(&mut output, &Ok::<_, String>(response))?;
+        serde_json::to_writer(&mut output, &response)?;
         output.write_all(b"\n")?;
         output.flush()?;
     }

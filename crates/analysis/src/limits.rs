@@ -27,6 +27,22 @@ pub enum Reason {
     Analysis,
 }
 
+impl Reason {
+    /// Converts an incomplete operation into an error for fallible entry points.
+    #[must_use]
+    pub fn error(self) -> std::io::Error {
+        let kind = match self {
+            Self::Cancelled => std::io::ErrorKind::Interrupted,
+            Self::Timeout => std::io::ErrorKind::TimedOut,
+            Self::Unsupported => std::io::ErrorKind::Unsupported,
+            Self::Environment => std::io::ErrorKind::InvalidData,
+            Self::Analysis => std::io::ErrorKind::Other,
+        };
+
+        std::io::Error::new(kind, format!("operation incomplete: {self:?}"))
+    }
+}
+
 /// Whether the result covers all selected entries and their dependencies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub enum Completion {
@@ -79,6 +95,8 @@ pub struct Options {
     /// Total elapsed budget, including host preparation and declarations.
     ///
     /// Native analysis runs in an isolated worker that is terminated on interruption.
+    /// Host preparation checks cancellation between phases and during traversal;
+    /// individual parser and native configuration calls are not forcibly interrupted.
     pub timeout: Duration,
 
     /// Shared cancellation signal.
@@ -86,6 +104,17 @@ pub struct Options {
 }
 
 impl Options {
+    /// Checks cancellation and the elapsed operation budget.
+    ///
+    /// # Errors
+    /// Returns interrupted or timed-out errors when the operation must stop.
+    pub fn check(&self, started: Instant) -> std::io::Result<()> {
+        match self.interrupted(started) {
+            Some(reason) => Err(reason.error()),
+            None => Ok(()),
+        }
+    }
+
     /// Returns the interruption reason at the current phase boundary.
     #[must_use]
     pub fn interrupted(&self, started: Instant) -> Option<Reason> {
