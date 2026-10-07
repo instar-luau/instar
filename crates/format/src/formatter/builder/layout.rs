@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::{iter, ops::Range};
 
 use vermis::{
     token::{Symbol, TokenKind},
@@ -503,7 +503,7 @@ impl Builder<'_, '_> {
             Document::Token(opening),
             Document::Indent {
                 conditional: true,
-                content: std::iter::once(Document::Soft(1)).chain(interior).collect(),
+                content: iter::once(Document::Soft(1)).chain(interior).collect(),
             },
             Document::Soft(1),
             Document::Token(closing),

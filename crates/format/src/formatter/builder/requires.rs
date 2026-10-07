@@ -1,5 +1,7 @@
 use std::collections::BTreeSet;
 
+use glob::Pattern;
+use instar_syntax::literal;
 use vermis::tree::{NodeIndex, NodeKind};
 
 use super::{Builder, Require, Statement};
@@ -53,7 +55,7 @@ impl Builder<'_, '_> {
         }
 
         Some(Require {
-            path: instar_syntax::literal::string(self.tree, self.tree.list(values)[0].node)?,
+            path: literal::string(self.tree, self.tree.list(values)[0].node)?,
             binding: *name,
         })
     }
@@ -122,7 +124,7 @@ impl Builder<'_, '_> {
                 Group::Builtin(BuiltinGroup::Other) => true,
 
                 Group::Custom(group) => group.patterns.iter().any(|pattern| {
-                    glob::Pattern::new(pattern).is_ok_and(|pattern| pattern.matches(path))
+                    Pattern::new(pattern).is_ok_and(|pattern| pattern.matches(path))
                 }),
             })
             .unwrap_or(self.configuration.requires.groups.len())

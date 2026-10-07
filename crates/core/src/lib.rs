@@ -2,13 +2,13 @@
 
 pub mod analysis;
 mod assets;
-pub mod checking;
+mod checking;
 pub mod configuration;
 pub mod documentation;
 mod environment;
 mod extract;
 pub mod graph;
-pub mod linting;
+mod linting;
 pub mod native;
 pub mod project;
 pub mod resolve;

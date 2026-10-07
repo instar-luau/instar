@@ -1,18 +1,9 @@
 //! Shared file-selection validation and matching.
 use std::{io, path::Path};
 
+use glob::Pattern;
+
 use crate::error::invalid;
-
-fn compile(pattern: &str, field: &str) -> io::Result<glob::Pattern> {
-    if pattern.is_empty() || pattern.contains('\0') {
-        return Err(invalid(format!(
-            "{field}: file patterns must be nonempty and contain no NUL"
-        )));
-    }
-
-    glob::Pattern::new(pattern)
-        .map_err(|error| invalid(format!("{field}: invalid glob {pattern:?}: {error}")))
-}
 
 /// Validates an optional list of file patterns.
 ///
@@ -38,4 +29,15 @@ pub fn matches(source: &Path, patterns: Option<&[String]>, empty: bool) -> io::R
     patterns.iter().try_fold(false, |matched, pattern| {
         Ok(compile(pattern, "selection")?.matches_path(source) || matched)
     })
+}
+
+fn compile(pattern: &str, field: &str) -> io::Result<Pattern> {
+    if pattern.is_empty() || pattern.contains('\0') {
+        return Err(invalid(format!(
+            "{field}: file patterns must be nonempty and contain no NUL"
+        )));
+    }
+
+    Pattern::new(pattern)
+        .map_err(|error| invalid(format!("{field}: invalid glob {pattern:?}: {error}")))
 }

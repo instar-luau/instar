@@ -1,6 +1,8 @@
 //! Typed overrides for registered native Luau flags.
+
 use std::{collections::BTreeMap, io};
 
+use instar_analysis::error::invalid;
 use serde::{Deserialize, Serialize};
 
 use crate::boundary;
@@ -20,21 +22,6 @@ pub enum Value {
 #[derive(Clone, Debug, Default)]
 pub struct Overrides(pub(crate) BTreeMap<String, Value>);
 
-pub(crate) fn native(flags: &BTreeMap<String, Value>) -> Vec<boundary::NativeFlag> {
-    flags
-        .iter()
-        .map(|(name, value)| boundary::NativeFlag {
-            name: name.clone(),
-            boolean: matches!(value, Value::Boolean(true)),
-            integer: match value {
-                Value::Integer(value) => *value,
-                Value::Boolean(_) => 0,
-            },
-            is_boolean: matches!(value, Value::Boolean(_)),
-        })
-        .collect()
-}
-
 /// Validates and canonicalizes overrides without modifying native process state.
 ///
 /// # Errors
@@ -42,7 +29,7 @@ pub(crate) fn native(flags: &BTreeMap<String, Value>) -> Vec<boundary::NativeFla
 pub fn validate(flags: &BTreeMap<String, Value>) -> io::Result<Overrides> {
     Ok(Overrides(
         boundary::normalize_flags(&native(flags))
-            .map_err(instar_analysis::error::invalid)?
+            .map_err(invalid)?
             .into_iter()
             .map(|flag| {
                 (
@@ -59,5 +46,20 @@ pub fn validate(flags: &BTreeMap<String, Value>) -> io::Result<Overrides> {
 }
 
 pub(crate) fn apply(flags: &BTreeMap<String, Value>) -> io::Result<()> {
-    boundary::apply_flags(&native(flags)).map_err(instar_analysis::error::invalid)
+    boundary::apply_flags(&native(flags)).map_err(invalid)
+}
+
+pub(crate) fn native(flags: &BTreeMap<String, Value>) -> Vec<boundary::NativeFlag> {
+    flags
+        .iter()
+        .map(|(name, value)| boundary::NativeFlag {
+            name: name.clone(),
+            boolean: matches!(value, Value::Boolean(true)),
+            integer: match value {
+                Value::Integer(value) => *value,
+                Value::Boolean(_) => 0,
+            },
+            is_boolean: matches!(value, Value::Boolean(_)),
+        })
+        .collect()
 }

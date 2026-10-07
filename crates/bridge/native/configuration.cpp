@@ -90,7 +90,7 @@ namespace instar {
 
             throw std::runtime_error("unknown upstream language mode");
         }
-    } // namespace
+    }
 
     NativeConfiguration::NativeConfiguration() : configuration(std::make_unique<Luau::Config>()) {}
 
@@ -245,4 +245,4 @@ namespace instar {
     const Luau::Config &NativeConfiguration::value() const {
         return *configuration;
     }
-} // namespace instar
+}

@@ -27,6 +27,6 @@ namespace instar {
     };
 
     std::unique_ptr<NativeConfiguration> create();
-} // namespace instar
+}
 
 #endif

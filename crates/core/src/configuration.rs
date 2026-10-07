@@ -6,8 +6,11 @@ use std::{
     path::PathBuf,
 };
 
-use instar_analysis::error::invalid;
-use schemars::JsonSchema;
+use instar_analysis::{error::invalid, selection};
+use instar_bridge::{flags, frontend};
+use instar_format as format;
+use instar_lint as lint;
+use schemars::{JsonSchema, Schema};
 use serde::{Deserialize, Serialize};
 
 /// An Instar configuration, independent of native Luau settings.
@@ -28,10 +31,10 @@ pub struct Configuration {
     pub check: Selection,
 
     /// Formatter style and file selection.
-    pub format: instar_format::Configuration,
+    pub format: format::Configuration,
 
     /// Instar lint rules and linter file selection.
-    pub lint: instar_lint::Configuration,
+    pub lint: lint::Configuration,
 
     /// Editor preferences, independent of protocol capability advertisement.
     pub editor: Editor,
@@ -62,14 +65,14 @@ impl Configuration {
     ///
     /// # Errors
     /// Returns an error for invalid configuration values.
-    pub fn validate(&self) -> io::Result<instar_bridge::flags::Overrides> {
+    pub fn validate(&self) -> io::Result<flags::Overrides> {
         self.format.validate()?;
         self.lint.validate()?;
         let flags = self.luau.native()?;
         let mut namespaces = BTreeSet::new();
 
         for environment in &self.environment {
-            instar_bridge::frontend::validate_namespace(&environment.namespace)?;
+            frontend::validate_namespace(&environment.namespace)?;
 
             if matches!(environment.namespace.as_str(), "@luau" | "@roblox")
                 || !namespaces.insert(&environment.namespace)
@@ -93,7 +96,7 @@ impl Configuration {
         .into_iter()
         .flatten()
         {
-            instar_analysis::selection::validate(Some(patterns), "selection")?;
+            selection::validate(Some(patterns), "selection")?;
         }
 
         for path in self
@@ -393,21 +396,21 @@ pub enum Flag {
 }
 
 impl Luau {
-    fn native(&self) -> io::Result<instar_bridge::flags::Overrides> {
+    fn native(&self) -> io::Result<flags::Overrides> {
         let flags = self
             .flags
             .iter()
             .map(|(name, value)| {
                 let value = match value {
-                    Flag::Boolean(value) => instar_bridge::flags::Value::Boolean(*value),
-                    Flag::Integer(value) => instar_bridge::flags::Value::Integer(*value),
+                    Flag::Boolean(value) => flags::Value::Boolean(*value),
+                    Flag::Integer(value) => flags::Value::Integer(*value),
                 };
 
                 (name.clone(), value)
             })
             .collect();
 
-        instar_bridge::flags::validate(&flags)
+        flags::validate(&flags)
     }
 }
 
@@ -449,6 +452,6 @@ pub enum Security {
 
 /// Generates the schema directly from the configuration types.
 #[must_use]
-pub fn schema() -> schemars::Schema {
+pub fn schema() -> Schema {
     schemars::schema_for!(Configuration)
 }

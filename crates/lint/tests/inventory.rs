@@ -1,17 +1,19 @@
 //! Positive and negative fixtures for every configured Instar rule.
 
 use std::{
+    cell::Cell,
     collections::{BTreeMap, BTreeSet},
     fs, io,
     path::Path,
     time::Duration,
 };
 
-use instar_lint::{
-    Completion, Configuration, Inference, Kind, Level, Options, Reason, Require, Rule, Source,
-};
+use instar_analysis::{Cancellation, Completion, Kind as AnalysisKind, Options, Reason};
+use instar_lint::{Configuration, Inference, Kind, Level, Require, Result as Output, Rule, Source};
+use serde::Deserialize;
+use toml::{Table, Value};
 
-#[derive(serde::Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Fixture {
     rule: String,
@@ -23,18 +25,18 @@ fn fixtures() -> BTreeMap<String, Fixture> {
 }
 
 fn configured(rule: Rule) -> Configuration {
-    let mut configuration: toml::Table =
+    let mut configuration: Table =
         toml::from_str(include_str!("fixtures/configuration.toml")).expect("fixture configuration");
 
     for (identity, _) in Configuration::default().rules() {
         configuration
             .entry(identity.name())
-            .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+            .or_insert_with(|| Value::Table(Table::new()))
             .as_table_mut()
             .expect("rule configuration")
             .insert(
                 "level".to_owned(),
-                toml::Value::String(if identity == rule { "warn" } else { "allow" }.to_owned()),
+                Value::String(if identity == rule { "warn" } else { "allow" }.to_owned()),
             );
     }
 
@@ -46,7 +48,7 @@ fn run(
     configuration: &Configuration,
     requires: &[Require],
     inferred: Option<&[Inference]>,
-) -> io::Result<instar_lint::Result<&'static str>> {
+) -> io::Result<Output<&'static str>> {
     instar_lint::lint(
         "fixture",
         &Source {
@@ -62,7 +64,7 @@ fn run(
     )
 }
 
-fn assert_findings(result: &instar_lint::Result<&str>, rule: Rule, ranges: &[[usize; 2]]) {
+fn assert_findings(result: &Output<&str>, rule: Rule, ranges: &[[usize; 2]]) {
     assert_eq!(result.completion, Completion::Complete, "{rule}");
     assert_eq!(result.modules, ["fixture"]);
 
@@ -231,10 +233,7 @@ fn native_inference_fixtures_and_unavailable_capability() -> io::Result<()> {
         assert_eq!(unsupported.diagnostics.len(), 1);
         let diagnostic = &unsupported.diagnostics[0];
 
-        assert_eq!(
-            diagnostic.kind,
-            Kind::Analysis(instar_analysis::Kind::Unsupported)
-        );
+        assert_eq!(diagnostic.kind, Kind::Analysis(AnalysisKind::Unsupported));
 
         assert_eq!(diagnostic.level, Level::Deny);
         assert_eq!(diagnostic.location.module, "fixture");
@@ -426,7 +425,7 @@ fn syntax_errors_are_explicit() -> io::Result<()> {
     for (diagnostic, expected) in result.diagnostics.iter().zip(&tree.diagnostics) {
         assert_eq!(
             diagnostic.kind,
-            Kind::Analysis(instar_analysis::Kind::Syntax { code: None })
+            Kind::Analysis(AnalysisKind::Syntax { code: None })
         );
 
         assert_eq!(diagnostic.level, Level::Deny);
@@ -490,8 +489,8 @@ fn service_rules_use_literal_values_and_byte_escapes_remain_valid() -> io::Resul
 #[test]
 fn cancellation_during_diagnostic_construction_updates_completion() -> io::Result<()> {
     struct Module<'signal> {
-        copies: &'signal std::cell::Cell<usize>,
-        cancellation: &'signal instar_lint::Cancellation,
+        copies: &'signal Cell<usize>,
+        cancellation: &'signal Cancellation,
     }
 
     impl Clone for Module<'_> {
@@ -510,7 +509,7 @@ fn cancellation_during_diagnostic_construction_updates_completion() -> io::Resul
     }
 
     let options = Options::new(Duration::from_secs(5));
-    let copies = std::cell::Cell::new(0);
+    let copies = Cell::new(0);
     let configuration = configured(Rule::DivideByZero);
 
     let result = instar_lint::lint(

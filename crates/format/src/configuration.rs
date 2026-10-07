@@ -1,7 +1,8 @@
 //! Formatter configuration and require grouping policies.
-use std::{collections::BTreeSet, num::NonZeroUsize};
+use std::{collections::BTreeSet, io, num::NonZeroUsize};
 
-use instar_analysis::error::invalid;
+use glob::Pattern;
+use instar_analysis::{error::invalid, selection};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -58,9 +59,9 @@ impl Configuration {
     ///
     /// # Errors
     /// Returns an error for invalid globs or invalid require group names or patterns.
-    pub fn validate(&self) -> std::io::Result<()> {
-        instar_analysis::selection::validate(self.include.as_deref(), "format.include")?;
-        instar_analysis::selection::validate(self.exclude.as_deref(), "format.exclude")?;
+    pub fn validate(&self) -> io::Result<()> {
+        selection::validate(self.include.as_deref(), "format.include")?;
+        selection::validate(self.exclude.as_deref(), "format.exclude")?;
 
         self.requires.validate()
     }
@@ -145,7 +146,7 @@ impl Requires {
     /// # Errors
     /// Returns an error for empty, reserved, or duplicate names, empty custom
     /// pattern lists or patterns, or invalid custom globs.
-    pub fn validate(&self) -> std::io::Result<()> {
+    pub fn validate(&self) -> io::Result<()> {
         let mut names = BTreeSet::new();
 
         for group in &self.groups {
@@ -183,7 +184,7 @@ impl Requires {
                             )));
                         }
 
-                        glob::Pattern::new(pattern).map_err(|error| {
+                        Pattern::new(pattern).map_err(|error| {
                             invalid(format!(
                                 "format.requires.groups: group {:?} has invalid glob {pattern:?}: {error}",
                                 group.name

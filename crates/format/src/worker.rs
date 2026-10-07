@@ -1,9 +1,9 @@
 //! Isolated formatter worker entry point.
 use std::io::{self, BufRead, Write};
 
-use instar_analysis::Options;
+use instar_analysis::{Options, error::Failure, process::Message};
 
-use crate::formatting::Request;
+use crate::{formatter, formatting::Request};
 
 /// Processes formatter requests over standard input and output.
 ///
@@ -16,17 +16,14 @@ pub fn run() -> io::Result<()> {
     for line in input.lock().lines() {
         let request: Request = serde_json::from_str(&line?)?;
 
-        let response = crate::formatter::format(
+        let response = formatter::format(
             &request.source,
             &request.configuration,
             &Options::new(request.timeout),
         )
-        .map_err(instar_analysis::error::Failure::from);
+        .map_err(Failure::from);
 
-        serde_json::to_writer(
-            &mut output,
-            &instar_analysis::process::Message::Response(response),
-        )?;
+        serde_json::to_writer(&mut output, &Message::Response(response))?;
 
         output.write_all(b"\n")?;
         output.flush()?;

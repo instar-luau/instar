@@ -1,6 +1,8 @@
 use std::{
     io::{self, IsTerminal, Write},
     path::Path,
+    sync::Arc,
+    time::Duration,
 };
 
 use codespan_reporting::{
@@ -14,10 +16,12 @@ use codespan_reporting::{
 
 use eyre::{Result, ensure};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressFinish, ProgressStyle};
-use instar_analysis::{Completion, Location, Related};
+use instar_analysis::{Completion, Location, Progress, Related};
 use instar_core::{analysis::Origin, project::Project};
+use instar_lint::Level;
 use serde_json::{Value, json};
-use tracing_subscriber::{filter::Targets, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing::Level as TraceLevel;
+use tracing_subscriber::{filter::Targets, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::arguments::Analysis;
 
@@ -63,12 +67,12 @@ impl Reporter {
     pub(crate) fn trace(&self) -> Result<()> {
         let progress = self.progress.clone();
 
-        let output = tracing_subscriber::fmt::layer()
+        let output = fmt::layer()
             .without_time()
             .with_ansi(!self.json && !matches!(self.color, ColorChoice::Never))
             .with_writer(move || Writer(progress.clone()));
 
-        let filter = Targets::new().with_target("instar", tracing::Level::DEBUG);
+        let filter = Targets::new().with_target("instar", TraceLevel::DEBUG);
 
         if self.json {
             tracing_subscriber::registry()
@@ -107,8 +111,7 @@ impl Reporter {
 
         self.progress.tick();
 
-        self.progress
-            .enable_steady_tick(std::time::Duration::from_millis(100));
+        self.progress.enable_steady_tick(Duration::from_millis(100));
 
         Ok(())
     }
@@ -117,14 +120,12 @@ impl Reporter {
         self.progress.clone()
     }
 
-    pub(crate) fn observer(
-        &self,
-    ) -> Result<std::sync::Arc<dyn Fn(instar_analysis::Progress) + Send + Sync>> {
+    pub(crate) fn observer(&self) -> Result<Arc<dyn Fn(Progress) + Send + Sync>> {
         let progress = self.progress.clone();
         let measured = ProgressStyle::with_template("{spinner} {prefix} {pos}/{len} {wide_msg}")?;
         let unmeasured = ProgressStyle::with_template("{spinner} {prefix} {wide_msg}")?;
 
-        Ok(std::sync::Arc::new(move |event| {
+        Ok(Arc::new(move |event| {
             progress.set_style(if let Some(total) = event.total {
                 progress.set_length(total as u64);
 
@@ -178,43 +179,12 @@ impl Reporter {
         }
     }
 
-    fn label(
-        &mut self,
-        project: &mut Project,
-        location: &Location<Origin>,
-        primary: bool,
-    ) -> Result<Option<Label<usize>>> {
-        if location.revision == 0 {
-            return Ok(None);
-        }
-
-        let source = project.source(location.module.source())?;
-
-        ensure!(
-            source.revision == location.revision,
-            "diagnostic source revision changed"
-        );
-
-        let index = self.files.add(
-            location.module.source().display().to_string(),
-            source.text.to_string(),
-        );
-
-        let range = location.range[0]..location.range[1];
-
-        Ok(Some(if primary {
-            Label::primary(index, range)
-        } else {
-            Label::secondary(index, range)
-        }))
-    }
-
     pub(crate) fn diagnostic(
         &mut self,
         project: &mut Project,
         diagnostic: &instar_lint::Diagnostic<Origin>,
     ) -> Result<()> {
-        let error = diagnostic.level == instar_lint::Level::Deny;
+        let error = diagnostic.level == Level::Deny;
         self.failed |= error;
         let mut labels = Vec::new();
 
@@ -229,12 +199,10 @@ impl Reporter {
         }
 
         let (severity, record) = match diagnostic.level {
-            instar_lint::Level::Info => ("info", Diagnostic::note()),
-            instar_lint::Level::Deny => ("error", Diagnostic::error()),
+            Level::Info => ("info", Diagnostic::note()),
+            Level::Deny => ("error", Diagnostic::error()),
 
-            instar_lint::Level::Allow | instar_lint::Level::Warn => {
-                ("warning", Diagnostic::warning())
-            }
+            Level::Allow | Level::Warn => ("warning", Diagnostic::warning()),
         };
 
         self.diagnostics.push(
@@ -330,6 +298,37 @@ impl Reporter {
         }
 
         Ok(())
+    }
+
+    fn label(
+        &mut self,
+        project: &mut Project,
+        location: &Location<Origin>,
+        primary: bool,
+    ) -> Result<Option<Label<usize>>> {
+        if location.revision == 0 {
+            return Ok(None);
+        }
+
+        let source = project.source(location.module.source())?;
+
+        ensure!(
+            source.revision == location.revision,
+            "diagnostic source revision changed"
+        );
+
+        let index = self.files.add(
+            location.module.source().display().to_string(),
+            source.text.to_string(),
+        );
+
+        let range = location.range[0]..location.range[1];
+
+        Ok(Some(if primary {
+            Label::primary(index, range)
+        } else {
+            Label::secondary(index, range)
+        }))
     }
 }
 

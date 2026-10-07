@@ -130,14 +130,6 @@ impl Map {
             .collect()
     }
 
-    fn identity(&self, node: usize) -> Identity {
-        Identity::Instance {
-            map: self.path.clone(),
-            revision: self.revision,
-            node,
-        }
-    }
-
     pub(crate) fn index(&self, identity: &Identity) -> io::Result<usize> {
         if let Identity::Instance {
             map,
@@ -244,6 +236,14 @@ impl Map {
             path: module_path(&source),
             source,
         })
+    }
+
+    fn identity(&self, node: usize) -> Identity {
+        Identity::Instance {
+            map: self.path.clone(),
+            revision: self.revision,
+            node,
+        }
     }
 }
 

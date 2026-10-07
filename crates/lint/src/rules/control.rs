@@ -1,6 +1,6 @@
 use vermis::{
     token::{Keyword, TokenKind},
-    tree::{NodeIndex, NodeKind},
+    tree::{NodeIndex, NodeKind, NodeList},
 };
 
 use super::{
@@ -40,7 +40,7 @@ impl Context<'_, '_> {
     pub(super) fn conditional(
         &mut self,
         node: NodeIndex,
-        branches: &vermis::tree::NodeList,
+        branches: &NodeList,
         otherwise: Option<NodeIndex>,
     ) {
         let tree = self.tree;

@@ -1,6 +1,6 @@
 use std::io;
 
-use instar_analysis::{Completion, Diagnostic, Kind, Location, Related};
+use instar_analysis::{Completion, Diagnostic, Kind, Location, Reason, Related};
 use serde::{Deserialize, Serialize};
 
 use crate::boundary;
@@ -115,8 +115,6 @@ pub(crate) fn checking(
 }
 
 pub(crate) fn completion(value: boundary::NativeCompletion) -> io::Result<Completion> {
-    use instar_analysis::Reason;
-
     match value {
         boundary::NativeCompletion::Complete => Ok(Completion::Complete),
         boundary::NativeCompletion::Cancelled => Ok(Completion::Incomplete(Reason::Cancelled)),

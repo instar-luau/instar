@@ -42,6 +42,6 @@ namespace instar {
     };
 
     std::unique_ptr<NativeFrontend> create_frontend();
-} // namespace instar
+}
 
 #endif

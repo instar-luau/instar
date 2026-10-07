@@ -5,7 +5,7 @@ use std::{
 };
 
 use instar_analysis::Options;
-use instar_syntax::bindings::Bindings;
+use instar_syntax::{bindings::Bindings, literal};
 
 use vermis::{
     token::{Keyword, Symbol, TokenKind},
@@ -80,7 +80,7 @@ impl Extractor<'_, '_> {
             NodeKind::Name { .. } => self.lookup(node),
 
             NodeKind::String { .. } => {
-                instar_syntax::literal::string(self.tree, node).map_or(Value::Other, Value::String)
+                literal::string(self.tree, node).map_or(Value::Other, Value::String)
             }
 
             NodeKind::Boolean { token } => {
@@ -251,7 +251,7 @@ impl Extractor<'_, '_> {
             };
 
             let failure = request.is_none().then(|| Failure {
-                kind: std::io::ErrorKind::InvalidData,
+                kind: io::ErrorKind::InvalidData,
                 message: if values.len() == 1 {
                     "require target is not a statically known string or instance"
                 } else {

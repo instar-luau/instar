@@ -1,6 +1,7 @@
 //! Regression coverage for CLI input selection, deadlines, contexts and severities.
 
 use std::{
+    ffi::OsStr,
     fs,
     io::{self, Write},
     path::Path,
@@ -338,7 +339,7 @@ fn mapped_lint_visits_every_placement_and_its_dependencies() -> io::Result<()> {
 
     assert_eq!(
         Path::new(diagnostics[0]["path"].as_str().expect("diagnostic path")).file_name(),
-        Some(std::ffi::OsStr::new("unmapped.luau")),
+        Some(OsStr::new("unmapped.luau")),
     );
 
     directory.close()

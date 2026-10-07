@@ -1,16 +1,19 @@
 //! Native and Instar lint policies over shared contextual project sources.
 use std::{io, time::Duration};
 
+use instar_analysis::{self as analysis, Completion, Options, Reason};
+
 use instar_core::{
     analysis::{Entry, Origin},
     project::Change,
+    roblox,
 };
 
-use instar_lint::{Completion, Kind, Level, Options, Reason, Rule};
+use instar_lint::{self as lint, Diagnostic, Kind, Level, Rule};
 
 use crate::support::{Directory, options, project};
 
-fn rule(result: &instar_lint::Result<Origin>, name: Rule) -> bool {
+fn rule(result: &lint::Result<Origin>, name: Rule) -> bool {
     result
         .diagnostics
         .iter()
@@ -128,7 +131,7 @@ fn selection_chooses_entries_and_reports_reachable_dependencies() -> io::Result<
                 |diagnostic| diagnostic.location.module.source() == dependency
                     && matches!(
                         diagnostic.kind,
-                        Kind::Analysis(instar_analysis::Kind::Resolution { .. })
+                        Kind::Analysis(analysis::Kind::Resolution { .. })
                     )
             )
     );
@@ -213,7 +216,7 @@ fn syntax_only_rules_do_not_load_declaration_environments() -> io::Result<()> {
 
     assert!(!result.diagnostics.iter().any(|diagnostic| matches!(
         diagnostic.kind,
-        Kind::Analysis(instar_analysis::Kind::Analysis { .. })
+        Kind::Analysis(analysis::Kind::Analysis { .. })
     )));
 
     Ok(())
@@ -284,7 +287,7 @@ fn inferred_any_uses_native_types_and_per_module_selection() -> io::Result<()> {
 
     assert!(nocheck.diagnostics.iter().any(|diagnostic| matches!(
         diagnostic.kind,
-        Kind::Analysis(instar_analysis::Kind::Analysis { .. })
+        Kind::Analysis(analysis::Kind::Analysis { .. })
     )));
 
     Ok(())
@@ -319,7 +322,7 @@ fn missing_and_invalid_definitions_remain_explicit_with_syntax_findings() -> io:
         Origin::Definition(_)
     ) && matches!(
         diagnostic.kind,
-        Kind::Analysis(instar_analysis::Kind::Analysis { .. })
+        Kind::Analysis(analysis::Kind::Analysis { .. })
     )));
 
     let definition = directory.path.join("globals.luau");
@@ -344,7 +347,7 @@ fn missing_and_invalid_definitions_remain_explicit_with_syntax_findings() -> io:
                 |diagnostic| diagnostic.location.module.source() == definition
                     && matches!(
                         diagnostic.kind,
-                        Kind::Analysis(instar_analysis::Kind::Syntax { .. })
+                        Kind::Analysis(analysis::Kind::Syntax { .. })
                     )
             )
     );
@@ -379,7 +382,7 @@ fn invalid_roblox_metadata_keeps_known_lint_findings() -> io::Result<()> {
     let mut project = project();
 
     project.change(Change::Overlay {
-        path: instar_core::roblox::cache_directory()?.join("metadata.json"),
+        path: roblox::cache_directory()?.join("metadata.json"),
         text: Some("{}".to_owned()),
     })?;
 
@@ -392,8 +395,9 @@ fn invalid_roblox_metadata_keeps_known_lint_findings() -> io::Result<()> {
 
     assert!(rule(&result, Rule::RobloxIncorrectColor3NewBounds));
 
-    assert!(result.diagnostics.iter().any(|diagnostic| diagnostic.kind
-        == Kind::Analysis(instar_analysis::Kind::Analysis { code: None })));
+    assert!(result.diagnostics.iter().any(
+        |diagnostic| diagnostic.kind == Kind::Analysis(analysis::Kind::Analysis { code: None })
+    ));
 
     Ok(())
 }
@@ -527,7 +531,7 @@ fn native_analysis_identity_survives_lint_conversion() -> io::Result<()> {
             checked
                 .diagnostics
                 .into_iter()
-                .map(instar_lint::Diagnostic::from)
+                .map(Diagnostic::from)
                 .collect::<Vec<_>>()
         );
     }
@@ -574,7 +578,7 @@ fn native_analysis_identity_survives_lint_conversion() -> io::Result<()> {
             checked
                 .diagnostics
                 .into_iter()
-                .map(instar_lint::Diagnostic::from)
+                .map(Diagnostic::from)
                 .collect::<Vec<_>>()
         );
     }

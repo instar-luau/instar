@@ -1,25 +1,25 @@
 //! Isolated native configuration safeguards.
 
 use std::{
-    io,
+    env, io,
     path::Path,
     process::Command,
+    thread,
     time::{Duration, Instant},
 };
 
 use instar_bridge::{Configuration, Mode};
 
 fn isolated(name: &str) -> bool {
-    if std::env::var("INSTAR_EXTRACTION_CASE").as_deref() == Ok(name) {
+    if env::var("INSTAR_EXTRACTION_CASE").as_deref() == Ok(name) {
         return false;
     }
 
-    let mut child =
-        Command::new(std::env::current_exe().expect("test executable must be available"))
-            .args(["--exact", name, "--nocapture"])
-            .env("INSTAR_EXTRACTION_CASE", name)
-            .spawn()
-            .expect("isolated extraction case must start");
+    let mut child = Command::new(env::current_exe().expect("test executable must be available"))
+        .args(["--exact", name, "--nocapture"])
+        .env("INSTAR_EXTRACTION_CASE", name)
+        .spawn()
+        .expect("isolated extraction case must start");
 
     let started = Instant::now();
 
@@ -46,7 +46,7 @@ fn isolated(name: &str) -> bool {
             panic!("isolated extraction case exceeded its watchdog");
         }
 
-        std::thread::sleep(Duration::from_millis(10));
+        thread::sleep(Duration::from_millis(10));
     }
 }
 

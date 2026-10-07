@@ -1,6 +1,8 @@
 use std::{io, time::Instant};
 
+use instar_analysis::{Completion, Kind as AnalysisKind, Location, Options, Reason};
 use instar_syntax::bindings::Bindings;
+use regex::Regex;
 
 use vermis::{
     token::Span,
@@ -8,17 +10,33 @@ use vermis::{
 };
 
 use super::{assignments, bindings, calls, control, expressions, roblox};
-use crate::{Completion, Diagnostic, Kind, Level, Location, Options, Reason, Result, Rule, Source};
+use crate::{Diagnostic, Kind, Level, Result, Rule, Source};
 
 pub(super) struct Context<'tree, 'source> {
     pub(super) tree: &'tree Tree<'source>,
     pub(super) source: &'tree Source<'source>,
     pub(super) bindings: Bindings,
-    pub(super) ignored: regex::Regex,
+    pub(super) ignored: Regex,
     findings: Vec<(Span, Rule, String)>,
 }
 
 impl Context<'_, '_> {
+    pub(super) fn emit(&mut self, span: Span, rule: Rule, message: impl Into<String>) {
+        if self.source.configuration.level(rule) != Level::Allow {
+            self.findings.push((span, rule, message.into()));
+        }
+    }
+
+    pub(super) fn finding(&mut self, node: NodeIndex, rule: Rule, message: impl Into<String>) {
+        self.emit(self.tree.node(node).span, rule, message);
+    }
+
+    pub(super) fn global(&self, node: NodeIndex, name: &[u8]) -> bool {
+        matches!(self.tree.node(node).kind, NodeKind::Name { .. })
+            && self.tree.text(node) == name
+            && self.bindings.global(self.tree, node)
+    }
+
     fn inferences<Module: Clone>(
         &mut self,
         module: &Module,
@@ -65,7 +83,7 @@ impl Context<'_, '_> {
                             revision: source.revision,
                             range: [0, 0],
                         },
-                        kind: Kind::Analysis(instar_analysis::Kind::Unsupported),
+                        kind: Kind::Analysis(AnalysisKind::Unsupported),
                         level: Level::Deny,
                         message: format!("{rule} requires shared native inferred binding types"),
                         related: Vec::new(),
@@ -79,22 +97,6 @@ impl Context<'_, '_> {
         }
 
         Ok(())
-    }
-
-    pub(super) fn emit(&mut self, span: Span, rule: Rule, message: impl Into<String>) {
-        if self.source.configuration.level(rule) != Level::Allow {
-            self.findings.push((span, rule, message.into()));
-        }
-    }
-
-    pub(super) fn finding(&mut self, node: NodeIndex, rule: Rule, message: impl Into<String>) {
-        self.emit(self.tree.node(node).span, rule, message);
-    }
-
-    pub(super) fn global(&self, node: NodeIndex, name: &[u8]) -> bool {
-        matches!(self.tree.node(node).kind, NodeKind::Name { .. })
-            && self.tree.text(node) == name
-            && self.bindings.global(self.tree, node)
     }
 }
 
@@ -139,7 +141,7 @@ pub fn lint<Module: Clone>(
                     revision: source.revision,
                     range: [diagnostic.span.start, diagnostic.span.end],
                 },
-                kind: Kind::Analysis(instar_analysis::Kind::Syntax { code: None }),
+                kind: Kind::Analysis(AnalysisKind::Syntax { code: None }),
                 level: Level::Deny,
                 message: diagnostic.message.to_owned(),
                 related: Vec::new(),

@@ -1,6 +1,7 @@
 //! Synthetic require resolution fixtures with independent expected outcomes.
-use std::{fs, io, path::Path, time::Duration};
+use std::{error::Error, fs, io, path::Path, time::Duration};
 
+use instar_bridge::Configuration;
 use instar_core::project::Project;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -16,7 +17,7 @@ struct Request {
 }
 
 #[test]
-fn require_fixtures() -> Result<(), Box<dyn std::error::Error>> {
+fn require_fixtures() -> Result<(), Box<dyn Error>> {
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/resolve");
 
     let mut cases = fs::read_dir(fixtures)?
@@ -59,7 +60,7 @@ fn require_fixtures() -> Result<(), Box<dyn std::error::Error>> {
                 Err(error) => json!({"error": error.to_string()}),
             };
 
-            normalize(&mut output, &root);
+            normalize(&root, &mut output);
 
             assert_eq!(
                 output,
@@ -112,7 +113,7 @@ fn native_alias_rejections_are_transactional() -> io::Result<()> {
             "Invalid alias @named",
         ),
     ] {
-        let mut native = instar_bridge::Configuration::new()?;
+        let mut native = Configuration::new()?;
 
         native.apply(
             r#"{"aliases":{"retained":"./target"}}"#,

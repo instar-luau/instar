@@ -1,3 +1,4 @@
+use instar_syntax::literal;
 use vermis::tree::{NodeIndex, NodeKind};
 
 use super::{
@@ -45,7 +46,7 @@ impl Context<'_, '_> {
             && self.tree.text(*method) == b"GetService"
             && values.len() == 1
             && matches!(self.tree.node(values[0]).kind, NodeKind::String { .. })
-            && instar_syntax::literal::string(self.tree, values[0]).as_deref() == Some("Players")
+            && literal::string(self.tree, values[0]).as_deref() == Some("Players")
     }
 }
 

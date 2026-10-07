@@ -385,7 +385,7 @@ namespace instar::frontend {
                 attach_extern(globals, type, magic, property, tag);
             }
         }
-    } // namespace
+    }
 
     void register_roblox_magic(Luau::GlobalTypes &globals, rust::Slice<const NativeClass> classes) {
         auto metadata = std::make_shared<Metadata>();

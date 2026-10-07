@@ -1,3 +1,7 @@
+use std::fmt;
+
+use crate::inventory;
+
 macro_rules! identities {
     ($($field:ident => $identity:ident: $settings:ident, $documentation:literal;)*) => {
         /// An Instar lint rule identity.
@@ -16,10 +20,10 @@ macro_rules! identities {
     };
 }
 
-crate::inventory::inventory!(identities);
+inventory::inventory!(identities);
 
-impl std::fmt::Display for Rule {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Rule {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.name())
     }
 }

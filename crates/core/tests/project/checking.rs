@@ -1,12 +1,15 @@
 //! Synthetic native checking across project snapshots.
 use std::{fs, io, time::Duration};
 
-use instar_analysis::{Completion, Kind, Options, Reason};
+use instar_analysis::{self as analysis, Completion, Kind, Options, Reason};
 
 use instar_core::{
     analysis::{Entry, Origin},
     project::Change,
+    roblox,
 };
+
+use instar_lint::Diagnostic;
 
 use crate::support::{Directory, options, project};
 
@@ -88,7 +91,7 @@ fn dependency_errors_are_not_filtered_or_repeated() -> io::Result<()> {
     let single = project.check(&[Entry::new(first.clone())], &options())?;
     let multiple = project.check(&[Entry::new(first), Entry::new(second)], &options())?;
 
-    let dependency_errors = |result: &instar_analysis::Result<Origin>| {
+    let dependency_errors = |result: &analysis::Result<Origin>| {
         result
             .diagnostics
             .iter()
@@ -390,7 +393,7 @@ fn incomplete_environments_keep_known_source_diagnostics() -> io::Result<()> {
         result
             .diagnostics
             .into_iter()
-            .map(instar_lint::Diagnostic::from)
+            .map(Diagnostic::from)
             .collect::<Vec<_>>()
     );
 
@@ -416,7 +419,7 @@ fn invalid_roblox_metadata_is_explicitly_incomplete() -> io::Result<()> {
     let mut project = project();
 
     project.change(Change::Overlay {
-        path: instar_core::roblox::cache_directory()?.join("metadata.json"),
+        path: roblox::cache_directory()?.join("metadata.json"),
         text: Some("{}".to_owned()),
     })?;
 
@@ -674,7 +677,7 @@ fn roblox_security_profiles_and_metadata_control_native_types() -> io::Result<()
     assert_eq!(game.completion, Completion::Complete);
     assert_eq!(game.diagnostics.len(), 1);
     assert!(game.diagnostics[0].message.contains("plugin"));
-    let metadata = instar_core::roblox::cache_directory()?.join("none.d.luau");
+    let metadata = roblox::cache_directory()?.join("none.d.luau");
 
     project.change(Change::Overlay {
         path: metadata,

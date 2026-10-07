@@ -3,7 +3,7 @@ use std::ops::Range;
 use instar_analysis::Reason;
 
 use vermis::{
-    token::{Keyword, Symbol, TokenKind},
+    token::{Keyword, Symbol, Token, TokenKind},
     tree::{NodeIndex, NodeKind, TokenIndex},
 };
 
@@ -307,7 +307,7 @@ impl Builder<'_, '_> {
             }
 
             if let Some(previous) = previous {
-                let prior: &vermis::token::Token = &self.tree.tokens[previous];
+                let prior: &Token = &self.tree.tokens[previous];
                 let lines = self.lines(prior.span.end, token.span.start);
 
                 result.push(if lines > 0 || prior.kind == TokenKind::Comment {

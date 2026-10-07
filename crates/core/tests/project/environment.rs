@@ -1,6 +1,8 @@
 use std::io;
 
-use instar_core::{analysis::Entry, configuration::Configuration, project::Change};
+use instar_core::{
+    analysis::Entry, configuration::Configuration, documentation::Index, project::Change, roblox,
+};
 
 use crate::support::{Directory, options, project};
 
@@ -197,7 +199,7 @@ fn builtin_documentation_loads_without_roblox_assets() -> io::Result<()> {
     let mut project = project();
 
     project.change(Change::Overlay {
-        path: instar_core::roblox::cache_directory()?.join("metadata.json"),
+        path: roblox::cache_directory()?.join("metadata.json"),
         text: Some("invalid Roblox metadata".to_owned()),
     })?;
 
@@ -226,9 +228,6 @@ fn deserialization_enforces_documentation_semantics() {
         include_str!("../fixtures/environment/deserialization/invalid.json"),
         include_str!("../fixtures/environment/deserialization/alternate.json"),
     ] {
-        assert!(
-            serde_json::from_str::<instar_core::documentation::Index>(source).is_err(),
-            "{source}"
-        );
+        assert!(serde_json::from_str::<Index>(source).is_err(), "{source}");
     }
 }

@@ -1,7 +1,8 @@
 use std::{
     collections::BTreeSet,
+    fs,
     io::{self, Read},
-    path::{Path, PathBuf},
+    path::{self, Path, PathBuf},
     sync::mpsc,
     thread,
     time::{Duration, Instant},
@@ -24,7 +25,7 @@ pub(crate) fn load(
             "stdin cannot be combined with file inputs"
         );
 
-        let path = std::path::absolute(context.unwrap_or_else(|| Path::new("stdin.luau")))?;
+        let path = path::absolute(context.unwrap_or_else(|| Path::new("stdin.luau")))?;
         let text = stdin(options, started)?;
         options.check(started)?;
 
@@ -50,9 +51,9 @@ pub(crate) fn load(
         files
     } {
         options.check(started)?;
-        let path = std::path::absolute(input)?;
+        let path = path::absolute(input)?;
 
-        match std::fs::metadata(&path) {
+        match fs::metadata(&path) {
             Ok(metadata) if metadata.is_file() => {
                 selected.insert(path);
             }

@@ -1,4 +1,7 @@
-use vermis::{token::Symbol, tree::TokenIndex};
+use vermis::{
+    token::Symbol,
+    tree::{TokenIndex, Tree},
+};
 
 #[derive(Clone, Copy)]
 pub(super) enum Layout {
@@ -27,7 +30,7 @@ pub(super) enum Document {
 }
 
 impl Document {
-    pub(super) fn multiline(&self, tree: &vermis::tree::Tree<'_>) -> bool {
+    pub(super) fn multiline(&self, tree: &Tree<'_>) -> bool {
         match self {
             Self::Line(_)
             | Self::Group {

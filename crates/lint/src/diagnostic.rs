@@ -1,4 +1,4 @@
-use instar_analysis::{Location, Related};
+use instar_analysis::{Diagnostic as AnalysisDiagnostic, Kind as AnalysisKind, Location, Related};
 
 use crate::{Level, Rule};
 
@@ -17,7 +17,7 @@ pub enum Kind {
     },
 
     /// Shared analysis diagnostic with its original category and native code.
-    Analysis(instar_analysis::Kind),
+    Analysis(AnalysisKind),
 }
 
 /// A revision-anchored lint finding or analysis error.
@@ -39,8 +39,8 @@ pub struct Diagnostic<Module> {
     pub related: Vec<Related<Module>>,
 }
 
-impl<Module> From<instar_analysis::Diagnostic<Module>> for Diagnostic<Module> {
-    fn from(diagnostic: instar_analysis::Diagnostic<Module>) -> Self {
+impl<Module> From<AnalysisDiagnostic<Module>> for Diagnostic<Module> {
+    fn from(diagnostic: AnalysisDiagnostic<Module>) -> Self {
         Self {
             location: diagnostic.location,
             kind: Kind::Analysis(diagnostic.kind),

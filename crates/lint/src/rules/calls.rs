@@ -1,3 +1,7 @@
+use std::time::Instant;
+
+use instar_analysis::Options;
+
 use vermis::{
     token::Span,
     tree::{NodeIndex, NodeKind},
@@ -11,7 +15,7 @@ use super::{
 use crate::Rule;
 
 impl Context<'_, '_> {
-    pub(super) fn requires(&mut self, options: &crate::Options, started: std::time::Instant) {
+    pub(super) fn requires(&mut self, options: &Options, started: Instant) {
         for site in self.source.requires {
             if options.interrupted(started).is_some() {
                 break;

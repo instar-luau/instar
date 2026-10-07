@@ -1,11 +1,12 @@
 //! Instar rule configuration and validation.
-use std::{collections::BTreeMap, num::NonZeroUsize};
+use std::{collections::BTreeMap, io, num::NonZeroUsize};
 
-use instar_analysis::error::invalid;
+use instar_analysis::{error::invalid, selection};
+use regex::Regex;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::Rule;
+use crate::{Rule, inventory};
 
 macro_rules! configuration {
     ($($field:ident => $identity:ident: $settings:ident, $documentation:literal;)*) => {
@@ -82,7 +83,7 @@ impl Default for AllowedSettings {
     }
 }
 
-crate::inventory::inventory!(configuration);
+inventory::inventory!(configuration);
 
 impl Configuration {
     /// Whether inferred native binding types are needed.
@@ -97,11 +98,11 @@ impl Configuration {
     /// # Errors
     /// Returns an error for invalid include or exclude globs or an invalid
     /// unused-variable ignored-name regular expression.
-    pub fn validate(&self) -> std::io::Result<regex::Regex> {
-        instar_analysis::selection::validate(self.include.as_deref(), "lint.include")?;
-        instar_analysis::selection::validate(self.exclude.as_deref(), "lint.exclude")?;
+    pub fn validate(&self) -> io::Result<Regex> {
+        selection::validate(self.include.as_deref(), "lint.include")?;
+        selection::validate(self.exclude.as_deref(), "lint.exclude")?;
 
-        regex::Regex::new(&self.unused_variable.ignore_pattern).map_err(|error| {
+        Regex::new(&self.unused_variable.ignore_pattern).map_err(|error| {
             invalid(format!(
                 "lint.unused_variable.ignore_pattern: invalid regular expression: {error}"
             ))

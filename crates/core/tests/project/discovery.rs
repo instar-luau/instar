@@ -1,13 +1,13 @@
 //! Synthetic configuration discovery and inheritance fixtures.
-use std::{fs, io, path::Path, time::Duration};
+use std::{error::Error, fs, io, path::Path, time::Duration};
 
 use instar_core::project::Project;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use crate::support::{Directory, copy, normalize};
 
 #[test]
-fn configuration_projects() -> Result<(), Box<dyn std::error::Error>> {
+fn configuration_projects() -> Result<(), Box<dyn Error>> {
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/project");
 
     let mut cases = fs::read_dir(fixtures)?
@@ -49,11 +49,11 @@ fn configuration_projects() -> Result<(), Box<dyn std::error::Error>> {
             let mut output = json!({"configuration": project.configuration, "native": project.native.snapshot()?});
 
             normalize(
-                &mut output,
                 &directory.path.to_string_lossy().replace('\\', "/"),
+                &mut output,
             );
 
-            let expected: serde_json::Map<String, Value> =
+            let expected: Map<String, Value> =
                 serde_json::from_str(&fs::read_to_string(case.join("expected.json"))?)?;
 
             for (pointer, expected) in expected {

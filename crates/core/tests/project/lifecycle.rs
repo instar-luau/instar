@@ -4,6 +4,7 @@ use std::{collections::BTreeSet, fs, io, rc::Rc, time::Duration};
 use instar_analysis::Options;
 
 use instar_core::{
+    native,
     project::Change,
     resolve::{Identity, Request},
 };
@@ -576,17 +577,14 @@ fn native_adapter_uses_rust_results_for_aliases_instances_and_lifecycle() -> io:
     let links = project.prepare(&caller, None, &Options::new(Duration::from_secs(5)))?;
     assert_eq!(links.len(), 1);
 
-    assert_eq!(
-        links[0].module,
-        instar_core::native::name(&node.module.identity)
-    );
+    assert_eq!(links[0].module, native::name(&node.module.identity));
 
     assert_eq!(links[0].revision, node.document.revision);
     assert_eq!(links[0].argument, node.sites[0].range);
 
     assert_eq!(
         links[0].target,
-        instar_core::native::name(&node.sites[0].target.as_ref().expect("Rust target").identity)
+        native::name(&node.sites[0].target.as_ref().expect("Rust target").identity)
     );
 
     assert_eq!(
@@ -633,7 +631,7 @@ fn native_adapter_uses_rust_results_for_aliases_instances_and_lifecycle() -> io:
 
     assert_eq!(
         links[0].target,
-        instar_core::native::name(
+        native::name(
             &node.sites[0]
                 .target
                 .as_ref()

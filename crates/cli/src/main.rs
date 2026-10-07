@@ -8,20 +8,25 @@ mod reporting;
 mod writing;
 
 use std::{
+    env,
     io::{self, IsTerminal},
     process::ExitCode,
 };
 
-use arguments::{Arguments, Command, Worker};
-use clap::{CommandFactory, FromArgMatches, Parser};
+use clap::{ColorChoice, CommandFactory, FromArgMatches, Parser};
+use color_eyre::config::{HookBuilder, Theme};
+use instar_bridge::worker as analysis;
+use instar_format::worker as formatting;
+
+use crate::arguments::{Arguments, Command, Worker};
 
 fn main() -> ExitCode {
-    let values = std::env::args_os().collect::<Vec<_>>();
+    let values = env::args_os().collect::<Vec<_>>();
 
     if values.get(1).is_some_and(|value| value == "worker") {
         let result = match Worker::parse_from(values.into_iter().skip(1)) {
-            Worker::Analysis => instar_bridge::worker::run(),
-            Worker::Format => instar_format::worker::run(),
+            Worker::Analysis => analysis::run(),
+            Worker::Format => formatting::run(),
         };
 
         return match result {
@@ -57,32 +62,27 @@ fn main() -> ExitCode {
         .next_back();
 
     let color = match color.as_deref() {
-        Some("always") => clap::ColorChoice::Always,
-        Some("never") => clap::ColorChoice::Never,
+        Some("always") => ColorChoice::Always,
+        Some("never") => ColorChoice::Never,
 
-        _ if std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()) => {
-            clap::ColorChoice::Never
-        }
+        _ if env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()) => ColorChoice::Never,
 
-        _ => clap::ColorChoice::Auto,
+        _ => ColorChoice::Auto,
     };
 
     let matches = Arguments::command().color(color).get_matches_from(values);
     let arguments = Arguments::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
 
     let theme = if !arguments.json
-        && (color == clap::ColorChoice::Always
-            || (color == clap::ColorChoice::Auto && io::stderr().is_terminal()))
+        && (color == ColorChoice::Always
+            || (color == ColorChoice::Auto && io::stderr().is_terminal()))
     {
-        color_eyre::config::Theme::dark()
+        Theme::dark()
     } else {
-        color_eyre::config::Theme::new()
+        Theme::new()
     };
 
-    if let Err(error) = color_eyre::config::HookBuilder::default()
-        .theme(theme)
-        .install()
-    {
+    if let Err(error) = HookBuilder::default().theme(theme).install() {
         eprintln!("{error}");
 
         return ExitCode::from(2);

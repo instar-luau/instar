@@ -1,5 +1,7 @@
 //! Typed Luau string literal values.
 
+use std::str;
+
 use vermis::{
     token::TokenKind,
     tree::{NodeIndex, NodeKind, Tree},
@@ -53,7 +55,7 @@ fn decode(bytes: &[u8]) -> Option<Vec<u8>> {
             content = &content[1..];
         }
 
-        let text = std::str::from_utf8(content).ok()?;
+        let text = str::from_utf8(content).ok()?;
 
         return Some(text.replace("\r\n", "\n").replace('\r', "\n").into_bytes());
     }
@@ -104,7 +106,7 @@ fn decode(bytes: &[u8]) -> Option<Vec<u8>> {
             }
 
             b'x' => {
-                let digits = std::str::from_utf8(content.get(index..index + 2)?).ok()?;
+                let digits = str::from_utf8(content.get(index..index + 2)?).ok()?;
                 output.push(u8::from_str_radix(digits, 16).ok()?);
                 index += 2;
             }
@@ -122,7 +124,7 @@ fn decode(bytes: &[u8]) -> Option<Vec<u8>> {
                         .iter()
                         .position(|&byte| byte == b'}')?;
 
-                let digits = std::str::from_utf8(&content[index..end]).ok()?;
+                let digits = str::from_utf8(&content[index..end]).ok()?;
                 let character = char::from_u32(u32::from_str_radix(digits, 16).ok()?)?;
                 let mut buffer = [0; 4];
                 output.extend_from_slice(character.encode_utf8(&mut buffer).as_bytes());
@@ -137,7 +139,7 @@ fn decode(bytes: &[u8]) -> Option<Vec<u8>> {
                 }
 
                 output.push(
-                    std::str::from_utf8(&content[start..index])
+                    str::from_utf8(&content[start..index])
                         .ok()?
                         .parse::<u8>()
                         .ok()?,

@@ -33,12 +33,14 @@ all = { level = "deny", priority = -1 }
 cargo = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
 
+absolute_paths = "deny"
 allow_attributes = "deny"
 allow_attributes_without_reason = "deny"
 arbitrary_source_item_ordering = "deny"
 clone_on_ref_ptr = "deny"
 definition_in_module_root = "deny"
 self_named_module_files = "deny"
+single_char_lifetime_names = "deny"
 
 [workspace.lints.rust]
 deprecated_safe = { level = "deny", priority = -1 }

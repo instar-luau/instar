@@ -40,6 +40,20 @@ namespace instar {
         }
     }
 
+    void apply_flags(rust::Slice<const NativeFlag> flags) {
+        validate_flags(flags);
+
+        for (const auto &flag : flags) {
+            const std::string name(flag.name);
+
+            if (flag.is_boolean) {
+                registered_flag<bool>(name)->value = flag.boolean;
+            } else {
+                registered_flag<int>(name)->value = flag.integer;
+            }
+        }
+    }
+
     rust::Vec<NativeFlag> normalize_flags(rust::Slice<const NativeFlag> flags) {
         validate_flags(flags);
         rust::Vec<NativeFlag> result;
@@ -63,19 +77,5 @@ namespace instar {
         }
 
         return result;
-    }
-
-    void apply_flags(rust::Slice<const NativeFlag> flags) {
-        validate_flags(flags);
-
-        for (const auto &flag : flags) {
-            const std::string name(flag.name);
-
-            if (flag.is_boolean) {
-                registered_flag<bool>(name)->value = flag.boolean;
-            } else {
-                registered_flag<int>(name)->value = flag.integer;
-            }
-        }
     }
 }

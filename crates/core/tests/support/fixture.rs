@@ -5,7 +5,13 @@ use std::{
 };
 
 use instar_analysis::Options;
-use instar_core::project::Project;
+
+use instar_core::{
+    documentation,
+    project::{Change, Project},
+    roblox,
+};
+
 use serde_json::Value;
 
 pub(crate) struct Directory {
@@ -71,22 +77,19 @@ pub(crate) fn copy(source: &Path, target: &Path, root: Option<&str>) -> io::Resu
     Ok(())
 }
 
-pub(crate) fn normalize(value: &mut Value, root: &str) {
+pub(crate) fn normalize(root: &str, value: &mut Value) {
     match value {
         Value::String(text) => *text = text.replace('\\', "/").replace(root, "$ROOT"),
-        Value::Array(values) => values.iter_mut().for_each(|value| normalize(value, root)),
-        Value::Object(values) => values.values_mut().for_each(|value| normalize(value, root)),
+        Value::Array(values) => values.iter_mut().for_each(|value| normalize(root, value)),
+        Value::Object(values) => values.values_mut().for_each(|value| normalize(root, value)),
         _ => {}
     }
 }
 
 fn assets(project: &mut Project) -> io::Result<()> {
     for (directory, fixture) in [
-        (instar_core::roblox::cache_directory()?, "project"),
-        (
-            instar_core::documentation::cache_directory()?,
-            "documentation",
-        ),
+        (roblox::cache_directory()?, "project"),
+        (documentation::cache_directory()?, "documentation"),
     ] {
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/assets")
@@ -95,7 +98,7 @@ fn assets(project: &mut Project) -> io::Result<()> {
         for entry in fs::read_dir(fixture)? {
             let entry = entry?;
 
-            project.change(instar_core::project::Change::Overlay {
+            project.change(Change::Overlay {
                 path: directory.join(entry.file_name()),
                 text: Some(fs::read_to_string(entry.path())?),
             })?;

@@ -1,14 +1,12 @@
 //! Worker execution from a standalone relocated CLI.
 
-use std::{fs, io, process::Command};
+use std::{env::consts::EXE_SUFFIX, fs, io, process::Command, str};
 
 #[test]
 fn relocated_executable_runs_all_workers() -> io::Result<()> {
     let directory = tempfile::tempdir()?;
 
-    let executable = directory
-        .path()
-        .join(format!("tool{}", std::env::consts::EXE_SUFFIX));
+    let executable = directory.path().join(format!("tool{EXE_SUFFIX}"));
 
     fs::copy(env!("CARGO_BIN_EXE_instar"), &executable)?;
 
@@ -53,7 +51,7 @@ fn completions_exclude_internal_worker_modes() -> io::Result<()> {
         assert!(output.status.success(), "{shell}: {output:?}");
         assert!(output.stderr.is_empty(), "{shell}: {output:?}");
 
-        let script = std::str::from_utf8(&output.stdout).expect("UTF-8 completions");
+        let script = str::from_utf8(&output.stdout).expect("UTF-8 completions");
 
         assert!(
             !script.contains("worker"),

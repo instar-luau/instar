@@ -2,7 +2,7 @@ use std::{
     cell::OnceCell,
     collections::BTreeMap,
     fmt, io,
-    path::{Path, PathBuf},
+    path::{self, Path, PathBuf},
     time::Duration,
 };
 
@@ -25,6 +25,23 @@ impl fmt::Debug for Configuration {
 }
 
 impl Configuration {
+    /// Creates a configuration with upstream defaults.
+    ///
+    /// # Errors
+    /// Returns an error if native configuration allocation fails.
+    pub fn new() -> io::Result<Self> {
+        let native = boundary::create().map_err(io::Error::other)?;
+
+        if native.is_null() {
+            return Err(io::Error::other("native configuration allocation failed"));
+        }
+
+        Ok(Self {
+            native,
+            snapshot: OnceCell::new(),
+        })
+    }
+
     pub(crate) fn restore(snapshot: &Snapshot) -> io::Result<Self> {
         let mut configuration = Self::new()?;
 
@@ -81,23 +98,6 @@ impl Configuration {
         Ok(configuration)
     }
 
-    /// Creates a configuration with upstream defaults.
-    ///
-    /// # Errors
-    /// Returns an error if native configuration allocation fails.
-    pub fn new() -> io::Result<Self> {
-        let native = boundary::create().map_err(io::Error::other)?;
-
-        if native.is_null() {
-            return Err(io::Error::other("native configuration allocation failed"));
-        }
-
-        Ok(Self {
-            native,
-            snapshot: OnceCell::new(),
-        })
-    }
-
     /// Applies a `.luaurc` or `.config.luau` layer transactionally.
     ///
     /// Alias paths retain their defining file's directory. Luau code runs in
@@ -126,7 +126,7 @@ impl Configuration {
         };
 
         let absolute =
-            std::path::absolute(path).map_err(|error| source_error(path, error.kind(), error))?;
+            path::absolute(path).map_err(|error| source_error(path, error.kind(), error))?;
 
         let location = absolute.to_str().ok_or_else(|| {
             source_error(

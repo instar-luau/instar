@@ -1,8 +1,9 @@
 //! Native Luau configuration and host-adapted analysis representation.
 
 #[expect(
+    clippy::absolute_paths,
     clippy::arbitrary_source_item_ordering,
-    reason = "CXX emits pointer trait implementations after generated factory functions"
+    reason = "CXX generates fully qualified paths and pointer trait implementations after factory functions"
 )]
 #[expect(
     unsafe_code,

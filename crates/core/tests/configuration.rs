@@ -49,7 +49,7 @@ fn fixtures() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn definition<'a>(schema: &'a Value, node: &'a Value) -> &'a Value {
+fn definition<'schema>(schema: &'schema Value, node: &'schema Value) -> &'schema Value {
     if let Some(reference) = node.get("$ref").and_then(Value::as_str) {
         schema
             .pointer(

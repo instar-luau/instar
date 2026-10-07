@@ -52,7 +52,7 @@ namespace instar::frontend {
 
             return nullptr;
         }
-    } // namespace
+    }
 
     void
     assign_documentation(const Luau::ScopePtr &scope, const std::string &identity, const std::string &namespace_name) {

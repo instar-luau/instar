@@ -1,11 +1,18 @@
 //! Validates a generated Roblox asset bundle against native analysis.
-use std::{env, io, path::Path, time::Duration};
+
+use std::{
+    env, fs, io,
+    path::{self, Path},
+    time::Duration,
+};
 
 use instar_analysis::{Completion, Options};
 
 use instar_core::{
     analysis::Entry,
+    documentation,
     project::{Change, Project},
+    roblox,
 };
 
 fn main() -> io::Result<()> {
@@ -13,13 +20,13 @@ fn main() -> io::Result<()> {
         .nth(1)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "expected asset directory"))?;
 
-    let destination = std::path::absolute(Path::new(&argument))?;
+    let destination = path::absolute(Path::new(&argument))?;
     let directory = destination.join("roblox");
 
     for profile in ["none", "local", "plugin", "roblox"] {
         let mut project = Project::new(Duration::from_secs(5));
         let configuration = format!("[roblox]\nenabled=true\nsecurity='{profile}'");
-        let cache = instar_core::roblox::cache_directory()?;
+        let cache = roblox::cache_directory()?;
 
         for name in [
             "metadata.json",
@@ -32,18 +39,16 @@ fn main() -> io::Result<()> {
         ] {
             project.change(Change::Overlay {
                 path: cache.join(name),
-                text: Some(std::fs::read_to_string(directory.join(name))?),
+                text: Some(fs::read_to_string(directory.join(name))?),
             })?;
         }
 
-        let cache = instar_core::documentation::cache_directory()?;
+        let cache = documentation::cache_directory()?;
 
         for name in ["metadata.json", "documentation.json"] {
             project.change(Change::Overlay {
                 path: cache.join(name),
-                text: Some(std::fs::read_to_string(
-                    destination.join("luau").join(name),
-                )?),
+                text: Some(fs::read_to_string(destination.join("luau").join(name))?),
             })?;
         }
 

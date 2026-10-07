@@ -1,3 +1,5 @@
+use instar_syntax::literal;
+
 use vermis::{
     token::{Keyword, Symbol, TokenKind},
     tree::{NodeIndex, NodeKind},
@@ -161,7 +163,7 @@ pub(super) fn check(context: &mut Context<'_, '_>, node: NodeIndex, ancestors: &
                 TokenKind::QuotedString
                     | TokenKind::RawString
                     | TokenKind::InterpolatedStringSimple
-            ) && instar_syntax::literal::bytes(context.tree, node).is_none() =>
+            ) && literal::bytes(context.tree, node).is_none() =>
         {
             context.finding(
                 node,
