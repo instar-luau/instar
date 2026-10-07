@@ -281,7 +281,14 @@ impl Project {
         let path = absolute(path)?;
         let changed = self.view.changes(&path);
         self.view.change(&path, change);
-        self.roblox.clear();
+
+        self.roblox.retain(|_, assets| {
+            !assets.definitions.iter().any(|(source, _)| {
+                source.parent().is_some_and(|directory| {
+                    path.starts_with(directory) || directory.starts_with(&path)
+                })
+            })
+        });
 
         self.settings.retain(|_, settings| {
             !settings

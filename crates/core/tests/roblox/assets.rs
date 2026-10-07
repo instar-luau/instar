@@ -4,6 +4,7 @@ use std::{
     io::{self, BufRead, BufReader, Write},
     net::TcpListener,
     path::Path,
+    rc::Rc,
     sync::mpsc,
     thread,
     time::{Duration, Instant},
@@ -114,6 +115,19 @@ fn downloads_verified_profiles_and_loads_cache_without_server() -> io::Result<()
             ("roblox", Security::Roblox),
         ] {
             let assets = project.load_assets(&cache, security)?;
+
+            project.change(Change::Overlay {
+                path: directory.path().join("unrelated.luau"),
+                text: Some("return 1".to_owned()),
+            })?;
+
+            assert!(Rc::ptr_eq(&assets, &project.load_assets(&cache, security)?));
+            project.change(Change::Disk(cache.join("metadata.json")))?;
+
+            assert!(!Rc::ptr_eq(
+                &assets,
+                &project.load_assets(&cache, security)?
+            ));
 
             assert_eq!(
                 assets.definitions[0].1.text.as_ref(),
