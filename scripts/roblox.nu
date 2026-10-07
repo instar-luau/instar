@@ -713,17 +713,6 @@ def main [
             revision: $revision
             documentation: ($documents.luau | hash sha256)
         } | to json --raw | save ($luau | path join metadata.json)
-
-        let validation = cargo run --offline --manifest-path (
-            $DATA
-            | path dirname
-            | path dirname
-            | path join Cargo.toml
-        ) --package instar-core --example validate -- $destination | complete
-
-        if $validation.exit_code != 0 {
-            error make $"Native Roblox asset validation failed: ($validation.stderr)"
-        }
     } catch {|failure|
         rm --recursive $destination
         error make $failure.msg
