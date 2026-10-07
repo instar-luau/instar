@@ -12,10 +12,18 @@ categories = ["development-tools"]
 
 [workspace.dependencies]
 glob = "0.3"
+instar-analysis = { path = "crates/analysis" }
+instar-bridge = { path = "crates/bridge" }
+instar-core = { path = "crates/core" }
+instar-format = { path = "crates/format" }
+instar-lint = { path = "crates/lint" }
+instar-syntax = { path = "crates/syntax" }
 regex = "1"
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tempfile = "3"
+thiserror = "2"
 toml = "1"
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 vermis = "0.7"
@@ -27,10 +35,10 @@ pedantic = { level = "deny", priority = -1 }
 
 allow_attributes = "deny"
 allow_attributes_without_reason = "deny"
-clone_on_ref_ptr = "deny"
-self_named_module_files = "deny"
-definition_in_module_root = "deny"
 arbitrary_source_item_ordering = "deny"
+clone_on_ref_ptr = "deny"
+definition_in_module_root = "deny"
+self_named_module_files = "deny"
 
 [workspace.lints.rust]
 deprecated_safe = { level = "deny", priority = -1 }

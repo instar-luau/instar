@@ -10,13 +10,13 @@ categories.workspace = true
 
 [dependencies]
 glob.workspace = true
-instar-analysis = { path = "../analysis" }
-instar-syntax = { path = "../syntax" }
+instar-analysis.workspace = true
+instar-syntax.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-vermis.workspace = true
 unicode-width = "0.2"
+vermis.workspace = true
 
 [dev-dependencies]
 toml.workspace = true

@@ -23,17 +23,17 @@ eyre = "0.6"
 glob.workspace = true
 ignore = "0.4"
 indicatif = "0.18"
-instar-analysis = { path = "../analysis" }
-instar-bridge = { path = "../bridge" }
-instar-core = { path = "../core" }
-instar-format = { path = "../format" }
-instar-lint = { path = "../lint" }
+instar-analysis.workspace = true
+instar-bridge.workspace = true
+instar-core.workspace = true
+instar-format.workspace = true
+instar-lint.workspace = true
 rayon = "1"
 serde_json.workspace = true
-tempfile = "3"
-thiserror = "2"
+tempfile.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
-tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "ansi", "json", "registry"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["ansi", "fmt", "json", "registry"] }
 
 [lints]
 workspace = true

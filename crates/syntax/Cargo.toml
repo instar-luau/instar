@@ -9,7 +9,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-instar-analysis = { path = "../analysis" }
+instar-analysis.workspace = true
 vermis.workspace = true
 
 [lints]

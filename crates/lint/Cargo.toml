@@ -9,8 +9,8 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-instar-analysis = { path = "../analysis" }
-instar-syntax = { path = "../syntax" }
+instar-analysis.workspace = true
+instar-syntax.workspace = true
 regex.workspace = true
 schemars.workspace = true
 serde.workspace = true

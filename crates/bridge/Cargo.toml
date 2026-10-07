@@ -10,7 +10,7 @@ categories.workspace = true
 
 [dependencies]
 cxx = "1"
-instar-analysis = { path = "../analysis" }
+instar-analysis.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
