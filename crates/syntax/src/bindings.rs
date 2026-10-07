@@ -5,15 +5,15 @@ use std::{
     time::Instant,
 };
 
+use instar_analysis::{Options, Reason};
+
 use vermis::{
     token::{Keyword, TokenKind},
     tree::{NodeIndex, NodeKind, NodeList, Tree},
 };
 
-use instar_analysis::{Options, Reason};
-
-#[derive(Clone, Copy, PartialEq, Eq)]
 /// Lexical declaration category.
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Category {
     /// Local variable.
     Local,
@@ -52,9 +52,8 @@ pub struct Binding {
     pub mutated: bool,
 }
 
-#[derive(Default)]
-/// One lexical declaration and its observed uses.
 /// Lexical declarations and references from one immutable syntax tree.
+#[derive(Default)]
 pub struct Bindings {
     /// Declarations indexed by syntax node identity.
     pub declarations: BTreeMap<usize, Binding>,

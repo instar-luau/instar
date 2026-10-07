@@ -1,19 +1,12 @@
+use instar_syntax::bindings::Category;
 use vermis::tree::{NodeIndex, NodeKind};
 
-use super::Context;
-use super::syntax::{builtin, complexity, path, symbol_path, unwrap};
+use super::{
+    Context,
+    syntax::{builtin, complexity, path, symbol_path, unwrap},
+};
+
 use crate::{Level, Rule};
-use instar_syntax::bindings::Category;
-
-pub(super) fn check(context: &mut Context<'_, '_>, node: NodeIndex, ancestors: &[NodeIndex]) {
-    match &context.tree.node(node).kind {
-        NodeKind::Name { .. } => context.name(node),
-        NodeKind::Function { .. } => context.function(node),
-        _ => {}
-    }
-
-    context.deprecated(node, ancestors);
-}
 
 impl Context<'_, '_> {
     pub(super) fn deprecated(&mut self, node: NodeIndex, ancestors: &[NodeIndex]) {
@@ -219,4 +212,14 @@ impl Context<'_, '_> {
             );
         }
     }
+}
+
+pub(super) fn check(context: &mut Context<'_, '_>, node: NodeIndex, ancestors: &[NodeIndex]) {
+    match &context.tree.node(node).kind {
+        NodeKind::Name { .. } => context.name(node),
+        NodeKind::Function { .. } => context.function(node),
+        _ => {}
+    }
+
+    context.deprecated(node, ancestors);
 }

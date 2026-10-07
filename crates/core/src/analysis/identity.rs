@@ -1,17 +1,10 @@
-//! Project analysis identities and source anchoring.
-
-mod diagnostics;
-
-pub(crate) use diagnostics::Report;
-
 use std::{
     collections::BTreeMap,
     io,
     path::{Path, PathBuf},
 };
 
-use instar_analysis::Location;
-use instar_analysis::error::invalid;
+use instar_analysis::{Location, error::invalid};
 
 use crate::{
     resolve::{Identity, Module},

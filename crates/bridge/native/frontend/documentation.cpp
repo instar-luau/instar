@@ -1,11 +1,10 @@
-#include "instar-bridge/src/boundary.rs.h"
-
-#include "Luau/Type.h"
-#include "Luau/TypeUtils.h"
 #include "documentation.hpp"
 #include "state.hpp"
 
-namespace instar {
+#include "Luau/Type.h"
+#include "Luau/TypeUtils.h"
+
+namespace instar::frontend {
     namespace {
         void rebase(std::optional<std::string> &symbol, const std::string &prefix, const std::string &replacement) {
             if (symbol && symbol->compare(0, prefix.size(), prefix) == 0) {
@@ -70,12 +69,12 @@ namespace instar {
         }
     }
 
-    rust::String NativeFrontend::documentation(rust::Str module, rust::Str symbol) const {
-        const auto environment = state->resolver.environments.find(std::string(module));
+    rust::String documentation(const State &state, rust::Str module, rust::Str symbol) {
+        const auto environment = state.resolver.environments.find(std::string(module));
 
-        const auto scope = environment == state->resolver.environments.end()
-                               ? state->frontend.globals.globalScope
-                               : state->frontend.getEnvironmentScope(environment->second);
+        const auto scope = environment == state.resolver.environments.end()
+                               ? state.frontend.globals.globalScope
+                               : state.frontend.getEnvironmentScope(environment->second);
 
         const std::string path(symbol);
         const auto slash = path.find('/');
@@ -90,7 +89,7 @@ namespace instar {
         std::optional<std::string> documentation;
 
         if (path.substr(0, slash) == "global") {
-            const auto binding = scope->lookupEx(state->frontend.globals.globalNames.names->getOrAdd(root.c_str()));
+            const auto binding = scope->lookupEx(state.frontend.globals.globalNames.names->getOrAdd(root.c_str()));
 
             if (!binding) {
                 return {};
@@ -139,4 +138,4 @@ namespace instar {
 
         return documentation ? rust::String(*documentation) : rust::String{};
     }
-} // namespace instar
+}

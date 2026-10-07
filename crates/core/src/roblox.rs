@@ -27,35 +27,6 @@ const HOST: &str = "https://instar-luau.github.io/instar/roblox";
 const PROFILES: [&str; 4] = ["none", "local", "plugin", "roblox"];
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
-/// Returns the versioned, automatically managed Roblox asset cache.
-///
-/// # Errors
-/// Returns an error when the operating system's user cache directory is unavailable.
-pub fn cache_directory() -> io::Result<PathBuf> {
-    let base = if cfg!(target_os = "windows") {
-        std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
-    } else if cfg!(target_os = "macos") {
-        std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Caches"))
-    } else {
-        std::env::var_os("XDG_CACHE_HOME")
-            .filter(|path| Path::new(path).is_absolute())
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
-    }
-    .ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            "user cache directory is unavailable",
-        )
-    })?;
-
-    if !base.is_absolute() {
-        return Err(invalid("user cache directory must be absolute"));
-    }
-
-    Ok(base.join("instar").join("roblox").join(VERSION))
-}
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Metadata {
@@ -214,6 +185,35 @@ impl Project {
             documentation,
         })
     }
+}
+
+/// Returns the versioned, automatically managed Roblox asset cache.
+///
+/// # Errors
+/// Returns an error when the operating system's user cache directory is unavailable.
+pub fn cache_directory() -> io::Result<PathBuf> {
+    let base = if cfg!(target_os = "windows") {
+        std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
+    } else if cfg!(target_os = "macos") {
+        std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Caches"))
+    } else {
+        std::env::var_os("XDG_CACHE_HOME")
+            .filter(|path| Path::new(path).is_absolute())
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+    }
+    .ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "user cache directory is unavailable",
+        )
+    })?;
+
+    if !base.is_absolute() {
+        return Err(invalid("user cache directory must be absolute"));
+    }
+
+    Ok(base.join("instar").join("roblox").join(VERSION))
 }
 
 fn names(values: &[String]) -> io::Result<BTreeSet<&str>> {

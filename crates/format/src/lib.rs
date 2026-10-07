@@ -1,7 +1,6 @@
 //! Luau source formatting.
 
 pub mod configuration;
-
 mod diagnostic;
 mod formatter;
 mod formatting;

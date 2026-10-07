@@ -146,12 +146,6 @@ impl Configuration {
     }
 }
 
-/// Generates the schema directly from the configuration types.
-#[must_use]
-pub fn schema() -> schemars::Schema {
-    schemars::schema_for!(Configuration)
-}
-
 /// Optional file-selection overrides.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -453,4 +447,10 @@ pub enum Security {
 
     /// Roblox-internal APIs.
     Roblox,
+}
+
+/// Generates the schema directly from the configuration types.
+#[must_use]
+pub fn schema() -> schemars::Schema {
+    schemars::schema_for!(Configuration)
 }

@@ -95,14 +95,13 @@ namespace instar::frontend {
             }
 
             nested = mismatch->error.get();
-            const std::string relatedName = nested->moduleName.empty() ? name : nested->moduleName;
+            const std::string related_name = nested->moduleName.empty() ? name : nested->moduleName;
 
             result.related.push_back(
-                NativeRelated{location(host, relatedName, nested->location), rust::String(Luau::toString(*nested))}
+                NativeRelated{location(host, related_name, nested->location), rust::String(Luau::toString(*nested))}
             );
         }
 
         return result;
     }
-
 } // namespace instar::frontend

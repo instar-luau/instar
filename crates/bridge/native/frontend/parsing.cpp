@@ -1,22 +1,15 @@
-#include "instar-bridge/src/boundary.rs.h"
-
-#include "frontend/diagnostics.hpp"
-#include "frontend/state.hpp"
+#include "diagnostics.hpp"
+#include "parsing.hpp"
+#include "state.hpp"
 
 #include "Luau/Ast.h"
 
+#include <map>
 #include <stdexcept>
 #include <utility>
 
-namespace instar {
-    using frontend::offset;
-    using frontend::Resolver;
-
+namespace instar::frontend {
     namespace {
-        std::string text(rust::Str value) {
-            return std::string(value.data(), value.size());
-        }
-
         struct Calls final : Luau::AstVisitor {
             const std::string &source;
             std::map<std::pair<size_t, size_t>, Luau::AstExprCall *> calls;
@@ -36,31 +29,17 @@ namespace instar {
 
             bool visit(Luau::AstTypePack *) override { return true; }
         };
-
-    } // namespace
-
-    NativeFrontend::NativeFrontend() : state(std::make_unique<State>()) {}
-
-    NativeFrontend::~NativeFrontend() = default;
-
-    std::unique_ptr<NativeFrontend> create_frontend() {
-        return std::make_unique<NativeFrontend>();
     }
 
-    void NativeFrontend::configure(rust::Str name, const NativeConfiguration &configuration) {
-        const std::string module = text(name);
-        state->frontend.markDirty(module);
-        state->resolver.configurations.insert_or_assign(module, configuration.value());
-    }
-
-    rust::Vec<NativeLink> NativeFrontend::prepare(const Host &host, rust::Slice<const rust::String> names) {
-        auto &frontend = state->frontend;
-        state->resolver.host = &host;
+    rust::Vec<NativeLink> prepare(State &state, const Host &host, rust::Slice<const rust::String> names) {
+        auto &frontend = state.frontend;
+        state.resolver.host = &host;
 
         struct Reset {
             Resolver &resolver;
+
             ~Reset() { resolver.host = nullptr; }
-        } reset{state->resolver};
+        } reset{state.resolver};
 
         std::vector<Luau::ModuleName> modules;
 
@@ -152,27 +131,4 @@ namespace instar {
 
         return links;
     }
-
-    void NativeFrontend::invalidate(rust::Slice<const rust::String> names) {
-        if (names.empty()) {
-            return;
-        }
-
-        std::vector<Luau::ModuleName> modules;
-
-        for (const rust::String &name : names) {
-            modules.emplace_back(name);
-            state->resolver.configurations.erase(std::string(name));
-            state->definitions.erase(std::string(name));
-        }
-
-        state->frontend.clearModules(modules);
-        state->frontend.clearBuiltinEnvironments();
-        state->resolver.environments.clear();
-        state->definitions.clear();
-
-        for (const auto &[name, node] : state->frontend.sourceNodes) {
-            state->frontend.markDirty(name);
-        }
-    }
-} // namespace instar
+}

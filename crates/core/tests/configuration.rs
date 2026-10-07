@@ -1,5 +1,4 @@
 //! Fixture-backed Instar configuration and schema contract.
-
 use std::{error::Error, fs, path::Path};
 
 use instar_core::configuration::{Configuration, schema};
@@ -119,7 +118,6 @@ fn schema_fields() -> Result<(), Box<dyn Error>> {
 fn schema_contract() -> Result<(), Box<dyn Error>> {
     let schema = serde_json::to_value(schema())?;
     let properties = schema["properties"].as_object().expect("root properties");
-
     let check = definition(&schema, &properties["check"]);
     let format = definition(&schema, &properties["format"]);
     let lint = definition(&schema, &properties["lint"]);

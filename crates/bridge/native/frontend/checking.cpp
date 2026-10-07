@@ -1,7 +1,7 @@
-#include "instar-bridge/src/boundary.rs.h"
-
+#include "checking.hpp"
 #include "diagnostics.hpp"
 #include "documentation.hpp"
+#include "parsing.hpp"
 #include "roblox.hpp"
 #include "state.hpp"
 
@@ -17,11 +17,7 @@
 #include <thread>
 #include <utility>
 
-namespace instar {
-    using frontend::diagnostic;
-    using frontend::kind;
-    using frontend::Resolver;
-
+namespace instar::frontend {
     namespace {
         struct Interruption {
             const Cancellation &cancellation;
@@ -69,18 +65,11 @@ namespace instar {
 
     } // namespace
 
-    NativeCheck NativeFrontend::check(
-        const Host &host, rust::Slice<const rust::String> entries, double timeout_seconds,
-        rust::Slice<const rust::String> names, const Cancellation &cancellation
-    ) {
-        return analyze(host, entries, timeout_seconds, names, cancellation, true);
-    }
-
-    NativeCheck NativeFrontend::analyze(
-        const Host &host, rust::Slice<const rust::String> entries, double timeout_seconds,
+    NativeCheck analyze(
+        State &state, const Host &host, rust::Slice<const rust::String> entries, double timeout_seconds,
         rust::Slice<const rust::String> names, const Cancellation &cancellation, bool typecheck
     ) {
-        auto &frontend = state->frontend;
+        auto &frontend = state.frontend;
         Interruption interruption(cancellation, timeout_seconds);
         NativeCheck result{{}, interruption.status()};
 
@@ -103,7 +92,7 @@ namespace instar {
                     }
                 }
             }
-        } dirty{*state, result};
+        } dirty{state, result};
 
         try {
             for (const rust::String &opaque : names) {
@@ -131,27 +120,27 @@ namespace instar {
                         .emplace_back(std::string(klass.name), klass.service, klass.creatable, std::move(properties));
                 }
 
-                if (const auto found = state->definitions.find(name);
-                    found != state->definitions.end() && found->second == signature) {
+                if (const auto found = state.definitions.find(name);
+                    found != state.definitions.end() && found->second == signature) {
                     continue;
                 }
 
                 frontend.markDirty(name);
 
                 if (source.definitions.empty()) {
-                    state->resolver.environments.erase(name);
-                    state->definitions.insert_or_assign(name, std::move(signature));
+                    state.resolver.environments.erase(name);
+                    state.definitions.insert_or_assign(name, std::move(signature));
                     continue;
                 }
 
                 bool reused = false;
 
-                for (const auto &[existing, definitions] : state->definitions) {
+                for (const auto &[existing, definitions] : state.definitions) {
                     if (definitions == signature) {
-                        const auto environment = state->resolver.environments.find(existing);
+                        const auto environment = state.resolver.environments.find(existing);
 
-                        if (environment != state->resolver.environments.end()) {
-                            state->resolver.environments.insert_or_assign(name, environment->second);
+                        if (environment != state.resolver.environments.end()) {
+                            state.resolver.environments.insert_or_assign(name, environment->second);
                             reused = true;
                             break;
                         }
@@ -159,7 +148,7 @@ namespace instar {
                 }
 
                 if (reused) {
-                    state->definitions.insert_or_assign(name, std::move(signature));
+                    state.definitions.insert_or_assign(name, std::move(signature));
                     continue;
                 }
 
@@ -169,7 +158,7 @@ namespace instar {
                     return result;
                 }
 
-                const std::string environment = "environment:" + std::to_string(++state->environmentRevision);
+                const std::string environment = "environment:" + std::to_string(++state.environment_revision);
                 Luau::ScopePtr scope = frontend.addEnvironment(environment);
 
                 {
@@ -193,27 +182,27 @@ namespace instar {
                             return result;
                         }
 
-                        const std::string definitionName(definition.name);
+                        const std::string definition_name(definition.name);
 
                         const auto loaded = frontend.loadDefinitionFile(
                             frontend.globals,
                             scope,
                             std::string(definition.text),
-                            definitionName,
+                            definition_name,
                             false
                         );
 
                         for (const Luau::ParseError &error : loaded.parseResult.errors) {
                             const Luau::TypeError syntax{error.getLocation(),
-                                definitionName,
+                                definition_name,
                                 Luau::SyntaxError{error.what()}};
 
-                            result.diagnostics.push_back(diagnostic(host, syntax, definitionName));
+                            result.diagnostics.push_back(diagnostic(host, syntax, definition_name));
                         }
 
                         if (loaded.module) {
                             for (const Luau::TypeError &error : loaded.module->errors) {
-                                result.diagnostics.push_back(diagnostic(host, error, definitionName));
+                                result.diagnostics.push_back(diagnostic(host, error, definition_name));
                             }
                         }
 
@@ -229,7 +218,7 @@ namespace instar {
                             return result;
                         }
 
-                        assign_documentation(scope, definitionName, std::string(definition.namespace_name));
+                        assign_documentation(scope, definition_name, std::string(definition.namespace_name));
                     }
 
                     if (!source.classes.empty()) {
@@ -240,8 +229,8 @@ namespace instar {
                     }
                 }
 
-                state->resolver.environments.insert_or_assign(name, environment);
-                state->definitions.insert_or_assign(name, std::move(signature));
+                state.resolver.environments.insert_or_assign(name, environment);
+                state.definitions.insert_or_assign(name, std::move(signature));
             }
 
             result.completion = interruption.status();
@@ -250,7 +239,7 @@ namespace instar {
                 return result;
             }
 
-            prepare(host, names);
+            prepare(state, host, names);
             result.completion = interruption.status();
 
             if (result.completion != NativeCompletion::Complete) {
@@ -273,12 +262,13 @@ namespace instar {
                 return result;
             }
 
-            state->resolver.host = &host;
+            state.resolver.host = &host;
 
             struct Reset {
                 Resolver &resolver;
+
                 ~Reset() { resolver.host = nullptr; }
-            } reset{state->resolver};
+            } reset{state.resolver};
 
             for (const rust::String &entry : entries) {
                 result.completion = interruption.status();
@@ -324,7 +314,7 @@ namespace instar {
                     result.completion = NativeCompletion::Timeout;
                 }
 
-                const Luau::Config &configuration = state->resolver.getConfig(name, {});
+                const Luau::Config &configuration = state.resolver.getConfig(name, {});
 
                 for (const Luau::TypeError &error : checked->errors) {
                     if (const auto *illegal = Luau::get<Luau::IllegalRequire>(error)) {
@@ -369,5 +359,4 @@ namespace instar {
 
         return result;
     }
-
-} // namespace instar
+}

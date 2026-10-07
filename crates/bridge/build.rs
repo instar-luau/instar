@@ -1,10 +1,10 @@
 //! Builds the private native configuration and frontend boundary.
 
-use std::env;
-use std::fs;
-use std::io;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::{
+    env, fs, io,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 fn main() {
     let output = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo must provide OUT_DIR"));
@@ -33,7 +33,7 @@ fn main() {
         .define("CXX_BRIDGE_SOURCE", source)
         .define("CXX_INCLUDE_DIRECTORY", output.join("cxxbridge/include"))
         .define("CXX_CRATE_DIRECTORY", output.join("cxxbridge/crate"))
-        .build_target("configuration");
+        .build_target("bridge");
 
     let features = env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
 
@@ -62,7 +62,7 @@ fn main() {
     println!("cargo:rustc-link-search=native={}", libraries.display());
 
     for library in [
-        "configuration",
+        "bridge",
         "Luau.Analysis",
         "Luau.Config",
         "Luau.Compiler",
@@ -76,11 +76,7 @@ fn main() {
 
     println!("cargo:rerun-if-changed=CMakeLists.txt");
     println!("cargo:rerun-if-changed=src/boundary.rs");
-    println!("cargo:rerun-if-changed=src/configuration.hpp");
-    println!("cargo:rerun-if-changed=src/configuration.cpp");
-    println!("cargo:rerun-if-changed=src/frontend.rs");
-    println!("cargo:rerun-if-changed=src/frontend.hpp");
-    println!("cargo:rerun-if-changed=src/frontend.cpp");
+    println!("cargo:rerun-if-changed=native");
     println!("cargo:rerun-if-changed=src/frontend");
     println!("cargo:rerun-if-changed=vendor/luau");
 }

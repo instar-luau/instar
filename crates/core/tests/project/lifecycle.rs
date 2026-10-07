@@ -1,5 +1,4 @@
 //! Synthetic source, configuration, graph and sourcemap lifecycle fixtures.
-
 use std::{collections::BTreeSet, fs, io, rc::Rc, time::Duration};
 
 use instar_analysis::Options;
@@ -12,6 +11,74 @@ use instar_core::{
 use serde_json::json;
 
 use crate::support::{Directory, project};
+
+const SERVICE_CASES: &[(&str, bool, bool)] = &[
+    (
+        "require(game:GetService('ReplicatedStorage').Library.Target)",
+        true,
+        true,
+    ),
+    (
+        "require(game:GetService('ReplicatedStorage'):WaitForChild('Library'):WaitForChild('Target', 1))",
+        true,
+        true,
+    ),
+    (
+        "require(game:GetService('ReplicatedStorage'):WaitForChild('Library', timeout).Target)",
+        true,
+        true,
+    ),
+    (
+        "require(game:GetService('ReplicatedStorage'):FindFirstChild('Target', true))",
+        true,
+        true,
+    ),
+    (
+        "require(game:GetService('ReplicatedStorage'):FindFirstChild('Library', false).Target.Parent.Target)",
+        true,
+        true,
+    ),
+    (
+        "local storage=game:GetService('ReplicatedStorage')\nrequire(storage['Library'].Target)",
+        true,
+        true,
+    ),
+    (
+        "require(game:GetService('ReplicatedStorage'):FindFirstChild('Target', false))",
+        true,
+        false,
+    ),
+    (
+        "require(game:GetService(service).Library.Target)",
+        false,
+        false,
+    ),
+    (
+        "require(game:GetService('ReplicatedStorage'):FindFirstChild('Target', recursive))",
+        false,
+        false,
+    ),
+    (
+        "local game={}\nrequire(game:GetService('ReplicatedStorage').Library.Target)",
+        false,
+        false,
+    ),
+    (
+        "local game=game\nlocal function change() game={} end\nrequire(game:GetService('ReplicatedStorage').Library.Target)",
+        false,
+        false,
+    ),
+    (
+        "local function f(game) require(game:GetService('ReplicatedStorage').Library.Target) end",
+        false,
+        false,
+    ),
+    (
+        "game={}\nrequire(game:GetService('ReplicatedStorage').Library.Target)",
+        false,
+        false,
+    ),
+];
 
 fn map(first: &str, second: &str) -> String {
     json!({"name":"Place","className":"DataModel","children":[
@@ -507,74 +574,6 @@ fn configuration_failures_track_absent_conflicting_candidates() -> io::Result<()
 
     Ok(())
 }
-
-const SERVICE_CASES: &[(&str, bool, bool)] = &[
-    (
-        "require(game:GetService('ReplicatedStorage').Library.Target)",
-        true,
-        true,
-    ),
-    (
-        "require(game:GetService('ReplicatedStorage'):WaitForChild('Library'):WaitForChild('Target', 1))",
-        true,
-        true,
-    ),
-    (
-        "require(game:GetService('ReplicatedStorage'):WaitForChild('Library', timeout).Target)",
-        true,
-        true,
-    ),
-    (
-        "require(game:GetService('ReplicatedStorage'):FindFirstChild('Target', true))",
-        true,
-        true,
-    ),
-    (
-        "require(game:GetService('ReplicatedStorage'):FindFirstChild('Library', false).Target.Parent.Target)",
-        true,
-        true,
-    ),
-    (
-        "local storage=game:GetService('ReplicatedStorage')\nrequire(storage['Library'].Target)",
-        true,
-        true,
-    ),
-    (
-        "require(game:GetService('ReplicatedStorage'):FindFirstChild('Target', false))",
-        true,
-        false,
-    ),
-    (
-        "require(game:GetService(service).Library.Target)",
-        false,
-        false,
-    ),
-    (
-        "require(game:GetService('ReplicatedStorage'):FindFirstChild('Target', recursive))",
-        false,
-        false,
-    ),
-    (
-        "local game={}\nrequire(game:GetService('ReplicatedStorage').Library.Target)",
-        false,
-        false,
-    ),
-    (
-        "local game=game\nlocal function change() game={} end\nrequire(game:GetService('ReplicatedStorage').Library.Target)",
-        false,
-        false,
-    ),
-    (
-        "local function f(game) require(game:GetService('ReplicatedStorage').Library.Target) end",
-        false,
-        false,
-    ),
-    (
-        "game={}\nrequire(game:GetService('ReplicatedStorage').Library.Target)",
-        false,
-        false,
-    ),
-];
 
 #[test]
 fn replicated_storage_service_chains_keep_static_and_lexical_context() -> io::Result<()> {

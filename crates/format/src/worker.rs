@@ -1,9 +1,9 @@
 //! Isolated formatter worker entry point.
-
 use std::io::{self, BufRead, Write};
 
-use crate::formatting::{Request, Response};
 use instar_analysis::Options;
+
+use crate::formatting::{Request, Response};
 
 /// Processes formatter requests over standard input and output.
 ///

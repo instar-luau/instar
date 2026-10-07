@@ -27,6 +27,9 @@ pedantic = { level = "deny", priority = -1 }
 allow_attributes = "deny"
 allow_attributes_without_reason = "deny"
 clone_on_ref_ptr = "deny"
+self_named_module_files = "deny"
+definition_in_module_root = "deny"
+arbitrary_source_item_ordering = "deny"
 
 [workspace.lints.rust]
 deprecated_safe = { level = "deny", priority = -1 }

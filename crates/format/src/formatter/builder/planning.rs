@@ -1,47 +1,45 @@
-mod layout;
-mod requires;
-mod trivia;
+use std::{cell::Cell, time::Instant};
 
-use super::{document::Document, quotes::quote};
-use crate::Configuration;
 use instar_analysis::{Options, Reason};
 use instar_syntax::bindings::Bindings;
-use std::{cell::Cell, time::Instant};
 
 use vermis::{
     token::TokenKind,
     tree::{NodeIndex, Tree},
 };
 
-pub(super) struct Plan {
-    pub(super) document: Vec<Document>,
+use super::super::{document::Document, quotes::quote};
+use crate::Configuration;
+
+pub(in crate::formatter) struct Plan {
+    pub(in crate::formatter) document: Vec<Document>,
+    pub(in crate::formatter) quotes: Vec<Option<Vec<u8>>>,
+}
+
+pub(super) struct Statement {
+    pub(super) content: Vec<Document>,
+    pub(super) blank: bool,
+    pub(super) require: Option<Require>,
+}
+
+pub(super) struct Require {
+    pub(super) path: String,
+    pub(super) binding: NodeIndex,
+}
+
+pub(in crate::formatter) struct Builder<'tree, 'source> {
+    pub(super) tree: &'tree Tree<'source>,
+    pub(super) configuration: &'tree Configuration,
+    pub(super) spacing: Vec<Option<usize>>,
+    pub(super) bindings: Bindings,
+    pub(super) options: &'tree Options,
+    pub(super) started: Instant,
+    interruption: Cell<Option<Reason>>,
     pub(super) quotes: Vec<Option<Vec<u8>>>,
 }
 
-struct Statement {
-    content: Vec<Document>,
-    blank: bool,
-    require: Option<Require>,
-}
-
-struct Require {
-    path: String,
-    binding: NodeIndex,
-}
-
-pub(super) struct Builder<'tree, 'source> {
-    tree: &'tree Tree<'source>,
-    configuration: &'tree Configuration,
-    spacing: Vec<Option<usize>>,
-    bindings: Bindings,
-    options: &'tree Options,
-    started: Instant,
-    interruption: Cell<Option<Reason>>,
-    quotes: Vec<Option<Vec<u8>>>,
-}
-
 impl<'tree, 'source> Builder<'tree, 'source> {
-    pub(super) fn build(
+    pub(in crate::formatter) fn build(
         tree: &'tree Tree<'source>,
         configuration: &'tree Configuration,
         options: &'tree Options,
@@ -81,7 +79,6 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         };
 
         builder.prepare_spacing()?;
-
         let document = builder.node(tree.root);
 
         if let Some(reason) = builder
@@ -98,7 +95,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         })
     }
 
-    fn interrupted(&self) -> bool {
+    pub(super) fn interrupted(&self) -> bool {
         let reason = self
             .interruption
             .get()

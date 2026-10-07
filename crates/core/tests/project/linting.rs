@@ -1,5 +1,4 @@
 //! Native and Instar lint policies over shared contextual project sources.
-
 use std::{io, time::Duration};
 
 use instar_core::{
@@ -347,7 +346,6 @@ fn invalid_roblox_metadata_keeps_known_lint_findings() -> io::Result<()> {
     ))?;
 
     directory.file("instar.toml", "[roblox]\nenabled=true\nsecurity='plugin'")?;
-
     let entry = directory.file("entry.luau", "return Color3.new(255,0,0)")?;
     let mut project = project();
 

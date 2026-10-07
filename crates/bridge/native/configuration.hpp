@@ -12,16 +12,12 @@ namespace Luau {
 namespace instar {
     struct NativeOutcome;
     struct NativeSnapshot;
-    struct NativeFlag;
-    void validate_flags(rust::Slice<const NativeFlag> flags);
-    void apply_flags(rust::Slice<const NativeFlag> flags);
-    rust::Vec<NativeFlag> normalize_flags(rust::Slice<const NativeFlag> flags);
 
     class NativeConfiguration final {
       public:
         NativeConfiguration();
         ~NativeConfiguration();
-        NativeOutcome apply(rust::Str source, rust::Str path, bool executable, double timeoutSeconds);
+        NativeOutcome apply(rust::Str source, rust::Str path, bool executable, double timeout_seconds);
         NativeSnapshot snapshot() const;
         void restore(const NativeSnapshot &snapshot);
         const Luau::Config &value() const;

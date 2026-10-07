@@ -1,9 +1,13 @@
-use super::super::document::Document;
-use super::Builder;
-use instar_analysis::Reason;
 use std::ops::Range;
-use vermis::token::{Keyword, Symbol, TokenKind};
-use vermis::tree::{NodeIndex, NodeKind, TokenIndex};
+
+use instar_analysis::Reason;
+
+use vermis::{
+    token::{Keyword, Symbol, TokenKind},
+    tree::{NodeIndex, NodeKind, TokenIndex},
+};
+
+use super::{super::document::Document, Builder};
 
 impl Builder<'_, '_> {
     pub(super) fn prepare_spacing(&mut self) -> Result<(), Reason> {

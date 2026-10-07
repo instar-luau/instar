@@ -1,5 +1,4 @@
 //! Native analysis preparation from the Rust-owned graph.
-
 use std::{io, path::Path};
 
 use instar_analysis::error::invalid;
@@ -9,12 +8,6 @@ use crate::{
     project::Project,
     resolve::{Identity, Module},
 };
-
-/// Encodes an exact Rust identity as an opaque native module name.
-#[must_use]
-pub fn name(identity: &Identity) -> String {
-    format!("{identity:?}")
-}
 
 impl Project {
     /// Prepares reachable native ASTs using Rust sources, settings and resolved sites.
@@ -96,4 +89,10 @@ impl Project {
 
         result
     }
+}
+
+/// Encodes an exact Rust identity as an opaque native module name.
+#[must_use]
+pub fn name(identity: &Identity) -> String {
+    format!("{identity:?}")
 }

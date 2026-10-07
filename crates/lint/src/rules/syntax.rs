@@ -1,7 +1,9 @@
 use std::cmp::Ordering::{Equal, Greater, Less};
 
-use vermis::token::{Keyword, Symbol, TokenKind};
-use vermis::tree::{NodeIndex, NodeKind, Tree};
+use vermis::{
+    token::{Keyword, Symbol, TokenKind},
+    tree::{NodeIndex, NodeKind, Tree},
+};
 
 pub(super) fn unwrap(tree: &Tree<'_>, node: NodeIndex) -> NodeIndex {
     match &tree.node(node).kind {

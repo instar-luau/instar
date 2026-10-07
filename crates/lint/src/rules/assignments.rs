@@ -1,21 +1,14 @@
-use vermis::token::{Symbol, TokenKind};
-use vermis::tree::{NodeIndex, NodeKind};
+use vermis::{
+    token::{Symbol, TokenKind},
+    tree::{NodeIndex, NodeKind},
+};
 
-use super::Context;
-use super::syntax::{assignment, in_loop, same, stable};
+use super::{
+    Context,
+    syntax::{assignment, in_loop, same, stable},
+};
+
 use crate::Rule;
-
-pub(super) fn check(context: &mut Context<'_, '_>, node: NodeIndex, ancestors: &[NodeIndex]) {
-    match &context.tree.node(node).kind {
-        NodeKind::Block { .. } => context.swapped(node),
-
-        NodeKind::Assignment { .. } | NodeKind::CompoundAssignment { .. } => {
-            context.assignments(node, ancestors);
-        }
-
-        _ => {}
-    }
-}
 
 impl Context<'_, '_> {
     pub(super) fn swapped(&mut self, node: NodeIndex) {
@@ -84,5 +77,17 @@ impl Context<'_, '_> {
 
             _ => {}
         }
+    }
+}
+
+pub(super) fn check(context: &mut Context<'_, '_>, node: NodeIndex, ancestors: &[NodeIndex]) {
+    match &context.tree.node(node).kind {
+        NodeKind::Block { .. } => context.swapped(node),
+
+        NodeKind::Assignment { .. } | NodeKind::CompoundAssignment { .. } => {
+            context.assignments(node, ancestors);
+        }
+
+        _ => {}
     }
 }

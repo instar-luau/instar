@@ -1,38 +1,14 @@
-use vermis::token::{Keyword, Symbol, TokenKind};
-use vermis::tree::{NodeIndex, NodeKind};
+use vermis::{
+    token::{Keyword, Symbol, TokenKind},
+    tree::{NodeIndex, NodeKind},
+};
 
-use super::Context;
-use super::syntax::{assignment, in_loop, nan, number, same, truth, unwrap};
+use super::{
+    Context,
+    syntax::{assignment, in_loop, nan, number, same, truth, unwrap},
+};
+
 use crate::Rule;
-
-pub(super) fn check(context: &mut Context<'_, '_>, node: NodeIndex, ancestors: &[NodeIndex]) {
-    match &context.tree.node(node).kind {
-        NodeKind::Binary { .. } => context.binary(node, ancestors),
-        NodeKind::Table { .. } => context.table(node),
-
-        NodeKind::Branch { condition, .. }
-        | NodeKind::While { condition, .. }
-        | NodeKind::Repeat { condition, .. }
-        | NodeKind::Conditional { condition, .. } => context.condition(*condition),
-
-        NodeKind::String { token }
-            if matches!(
-                context.tree.token(*token).kind,
-                TokenKind::QuotedString
-                    | TokenKind::RawString
-                    | TokenKind::InterpolatedStringSimple
-            ) && instar_syntax::literal::bytes(context.tree, node).is_none() =>
-        {
-            context.finding(
-                node,
-                Rule::BadStringEscape,
-                "string contains an invalid escape",
-            );
-        }
-
-        _ => {}
-    }
-}
 
 impl Context<'_, '_> {
     pub(super) fn binary(&mut self, node: NodeIndex, ancestors: &[NodeIndex]) {
@@ -166,5 +142,34 @@ impl Context<'_, '_> {
                 "zero is truthy in Luau; compare the length explicitly",
             );
         }
+    }
+}
+
+pub(super) fn check(context: &mut Context<'_, '_>, node: NodeIndex, ancestors: &[NodeIndex]) {
+    match &context.tree.node(node).kind {
+        NodeKind::Binary { .. } => context.binary(node, ancestors),
+        NodeKind::Table { .. } => context.table(node),
+
+        NodeKind::Branch { condition, .. }
+        | NodeKind::While { condition, .. }
+        | NodeKind::Repeat { condition, .. }
+        | NodeKind::Conditional { condition, .. } => context.condition(*condition),
+
+        NodeKind::String { token }
+            if matches!(
+                context.tree.token(*token).kind,
+                TokenKind::QuotedString
+                    | TokenKind::RawString
+                    | TokenKind::InterpolatedStringSimple
+            ) && instar_syntax::literal::bytes(context.tree, node).is_none() =>
+        {
+            context.finding(
+                node,
+                Rule::BadStringEscape,
+                "string contains an invalid escape",
+            );
+        }
+
+        _ => {}
     }
 }

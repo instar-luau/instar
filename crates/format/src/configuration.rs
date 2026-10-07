@@ -1,5 +1,4 @@
 //! Formatter configuration and require grouping policies.
-
 use std::{collections::BTreeSet, num::NonZeroUsize};
 
 use instar_analysis::error::invalid;

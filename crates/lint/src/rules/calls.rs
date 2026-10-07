@@ -1,17 +1,14 @@
-use vermis::token::Span;
-use vermis::tree::{NodeIndex, NodeKind};
+use vermis::{
+    token::Span,
+    tree::{NodeIndex, NodeKind},
+};
 
-use super::Context;
-use super::syntax::{arguments_values, comparison, in_loop, range};
+use super::{
+    Context,
+    syntax::{arguments_values, comparison, in_loop, range},
+};
+
 use crate::Rule;
-
-pub(super) fn check(context: &mut Context<'_, '_>, node: NodeIndex, ancestors: &[NodeIndex]) {
-    match &context.tree.node(node).kind {
-        NodeKind::CallStatement { call } => context.discarded(*call),
-        NodeKind::Call { callee, arguments } => context.call(node, *callee, *arguments, ancestors),
-        _ => {}
-    }
-}
 
 impl Context<'_, '_> {
     pub(super) fn requires(&mut self) {
@@ -144,5 +141,13 @@ impl Context<'_, '_> {
                 "constant require call repeated inside a loop",
             );
         }
+    }
+}
+
+pub(super) fn check(context: &mut Context<'_, '_>, node: NodeIndex, ancestors: &[NodeIndex]) {
+    match &context.tree.node(node).kind {
+        NodeKind::CallStatement { call } => context.discarded(*call),
+        NodeKind::Call { callee, arguments } => context.call(node, *callee, *arguments, ancestors),
+        _ => {}
     }
 }

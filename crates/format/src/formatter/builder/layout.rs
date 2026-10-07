@@ -1,9 +1,16 @@
-use super::super::document::{Document, Layout};
-use super::{Builder, Statement};
-use crate::configuration::{BlankLines, Order};
 use std::ops::Range;
-use vermis::token::{Symbol, TokenKind};
-use vermis::tree::{ListEntry, NodeIndex, NodeKind, TokenIndex};
+
+use vermis::{
+    token::{Symbol, TokenKind},
+    tree::{ListEntry, NodeIndex, NodeKind, TokenIndex},
+};
+
+use super::{
+    super::document::{Document, Layout},
+    Builder, Statement,
+};
+
+use crate::configuration::{BlankLines, Order};
 
 impl Builder<'_, '_> {
     pub(super) fn node(&self, index: NodeIndex) -> Vec<Document> {
@@ -379,7 +386,6 @@ impl Builder<'_, '_> {
         }
 
         self.order(&mut units);
-
         let mut previous_path = None;
 
         for (

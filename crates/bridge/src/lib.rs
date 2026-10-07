@@ -1,6 +1,10 @@
 //! Native Luau configuration and host-adapted analysis representation.
 
 #[expect(
+    clippy::arbitrary_source_item_ordering,
+    reason = "CXX emits pointer trait implementations after generated factory functions"
+)]
+#[expect(
     unsafe_code,
     unreachable_pub,
     reason = "CXX generates public unsafe declarations inside this private native boundary"

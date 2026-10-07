@@ -36,37 +36,6 @@ struct Extractor<'tree, 'source> {
     sites: Vec<Site>,
 }
 
-pub(crate) fn extract(source: &str, revision: u64) -> (Vec<Site>, Vec<Problem>) {
-    let tree = vermis::parse(source.as_bytes());
-
-    let mut extractor = Extractor {
-        tree: &tree,
-        scopes: vec![BTreeMap::new()],
-        writes: BTreeSet::new(),
-        globals: BTreeSet::new(),
-        writing: true,
-        revision,
-        sites: Vec::new(),
-    };
-
-    extractor.visit(tree.root);
-    extractor.scopes = vec![BTreeMap::new()];
-    extractor.writing = false;
-    extractor.visit(tree.root);
-    extractor.sites.sort_by_key(|site| site.range);
-
-    let problems = tree
-        .diagnostics
-        .iter()
-        .map(|diagnostic| Problem {
-            range: [diagnostic.span.start, diagnostic.span.end],
-            message: diagnostic.message.to_owned(),
-        })
-        .collect();
-
-    (extractor.sites, problems)
-}
-
 impl Extractor<'_, '_> {
     fn name(&self, node: NodeIndex) -> String {
         String::from_utf8_lossy(self.tree.text(node)).into_owned()
@@ -550,4 +519,35 @@ impl Extractor<'_, '_> {
             }
         }
     }
+}
+
+pub(crate) fn extract(source: &str, revision: u64) -> (Vec<Site>, Vec<Problem>) {
+    let tree = vermis::parse(source.as_bytes());
+
+    let mut extractor = Extractor {
+        tree: &tree,
+        scopes: vec![BTreeMap::new()],
+        writes: BTreeSet::new(),
+        globals: BTreeSet::new(),
+        writing: true,
+        revision,
+        sites: Vec::new(),
+    };
+
+    extractor.visit(tree.root);
+    extractor.scopes = vec![BTreeMap::new()];
+    extractor.writing = false;
+    extractor.visit(tree.root);
+    extractor.sites.sort_by_key(|site| site.range);
+
+    let problems = tree
+        .diagnostics
+        .iter()
+        .map(|diagnostic| Problem {
+            range: [diagnostic.span.start, diagnostic.span.end],
+            message: diagnostic.message.to_owned(),
+        })
+        .collect();
+
+    (extractor.sites, problems)
 }

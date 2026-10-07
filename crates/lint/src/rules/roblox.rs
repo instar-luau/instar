@@ -1,8 +1,53 @@
 use vermis::tree::{NodeIndex, NodeKind};
 
-use super::Context;
-use super::syntax::{arguments_values, number, unwrap};
+use super::{
+    Context,
+    syntax::{arguments_values, number, unwrap},
+};
+
 use crate::Rule;
+
+impl Context<'_, '_> {
+    pub(super) fn players(&self, node: NodeIndex) -> bool {
+        let node = unwrap(self.tree, node);
+
+        let value = if matches!(self.tree.node(node).kind, NodeKind::Name { .. }) {
+            let Some(binding) = self.bindings.declaration(node) else {
+                return false;
+            };
+
+            if binding.assigned {
+                return false;
+            }
+
+            let Some(value) = binding.value else {
+                return false;
+            };
+
+            value
+        } else {
+            node
+        };
+
+        let NodeKind::MethodCall {
+            receiver,
+            method,
+            arguments,
+            ..
+        } = &self.tree.node(value).kind
+        else {
+            return false;
+        };
+
+        let values = arguments_values(self.tree, *arguments);
+
+        self.global(*receiver, b"game")
+            && self.tree.text(*method) == b"GetService"
+            && values.len() == 1
+            && matches!(self.tree.node(values[0]).kind, NodeKind::String { .. })
+            && instar_syntax::literal::string(self.tree, values[0]).as_deref() == Some("Players")
+    }
+}
 
 pub(super) fn check(context: &mut Context<'_, '_>, node: NodeIndex) {
     if !context.source.roblox {
@@ -71,47 +116,5 @@ pub(super) fn check(context: &mut Context<'_, '_>, node: NodeIndex) {
             Rule::RobloxPreferGetPlayers,
             "use Players:GetPlayers() to select players",
         );
-    }
-}
-
-impl Context<'_, '_> {
-    pub(super) fn players(&self, node: NodeIndex) -> bool {
-        let node = unwrap(self.tree, node);
-
-        let value = if matches!(self.tree.node(node).kind, NodeKind::Name { .. }) {
-            let Some(binding) = self.bindings.declaration(node) else {
-                return false;
-            };
-
-            if binding.assigned {
-                return false;
-            }
-
-            let Some(value) = binding.value else {
-                return false;
-            };
-
-            value
-        } else {
-            node
-        };
-
-        let NodeKind::MethodCall {
-            receiver,
-            method,
-            arguments,
-            ..
-        } = &self.tree.node(value).kind
-        else {
-            return false;
-        };
-
-        let values = arguments_values(self.tree, *arguments);
-
-        self.global(*receiver, b"game")
-            && self.tree.text(*method) == b"GetService"
-            && values.len() == 1
-            && matches!(self.tree.node(values[0]).kind, NodeKind::String { .. })
-            && instar_syntax::literal::string(self.tree, values[0]).as_deref() == Some("Players")
     }
 }
