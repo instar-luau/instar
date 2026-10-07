@@ -1,5 +1,13 @@
 //! Native analysis preparation from the Rust-owned graph.
-use std::{collections::BTreeMap, io, path::Path, rc::Rc, sync::Arc, time::Instant};
+
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+    path::Path,
+    rc::Rc,
+    sync::Arc,
+    time::Instant,
+};
 
 use instar_analysis::{Completion, Options, error::invalid};
 use instar_bridge::frontend::{Frontend, Link, Site};
@@ -35,19 +43,19 @@ impl Project {
         &mut self,
         source: &Path,
         context: Option<&Identity>,
-    ) -> io::Result<Module> {
+    ) -> io::Result<(Module, BTreeSet<Identity>)> {
         let entry = self.links(source, context)?.module.clone();
         let identities = self.discover(source, context)?;
 
         let mut frontend = self.frontend.take().unwrap_or_default();
 
         let result = (|| {
-            for identity in identities {
+            for identity in &identities {
                 self.interrupted()?;
 
                 let node = self
                     .graph
-                    .node(&identity)
+                    .node(identity)
                     .ok_or_else(|| invalid("discovered module is missing from the Rust graph"))?;
 
                 let directory = node
@@ -70,17 +78,17 @@ impl Project {
                     .collect::<Vec<_>>();
 
                 frontend.insert(
-                    &name(&identity),
+                    &name(identity),
                     Arc::clone(&node.document.text),
                     node.document.revision,
                     &settings.native,
                     &sites,
                 )?;
 
-                frontend.flags(&name(&identity), &settings.flags)?;
+                frontend.flags(&name(identity), &settings.flags)?;
             }
 
-            Ok(entry)
+            Ok((entry, identities))
         })();
 
         self.frontend = Some(frontend);
@@ -95,7 +103,7 @@ impl Project {
         options: &Options,
     ) -> io::Result<Vec<Link>> {
         let started = Instant::now();
-        let entry = self.install(source, context)?;
+        let (entry, _) = self.install(source, context)?;
 
         self.frontend
             .as_mut()

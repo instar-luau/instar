@@ -94,9 +94,9 @@ impl Project {
                         continue;
                     }
 
-                    let module = project.install(&source, entry.context.as_ref())?;
+                    let (module, discovered) = project.install(&source, entry.context.as_ref())?;
                     roots.insert(native::name(&module.identity));
-                    identities.extend(project.discover(&source, entry.context.as_ref())?);
+                    identities.extend(discovered);
 
                     options.report(
                         "Discovering dependencies",
