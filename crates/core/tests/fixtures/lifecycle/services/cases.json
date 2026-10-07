@@ -1,0 +1,67 @@
+[
+  [
+    "require(game:GetService('ReplicatedStorage').Library.Target)",
+    true,
+    true
+  ],
+  [
+    "require(game:GetService('ReplicatedStorage'):WaitForChild('Library'):WaitForChild('Target', 1))",
+    true,
+    true
+  ],
+  [
+    "require(game:GetService('ReplicatedStorage'):WaitForChild('Library', timeout).Target)",
+    true,
+    true
+  ],
+  [
+    "require(game:GetService('ReplicatedStorage'):FindFirstChild('Target', true))",
+    true,
+    true
+  ],
+  [
+    "require(game:GetService('ReplicatedStorage'):FindFirstChild('Library', false).Target.Parent.Target)",
+    true,
+    true
+  ],
+  [
+    "local storage=game:GetService('ReplicatedStorage')\nrequire(storage['Library'].Target)",
+    true,
+    true
+  ],
+  [
+    "require(game:GetService('ReplicatedStorage'):FindFirstChild('Target', false))",
+    true,
+    false
+  ],
+  [
+    "require(game:GetService(service).Library.Target)",
+    false,
+    false
+  ],
+  [
+    "require(game:GetService('ReplicatedStorage'):FindFirstChild('Target', recursive))",
+    false,
+    false
+  ],
+  [
+    "local game={}\nrequire(game:GetService('ReplicatedStorage').Library.Target)",
+    false,
+    false
+  ],
+  [
+    "local game=game\nlocal function change() game={} end\nrequire(game:GetService('ReplicatedStorage').Library.Target)",
+    false,
+    false
+  ],
+  [
+    "local function f(game) require(game:GetService('ReplicatedStorage').Library.Target) end",
+    false,
+    false
+  ],
+  [
+    "game={}\nrequire(game:GetService('ReplicatedStorage').Library.Target)",
+    false,
+    false
+  ]
+]

@@ -1,0 +1,13 @@
+{
+  "name": "Inner",
+  "className": "DataModel",
+  "children": [
+    {
+      "name": "Caller",
+      "className": "ModuleScript",
+      "filePaths": [
+        "caller.luau"
+      ]
+    }
+  ]
+}

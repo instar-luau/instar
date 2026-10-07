@@ -19,27 +19,28 @@ fn namespaces_preserve_builtins_members_and_file_diagnostics() -> io::Result<()>
             name: "types.d.luau".to_owned(),
             namespace: "@game".to_owned(),
             revision: 1,
-            text: "declare extern type Thing with\n function Method(self): number\nend".to_owned(),
+            text: include_str!("fixtures/documentation/namespaces/types.luau").to_owned(),
         },
         Definition {
             name: "globals.d.luau".to_owned(),
             namespace: "@game".to_owned(),
             revision: 1,
-            text: "declare thing: Thing\ndeclare library: { call: () -> number }".to_owned(),
+            text: include_str!("fixtures/documentation/namespaces/globals.luau").to_owned(),
         },
     ];
 
     frontend.definitions("entry", &definitions)?;
 
-    for (path, expected) in [
-        ("global/library.call", "@game/global/library.call"),
-        ("globaltype/Thing.Method", "@game/globaltype/Thing.Method"),
-        ("global/thing", "@game/global/thing"),
-        ("global/type", "@luau/global/type"),
-    ] {
+    let symbols: Vec<[String; 2]> = serde_json::from_str(include_str!(
+        "fixtures/documentation/namespaces/expected.json"
+    ))?;
+
+    assert_eq!(symbols.len(), 4);
+
+    for [path, expected] in symbols {
         assert_eq!(
-            frontend.documentation("entry", path, &options)?.as_deref(),
-            Some(expected)
+            frontend.documentation("entry", &path, &options)?.as_deref(),
+            Some(expected.as_str())
         );
     }
 
@@ -56,7 +57,7 @@ fn namespaces_preserve_builtins_members_and_file_diagnostics() -> io::Result<()>
         Some("@renamed/global/library.call")
     );
 
-    definitions[1].text = "declare broken: UnknownType".to_owned();
+    definitions[1].text = include_str!("fixtures/documentation/namespaces/invalid.luau").to_owned();
     definitions[1].revision = 2;
     frontend.definitions("entry", &definitions)?;
     let result = frontend.check(&["entry".to_owned()], &options)?;
@@ -89,7 +90,7 @@ fn declaration_identity_is_shared_across_distinct_namespaces() -> io::Result<()>
                 name: "shared.d.luau".to_owned(),
                 namespace: namespace.to_owned(),
                 revision: 1,
-                text: "declare value: number".to_owned(),
+                text: include_str!("fixtures/documentation/declaration/definition.luau").to_owned(),
             }],
         )?;
     }
@@ -118,7 +119,7 @@ fn shared_declaration_revisions_update_atomically() -> io::Result<()> {
     for module in ["first", "second"] {
         frontend.insert(
             module,
-            "local result: string = value\nreturn result",
+            include_str!("fixtures/documentation/shared/input.luau"),
             1,
             &configuration,
             &[],
@@ -130,7 +131,7 @@ fn shared_declaration_revisions_update_atomically() -> io::Result<()> {
                 name: "shared".to_owned(),
                 namespace: format!("@{module}"),
                 revision: 1,
-                text: "declare value: number".to_owned(),
+                text: include_str!("fixtures/documentation/declaration/definition.luau").to_owned(),
             }],
         )?;
     }
@@ -139,7 +140,7 @@ fn shared_declaration_revisions_update_atomically() -> io::Result<()> {
         name: "shared".to_owned(),
         namespace: "@first".to_owned(),
         revision: 2,
-        text: "declare value: string".to_owned(),
+        text: include_str!("fixtures/documentation/shared/definition.luau").to_owned(),
     };
 
     frontend.definitions("first", &[replacement.clone()])?;
@@ -155,7 +156,8 @@ fn shared_declaration_revisions_update_atomically() -> io::Result<()> {
         );
     }
 
-    replacement.text = "declare value: number".to_owned();
+    replacement.text =
+        include_str!("fixtures/documentation/declaration/definition.luau").to_owned();
 
     assert!(
         frontend
@@ -200,7 +202,7 @@ fn documentation_preserves_interruption_and_environment_error_categories() -> io
             name: "invalid".to_owned(),
             namespace: "@custom".to_owned(),
             revision: 1,
-            text: "declare value: UnknownType".to_owned(),
+            text: include_str!("fixtures/documentation/documentation/invalid.luau").to_owned(),
         }],
     )?;
 
@@ -225,7 +227,7 @@ fn unrelated_type_errors_do_not_hide_builtin_documentation() -> io::Result<()> {
 
     frontend.insert(
         "entry",
-        "--!strict\nlocal value: number = 'wrong'\nreturn value",
+        include_str!("fixtures/documentation/unrelated/input.luau"),
         1,
         &Configuration::new()?,
         &[],

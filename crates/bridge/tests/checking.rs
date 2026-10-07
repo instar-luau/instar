@@ -12,7 +12,7 @@ use instar_bridge::{
 fn native_type_codes_locations_and_related_data_are_retained() -> io::Result<()> {
     let configuration = Configuration::new()?;
     let mut frontend = Frontend::new()?;
-    let source = "--!strict\ntype Value = number\ntype Value = string\nreturn 1";
+    let source = include_str!("fixtures/checking/native/input.luau");
     frontend.insert("entry", source, 8, &configuration, &[])?;
     let result = frontend.check(&["entry".to_owned()], &Options::new(Duration::from_secs(5)))?;
     assert_eq!(result.completion, Completion::Complete);
@@ -44,7 +44,7 @@ fn native_type_codes_locations_and_related_data_are_retained() -> io::Result<()>
 fn lexical_loader_targets_supply_real_imported_types() -> io::Result<()> {
     let configuration = Configuration::new()?;
     let mut frontend = Frontend::new()?;
-    let source = "--!strict\nlocal loader = require\nlocal imported = loader('./not-on-disk')\nlocal number: number = imported\nreturn number";
+    let source = include_str!("fixtures/checking/lexical/input.luau");
     let call = source.find("loader(").expect("loader call");
     let argument = source.find("'./").expect("loader argument");
     let end = source[argument..].find(')').expect("call end") + argument;
@@ -62,7 +62,14 @@ fn lexical_loader_targets_supply_real_imported_types() -> io::Result<()> {
         }],
     )?;
 
-    frontend.insert("dependency", "return 'string'", 2, &configuration, &[])?;
+    frontend.insert(
+        "dependency",
+        include_str!("fixtures/checking/lexical/dependency.luau"),
+        2,
+        &configuration,
+        &[],
+    )?;
+
     let result = frontend.check(&["entry".to_owned()], &Options::new(Duration::from_secs(5)))?;
     assert_eq!(result.completion, Completion::Complete);
 
@@ -84,7 +91,7 @@ fn failed_definitions_do_not_pollute_other_environments() -> io::Result<()> {
 
     frontend.insert(
         "configured",
-        "--!strict\nreturn configured",
+        include_str!("fixtures/checking/failed/input.luau"),
         1,
         &configuration,
         &[],
@@ -97,13 +104,13 @@ fn failed_definitions_do_not_pollute_other_environments() -> io::Result<()> {
                 name: "first".to_owned(),
                 namespace: "@custom".to_owned(),
                 revision: 1,
-                text: "declare configured: number".to_owned(),
+                text: include_str!("fixtures/checking/failed/definition.luau").to_owned(),
             },
             Definition {
                 name: "broken".to_owned(),
                 namespace: "@custom".to_owned(),
                 revision: 1,
-                text: "declare broken:".to_owned(),
+                text: include_str!("fixtures/checking/failed/invalid.luau").to_owned(),
             },
         ],
     )?;
@@ -128,7 +135,7 @@ fn failed_definitions_do_not_pollute_other_environments() -> io::Result<()> {
 
     frontend.insert(
         "isolated",
-        "--!strict\nreturn configured",
+        include_str!("fixtures/checking/failed/input.luau"),
         1,
         &configuration,
         &[],
@@ -148,7 +155,7 @@ fn failed_definitions_do_not_pollute_other_environments() -> io::Result<()> {
             name: "first".to_owned(),
             namespace: "@custom".to_owned(),
             revision: 1,
-            text: "declare configured: number".to_owned(),
+            text: include_str!("fixtures/checking/failed/definition.luau").to_owned(),
         }],
     )?;
 
@@ -172,7 +179,7 @@ fn native_interruption_does_not_cache_a_clean_answer() -> io::Result<()> {
 
     frontend.insert(
         "entry",
-        "--!strict\nlocal number: number = 'wrong'\nreturn number",
+        include_str!("fixtures/checking/interruption/input.luau"),
         4,
         &configuration,
         &[],

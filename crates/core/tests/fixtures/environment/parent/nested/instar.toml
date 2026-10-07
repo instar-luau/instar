@@ -1,0 +1,6 @@
+[roblox]
+enabled=false
+[[environment]]
+namespace='@custom'
+definitions=['../types.luau']
+documentation=['../docs.json']

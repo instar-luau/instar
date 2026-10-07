@@ -1,0 +1,4 @@
+[lint.implicit_any_parameter]
+level='warn'
+[lint.implicit_any_local]
+level='warn'

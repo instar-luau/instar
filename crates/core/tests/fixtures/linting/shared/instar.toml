@@ -1,0 +1,6 @@
+[lint.restricted_module_paths]
+level='deny'
+[lint.restricted_module_paths.paths]
+'./dependency'='blocked'
+[lint.non_const_require]
+level='warn'

@@ -1,0 +1,2 @@
+[check]
+exclude = ['dependency.luau']

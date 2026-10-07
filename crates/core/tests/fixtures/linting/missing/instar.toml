@@ -1,0 +1,3 @@
+[[environment]]
+namespace='@custom'
+definitions=['globals.luau']

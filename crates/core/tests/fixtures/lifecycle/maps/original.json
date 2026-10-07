@@ -1,0 +1,46 @@
+{
+  "name": "Place",
+  "className": "DataModel",
+  "children": [
+    {
+      "name": "One",
+      "className": "Folder",
+      "children": [
+        {
+          "name": "Caller",
+          "className": "ModuleScript",
+          "filePaths": [
+            "caller.luau"
+          ]
+        },
+        {
+          "name": "Target",
+          "className": "ModuleScript",
+          "filePaths": [
+            "first.luau"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Two",
+      "className": "Folder",
+      "children": [
+        {
+          "name": "Caller",
+          "className": "ModuleScript",
+          "filePaths": [
+            "caller.luau"
+          ]
+        },
+        {
+          "name": "Target",
+          "className": "ModuleScript",
+          "filePaths": [
+            "second.luau"
+          ]
+        }
+      ]
+    }
+  ]
+}

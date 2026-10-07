@@ -1,0 +1,2 @@
+[luau.flags]
+LuauRecursionLimit=2147483648

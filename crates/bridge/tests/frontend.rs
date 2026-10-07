@@ -12,7 +12,7 @@ use instar_bridge::{
 fn host_targets_are_authoritative_for_lexical_loader_aliases() -> io::Result<()> {
     let configuration = Configuration::new()?;
     let mut frontend = Frontend::new()?;
-    let source = "local loader=require\nloader('./not-on-disk')";
+    let source = include_str!("fixtures/frontend/host/input.luau");
     let start = source.find("loader(").expect("loader call");
     let argument = source.find("'./").expect("argument");
 
@@ -64,7 +64,7 @@ fn host_targets_are_authoritative_for_lexical_loader_aliases() -> io::Result<()>
 fn static_argument_disagreement_is_an_error() -> io::Result<()> {
     let configuration = Configuration::new()?;
     let mut frontend = Frontend::new()?;
-    let source = "require('./target')";
+    let source = include_str!("fixtures/frontend/static/input.luau");
 
     frontend.insert(
         "entry",
@@ -94,7 +94,7 @@ fn static_argument_disagreement_is_an_error() -> io::Result<()> {
 fn missing_host_targets_and_invalid_ranges_are_not_guessed() -> io::Result<()> {
     let configuration = Configuration::new()?;
     let mut frontend = Frontend::new()?;
-    let source = "require('./target')";
+    let source = include_str!("fixtures/frontend/static/input.luau");
 
     let site = Site {
         call: [0, source.len()],

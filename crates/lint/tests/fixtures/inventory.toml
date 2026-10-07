@@ -1,0 +1,147 @@
+[swapping]
+rule = "almost_swapped"
+range = [18, 21]
+
+[escapes]
+rule = "bad_string_escape"
+range = [7, 11]
+
+[number]
+rule = "compare_nan"
+range = [7, 15]
+
+[condition]
+rule = "constant_condition"
+range = [3, 7]
+
+[comparison]
+rule = "constant_table_comparison"
+range = [7, 18]
+
+[length]
+rule = "length_as_condition"
+range = [3, 8]
+
+[arguments]
+rule = "mismatched_argument_count"
+range = [44, 48]
+
+[result]
+rule = "must_use"
+range = [0, 12]
+
+[step]
+rule = "zero_step_loop"
+range = [11, 12]
+
+[division]
+rule = "divide_by_zero"
+range = [9, 13]
+
+[assignment]
+rule = "self_assignment"
+range = [14, 19]
+
+[branch]
+rule = "empty_if"
+range = [13, 13]
+
+[loop]
+rule = "empty_loop"
+range = [14, 14]
+
+[branches]
+rule = "if_same_then_else"
+range = [0, 39]
+
+[protection]
+rule = "ignored_pcall_result"
+range = [0, 14]
+
+[tables]
+rule = "mixed_table"
+range = [7, 16]
+
+[globals]
+rule = "unscoped_variables"
+range = [0, 7]
+
+[color]
+rule = "roblox_incorrect_color3_new_bounds"
+range = [7, 26]
+
+[scale]
+rule = "roblox_manual_fromscale_or_fromoffset"
+range = [7, 29]
+
+[players]
+rule = "roblox_prefer_get_players"
+range = [48, 69]
+
+[dimensions]
+rule = "roblox_suspicious_udim2_new"
+range = [7, 21]
+
+[conditional]
+rule = "and_or_conditional"
+range = [7, 22]
+
+[nesting]
+rule = "collapsible_if"
+range = [0, 36]
+
+[return]
+rule = "else_after_return"
+range = [39, 52]
+
+[expression]
+rule = "if_expression_assignment"
+range = [8, 37]
+
+[negation]
+rule = "negated_condition"
+range = [3, 11]
+
+[parentheses]
+rule = "parenthesized_conditions"
+range = [3, 9]
+
+[usage]
+rule = "global_usage"
+range = [7, 15]
+
+[types]
+rule = "type_check_inside_call"
+range = [7, 19]
+
+[invariance]
+rule = "loop_invariant_call"
+range = [17, 43]
+
+[cloning]
+rule = "manual_table_clone"
+range = [14, 52]
+
+[concatenation]
+rule = "string_concat_in_loop"
+range = [30, 36]
+
+[bindings]
+rule = "unused_variable"
+range = [6, 12]
+
+[complexity]
+rule = "high_cyclomatic_complexity"
+range = [0, 67]
+
+[constants]
+rule = "prefer_const"
+range = [6, 11]
+
+[deprecation]
+rule = "deprecated"
+range = [0, 7]
+
+[restrictions]
+rule = "restricted_globals"
+range = [0, 5]

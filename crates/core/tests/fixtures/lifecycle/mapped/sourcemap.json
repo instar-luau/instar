@@ -1,0 +1,27 @@
+{
+  "name": "Place",
+  "className": "DataModel",
+  "children": [
+    {
+      "name": "Caller",
+      "className": "ModuleScript",
+      "filePaths": [
+        "caller.luau"
+      ]
+    },
+    {
+      "name": "Target",
+      "className": "ModuleScript",
+      "filePaths": [
+        "../shared/target.luau"
+      ]
+    },
+    {
+      "name": "Other",
+      "className": "ModuleScript",
+      "filePaths": [
+        "../shared/other.luau"
+      ]
+    }
+  ]
+}

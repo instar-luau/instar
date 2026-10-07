@@ -7,14 +7,14 @@ use crate::support::{Directory, options, project};
 #[test]
 fn configuration_rejects_reserved_namespaces_and_invalid_flags() {
     for source in [
-        "[[environment]]\nnamespace='@luau'",
-        "[[environment]]\nnamespace='@roblox'",
-        "[[environment]]\nnamespace='missing-prefix'",
-        "[[environment]]\nnamespace='@custom'\n[[environment]]\nnamespace='@custom'",
-        "[luau.flags]\nMissingInstarFlag=true",
-        "[luau.flags]\nLuauRecursionLimit=true",
-        "[luau.flags]\nLuauRecursionLimit='20'",
-        "[luau.flags]\nLuauRecursionLimit=2147483648",
+        include_str!("../fixtures/environment/configuration/luau.toml"),
+        include_str!("../fixtures/environment/configuration/roblox.toml"),
+        include_str!("../fixtures/environment/configuration/prefix.toml"),
+        include_str!("../fixtures/environment/configuration/duplicate.toml"),
+        include_str!("../fixtures/environment/configuration/missing.toml"),
+        include_str!("../fixtures/environment/configuration/boolean.toml"),
+        include_str!("../fixtures/environment/configuration/string.toml"),
+        include_str!("../fixtures/environment/configuration/overflow.toml"),
     ] {
         assert!(Configuration::parse(source).is_err(), "{source}");
     }
@@ -26,14 +26,14 @@ fn documentation_lookup_tracks_overlays_and_rejects_invalid_entries() -> io::Res
 
     let configuration = directory.file(
         "instar.toml",
-        "[[environment]]\nnamespace='@custom'\ndocumentation=['docs.json']",
+        include_str!("../fixtures/environment/documentation/instar.toml"),
     )?;
 
     let entry = directory.file("entry.luau", "return 1")?;
 
     let documentation = directory.file(
         "docs.json",
-        r#"{"@custom/global/value":{"documentation":"first"}}"#,
+        include_str!("../fixtures/environment/documentation/docs.json"),
     )?;
 
     let mut project = project();
@@ -50,7 +50,7 @@ fn documentation_lookup_tracks_overlays_and_rejects_invalid_entries() -> io::Res
 
     project.change(Change::Overlay {
         path: documentation.clone(),
-        text: Some(r#"{"@custom/global/value":{"documentation":"updated"}}"#.to_owned()),
+        text: Some(include_str!("../fixtures/environment/documentation/input.json").to_owned()),
     })?;
 
     assert_eq!(
@@ -64,10 +64,10 @@ fn documentation_lookup_tracks_overlays_and_rejects_invalid_entries() -> io::Res
     );
 
     for text in [
-        r#"{"@wrong/global/value":{"documentation":"wrong namespace"}}"#,
-        r#"{"@custom/global/value":{"documentation":3}}"#,
-        r#"{"@custom/global/value":{}}"#,
-        r#"{"@custom/global/value":{"documentation":"first"},"@custom/global/value":{"documentation":"duplicate"}}"#,
+        include_str!("../fixtures/environment/documentation/replacement.json"),
+        include_str!("../fixtures/environment/documentation/invalid.json"),
+        include_str!("../fixtures/environment/documentation/alternate.json"),
+        include_str!("../fixtures/environment/documentation/final.json"),
     ] {
         project.change(Change::Overlay {
             path: documentation.clone(),
@@ -79,7 +79,7 @@ fn documentation_lookup_tracks_overlays_and_rejects_invalid_entries() -> io::Res
 
     project.change(Change::Overlay {
         path: configuration,
-        text: Some("environment=[]".to_owned()),
+        text: Some(include_str!("../fixtures/environment/documentation/input.toml").to_owned()),
     })?;
 
     assert!(
@@ -104,7 +104,7 @@ fn project_flags_follow_configuration_changes() -> io::Result<()> {
 
     project.change(Change::Overlay {
         path: configuration.clone(),
-        text: Some("[luau.flags]\nLuauRecursionLimit=20".to_owned()),
+        text: Some(include_str!("../fixtures/environment/project/input.toml").to_owned()),
     })?;
 
     assert_ne!(project.check(&entries, &options())?.diagnostics, Vec::new());
@@ -125,11 +125,19 @@ fn parent_environment_paths_invalidate_consumers() -> io::Result<()> {
 
     directory.file(
         "nested/instar.toml",
-        "[roblox]\nenabled=false\n[[environment]]\nnamespace='@custom'\ndefinitions=['../types.luau']\ndocumentation=['../docs.json']",
+        include_str!("../fixtures/environment/parent/nested/instar.toml"),
     )?;
 
-    let entry = directory.file("nested/entry.luau", "return value")?;
-    let definitions = directory.file("types.luau", "declare value: number")?;
+    let entry = directory.file(
+        "nested/entry.luau",
+        include_str!("../fixtures/environment/parent/nested/entry.luau"),
+    )?;
+
+    let definitions = directory.file(
+        "types.luau",
+        include_str!("../fixtures/environment/parent/types.luau"),
+    )?;
+
     let documentation = directory.file("docs.json", "{}")?;
     let mut project = project();
 
@@ -175,8 +183,17 @@ fn cancelled_preparation_and_documentation_do_not_load_sources() -> io::Result<(
 #[test]
 fn builtin_documentation_loads_without_roblox_assets() -> io::Result<()> {
     let directory = Directory::new(None)?;
-    directory.file("instar.toml", "[roblox]\nenabled=false")?;
-    let entry = directory.file("entry.luau", "print('hello')")?;
+
+    directory.file(
+        "instar.toml",
+        include_str!("../fixtures/environment/builtin/instar.toml"),
+    )?;
+
+    let entry = directory.file(
+        "entry.luau",
+        include_str!("../fixtures/environment/builtin/entry.luau"),
+    )?;
+
     let mut project = project();
 
     project.change(Change::Overlay {
@@ -203,11 +220,11 @@ fn builtin_documentation_loads_without_roblox_assets() -> io::Result<()> {
 #[test]
 fn deserialization_enforces_documentation_semantics() {
     for source in [
-        r#"{"@custom/global/value":{}}"#,
-        r#"{"custom/global/value":{"documentation":"text"}}"#,
-        r#"{"@custom/":{"documentation":"text"}}"#,
-        r#"{"@custom/global/value":{"documentation":"text","keys":{"member":"invalid"}}}"#,
-        r#"{"@custom/global/value":{"documentation":"text","params":[{"name":"","documentation":"@custom/global/parameter"}]}}"#,
+        include_str!("../fixtures/environment/documentation/alternate.json"),
+        include_str!("../fixtures/environment/deserialization/input.json"),
+        include_str!("../fixtures/environment/deserialization/replacement.json"),
+        include_str!("../fixtures/environment/deserialization/invalid.json"),
+        include_str!("../fixtures/environment/deserialization/alternate.json"),
     ] {
         assert!(
             serde_json::from_str::<instar_core::documentation::Index>(source).is_err(),

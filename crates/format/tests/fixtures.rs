@@ -1,8 +1,8 @@
 //! Formatter fixture syntax and lossless emission contracts.
-use std::{error::Error, fs, io, num::NonZeroUsize, path::Path, time::Duration};
+use std::{error::Error, fs, io, path::Path, time::Duration};
 
 use instar_analysis::{Completion, Options, Reason};
-use instar_format::configuration::{Configuration, IndentStyle, LineEnding};
+use instar_format::configuration::{Configuration, LineEnding};
 
 use vermis::{
     emitter::{Emitter, LineEnding as EmittedLineEnding},
@@ -15,7 +15,7 @@ fn fixtures() -> Result<(), Box<dyn Error>> {
     let cases = glob::glob(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/*/*"))?
         .collect::<Result<Vec<_>, _>>()?;
 
-    assert_eq!(cases.len(), 48, "all formatter fixtures must be discovered");
+    assert_eq!(cases.len(), 60, "all formatter fixtures must be discovered");
 
     for case in cases {
         let configuration = match fs::read_to_string(case.join("configuration.toml")) {
@@ -74,6 +74,19 @@ fn fixtures() -> Result<(), Box<dyn Error>> {
         );
 
         verify(&input, &expected, &actual, line_ending, &case);
+
+        if case
+            .parent()
+            .is_some_and(|parent| parent.ends_with("identity"))
+        {
+            let output = std::str::from_utf8(&actual)?;
+
+            assert!(
+                output.find("./z").expect("first call") < output.find("./a").expect("second call"),
+                "{}: {output}",
+                case.display()
+            );
+        }
     }
 
     Ok(())
@@ -154,37 +167,6 @@ fn preserved<'source>(tree: &Tree<'source>) -> Vec<&'source [u8]> {
 }
 
 #[test]
-fn require_ordering_respects_lexical_identity() -> Result<(), Box<dyn Error>> {
-    let configuration: Configuration = toml::from_str("[requires]\norder='alphabetical'")?;
-
-    for source in [
-        "local require = function(value) return value end\nlocal z = require('./z')\nlocal a = require('./a')\n",
-        "local function load(require)\nlocal z = require('./z')\nlocal a = require('./a')\nend\n",
-        "require = custom\nlocal z = require('./z')\nlocal a = require('./a')\n",
-        "local z = require('./z')\nlocal require = require('./a')\n",
-        "local value = require('./z')\nlocal value = require('./a')\n",
-        "local z = require('./z')\nlocal a: typeof(z) = require('./a')\n",
-    ] {
-        let output = String::from_utf8(
-            instar_format::format(
-                source.as_bytes(),
-                &configuration,
-                &Options::new(Duration::from_secs(5)),
-            )?
-            .output
-            .expect("formatted source"),
-        )?;
-
-        assert!(
-            output.find("./z").expect("first call") < output.find("./a").expect("second call"),
-            "{output}"
-        );
-    }
-
-    Ok(())
-}
-
-#[test]
 fn failures_and_limits_never_return_partial_output() -> Result<(), Box<dyn Error>> {
     let configuration = Configuration::default();
     let source = b"local =";
@@ -224,76 +206,6 @@ fn failures_and_limits_never_return_partial_output() -> Result<(), Box<dyn Error
         assert_eq!(result.output, None);
         assert_eq!(result.diagnostics, Vec::new());
     }
-
-    Ok(())
-}
-
-fn formatted(source: &str, width: usize) -> io::Result<String> {
-    let configuration = Configuration {
-        width: NonZeroUsize::new(width).expect("nonzero width"),
-        indent_style: IndentStyle::Spaces,
-        ..Configuration::default()
-    };
-
-    let result = instar_format::format(
-        source.as_bytes(),
-        &configuration,
-        &Options::new(Duration::from_secs(5)),
-    )?;
-
-    assert_eq!(result.completion, Completion::Complete);
-    assert_eq!(result.diagnostics, Vec::new());
-    let output = result.output.expect("complete output");
-
-    verify(
-        source.as_bytes(),
-        &output,
-        &output,
-        EmittedLineEnding::LineFeed,
-        Path::new("layout"),
-    );
-
-    let repeated = instar_format::format(
-        &output,
-        &configuration,
-        &Options::new(Duration::from_secs(5)),
-    )?;
-
-    assert_eq!(repeated.completion, Completion::Complete);
-    assert_eq!(repeated.diagnostics, Vec::new());
-    assert_eq!(repeated.output, Some(output.clone()));
-
-    Ok(String::from_utf8(output).expect("UTF-8 output"))
-}
-
-#[test]
-fn unicode_and_tabs_use_display_columns() -> io::Result<()> {
-    for text in ["e\u{301}".repeat(8), "界".repeat(4), "👨‍👩‍👧‍👦".repeat(4)] {
-        let source = format!("return call(\"{text}\")\n");
-        assert_eq!(formatted(&source, 24)?, source);
-    }
-
-    assert_eq!(
-        formatted("return call(\"a\tb\")", 18)?,
-        "return call(\n    \"a\tb\"\n)\n"
-    );
-
-    Ok(())
-}
-
-#[test]
-fn multiline_arguments_wrap_surrounding_arguments() -> io::Result<()> {
-    let source = "dispatch(\"a fairly long argument\", function(value)\nreturn value\nend, \"another long argument\")";
-    let expected = "dispatch(\n    \"a fairly long argument\",\n    function(value)\n        return value\n    end,\n    \"another long argument\"\n)\n";
-    assert_eq!(formatted(source, 36)?, expected);
-
-    assert_eq!(
-        formatted(
-            "dispatch(\"head\", function(value)\nreturn value\nend, \"tail\")",
-            60
-        )?,
-        "dispatch(\"head\", function(value)\n    return value\nend, \"tail\")\n"
-    );
 
     Ok(())
 }

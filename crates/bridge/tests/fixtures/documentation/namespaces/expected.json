@@ -1,0 +1,18 @@
+[
+  [
+    "global/library.call",
+    "@game/global/library.call"
+  ],
+  [
+    "globaltype/Thing.Method",
+    "@game/globaltype/Thing.Method"
+  ],
+  [
+    "global/thing",
+    "@game/global/thing"
+  ],
+  [
+    "global/type",
+    "@luau/global/type"
+  ]
+]

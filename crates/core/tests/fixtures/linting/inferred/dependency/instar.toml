@@ -1,0 +1,4 @@
+[lint.implicit_any_parameter]
+level='allow'
+[lint.implicit_any_local]
+level='allow'

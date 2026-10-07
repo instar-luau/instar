@@ -1,0 +1,1 @@
+while running do game:GetService('Players') end

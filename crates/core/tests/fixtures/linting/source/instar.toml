@@ -1,0 +1,5 @@
+[roblox]
+enabled=true
+[[environment]]
+namespace='@custom'
+definitions=['globals.luau']

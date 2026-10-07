@@ -8,20 +8,24 @@ use instar_core::{
     project::Change,
 };
 
-use serde_json::json;
-
 use crate::support::{Directory, options, project};
 
 #[test]
 fn imported_types_and_source_updates() -> io::Result<()> {
-    let directory = Directory::new(Some(r#"{"languageMode":"strict"}"#))?;
+    let directory = Directory::new(Some(include_str!(
+        "../fixtures/checking/imported/strict.json"
+    )))?;
 
     let dependency = directory.file(
         "dependency.luau",
-        "export type Value = {number: number}\nreturn {number = 1}",
+        include_str!("../fixtures/checking/imported/dependency.luau"),
     )?;
 
-    let entry = directory.file("entry.luau", "local dependency = require('./dependency')\nlocal value: dependency.Value = dependency\nlocal number: string = value.number\nreturn number")?;
+    let entry = directory.file(
+        "entry.luau",
+        include_str!("../fixtures/checking/imported/entry.luau"),
+    )?;
+
     let mut project = project();
     let entries = [Entry::new(entry.clone())];
     let first = project.check(&entries, &options())?;
@@ -44,7 +48,7 @@ fn imported_types_and_source_updates() -> io::Result<()> {
 
     project.change(Change::Overlay {
         path: dependency,
-        text: Some("export type Value = {number: string}\nreturn {number = 'one'}".to_owned()),
+        text: Some(include_str!("../fixtures/checking/imported/replacement.luau").to_owned()),
     })?;
 
     let updated = project.check(&entries, &options())?;
@@ -56,16 +60,30 @@ fn imported_types_and_source_updates() -> io::Result<()> {
 
 #[test]
 fn dependency_errors_are_not_filtered_or_repeated() -> io::Result<()> {
-    let directory = Directory::new(Some(r#"{"languageMode":"strict"}"#))?;
-    directory.file("instar.toml", "[check]\nexclude = ['dependency.luau']")?;
+    let directory = Directory::new(Some(include_str!(
+        "../fixtures/checking/imported/strict.json"
+    )))?;
+
+    directory.file(
+        "instar.toml",
+        include_str!("../fixtures/checking/dependency/instar.toml"),
+    )?;
 
     let dependency = directory.file(
         "dependency.luau",
-        "local number: number = 'wrong'\nreturn number",
+        include_str!("../fixtures/checking/dependency/dependency.luau"),
     )?;
 
-    let first = directory.file("first.luau", "return require('./dependency')")?;
-    let second = directory.file("second.luau", "return require('./dependency')")?;
+    let first = directory.file(
+        "first.luau",
+        include_str!("../fixtures/checking/dependency/first.luau"),
+    )?;
+
+    let second = directory.file(
+        "second.luau",
+        include_str!("../fixtures/checking/dependency/first.luau"),
+    )?;
+
     let mut project = project();
     let single = project.check(&[Entry::new(first.clone())], &options())?;
     let multiple = project.check(&[Entry::new(first), Entry::new(second)], &options())?;
@@ -93,16 +111,18 @@ fn dependency_errors_are_not_filtered_or_repeated() -> io::Result<()> {
 
 #[test]
 fn cycles_are_finite_and_keep_native_identity() -> io::Result<()> {
-    let directory = Directory::new(Some(r#"{"languageMode":"strict"}"#))?;
+    let directory = Directory::new(Some(include_str!(
+        "../fixtures/checking/imported/strict.json"
+    )))?;
 
     let first = directory.file(
         "first.luau",
-        "local second = require('./second')\nreturn {second = second}",
+        include_str!("../fixtures/checking/cycles/first.luau"),
     )?;
 
     directory.file(
         "second.luau",
-        "local first = require('./first')\nreturn {first = first}",
+        include_str!("../fixtures/checking/cycles/second.luau"),
     )?;
 
     let result = project().check(&[Entry::new(first)], &options())?;
@@ -122,22 +142,35 @@ fn cycles_are_finite_and_keep_native_identity() -> io::Result<()> {
 
 #[test]
 fn declarations_are_scoped_and_invalidated() -> io::Result<()> {
-    let directory = Directory::new(Some(r#"{"languageMode":"strict"}"#))?;
+    let directory = Directory::new(Some(include_str!(
+        "../fixtures/checking/imported/strict.json"
+    )))?;
 
     directory.file(
         "instar.toml",
-        "[[environment]]\nnamespace='@custom'\ndefinitions = ['globals.luau']",
+        include_str!("../fixtures/checking/declarations/instar.toml"),
     )?;
 
-    let definition = directory.file("globals.luau", "declare configured: number")?;
+    let definition = directory.file(
+        "globals.luau",
+        include_str!("../fixtures/checking/declarations/globals.luau"),
+    )?;
 
     let entry = directory.file(
         "entry.luau",
-        "local number: number = configured\nreturn number",
+        include_str!("../fixtures/checking/declarations/entry.luau"),
     )?;
 
-    directory.file("isolated/instar.toml", "environment = []")?;
-    let isolated = directory.file("isolated/entry.luau", "return configured")?;
+    directory.file(
+        "isolated/instar.toml",
+        include_str!("../fixtures/checking/declarations/isolated/instar.toml"),
+    )?;
+
+    let isolated = directory.file(
+        "isolated/entry.luau",
+        include_str!("../fixtures/checking/declarations/isolated/entry.luau"),
+    )?;
+
     let mut project = project();
 
     assert_eq!(
@@ -156,7 +189,7 @@ fn declarations_are_scoped_and_invalidated() -> io::Result<()> {
 
     project.change(Change::Overlay {
         path: definition.clone(),
-        text: Some("declare configured: string".to_owned()),
+        text: Some(include_str!("../fixtures/checking/declarations/definition.luau").to_owned()),
     })?;
 
     assert_ne!(
@@ -168,7 +201,7 @@ fn declarations_are_scoped_and_invalidated() -> io::Result<()> {
 
     project.change(Change::Overlay {
         path: definition.clone(),
-        text: Some("declare configured:".to_owned()),
+        text: Some(include_str!("../fixtures/checking/declarations/invalid.luau").to_owned()),
     })?;
 
     let invalid = project.check(&[Entry::new(entry.clone())], &options())?;
@@ -185,7 +218,7 @@ fn declarations_are_scoped_and_invalidated() -> io::Result<()> {
 
     project.change(Change::Overlay {
         path: definition,
-        text: Some("declare configured: number".to_owned()),
+        text: Some(include_str!("../fixtures/checking/declarations/globals.luau").to_owned()),
     })?;
 
     assert_eq!(
@@ -198,12 +231,15 @@ fn declarations_are_scoped_and_invalidated() -> io::Result<()> {
 
 #[test]
 fn native_modes_and_lint_ownership() -> io::Result<()> {
-    let directory = Directory::new(Some(r#"{"languageMode":"strict"}"#))?;
+    let directory = Directory::new(Some(include_str!(
+        "../fixtures/checking/imported/strict.json"
+    )))?;
+
     let configuration = directory.path.join(".luaurc");
 
     let entry = directory.file(
         "entry.luau",
-        "local unused = 1\nlocal function value(number: number) return number end\nreturn value()",
+        include_str!("../fixtures/checking/native/entry.luau"),
     )?;
 
     let mut project = project();
@@ -217,7 +253,7 @@ fn native_modes_and_lint_ownership() -> io::Result<()> {
 
     project.change(Change::Overlay {
         path: configuration.clone(),
-        text: Some(r#"{"languageMode":"nonstrict"}"#.to_owned()),
+        text: Some(include_str!("../fixtures/checking/native/nonstrict.json").to_owned()),
     })?;
 
     let nonstrict = project.check(&[Entry::new(entry.clone())], &options())?;
@@ -225,7 +261,7 @@ fn native_modes_and_lint_ownership() -> io::Result<()> {
 
     project.change(Change::Overlay {
         path: configuration,
-        text: Some(r#"{"languageMode":"nocheck"}"#.to_owned()),
+        text: Some(include_str!("../fixtures/checking/native/nocheck.json").to_owned()),
     })?;
 
     assert_eq!(
@@ -253,8 +289,15 @@ fn native_modes_and_lint_ownership() -> io::Result<()> {
 
 #[test]
 fn unresolved_import_has_one_source_diagnostic() -> io::Result<()> {
-    let directory = Directory::new(Some(r#"{"languageMode":"strict"}"#))?;
-    let entry = directory.file("entry.luau", "return require('./missing')")?;
+    let directory = Directory::new(Some(include_str!(
+        "../fixtures/checking/imported/strict.json"
+    )))?;
+
+    let entry = directory.file(
+        "entry.luau",
+        include_str!("../fixtures/checking/unresolved/entry.luau"),
+    )?;
+
     let result = project().check(&[Entry::new(entry)], &options())?;
     assert_eq!(result.completion, Completion::Complete);
     assert_eq!(result.diagnostics.len(), 1);
@@ -271,7 +314,10 @@ fn unresolved_import_has_one_source_diagnostic() -> io::Result<()> {
 
 #[test]
 fn interruption_is_not_success_and_can_be_retried() -> io::Result<()> {
-    let directory = Directory::new(Some(r#"{"languageMode":"strict"}"#))?;
+    let directory = Directory::new(Some(include_str!(
+        "../fixtures/checking/imported/strict.json"
+    )))?;
+
     let entry = directory.file("entry.luau", "return 1")?;
     let mut project = project();
     let cancelled = options();
@@ -301,16 +347,20 @@ fn interruption_is_not_success_and_can_be_retried() -> io::Result<()> {
 
 #[test]
 fn incomplete_environments_keep_known_source_diagnostics() -> io::Result<()> {
-    let directory = Directory::new(Some(
-        r#"{"languageMode":"strict","lint":{"*":false,"LocalUnused":true}}"#,
-    ))?;
+    let directory = Directory::new(Some(include_str!(
+        "../fixtures/checking/incomplete/strict.json"
+    )))?;
 
     directory.file(
         "instar.toml",
-        "[[environment]]\nnamespace='@custom'\ndefinitions=['missing.luau']",
+        include_str!("../fixtures/checking/incomplete/instar.toml"),
     )?;
 
-    let entry = directory.file("entry.luau", "return require('./absent')")?;
+    let entry = directory.file(
+        "entry.luau",
+        include_str!("../fixtures/checking/incomplete/entry.luau"),
+    )?;
+
     let mut project = project();
     let entries = [Entry::new(entry.clone())];
     let result = project.check(&entries, &options())?;
@@ -349,9 +399,20 @@ fn incomplete_environments_keep_known_source_diagnostics() -> io::Result<()> {
 
 #[test]
 fn invalid_roblox_metadata_is_explicitly_incomplete() -> io::Result<()> {
-    let directory = Directory::new(Some(r#"{"languageMode":"strict"}"#))?;
-    directory.file("instar.toml", "[roblox]\nenabled = true")?;
-    let entry = directory.file("entry.luau", "return game")?;
+    let directory = Directory::new(Some(include_str!(
+        "../fixtures/checking/imported/strict.json"
+    )))?;
+
+    directory.file(
+        "instar.toml",
+        include_str!("../fixtures/checking/invalid/instar.toml"),
+    )?;
+
+    let entry = directory.file(
+        "entry.luau",
+        include_str!("../fixtures/checking/invalid/entry.luau"),
+    )?;
+
     let mut project = project();
 
     project.change(Change::Overlay {
@@ -378,9 +439,17 @@ fn invalid_roblox_metadata_is_explicitly_incomplete() -> io::Result<()> {
 
 #[test]
 fn broken_dependency_reports_syntax_without_a_generic_import_failure() -> io::Result<()> {
-    let directory = Directory::new(Some(r#"{"languageMode":"strict"}"#))?;
+    let directory = Directory::new(Some(include_str!(
+        "../fixtures/checking/imported/strict.json"
+    )))?;
+
     let dependency = directory.file("dependency.luau", "local =")?;
-    let entry = directory.file("entry.luau", "return require('./dependency')")?;
+
+    let entry = directory.file(
+        "entry.luau",
+        include_str!("../fixtures/checking/dependency/first.luau"),
+    )?;
+
     let result = project().check(&[Entry::new(entry)], &options())?;
     assert_eq!(result.completion, Completion::Complete);
 
@@ -406,8 +475,15 @@ fn broken_dependency_reports_syntax_without_a_generic_import_failure() -> io::Re
 
 #[test]
 fn malformed_require_has_one_resolution_error() -> io::Result<()> {
-    let directory = Directory::new(Some(r#"{"languageMode":"strict"}"#))?;
-    let entry = directory.file("entry.luau", "return require()")?;
+    let directory = Directory::new(Some(include_str!(
+        "../fixtures/checking/imported/strict.json"
+    )))?;
+
+    let entry = directory.file(
+        "entry.luau",
+        include_str!("../fixtures/checking/malformed/entry.luau"),
+    )?;
+
     let result = project().check(&[Entry::new(entry)], &options())?;
     assert_eq!(result.completion, Completion::Complete);
     assert_eq!(result.diagnostics.len(), 1);
@@ -422,10 +498,22 @@ fn malformed_require_has_one_resolution_error() -> io::Result<()> {
 
 #[test]
 fn executable_configuration_and_module_directives_control_modes() -> io::Result<()> {
-    let directory = Directory::new(Some(r#"{"languageMode":"strict"}"#))?;
+    let directory = Directory::new(Some(include_str!(
+        "../fixtures/checking/imported/strict.json"
+    )))?;
+
     fs::remove_file(directory.path.join(".luaurc"))?;
-    directory.file(".config.luau", "return {languageMode = 'strict'}")?;
-    let entry = directory.file("entry.luau", "--!nocheck\nreturn unknown")?;
+
+    directory.file(
+        ".config.luau",
+        include_str!("../fixtures/checking/executable/.config.luau"),
+    )?;
+
+    let entry = directory.file(
+        "entry.luau",
+        include_str!("../fixtures/checking/executable/entry.luau"),
+    )?;
+
     let mut project = project();
 
     assert_eq!(
@@ -437,7 +525,7 @@ fn executable_configuration_and_module_directives_control_modes() -> io::Result<
 
     project.change(Change::Overlay {
         path: entry.clone(),
-        text: Some("--!strict\nreturn unknown".to_owned()),
+        text: Some(include_str!("../fixtures/checking/executable/input.luau").to_owned()),
     })?;
 
     assert_ne!(
@@ -450,19 +538,28 @@ fn executable_configuration_and_module_directives_control_modes() -> io::Result<
 
 #[test]
 fn declarations_can_build_on_prior_files_and_be_removed() -> io::Result<()> {
-    let directory = Directory::new(Some(r#"{"languageMode":"strict"}"#))?;
+    let directory = Directory::new(Some(include_str!(
+        "../fixtures/checking/imported/strict.json"
+    )))?;
 
     let configuration = directory.file(
         "instar.toml",
-        "[[environment]]\nnamespace='@custom'\ndefinitions = ['types.luau', 'globals.luau']",
+        include_str!("../fixtures/checking/composition/instar.toml"),
     )?;
 
-    directory.file("types.luau", "export type Value = number")?;
-    directory.file("globals.luau", "declare configured: Value")?;
+    directory.file(
+        "types.luau",
+        include_str!("../fixtures/checking/composition/types.luau"),
+    )?;
+
+    directory.file(
+        "globals.luau",
+        include_str!("../fixtures/checking/composition/globals.luau"),
+    )?;
 
     let entry = directory.file(
         "entry.luau",
-        "local number: number = configured\nreturn number",
+        include_str!("../fixtures/checking/declarations/entry.luau"),
     )?;
 
     let mut project = project();
@@ -476,7 +573,9 @@ fn declarations_can_build_on_prior_files_and_be_removed() -> io::Result<()> {
 
     project.change(Change::Overlay {
         path: configuration,
-        text: Some("environment = []".to_owned()),
+        text: Some(
+            include_str!("../fixtures/checking/declarations/isolated/instar.toml").to_owned(),
+        ),
     })?;
 
     assert_ne!(
@@ -489,33 +588,35 @@ fn declarations_can_build_on_prior_files_and_be_removed() -> io::Result<()> {
 
 #[test]
 fn explicit_declarations_preserve_distinct_mapped_contexts() -> io::Result<()> {
-    let directory = Directory::new(Some(r#"{"languageMode":"strict"}"#))?;
+    let directory = Directory::new(Some(include_str!(
+        "../fixtures/checking/imported/strict.json"
+    )))?;
 
     directory.file(
         "instar.toml",
-        "[[environment]]\nnamespace='@custom'\ndefinitions = ['globals.luau']",
+        include_str!("../fixtures/checking/declarations/instar.toml"),
     )?;
 
-    directory.file("globals.luau", "declare script: any")?;
-    let caller = directory.file("caller.luau", "local imported = require(script.Parent.Target)\nlocal number: number = imported\nreturn number")?;
+    directory.file(
+        "globals.luau",
+        include_str!("../fixtures/checking/explicit/globals.luau"),
+    )?;
+
+    let caller = directory.file(
+        "caller.luau",
+        include_str!("../fixtures/checking/explicit/caller.luau"),
+    )?;
+
     directory.file("number.luau", "return 1")?;
-    directory.file("string.luau", "return 'one'")?;
+
+    directory.file(
+        "string.luau",
+        include_str!("../fixtures/checking/explicit/string.luau"),
+    )?;
 
     directory.file(
         "sourcemap.json",
-        &json!({
-            "name":"Place", "className":"DataModel", "children":[
-                {"name":"One", "className":"Folder", "children":[
-                    {"name":"Caller", "className":"ModuleScript", "filePaths":["caller.luau"]},
-                    {"name":"Target", "className":"ModuleScript", "filePaths":["number.luau"]}
-                ]},
-                {"name":"Two", "className":"Folder", "children":[
-                    {"name":"Caller", "className":"ModuleScript", "filePaths":["caller.luau"]},
-                    {"name":"Target", "className":"ModuleScript", "filePaths":["string.luau"]}
-                ]}
-            ]
-        })
-        .to_string(),
+        include_str!("../fixtures/checking/explicit/sourcemap.json"),
     )?;
 
     let mut project = project();
@@ -544,14 +645,18 @@ fn explicit_declarations_preserve_distinct_mapped_contexts() -> io::Result<()> {
 
 #[test]
 fn roblox_security_profiles_and_metadata_control_native_types() -> io::Result<()> {
-    let directory = Directory::new(Some(r#"{"languageMode":"strict"}"#))?;
+    let directory = Directory::new(Some(include_str!(
+        "../fixtures/checking/imported/strict.json"
+    )))?;
 
-    let configuration =
-        directory.file("instar.toml", "[roblox]\nenabled=true\nsecurity='plugin'")?;
+    let configuration = directory.file(
+        "instar.toml",
+        include_str!("../fixtures/checking/roblox/instar.toml"),
+    )?;
 
     let entry = directory.file(
         "entry.luau",
-        "local part: Part = Instance.new('Part')\nreturn plugin.Name, part",
+        include_str!("../fixtures/checking/roblox/entry.luau"),
     )?;
 
     let entries = [Entry::new(entry)];
@@ -562,7 +667,7 @@ fn roblox_security_profiles_and_metadata_control_native_types() -> io::Result<()
 
     project.change(Change::Overlay {
         path: configuration,
-        text: Some("[roblox]\nenabled=true\nsecurity='none'".to_owned()),
+        text: Some(include_str!("../fixtures/checking/roblox/input.toml").to_owned()),
     })?;
 
     let game = project.check(&entries, &options())?;
@@ -573,7 +678,7 @@ fn roblox_security_profiles_and_metadata_control_native_types() -> io::Result<()
 
     project.change(Change::Overlay {
         path: metadata,
-        text: Some("declare game: any".to_owned()),
+        text: Some(include_str!("../fixtures/checking/roblox/definition.luau").to_owned()),
     })?;
 
     let mismatched = project.check(&entries, &options())?;
@@ -595,9 +700,20 @@ fn roblox_security_profiles_and_metadata_control_native_types() -> io::Result<()
 
 #[test]
 fn nonstrict_keeps_native_unknown_global_errors() -> io::Result<()> {
-    let directory = Directory::new(Some(r#"{"languageMode":"strict"}"#))?;
-    directory.file(".luaurc", r#"{"languageMode":"nonstrict"}"#)?;
-    let entry = directory.file("entry.luau", "local unused = 1\nreturn undeclared")?;
+    let directory = Directory::new(Some(include_str!(
+        "../fixtures/checking/imported/strict.json"
+    )))?;
+
+    directory.file(
+        ".luaurc",
+        include_str!("../fixtures/checking/native/nonstrict.json"),
+    )?;
+
+    let entry = directory.file(
+        "entry.luau",
+        include_str!("../fixtures/checking/nonstrict/entry.luau"),
+    )?;
+
     let result = project().check(&[Entry::new(entry.clone())], &options())?;
     assert_eq!(result.completion, Completion::Complete);
 

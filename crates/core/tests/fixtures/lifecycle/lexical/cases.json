@@ -1,0 +1,88 @@
+[
+  [
+    "local loader=require\nloader('./target')",
+    [
+      "./target"
+    ]
+  ],
+  [
+    "local require=function() end\nrequire('./target')",
+    []
+  ],
+  [
+    "do local require=function() end require('./target') end\nrequire('./target')",
+    [
+      "./target"
+    ]
+  ],
+  [
+    "local path='./target'\nlocal function change() path..='x' end\nrequire(path)",
+    [
+      null
+    ]
+  ],
+  [
+    "local path='./target'\ndo local path='other' path='changed' end\nrequire(path)",
+    [
+      "./target"
+    ]
+  ],
+  [
+    "local path='./target'\nlocal function change(path) path='other' end\nrequire(path)",
+    [
+      "./target"
+    ]
+  ],
+  [
+    "function require(value) return value end\nrequire('./target')",
+    [
+      null
+    ]
+  ],
+  [
+    "local function f(require, ...: typeof(require('./target'))) end",
+    []
+  ],
+  [
+    "local function f(...: typeof(require('./target'))) end",
+    [
+      "./target"
+    ]
+  ],
+  [
+    "repeat local path='./target' require(path) until path",
+    [
+      "./target"
+    ]
+  ],
+  [
+    "for require in pairs({}) do require('./target') end\nrequire('./target')",
+    [
+      "./target"
+    ]
+  ],
+  [
+    "local path='./target'\nlocal result=if local path=path then require(path) else require(path)\nrequire(path)",
+    [
+      "./target",
+      "./target",
+      "./target"
+    ]
+  ],
+  [
+    "require([=[./target]=])\nrequire('./tar'..'get')\nrequire('./tar\\x67et')",
+    [
+      "./target",
+      "./target",
+      "./target"
+    ]
+  ],
+  [
+    "require(compute())\nrequire()\nrequire('./target', 1)",
+    [
+      null,
+      null,
+      null
+    ]
+  ]
+]

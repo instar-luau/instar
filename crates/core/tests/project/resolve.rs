@@ -93,22 +93,22 @@ fn native_alias_rejections_are_transactional() -> io::Result<()> {
     for (filename, source, message) in [
         (
             ".luaurc",
-            r#"{"aliases":{"SeLf":"./target"}}"#,
+            include_str!("../fixtures/resolve/reserved/input/.luaurc"),
             "alias @self is reserved",
         ),
         (
             ".config.luau",
-            "return {luau = {aliases = {SELF = './target'}}}",
+            include_str!("../fixtures/resolve/self/input/.config.luau"),
             "alias @self is reserved",
         ),
         (
             ".luaurc",
-            r#"{"aliases":{"@named":"./target"}}"#,
+            include_str!("../fixtures/resolve/prefixed/input/.luaurc"),
             "Invalid alias @named",
         ),
         (
             ".config.luau",
-            "return {luau = {aliases = {['@named'] = './target'}}}",
+            include_str!("../fixtures/resolve/prefix/input/.config.luau"),
             "Invalid alias @named",
         ),
     ] {

@@ -1,0 +1,1 @@
+if a then print(1) end

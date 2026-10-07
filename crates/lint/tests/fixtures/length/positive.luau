@@ -1,0 +1,1 @@
+if #list then print(1) end
