@@ -1,1 +1,2 @@
+allowed-duplicate-crates = ["getrandom", "miniz_oxide", "windows-sys"]
 source-item-ordering = ["module"]
