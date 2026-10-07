@@ -262,7 +262,7 @@ impl Project {
         let directory = cache_directory()?;
 
         match self.source(&directory.join("metadata.json")) {
-            Ok(_) => {}
+            Ok(_) => tracing::debug!(path = %directory.display(), "Using cached documentation"),
 
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 let files = assets::fetch(

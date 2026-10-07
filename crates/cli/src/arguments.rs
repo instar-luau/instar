@@ -11,6 +11,9 @@ pub(crate) struct Arguments {
     #[arg(long, global = true)]
     pub(crate) json: bool,
 
+    #[arg(long, global = true, help = "Write operational debug events to stderr")]
+    pub(crate) verbose: bool,
+
     #[arg(long, global = true, default_value = "30", value_parser = clap::value_parser!(u64).range(1..))]
     pub(crate) timeout: u64,
 

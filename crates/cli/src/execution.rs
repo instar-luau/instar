@@ -56,6 +56,11 @@ pub(crate) fn run(arguments: &Arguments) -> Result<bool> {
 
     console::set_colors_enabled_stderr(!matches!(color, ColorChoice::Never));
     let mut reporter = Reporter::new(arguments.json, color);
+
+    if arguments.verbose {
+        reporter.trace()?;
+    }
+
     reporter.phase("Discovering", None)?;
     options.progress = Some(reporter.observer()?);
 

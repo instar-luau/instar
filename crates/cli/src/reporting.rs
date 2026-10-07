@@ -17,6 +17,7 @@ use indicatif::{ProgressBar, ProgressDrawTarget, ProgressFinish, ProgressStyle};
 use instar_analysis::{Completion, Location, Related};
 use instar_core::{analysis::Origin, project::Project};
 use serde_json::{Value, json};
+use tracing_subscriber::{filter::Targets, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::arguments::Command;
 
@@ -57,6 +58,33 @@ impl Reporter {
             skipped: 0,
             unsuccessful: 0,
         }
+    }
+
+    pub(crate) fn trace(&self) -> Result<()> {
+        let progress = self.progress.clone();
+
+        let output = tracing_subscriber::fmt::layer()
+            .without_time()
+            .with_ansi(!self.json && !matches!(self.color, ColorChoice::Never))
+            .with_writer(move || Writer(progress.clone()));
+
+        let filter = Targets::new().with_target("instar", tracing::Level::DEBUG);
+
+        if self.json {
+            tracing_subscriber::registry()
+                .with(output.json())
+                .with(filter)
+                .try_init()
+                .map_err(|error| eyre::eyre!("{error}"))?;
+        } else {
+            tracing_subscriber::registry()
+                .with(output)
+                .with(filter)
+                .try_init()
+                .map_err(|error| eyre::eyre!("{error}"))?;
+        }
+
+        Ok(())
     }
 
     pub(crate) fn phase(&self, name: &str, total: Option<usize>) -> Result<()> {
@@ -299,6 +327,22 @@ impl Reporter {
         }
 
         Ok(())
+    }
+}
+
+struct Writer(ProgressBar);
+
+impl Write for Writer {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.suspend(|| {
+            io::stderr().lock().write_all(bytes)?;
+
+            Ok(bytes.len())
+        })
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.suspend(|| io::stderr().lock().flush())
     }
 }
 

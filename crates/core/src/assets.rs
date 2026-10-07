@@ -52,6 +52,7 @@ pub(crate) fn fetch(
 ) -> io::Result<BTreeMap<String, String>> {
     let started = Instant::now();
     options.check(started)?;
+    tracing::debug!(%url, "Downloading asset bundle");
     let (sender, receiver) = mpsc::sync_channel(1);
     let limits = options.clone();
 
@@ -65,7 +66,16 @@ pub(crate) fn fetch(
         options.check(started)?;
 
         match receiver.recv_timeout(Duration::from_millis(10)) {
-            Ok(result) => return result,
+            Ok(result) => {
+                tracing::debug!(
+                    elapsed_seconds = started.elapsed().as_secs_f64(),
+                    success = result.is_ok(),
+                    "Asset download completed"
+                );
+
+                return result;
+            }
+
             Err(mpsc::RecvTimeoutError::Timeout) => {}
 
             Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -82,6 +92,7 @@ pub(crate) fn get(
     started: Instant,
 ) -> io::Result<String> {
     options.check(started)?;
+    tracing::debug!(%url, "Fetching asset");
 
     let bytes = agent
         .get(url)
@@ -95,6 +106,7 @@ pub(crate) fn get(
         .map_err(io::Error::other)?;
 
     options.check(started)?;
+    tracing::debug!(%url, bytes = bytes.len(), "Asset received");
 
     String::from_utf8(bytes).map_err(invalid)
 }
@@ -103,6 +115,8 @@ pub(crate) fn install(directory: &Path, mut files: BTreeMap<String, String>) -> 
     let metadata = files
         .remove("metadata.json")
         .ok_or_else(|| invalid("missing asset metadata"))?;
+
+    tracing::debug!(path = %directory.display(), files = files.len() + 1, "Installing asset bundle");
 
     fs::create_dir_all(directory)?;
 

@@ -29,6 +29,8 @@ rayon = "1"
 serde_json.workspace = true
 tempfile = "3"
 thiserror = "2"
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "ansi", "json", "registry"] }
 
 [lints]
 workspace = true

@@ -51,11 +51,16 @@ impl<Request, Response> Process<Request, Response> {
         Request: Serialize + Send + 'static,
         Response: DeserializeOwned + Send + 'static,
     {
-        let mut child = Command::new(executable(name)?)
+        let path = executable(name)?;
+        tracing::debug!(worker = name, path = %path.display(), "Starting worker");
+
+        let mut child = Command::new(path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()?;
+
+        tracing::debug!(worker = name, process = child.id(), "Worker started");
 
         let mut input = child
             .stdin
@@ -103,10 +108,13 @@ impl<Request, Response> Process<Request, Response> {
         started: Instant,
     ) -> io::Result<Outcome<Response>> {
         if let Some(reason) = options.interrupted(started) {
+            tracing::debug!(process = self.child.id(), ?reason, "Request interrupted");
             self.stop()?;
 
             return Ok(Outcome::Interrupted(reason));
         }
+
+        tracing::debug!(process = self.child.id(), "Sending worker request");
 
         self.requests
             .as_ref()
@@ -116,6 +124,7 @@ impl<Request, Response> Process<Request, Response> {
 
         loop {
             if let Some(reason) = options.interrupted(started) {
+                tracing::debug!(process = self.child.id(), ?reason, "Request interrupted");
                 self.stop()?;
 
                 return Ok(Outcome::Interrupted(reason));
@@ -129,6 +138,7 @@ impl<Request, Response> Process<Request, Response> {
             {
                 Ok(response) => {
                     if let Some(reason) = options.interrupted(started) {
+                        tracing::debug!(process = self.child.id(), ?reason, "Request interrupted");
                         self.stop()?;
 
                         return Ok(Outcome::Interrupted(reason));
@@ -141,8 +151,21 @@ impl<Request, Response> Process<Request, Response> {
                             }
                         }
 
-                        Message::Response(Ok(response)) => return Ok(Outcome::Response(response)),
-                        Message::Response(Err(error)) => return Err(io::Error::try_from(error)?),
+                        Message::Response(Ok(response)) => {
+                            tracing::debug!(
+                                process = self.child.id(),
+                                elapsed_seconds = started.elapsed().as_secs_f64(),
+                                "Worker request completed"
+                            );
+
+                            return Ok(Outcome::Response(response));
+                        }
+
+                        Message::Response(Err(error)) => {
+                            tracing::debug!(process = self.child.id(), "Worker request failed");
+
+                            return Err(io::Error::try_from(error)?);
+                        }
                     }
                 }
 
@@ -159,9 +182,12 @@ impl<Request, Response> Process<Request, Response> {
         self.requests.take();
         self.responses = mpsc::sync_channel(1).1;
 
-        let killed = match self.child.try_wait()? {
-            Some(_) => Ok(()),
-            None => self.child.kill(),
+        let killed = if self.child.try_wait()?.is_some() {
+            Ok(())
+        } else {
+            tracing::debug!(process = self.child.id(), "Stopping worker");
+
+            self.child.kill()
         };
 
         self.child.wait()?;
@@ -170,6 +196,8 @@ impl<Request, Response> Process<Request, Response> {
             transport
                 .join()
                 .map_err(|_| io::Error::other("worker transport panicked"))?;
+
+            tracing::debug!(process = self.child.id(), "Worker transport joined");
         }
 
         killed

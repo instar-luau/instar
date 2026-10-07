@@ -24,6 +24,7 @@ sha2 = "0.10"
 tempfile = "3"
 thiserror = "2"
 toml.workspace = true
+tracing.workspace = true
 ureq = "3"
 vermis.workspace = true
 
