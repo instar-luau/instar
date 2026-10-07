@@ -1,5 +1,4 @@
 //! Synthetic require resolution fixtures with independent expected outcomes.
-
 use std::{fs, io, path::Path, time::Duration};
 
 use instar_core::project::Project;

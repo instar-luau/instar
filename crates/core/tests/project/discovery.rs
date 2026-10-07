@@ -1,5 +1,4 @@
 //! Synthetic configuration discovery and inheritance fixtures.
-
 use std::{fs, io, path::Path, time::Duration};
 
 use instar_core::project::Project;

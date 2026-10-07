@@ -1,6 +1,7 @@
-#include "instar-bridge/src/boundary.rs.h"
-
+#include "checking.hpp"
 #include "diagnostics.hpp"
+#include "linting.hpp"
+#include "parsing.hpp"
 #include "state.hpp"
 
 #include "Luau/Ast.h"
@@ -15,10 +16,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace instar {
-    using frontend::diagnostic;
-    using frontend::location;
-
+namespace instar::frontend {
     namespace {
         struct Bindings final : Luau::AstVisitor {
             std::map<Luau::AstLocal *, NativeFactKind> bindings;
@@ -79,8 +77,8 @@ namespace instar {
         }
     } // namespace
 
-    NativeLintResult NativeFrontend::lint(
-        const Host &host, rust::Slice<const rust::String> entries, double timeout_seconds,
+    NativeLintResult lint(
+        State &state, const Host &host, rust::Slice<const rust::String> entries, double timeout_seconds,
         rust::Slice<const rust::String> names, const Cancellation &cancellation,
         rust::Slice<const rust::String> semantic_modules
     ) {
@@ -105,14 +103,14 @@ namespace instar {
         bool typecheck = !semantics.empty();
 
         for (const rust::String &name : names) {
-            const auto &enabled = state->resolver.getConfig(std::string(name), {}).enabledLint;
+            const auto &enabled = state.resolver.getConfig(std::string(name), {}).enabledLint;
 
             typecheck = typecheck || enabled.isEnabled(Luau::LintWarning::Code_FormatString) ||
                         enabled.isEnabled(Luau::LintWarning::Code_DeprecatedApi) ||
                         enabled.isEnabled(Luau::LintWarning::Code_TableOperations);
         }
 
-        NativeCheck checked = analyze(host, entries, timeout_seconds, names, cancellation, typecheck);
+        NativeCheck checked = analyze(state, host, entries, timeout_seconds, names, cancellation, typecheck);
         NativeLintResult result{{}, {}, {}, checked.completion};
 
         for (NativeDiagnostic &error : checked.diagnostics) {
@@ -127,7 +125,7 @@ namespace instar {
             return result;
         }
 
-        prepare(host, names);
+        prepare(state, host, names);
 
         for (const rust::String &opaque : names) {
             if (status() != NativeCompletion::Complete) {
@@ -137,7 +135,7 @@ namespace instar {
             }
 
             const std::string name(opaque);
-            auto &frontend = state->frontend;
+            auto &frontend = state.frontend;
             const auto *source = frontend.getSourceModule(name);
 
             if (!source || !source->root) {
@@ -146,8 +144,8 @@ namespace instar {
 
             if (checked.completion == NativeCompletion::Environment) {
                 for (const Luau::ParseError &error : source->parseErrors) {
-                    const Luau::TypeError syntaxError{error.getLocation(), name, Luau::SyntaxError{error.what()}};
-                    result.diagnostics.push_back(diagnostic(host, syntaxError, name));
+                    const Luau::TypeError syntax_error{error.getLocation(), name, Luau::SyntaxError{error.what()}};
+                    result.diagnostics.push_back(diagnostic(host, syntax_error, name));
                 }
             }
 
@@ -156,7 +154,7 @@ namespace instar {
             const bool typed =
                 typecheck && checked.completion == NativeCompletion::Complete && module && !module->cancelled;
 
-            const Luau::Config &configuration = state->resolver.getConfig(name, {});
+            const Luau::Config &configuration = state.resolver.getConfig(name, {});
             const Luau::Mode mode = source->mode.value_or(configuration.mode);
             Luau::LintOptions options = configuration.enabledLint;
             options.warningMask &= ~Luau::LintWarning::parseMask(source->hotcomments);
@@ -176,9 +174,9 @@ namespace instar {
             }
 
             if (!typed) {
-                const auto found = state->resolver.environments.find(name);
+                const auto found = state.resolver.environments.find(name);
 
-                if (found != state->resolver.environments.end()) {
+                if (found != state.resolver.environments.end()) {
                     environment = frontend.getEnvironmentScope(found->second);
                 }
             }
@@ -242,5 +240,4 @@ namespace instar {
 
         return result;
     }
-
-} // namespace instar
+}

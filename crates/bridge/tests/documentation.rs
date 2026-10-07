@@ -1,4 +1,5 @@
 //! Native documentation namespace and declaration identity contracts.
+use std::{io, time::Duration};
 
 use instar_analysis::{Completion, Options};
 
@@ -6,8 +7,6 @@ use instar_bridge::{
     Configuration,
     frontend::{Definition, Frontend},
 };
-
-use std::{io, time::Duration};
 
 #[test]
 fn namespaces_preserve_builtins_members_and_file_diagnostics() -> io::Result<()> {

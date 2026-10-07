@@ -1,5 +1,4 @@
 //! Native lint warnings, semantic facts and shared-session boundaries.
-
 use std::{io, path::Path, time::Duration};
 
 use instar_analysis::{Completion, Kind, Options, Reason};

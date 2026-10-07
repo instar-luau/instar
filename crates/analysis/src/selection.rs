@@ -1,5 +1,4 @@
 //! Shared file-selection validation and matching.
-
 use std::{io, path::Path};
 
 use crate::error::invalid;

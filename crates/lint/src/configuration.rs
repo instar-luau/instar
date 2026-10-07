@@ -1,5 +1,4 @@
 //! Instar rule configuration and validation.
-
 use std::{collections::BTreeMap, num::NonZeroUsize};
 
 use instar_analysis::error::invalid;
@@ -7,6 +6,39 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::Rule;
+
+macro_rules! configuration {
+    ($($field:ident => $identity:ident: $settings:ident, $documentation:literal;)*) => {
+        /// Effective Instar linter settings after configuration inheritance.
+        #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+        #[serde(default, deny_unknown_fields)]
+        pub struct Configuration {
+            /// Included entry patterns, inheriting global selection when omitted.
+            #[serde(skip_serializing_if = "Option::is_none")]
+            #[schemars(with = "Vec<String>")]
+            pub include: Option<Vec<String>>,
+            /// Excluded entry patterns, inheriting global selection when omitted.
+            #[serde(skip_serializing_if = "Option::is_none")]
+            #[schemars(with = "Vec<String>")]
+            pub exclude: Option<Vec<String>>,
+            $(#[doc = $documentation] pub $field: $settings,)*
+        }
+
+        impl Configuration {
+            /// Returns every configured rule and its effective severity.
+            #[must_use]
+            pub fn rules(&self) -> Vec<(Rule, Level)> {
+                vec![$((Rule::$identity, self.$field.level),)*]
+            }
+
+            /// Returns the severity for an inventoried rule.
+            #[must_use]
+            pub const fn level(&self, rule: Rule) -> Level {
+                match rule { $(Rule::$identity => self.$field.level,)* }
+            }
+        }
+    };
+}
 
 /// Severity of an Instar lint rule.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
@@ -48,39 +80,6 @@ impl Default for AllowedSettings {
             level: Level::Allow,
         }
     }
-}
-
-macro_rules! configuration {
-    ($($field:ident => $identity:ident: $settings:ident, $documentation:literal;)*) => {
-        /// Effective Instar linter settings after configuration inheritance.
-        #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
-        #[serde(default, deny_unknown_fields)]
-        pub struct Configuration {
-            /// Included entry patterns, inheriting global selection when omitted.
-            #[serde(skip_serializing_if = "Option::is_none")]
-            #[schemars(with = "Vec<String>")]
-            pub include: Option<Vec<String>>,
-            /// Excluded entry patterns, inheriting global selection when omitted.
-            #[serde(skip_serializing_if = "Option::is_none")]
-            #[schemars(with = "Vec<String>")]
-            pub exclude: Option<Vec<String>>,
-            $(#[doc = $documentation] pub $field: $settings,)*
-        }
-
-        impl Configuration {
-            /// Returns every configured rule and its effective severity.
-            #[must_use]
-            pub fn rules(&self) -> Vec<(Rule, Level)> {
-                vec![$((Rule::$identity, self.$field.level),)*]
-            }
-
-            /// Returns the severity for an inventoried rule.
-            #[must_use]
-            pub const fn level(&self, rule: Rule) -> Level {
-                match rule { $(Rule::$identity => self.$field.level,)* }
-            }
-        }
-    };
 }
 
 crate::inventory::inventory!(configuration);

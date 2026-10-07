@@ -1,3 +1,14 @@
+use std::time::Instant;
+
+use instar_analysis::{Completion, Options, Reason};
+use unicode_width::UnicodeWidthStr;
+
+use vermis::{
+    emitter::{Emitter, LineEnding as EmittedLineEnding},
+    token::{Keyword, Symbol, TokenKind},
+    tree::{TokenIndex, Tree},
+};
+
 use super::{
     builder::Plan,
     document::{Document, Layout},
@@ -7,122 +18,6 @@ use crate::{
     Result as Output,
     configuration::{Configuration, IndentStyle, LineEnding},
 };
-
-use instar_analysis::{Completion, Options, Reason};
-use std::time::Instant;
-use unicode_width::UnicodeWidthStr;
-
-use vermis::{
-    emitter::{Emitter, LineEnding as EmittedLineEnding},
-    token::{Keyword, Symbol, TokenKind},
-    tree::{TokenIndex, Tree},
-};
-
-pub(super) fn emit(
-    tree: &Tree<'_>,
-    configuration: &Configuration,
-    plan: &Plan,
-    options: &Options,
-    started: Instant,
-) -> Output {
-    let line_ending = match configuration.line_ending {
-        LineEnding::Lf => EmittedLineEnding::LineFeed,
-        LineEnding::Crlf => EmittedLineEnding::CarriageReturnLineFeed,
-    };
-
-    let mut sources = Vec::new();
-
-    for quote in &plan.quotes {
-        if let Some(reason) = options.interrupted(started) {
-            return Output::interrupted(reason);
-        }
-
-        sources.push(quote.as_ref().map(|quote| {
-            let mut emitter = Emitter::new(line_ending);
-            emitter.keyword(Keyword::Return);
-            emitter.spaces(1);
-            let mut source = emitter.finish().into_owned();
-            source.extend_from_slice(quote);
-
-            source
-        }));
-    }
-
-    let mut replacements = Vec::new();
-
-    for source in &sources {
-        if let Some(reason) = options.interrupted(started) {
-            return Output::interrupted(reason);
-        }
-
-        let Some(source) = source else {
-            replacements.push(None);
-            continue;
-        };
-
-        let replacement = vermis::parse(source);
-
-        if !replacement.diagnostics.is_empty() {
-            return Output::failed("quoted-string transformation produced invalid syntax");
-        }
-
-        let Some(token) = replacement
-            .tokens
-            .iter()
-            .position(|token| token.kind == TokenKind::QuotedString)
-        else {
-            return Output::failed("quoted-string transformation did not produce a string token");
-        };
-
-        replacements.push(Some((replacement, TokenIndex::new(token))));
-    }
-
-    let mut renderer = Renderer {
-        tree,
-        configuration,
-        options,
-        started,
-        interruption: None,
-        emitter: Some(Emitter::from_tree(tree, line_ending)),
-        replacements: &replacements,
-        indentation: 0,
-        column: 0,
-        lines: 0,
-        space: false,
-        emitted: false,
-        measurement: None,
-        exceeded: false,
-    };
-
-    renderer.render(&plan.document, false);
-
-    if let Some(reason) = renderer
-        .interruption
-        .or_else(|| options.interrupted(started))
-    {
-        return Output::interrupted(reason);
-    }
-
-    if renderer.emitted {
-        renderer
-            .emitter
-            .as_mut()
-            .expect("output renderer")
-            .newline();
-    }
-
-    Output {
-        output: Some(
-            renderer
-                .emitter
-                .expect("output renderer")
-                .finish()
-                .into_owned(),
-        ),
-        diagnostics: Vec::new(),
-        completion: Completion::Complete,
-    }
-}
 
 struct Renderer<'tree, 'source> {
     tree: &'tree Tree<'source>,
@@ -338,4 +233,110 @@ fn columns(bytes: &[u8], mut column: usize, tab_width: usize) -> (usize, usize) 
     }
 
     (column, maximum)
+}
+
+pub(super) fn emit(
+    tree: &Tree<'_>,
+    configuration: &Configuration,
+    plan: &Plan,
+    options: &Options,
+    started: Instant,
+) -> Output {
+    let line_ending = match configuration.line_ending {
+        LineEnding::Lf => EmittedLineEnding::LineFeed,
+        LineEnding::Crlf => EmittedLineEnding::CarriageReturnLineFeed,
+    };
+
+    let mut sources = Vec::new();
+
+    for quote in &plan.quotes {
+        if let Some(reason) = options.interrupted(started) {
+            return Output::interrupted(reason);
+        }
+
+        sources.push(quote.as_ref().map(|quote| {
+            let mut emitter = Emitter::new(line_ending);
+            emitter.keyword(Keyword::Return);
+            emitter.spaces(1);
+            let mut source = emitter.finish().into_owned();
+            source.extend_from_slice(quote);
+
+            source
+        }));
+    }
+
+    let mut replacements = Vec::new();
+
+    for source in &sources {
+        if let Some(reason) = options.interrupted(started) {
+            return Output::interrupted(reason);
+        }
+
+        let Some(source) = source else {
+            replacements.push(None);
+            continue;
+        };
+
+        let replacement = vermis::parse(source);
+
+        if !replacement.diagnostics.is_empty() {
+            return Output::failed("quoted-string transformation produced invalid syntax");
+        }
+
+        let Some(token) = replacement
+            .tokens
+            .iter()
+            .position(|token| token.kind == TokenKind::QuotedString)
+        else {
+            return Output::failed("quoted-string transformation did not produce a string token");
+        };
+
+        replacements.push(Some((replacement, TokenIndex::new(token))));
+    }
+
+    let mut renderer = Renderer {
+        tree,
+        configuration,
+        options,
+        started,
+        interruption: None,
+        emitter: Some(Emitter::from_tree(tree, line_ending)),
+        replacements: &replacements,
+        indentation: 0,
+        column: 0,
+        lines: 0,
+        space: false,
+        emitted: false,
+        measurement: None,
+        exceeded: false,
+    };
+
+    renderer.render(&plan.document, false);
+
+    if let Some(reason) = renderer
+        .interruption
+        .or_else(|| options.interrupted(started))
+    {
+        return Output::interrupted(reason);
+    }
+
+    if renderer.emitted {
+        renderer
+            .emitter
+            .as_mut()
+            .expect("output renderer")
+            .newline();
+    }
+
+    Output {
+        output: Some(
+            renderer
+                .emitter
+                .expect("output renderer")
+                .finish()
+                .into_owned(),
+        ),
+        diagnostics: Vec::new(),
+        completion: Completion::Complete,
+    }
 }

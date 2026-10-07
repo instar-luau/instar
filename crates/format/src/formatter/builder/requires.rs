@@ -1,7 +1,9 @@
+use std::collections::BTreeSet;
+
+use vermis::tree::{NodeIndex, NodeKind};
+
 use super::{Builder, Require, Statement};
 use crate::configuration::{BuiltinGroup, Group, Order};
-use std::collections::BTreeSet;
-use vermis::tree::{NodeIndex, NodeKind};
 
 impl Builder<'_, '_> {
     pub(super) fn require(&self, index: NodeIndex) -> Option<Require> {

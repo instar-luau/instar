@@ -1,12 +1,12 @@
 //! Formatter worker interruption and error boundary contracts.
 
-use instar_analysis::{Completion, Options, Reason};
-use instar_format::{Configuration, format};
-
 use std::{
     io, thread,
     time::{Duration, Instant},
 };
+
+use instar_analysis::{Completion, Options, Reason};
+use instar_format::{Configuration, format};
 
 #[test]
 fn interrupted_work_never_returns_output_and_allows_retry() -> io::Result<()> {
@@ -24,7 +24,6 @@ fn interrupted_work_never_returns_output_and_allows_retry() -> io::Result<()> {
     assert_eq!(result.output, None);
     assert_eq!(result.diagnostics, Vec::new());
     assert!(started.elapsed() < Duration::from_secs(2));
-
     let options = Options::new(Duration::from_secs(5));
     let cancellation = options.cancellation.clone();
 

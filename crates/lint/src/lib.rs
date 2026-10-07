@@ -2,7 +2,13 @@
 
 pub mod configuration;
 mod diagnostic;
+
+#[expect(
+    clippy::arbitrary_source_item_ordering,
+    reason = "Rust requires the macro definition before its re-export"
+)]
 mod inventory;
+
 mod result;
 mod rule;
 mod rules;

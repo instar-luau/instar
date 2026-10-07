@@ -2,6 +2,7 @@
 #define INSTAR_FRONTEND_HEADER
 
 #include "rust/cxx.h"
+
 #include <memory>
 
 namespace instar {
@@ -11,6 +12,10 @@ namespace instar {
     struct NativeLintResult;
     struct NativeLink;
     class NativeConfiguration;
+
+    namespace frontend {
+        struct State;
+    }
 
     class NativeFrontend final {
       public:
@@ -33,13 +38,7 @@ namespace instar {
         );
 
       private:
-        NativeCheck analyze(
-            const Host &host, rust::Slice<const rust::String> entries, double timeout_seconds,
-            rust::Slice<const rust::String> names, const Cancellation &cancellation, bool typecheck
-        );
-
-        struct State;
-        std::unique_ptr<State> state;
+        std::unique_ptr<frontend::State> state;
     };
 
     std::unique_ptr<NativeFrontend> create_frontend();

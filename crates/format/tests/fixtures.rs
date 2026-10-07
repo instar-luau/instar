@@ -1,8 +1,7 @@
 //! Formatter fixture syntax and lossless emission contracts.
-
-use instar_analysis::{Completion, Options, Reason};
 use std::{error::Error, fs, io, time::Duration};
 
+use instar_analysis::{Completion, Options, Reason};
 use instar_format::configuration::{Configuration, LineEnding};
 
 use vermis::{

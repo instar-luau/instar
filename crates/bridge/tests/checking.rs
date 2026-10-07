@@ -1,5 +1,4 @@
 //! Native checker diagnostics and interruption boundary fixtures.
-
 use std::{io, time::Duration};
 
 use instar_analysis::{Completion, Kind, Options, Reason};

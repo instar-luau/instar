@@ -1,8 +1,8 @@
 //! Display-column and multiline-argument layout contracts.
+use std::{io, num::NonZeroUsize, time::Duration};
 
 use instar_analysis::{Completion, Options};
 use instar_format::{Configuration, configuration::IndentStyle};
-use std::{io, num::NonZeroUsize, time::Duration};
 
 fn formatted(source: &str, width: usize) -> io::Result<String> {
     let configuration = Configuration {

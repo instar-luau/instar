@@ -1,4 +1,5 @@
 //! Typed native flags and worker lifetime contracts.
+use std::{collections::BTreeMap, io, time::Duration};
 
 use instar_analysis::{Kind, Options};
 
@@ -7,8 +8,6 @@ use instar_bridge::{
     flags::{self, Value},
     frontend::{Frontend, Site},
 };
-
-use std::{collections::BTreeMap, io, time::Duration};
 
 #[test]
 fn flags_validate_registry_names_types_and_aliases() {

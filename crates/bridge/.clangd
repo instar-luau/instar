@@ -5,7 +5,7 @@ CompileFlags:
     - -fcxx-exceptions
 ---
 If:
-  PathMatch: src/[^/]+
+  PathMatch: native/[^/]+
 CompileFlags:
   Add:
     - -I../../../target/cxxbridge
@@ -17,7 +17,7 @@ CompileFlags:
     - -I../vendor/luau/Analysis/include
 ---
 If:
-  PathMatch: src/frontend/[^/]+
+  PathMatch: native/frontend/[^/]+
 CompileFlags:
   Add:
     - -I../../../../target/cxxbridge

@@ -1,5 +1,4 @@
 //! Analysis input error construction.
-
 use std::{fmt::Display, io};
 
 /// Creates an invalid-data error while preserving its explanation.

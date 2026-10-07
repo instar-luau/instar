@@ -1,29 +1,17 @@
-use vermis::token::{Keyword, TokenKind};
-use vermis::tree::{NodeIndex, NodeKind};
+use vermis::{
+    token::{Keyword, TokenKind},
+    tree::{NodeIndex, NodeKind},
+};
 
-use super::Context;
-
-use super::syntax::{
-    arguments_values, assignment, body, empty, empty_table, in_loop, number, same, single, unwrap,
+use super::{
+    Context,
+    syntax::{
+        arguments_values, assignment, body, empty, empty_table, in_loop, number, same, single,
+        unwrap,
+    },
 };
 
 use crate::Rule;
-
-pub(super) fn check(context: &mut Context<'_, '_>, node: NodeIndex, ancestors: &[NodeIndex]) {
-    match &context.tree.node(node).kind {
-        NodeKind::If {
-            branches,
-            otherwise,
-            ..
-        } => context.conditional(node, branches, *otherwise),
-
-        NodeKind::Else { .. } => context.else_branch(node, ancestors),
-        _ => {}
-    }
-
-    context.loops(node);
-    context.iteration(node, ancestors);
-}
 
 impl Context<'_, '_> {
     pub(super) fn loops(&mut self, node: NodeIndex) {
@@ -264,4 +252,20 @@ impl Context<'_, '_> {
             );
         }
     }
+}
+
+pub(super) fn check(context: &mut Context<'_, '_>, node: NodeIndex, ancestors: &[NodeIndex]) {
+    match &context.tree.node(node).kind {
+        NodeKind::If {
+            branches,
+            otherwise,
+            ..
+        } => context.conditional(node, branches, *otherwise),
+
+        NodeKind::Else { .. } => context.else_branch(node, ancestors),
+        _ => {}
+    }
+
+    context.loops(node);
+    context.iteration(node, ancestors);
 }

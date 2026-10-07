@@ -1,5 +1,4 @@
 //! Host/native analysis agreement and invalidation fixtures.
-
 use std::{io, time::Duration};
 
 use instar_analysis::Options;

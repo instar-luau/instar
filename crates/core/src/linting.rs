@@ -10,7 +10,6 @@ use std::{
 
 use instar_analysis::error::invalid;
 use instar_bridge::frontend::{Definition, FactKind, LintResult};
-
 use instar_lint::{Completion, Diagnostic, Inference, Kind, Level, Options, Require, Source};
 
 use crate::{
@@ -31,15 +30,6 @@ struct Analysis {
     report: Report,
     modules: BTreeMap<String, Module>,
     definitions: BTreeMap<String, Vec<Definition>>,
-}
-
-fn eligible(source: &Path, settings: &Settings) -> io::Result<bool> {
-    let lint = &settings.configuration.lint;
-
-    Ok(
-        instar_analysis::selection::matches(source, lint.include.as_deref(), true)?
-            && !instar_analysis::selection::matches(source, lint.exclude.as_deref(), false)?,
-    )
 }
 
 impl Project {
@@ -130,7 +120,6 @@ impl Project {
         for entry in entries {
             if let Some(reason) = options.interrupted(started) {
                 result.completion = Completion::Incomplete(reason);
-
                 break;
             }
 
@@ -422,4 +411,13 @@ impl Analysis {
 
         Ok(())
     }
+}
+
+fn eligible(source: &Path, settings: &Settings) -> io::Result<bool> {
+    let lint = &settings.configuration.lint;
+
+    Ok(
+        instar_analysis::selection::matches(source, lint.include.as_deref(), true)?
+            && !instar_analysis::selection::matches(source, lint.exclude.as_deref(), false)?,
+    )
 }

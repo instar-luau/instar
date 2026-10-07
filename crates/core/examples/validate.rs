@@ -1,5 +1,4 @@
 //! Validates a generated Roblox asset bundle against native analysis.
-
 use std::{env, io, path::Path, time::Duration};
 
 use instar_analysis::{Completion, Options};
@@ -18,7 +17,6 @@ fn main() -> io::Result<()> {
 
     for profile in ["none", "local", "plugin", "roblox"] {
         let mut project = Project::new(Duration::from_secs(5));
-
         let configuration = format!("[roblox]\nenabled=true\nsecurity='{profile}'");
         let cache = instar_core::roblox::cache_directory()?;
 

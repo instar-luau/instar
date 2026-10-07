@@ -1,17 +1,9 @@
 //! Positive and negative fixtures for every configured Instar rule.
-
 use std::{collections::BTreeSet, fmt::Write as _, io, time::Duration};
 
 use instar_lint::{
     Completion, Configuration, Inference, Kind, Level, Options, Reason, Require, Rule, Source,
 };
-
-struct Fixture {
-    rule: Rule,
-    positive: &'static str,
-    negative: &'static str,
-    range: [usize; 2],
-}
 
 const FIXTURES: &[Fixture] = &[
     Fixture {
@@ -238,6 +230,13 @@ const FIXTURES: &[Fixture] = &[
     },
 ];
 
+struct Fixture {
+    rule: Rule,
+    positive: &'static str,
+    negative: &'static str,
+    range: [usize; 2],
+}
+
 fn configured(rule: Rule) -> Configuration {
     let mut source = String::new();
 
@@ -321,7 +320,6 @@ fn every_syntax_rule_has_positive_and_negative_fixtures() -> io::Result<()> {
         let configuration = configured(fixture.rule);
         let positive = run(fixture.positive, &configuration, &[], None)?;
         let negative = run(fixture.negative, &configuration, &[], None)?;
-
         assert_findings(&positive, fixture.rule, &[fixture.range]);
         assert_findings(&negative, fixture.rule, &[]);
         assert!(positive.diagnostics[0].location.range[1] <= fixture.positive.len());
@@ -601,7 +599,6 @@ fn lexical_binding_options_and_shadowing() -> io::Result<()> {
 #[test]
 fn syntax_errors_are_explicit() -> io::Result<()> {
     let result = run("local =", &Configuration::default(), &[], None)?;
-
     let tree = vermis::parse(b"local =");
     assert_eq!(result.completion, Completion::Complete);
     assert_eq!(result.modules, ["fixture"]);

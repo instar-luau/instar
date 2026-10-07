@@ -6,8 +6,7 @@ use std::{
     time::Instant,
 };
 
-use instar_analysis::error::invalid;
-use instar_analysis::{Completion, Options};
+use instar_analysis::{Completion, Options, error::invalid};
 use instar_bridge::frontend::Definition;
 
 use crate::{
@@ -53,7 +52,6 @@ impl Project {
         for entry in entries {
             if let Some(reason) = options.interrupted(started) {
                 result.completion = Completion::Incomplete(reason);
-
                 break;
             }
 
@@ -126,7 +124,6 @@ impl Project {
         }
 
         let remaining = options.remaining(started);
-
         let checked = frontend.check(&roots.into_iter().collect::<Vec<_>>(), &remaining)?;
         result.completion = result.completion.combine(checked.completion);
 

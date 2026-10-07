@@ -9,7 +9,10 @@ namespace Luau {
 
 namespace instar {
     struct NativeClass;
+}
+
+namespace instar::frontend {
     void register_roblox_magic(Luau::GlobalTypes &globals, rust::Slice<const NativeClass> classes);
-} // namespace instar
+}
 
 #endif

@@ -1,11 +1,10 @@
-#include "instar-bridge/src/boundary.rs.h"
-
 #include "diagnostics.hpp"
 #include "state.hpp"
 
 #include "Luau/Ast.h"
 #include "Luau/BuiltinDefinitions.h"
 #include "Luau/TypeArena.h"
+#include "instar-bridge/src/boundary.rs.h"
 
 #include <stdexcept>
 
@@ -22,7 +21,7 @@ namespace instar::frontend {
         }
 
         active = name;
-        activeSource = std::string(source.text);
+        active_source = std::string(source.text);
 
         return Luau::SourceCode{std::string(source.text), Luau::SourceCode::Module};
     }
@@ -35,8 +34,8 @@ namespace instar::frontend {
 
         const rust::String target = host->resolve(
             active,
-            offset(activeSource, expression->location.begin),
-            offset(activeSource, expression->location.end)
+            offset(active_source, expression->location.begin),
+            offset(active_source, expression->location.end)
         );
 
         if (target.empty()) {
@@ -65,11 +64,9 @@ namespace instar::frontend {
 
         return found->second;
     }
-} // namespace instar::frontend
 
-namespace instar {
-    NativeFrontend::State::State() {
+    State::State() {
         Luau::registerBuiltinGlobals(frontend, frontend.globals);
         Luau::freeze(frontend.globals.globalTypes);
     }
-} // namespace instar
+}

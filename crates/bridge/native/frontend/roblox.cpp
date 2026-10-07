@@ -1,5 +1,3 @@
-#include "instar-bridge/src/boundary.rs.h"
-
 #include "roblox.hpp"
 
 #include "Luau/Ast.h"
@@ -12,6 +10,7 @@
 #include "Luau/Type.h"
 #include "Luau/TypePack.h"
 #include "Luau/TypeUtils.h"
+#include "instar-bridge/src/boundary.rs.h"
 
 #include <cstdint>
 #include <memory>
@@ -26,7 +25,7 @@
 
 LUAU_FASTFLAG(LuauCyclicRequireTypeInference)
 
-namespace instar {
+namespace instar::frontend {
     namespace {
         enum class MagicKind : std::uint8_t {
             Constructor,
@@ -475,5 +474,4 @@ namespace instar {
         attach_extern(globals, "Instance", nullptr, "FindFirstChild", "instar.child");
         attach_extern(globals, "Instance", nullptr, "WaitForChild", "instar.child");
     }
-
-} // namespace instar
+}

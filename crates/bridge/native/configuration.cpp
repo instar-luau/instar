@@ -1,9 +1,8 @@
-#include "instar-bridge/src/boundary.rs.h"
+#include "configuration.hpp"
 
-#include "Luau/Common.h"
 #include "Luau/Config.h"
 #include "Luau/LuauConfig.h"
-
+#include "instar-bridge/src/boundary.rs.h"
 #include "lua.h"
 
 #include <chrono>
@@ -13,17 +12,6 @@
 
 namespace instar {
     namespace {
-        template <typename Value> Luau::FValue<Value> *registered_flag(const std::string &name) {
-            for (auto *flag = Luau::FValue<Value>::list; flag; flag = flag->next) {
-                if (name == flag->name ||
-                    (flag->version != 0 && name == std::string(flag->name) + std::to_string(flag->version))) {
-                    return flag;
-                }
-            }
-
-            return nullptr;
-        }
-
         struct DeadlineExceeded final : std::runtime_error {
             DeadlineExceeded() : std::runtime_error("configuration execution timed out") {}
         };
@@ -34,21 +22,21 @@ namespace instar {
 
         struct Execution {
             std::chrono::steady_clock::time_point started;
-            double timeoutSeconds;
+            double timeout_seconds;
             lua_State *main = nullptr;
             size_t entries = 0;
             std::unordered_set<const void *> ancestors;
 
-            void checkDeadline() const {
+            void check_deadline() const {
                 const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - started);
 
-                if (elapsed.count() >= timeoutSeconds) {
+                if (elapsed.count() >= timeout_seconds) {
                     throw DeadlineExceeded{};
                 }
             }
 
             void inspect(lua_State *state, size_t depth) {
-                checkDeadline();
+                check_deadline();
 
                 if (depth > 128) {
                     throw ExtractionFailure{"configuration table exceeds extraction depth limit (128)"};
@@ -68,7 +56,7 @@ namespace instar {
                 lua_pushnil(state);
 
                 while (lua_next(state, table) != 0) {
-                    checkDeadline();
+                    check_deadline();
 
                     if (++entries > 100000) {
                         throw ExtractionFailure{"configuration table exceeds extraction entry limit (100000)"};
@@ -85,7 +73,7 @@ namespace instar {
             }
         };
 
-        const char *modeName(Luau::Mode mode) {
+        const char *mode_name(Luau::Mode mode) {
             switch (mode) {
             case Luau::Mode::NoCheck:
                 return "nocheck";
@@ -112,8 +100,9 @@ namespace instar {
         return std::make_unique<NativeConfiguration>();
     }
 
-    NativeOutcome NativeConfiguration::apply(rust::Str source, rust::Str path, bool executable, double timeoutSeconds) {
-        Execution execution{std::chrono::steady_clock::now(), timeoutSeconds, nullptr, 0, {}};
+    NativeOutcome
+    NativeConfiguration::apply(rust::Str source, rust::Str path, bool executable, double timeout_seconds) {
+        Execution execution{std::chrono::steady_clock::now(), timeout_seconds, nullptr, 0, {}};
         auto next = std::make_unique<Luau::Config>(*configuration);
         Luau::ConfigOptions::AliasOptions aliases{std::string(path), true};
         std::optional<std::string> error;
@@ -133,7 +122,7 @@ namespace instar {
                             return;
                         }
 
-                        execution.checkDeadline();
+                        execution.check_deadline();
 
                         if (lua_status(resumed) == LUA_OK && lua_gettop(resumed) == 1 &&
                             lua_type(resumed, -1) == LUA_TTABLE) {
@@ -147,11 +136,11 @@ namespace instar {
                 };
 
                 callbacks.interruptCallback = [](lua_State *state, int) {
-                    static_cast<Execution *>(lua_callbacks(state)->userdata)->checkDeadline();
+                    static_cast<Execution *>(lua_callbacks(state)->userdata)->check_deadline();
                 };
 
                 error = Luau::extractLuauConfig(std::string(source), *next, aliases, std::move(callbacks));
-                execution.checkDeadline();
+                execution.check_deadline();
             } else {
                 Luau::ConfigOptions options;
                 options.aliasOptions = std::move(aliases);
@@ -184,7 +173,7 @@ namespace instar {
 
     NativeSnapshot NativeConfiguration::snapshot() const {
         NativeSnapshot result;
-        result.mode = modeName(configuration->mode);
+        result.mode = mode_name(configuration->mode);
         result.lint_errors = configuration->lintErrors;
         result.type_errors = configuration->typeErrors;
 
@@ -251,64 +240,6 @@ namespace instar {
         }
 
         configuration = std::move(next);
-    }
-
-    void validate_flags(rust::Slice<const NativeFlag> flags) {
-        std::unordered_set<const void *> registered;
-
-        for (const auto &flag : flags) {
-            const std::string name(flag.name);
-
-            const void *found = flag.is_boolean ? static_cast<const void *>(registered_flag<bool>(name))
-                                                : static_cast<const void *>(registered_flag<int>(name));
-
-            if (!found) {
-                throw std::invalid_argument("unknown Luau flag or incorrect value type: " + name);
-            }
-
-            if (!registered.insert(found).second) {
-                throw std::invalid_argument("duplicate Luau flag alias: " + name);
-            }
-        }
-    }
-
-    rust::Vec<NativeFlag> normalize_flags(rust::Slice<const NativeFlag> flags) {
-        validate_flags(flags);
-        rust::Vec<NativeFlag> result;
-
-        for (const auto &flag : flags) {
-            const std::string name(flag.name);
-
-            if (flag.is_boolean) {
-                const auto *registered = registered_flag<bool>(name);
-
-                if (registered->value != flag.boolean) {
-                    result.push_back(NativeFlag{rust::String(registered->name), flag.boolean, 0, true});
-                }
-            } else {
-                const auto *registered = registered_flag<int>(name);
-
-                if (registered->value != flag.integer) {
-                    result.push_back(NativeFlag{rust::String(registered->name), false, flag.integer, false});
-                }
-            }
-        }
-
-        return result;
-    }
-
-    void apply_flags(rust::Slice<const NativeFlag> flags) {
-        validate_flags(flags);
-
-        for (const auto &flag : flags) {
-            const std::string name(flag.name);
-
-            if (flag.is_boolean) {
-                registered_flag<bool>(name)->value = flag.boolean;
-            } else {
-                registered_flag<int>(name)->value = flag.integer;
-            }
-        }
     }
 
     const Luau::Config &NativeConfiguration::value() const {

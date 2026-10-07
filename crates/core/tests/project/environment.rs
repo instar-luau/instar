@@ -1,6 +1,8 @@
-use crate::support::{Directory, options, project};
-use instar_core::{analysis::Entry, configuration::Configuration, project::Change};
 use std::io;
+
+use instar_core::{analysis::Entry, configuration::Configuration, project::Change};
+
+use crate::support::{Directory, options, project};
 
 #[test]
 fn configuration_rejects_reserved_namespaces_and_invalid_flags() {

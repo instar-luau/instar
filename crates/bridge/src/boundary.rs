@@ -1,11 +1,11 @@
-use crate::frontend::{Cancellation, Host};
-
 pub(super) use native::{
     NativeAlias, NativeClass, NativeCompletion, NativeConfiguration, NativeDefinition,
     NativeDiagnostic, NativeFact, NativeFactKind, NativeFlag, NativeFrontend, NativeKind,
     NativeLint, NativeLocation, NativeProperty, NativeSite, NativeSnapshot, NativeSource,
     apply_flags, create, create_frontend, normalize_flags, validate_flags,
 };
+
+use crate::frontend::{Cancellation, Host};
 
 #[cxx::bridge(namespace = "instar")]
 mod native {
@@ -169,15 +169,14 @@ mod native {
     }
 
     unsafe extern "C++" {
-        include!("src/configuration.hpp");
-        include!("src/frontend.hpp");
-
+        include!("native/configuration.hpp");
+        include!("native/flags.hpp");
+        include!("native/frontend.hpp");
         type NativeConfiguration;
         type NativeFrontend;
         fn validate_flags(flags: &[NativeFlag]) -> Result<()>;
         fn apply_flags(flags: &[NativeFlag]) -> Result<()>;
         fn normalize_flags(flags: &[NativeFlag]) -> Result<Vec<NativeFlag>>;
-
         fn create_frontend() -> Result<UniquePtr<NativeFrontend>>;
         fn documentation(self: &NativeFrontend, module: &str, symbol: &str) -> Result<String>;
         fn configure(
@@ -208,7 +207,6 @@ mod native {
             cancellation: &Cancellation,
             semantic_modules: &[String],
         ) -> Result<NativeLintResult>;
-
         fn create() -> Result<UniquePtr<NativeConfiguration>>;
         fn apply(
             self: Pin<&mut NativeConfiguration>,

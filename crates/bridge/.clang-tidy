@@ -1,3 +1,14 @@
-Checks: "clang-analyzer-*,bugprone-*,performance-*,portability-*"
+Checks: "clang-analyzer-*,bugprone-*,performance-*,portability-*,readability-identifier-naming"
 WarningsAsErrors: "*"
-HeaderFilterRegex: '[/\\]crates[/\\]bridge[/\\]src[/\\]'
+HeaderFilterRegex: '[/\\]crates[/\\]bridge[/\\]native[/\\]'
+CheckOptions:
+  readability-identifier-naming.NamespaceCase: lower_case
+  readability-identifier-naming.NamespaceIgnoredRegexp: '^Luau$'
+  readability-identifier-naming.ClassCase: CamelCase
+  readability-identifier-naming.StructCase: CamelCase
+  readability-identifier-naming.EnumCase: CamelCase
+  readability-identifier-naming.FunctionCase: lower_case
+  readability-identifier-naming.VariableCase: lower_case
+  readability-identifier-naming.VariableIgnoredRegexp: '^LuauCyclicRequireTypeInference$'
+  readability-identifier-naming.MemberCase: lower_case
+  readability-identifier-naming.ParameterCase: lower_case

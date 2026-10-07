@@ -1,5 +1,4 @@
 //! Synthetic native checking across project snapshots.
-
 use std::{fs, io, time::Duration};
 
 use instar_analysis::{Completion, Kind, Options, Reason};
@@ -351,9 +350,7 @@ fn incomplete_environments_keep_known_source_diagnostics() -> io::Result<()> {
 #[test]
 fn invalid_roblox_metadata_is_explicitly_incomplete() -> io::Result<()> {
     let directory = Directory::new(Some(r#"{"languageMode":"strict"}"#))?;
-
     directory.file("instar.toml", "[roblox]\nenabled = true")?;
-
     let entry = directory.file("entry.luau", "return game")?;
     let mut project = project();
 
