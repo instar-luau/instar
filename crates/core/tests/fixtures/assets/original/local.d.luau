@@ -1,1 +1,1 @@
-declare local: string
+declare localProfile: string

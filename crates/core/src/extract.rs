@@ -172,20 +172,10 @@ impl Extractor<'_, '_> {
             return Value::Other;
         };
 
-        if matches!(
-            name,
-            "Name" | "ClassName" | "GetService" | "WaitForChild" | "FindFirstChild"
-        ) {
-            return Value::Other;
-        }
-
         steps.push(if name == "Parent" {
             Step::Parent
         } else {
-            Step::Child {
-                name: name.to_owned(),
-                recursive: false,
-            }
+            Step::Field(name.to_owned())
         });
 
         Value::Instance(root, steps)

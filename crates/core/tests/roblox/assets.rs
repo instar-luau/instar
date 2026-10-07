@@ -16,7 +16,7 @@ use crate::{
     assets::{fetch, install},
     configuration::Security,
     project::{Change, Project},
-    roblox::download,
+    roblox::assets::download,
 };
 
 fn files(name: &str) -> io::Result<BTreeMap<String, String>> {

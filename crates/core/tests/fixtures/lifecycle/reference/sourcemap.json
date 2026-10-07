@@ -1,0 +1,23 @@
+{
+  "name": "game",
+  "className": "DataModel",
+  "children": [
+    { "name": "Caller", "className": "ModuleScript", "filePaths": ["caller.luau"] },
+    { "name": "Model", "className": "Model" },
+    { "name": "Actor", "className": "Actor" },
+    {
+      "name": "Reference",
+      "className": "ObjectValue",
+      "children": [
+        { "name": "Value", "className": "ModuleScript", "filePaths": ["target.luau"] }
+      ]
+    },
+    {
+      "name": "Folder",
+      "className": "Folder",
+      "children": [
+        { "name": "Value", "className": "ModuleScript", "filePaths": ["target.luau"] }
+      ]
+    }
+  ]
+}

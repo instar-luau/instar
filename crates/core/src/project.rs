@@ -180,7 +180,7 @@ struct CachedSettings {
 /// Cached project sources, effective settings and module graph.
 pub struct Project {
     pub(crate) view: View,
-    timeout: Duration,
+    pub(crate) timeout: Duration,
     pub(crate) operation: Option<(Options, Instant)>,
     settings: BTreeMap<PathBuf, CachedSettings>,
     maps: BTreeMap<PathBuf, Result<Rc<Map>, Failure>>,

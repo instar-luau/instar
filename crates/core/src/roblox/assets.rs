@@ -14,6 +14,8 @@ use instar_bridge::frontend::{Class, Property};
 use serde::Deserialize;
 use ureq::Agent;
 
+use super::members::Members;
+
 use crate::{
     assets::{self, HOST, fetch, install, verify},
     configuration::Security,
@@ -70,6 +72,7 @@ pub(crate) struct Assets {
     pub(crate) definitions: Vec<(PathBuf, Document)>,
     pub(crate) classes: Arc<[Class]>,
     pub(crate) documentation: Index,
+    pub(crate) members: Members,
 }
 
 impl Project {
@@ -103,7 +106,25 @@ impl Project {
         self.load_assets(&directory, security)
     }
 
-    fn load_assets(&mut self, directory: &Path, security: Security) -> io::Result<Rc<Assets>> {
+    pub(crate) fn member(&mut self, directory: &Path, class: &str, name: &str) -> io::Result<bool> {
+        let settings = self.configuration(directory)?;
+
+        let (options, started) = self
+            .operation
+            .clone()
+            .unwrap_or_else(|| (Options::new(self.timeout), Instant::now()));
+
+        let assets =
+            self.roblox_assets(settings.configuration.roblox.security, &options, started)?;
+
+        assets.members.contains(class, name)
+    }
+
+    pub(crate) fn load_assets(
+        &mut self,
+        directory: &Path,
+        security: Security,
+    ) -> io::Result<Rc<Assets>> {
         let metadata = self.source(&directory.join("metadata.json"))?;
 
         let profile = match security {
@@ -183,11 +204,13 @@ impl Project {
         }
 
         verify(&enumerations.text, &metadata.enumerations)?;
+        let members = Members::parse(&document.text)?;
 
         let assets = Rc::new(Assets {
             definitions: vec![(path, document), (enumeration_path, enumerations)],
             classes: classes.into_values().collect(),
             documentation,
+            members,
         });
 
         self.roblox.insert(revisions, Rc::clone(&assets));
@@ -221,7 +244,7 @@ fn names(values: &[String]) -> io::Result<BTreeSet<&str>> {
     Ok(names)
 }
 
-fn download(url: &str, options: &Options) -> io::Result<BTreeMap<String, String>> {
+pub(crate) fn download(url: &str, options: &Options) -> io::Result<BTreeMap<String, String>> {
     let started = Instant::now();
 
     let agent = Agent::config_builder()
@@ -260,7 +283,3 @@ fn download(url: &str, options: &Options) -> io::Result<BTreeMap<String, String>
 
     Ok(files)
 }
-
-#[cfg(test)]
-#[path = "../tests/roblox/mod.rs"]
-mod tests;

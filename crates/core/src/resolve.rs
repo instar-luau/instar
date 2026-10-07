@@ -64,6 +64,9 @@ pub enum Step {
     /// Navigate to the mapped parent.
     Parent,
 
+    /// Read a named instance member, respecting property precedence over children.
+    Field(String),
+
     /// Navigate to a uniquely named child or descendant.
     Child {
         /// Exact instance name.
@@ -330,6 +333,33 @@ impl Project {
 
                 let settings = self.configuration(directory)?;
 
+                if settings.configuration.roblox.enabled == Some(true)
+                    && let Some(path) = request.strip_prefix("@game/")
+                {
+                    let steps = path
+                        .split('/')
+                        .filter(|component| !component.is_empty() && *component != ".")
+                        .map(|component| {
+                            if component == ".." {
+                                Step::Parent
+                            } else {
+                                Step::Child {
+                                    name: component.to_owned(),
+                                    recursive: false,
+                                }
+                            }
+                        })
+                        .collect();
+
+                    return self.resolve_inner(
+                        &current,
+                        &Request::Instance {
+                            root: Root::Game,
+                            steps,
+                        },
+                    );
+                }
+
                 let target = if let Some(aliased) = request.strip_prefix('@') {
                     let (name, rest) = aliased.split_once('/').unwrap_or((aliased, ""));
 
@@ -388,6 +418,13 @@ impl Project {
                 for step in steps {
                     node = match step {
                         Step::Parent => map.parent(node)?,
+
+                        Step::Field(name) => {
+                            let member = self.member(directory, map.class(node), name)?;
+
+                            map.field(node, name, member)?
+                        }
+
                         Step::Child { name, recursive } => map.child(node, name, *recursive)?,
                         Step::Service(name) => map.service(node, name)?,
                     };

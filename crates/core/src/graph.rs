@@ -257,7 +257,13 @@ impl Project {
                         site.target = Some(target);
                     }
 
-                    Err(failure) => site.failure = Some(failure),
+                    Err(failure) => {
+                        if failure.kind == io::ErrorKind::Unsupported {
+                            site.request = None;
+                        }
+
+                        site.failure = Some(failure);
+                    }
                 }
             }
         }

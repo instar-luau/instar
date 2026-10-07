@@ -164,6 +164,24 @@ impl Map {
             .ok_or_else(|| invalid("instance has no mapped parent"))
     }
 
+    pub(crate) fn class(&self, node: usize) -> &str {
+        &self.nodes[node].class
+    }
+
+    pub(crate) fn field(&self, node: usize, name: &str, member: bool) -> io::Result<usize> {
+        if member {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!(
+                    "require target depends on runtime member {}.{name}",
+                    self.class(node)
+                ),
+            ));
+        }
+
+        self.child(node, name, false)
+    }
+
     pub(crate) fn child(&self, node: usize, name: &str, recursive: bool) -> io::Result<usize> {
         let mut pending = self.nodes[node].children.clone();
         let mut found = Vec::new();

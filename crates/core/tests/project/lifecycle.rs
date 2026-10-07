@@ -825,3 +825,42 @@ fn file_creation_below_missing_navigation_directories_retries_failures() -> io::
 
     Ok(())
 }
+
+#[test]
+fn object_references_are_dynamic_but_named_children_resolve() -> io::Result<()> {
+    let directory = Directory::new(None)?;
+
+    let caller = directory.file(
+        "caller.luau",
+        include_str!("../fixtures/lifecycle/reference/caller.luau"),
+    )?;
+
+    let target = directory.file("target.luau", "return 1")?;
+
+    directory.file(
+        "sourcemap.json",
+        include_str!("../fixtures/lifecycle/reference/sourcemap.json"),
+    )?;
+
+    let mut project = project();
+    let node = project.links(&caller, None)?;
+    assert_eq!(node.sites.len(), 7);
+
+    for site in &node.sites[..5] {
+        assert!(site.request.is_none());
+        assert!(site.target.is_none());
+
+        assert_eq!(
+            site.failure.as_ref().expect("dynamic request").kind,
+            io::ErrorKind::Unsupported
+        );
+    }
+
+    for site in &node.sites[5..] {
+        assert!(site.request.is_some());
+        assert!(site.failure.is_none());
+        assert_eq!(site.target.as_ref().expect("named child").source, target);
+    }
+
+    Ok(())
+}
