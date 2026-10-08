@@ -216,7 +216,14 @@ impl Project {
                 continue;
             }
 
-            let node = self.links(&module.source, Some(&module.identity))?;
+            let node = if let Some(node) = self.graph.node(&module.identity) {
+                self.view.consult(&node.inputs);
+
+                node
+            } else {
+                self.links(&module.source, Some(&module.identity))?
+            };
+
             pending.extend(node.sites.iter().filter_map(|site| site.target.clone()));
         }
 
