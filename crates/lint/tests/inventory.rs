@@ -113,6 +113,74 @@ fn every_syntax_rule_has_positive_and_negative_fixtures() -> io::Result<()> {
 }
 
 #[test]
+fn empty_conditional_branches_highlight_opening_headers() -> io::Result<()> {
+    let configuration = configured(Rule::EmptyIf);
+
+    for contents in ["", "-- pending", "--[[pending]]"] {
+        let text = format!(
+            "if flag then\n{contents}\nelseif other then\n{contents}\nelse\n{contents}\nend"
+        );
+
+        let ranges = ["if flag then", "elseif other then", "else"].map(|header| {
+            let start = text.rfind(header).expect("branch header");
+
+            [start, start + header.len()]
+        });
+
+        let result = run(&text, &configuration, &[], None)?;
+        assert_findings(&result, Rule::EmptyIf, &ranges);
+
+        for diagnostic in &result.diagnostics {
+            assert_eq!(diagnostic.message, "empty conditional branch");
+        }
+    }
+
+    let text = "if flag then return 1 elseif other then else return 2 end";
+    let header = "elseif other then";
+    let start = text.find(header).expect("branch header");
+
+    assert_findings(
+        &run(text, &configuration, &[], None)?,
+        Rule::EmptyIf,
+        &[[start, start + header.len()]],
+    );
+
+    Ok(())
+}
+
+#[test]
+fn empty_loops_highlight_opening_headers() -> io::Result<()> {
+    let configuration = configured(Rule::EmptyLoop);
+
+    for (header, closing) in [
+        ("while flag do", "end"),
+        ("repeat", "until flag"),
+        ("for index = 1, 4, 2 do", "end"),
+        ("for key, value in pairs(values) do", "end"),
+    ] {
+        for contents in ["", "-- pending", "--[[pending]]"] {
+            let text = format!("{header}\n{contents}\n{closing}");
+            let result = run(&text, &configuration, &[], None)?;
+            assert_findings(&result, Rule::EmptyLoop, &[[0, header.len()]]);
+            assert_eq!(result.diagnostics[0].message, "empty loop body");
+        }
+
+        assert_findings(
+            &run(
+                &format!("{header}\n-- pending\nbreak\n{closing}"),
+                &configuration,
+                &[],
+                None,
+            )?,
+            Rule::EmptyLoop,
+            &[],
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
 fn typed_require_fixtures() -> io::Result<()> {
     let configuration = configured(Rule::NonConstRequire);
 

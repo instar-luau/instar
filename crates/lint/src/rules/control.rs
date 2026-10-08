@@ -1,5 +1,5 @@
 use vermis::{
-    token::{Keyword, TokenKind},
+    token::{Keyword, Span, TokenKind},
     tree::{NodeIndex, NodeKind, NodeList},
 };
 
@@ -24,13 +24,40 @@ impl Context<'_, '_> {
         }
 
         match &self.tree.node(node).kind {
-            NodeKind::While { body, .. }
-            | NodeKind::Repeat { body, .. }
-            | NodeKind::NumericFor { body, .. }
-            | NodeKind::GenericFor { body, .. }
-                if empty(self.tree, *body) =>
-            {
-                self.finding(*body, Rule::EmptyLoop, "empty loop body");
+            NodeKind::While {
+                keyword,
+                do_keyword,
+                body,
+                ..
+            }
+            | NodeKind::NumericFor {
+                keyword,
+                do_keyword,
+                body,
+                ..
+            }
+            | NodeKind::GenericFor {
+                keyword,
+                do_keyword,
+                body,
+                ..
+            } if empty(self.tree, *body) => {
+                self.emit(
+                    Span {
+                        start: self.tree.token(*keyword).span.start,
+                        end: self.tree.token(do_keyword.unwrap_or(*keyword)).span.end,
+                    },
+                    Rule::EmptyLoop,
+                    "empty loop body",
+                );
+            }
+
+            NodeKind::Repeat { keyword, body, .. } if empty(self.tree, *body) => {
+                self.emit(
+                    self.tree.token(*keyword).span,
+                    Rule::EmptyLoop,
+                    "empty loop body",
+                );
             }
 
             _ => {}
@@ -54,17 +81,37 @@ impl Context<'_, '_> {
             })
             .collect::<Vec<_>>();
 
-        for body in &bodies {
-            if empty(tree, *body) {
-                self.finding(*body, Rule::EmptyIf, "empty conditional branch");
+        for branch in branches {
+            if let NodeKind::Branch {
+                keyword,
+                then,
+                body,
+                ..
+            } = &tree.node(branch.node).kind
+                && empty(tree, *body)
+            {
+                self.emit(
+                    Span {
+                        start: tree.token(*keyword).span.start,
+                        end: tree.token(then.unwrap_or(*keyword)).span.end,
+                    },
+                    Rule::EmptyIf,
+                    "empty conditional branch",
+                );
             }
         }
 
         if let Some(otherwise) = otherwise {
             let body = body(tree, otherwise);
 
-            if empty(tree, body) {
-                self.finding(body, Rule::EmptyIf, "empty conditional branch");
+            if empty(tree, body)
+                && let NodeKind::Else { keyword, .. } = &tree.node(otherwise).kind
+            {
+                self.emit(
+                    tree.token(*keyword).span,
+                    Rule::EmptyIf,
+                    "empty conditional branch",
+                );
             }
 
             if let Some(first) = bodies.first()

@@ -44,11 +44,11 @@ range = [14, 19]
 
 [branch]
 rule = "empty_if"
-range = [13, 13]
+range = [0, 12]
 
 [loop]
 rule = "empty_loop"
-range = [14, 14]
+range = [0, 13]
 
 [branches]
 rule = "if_same_then_else"
