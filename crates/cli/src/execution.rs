@@ -71,10 +71,6 @@ pub(crate) fn run(arguments: &Arguments, command: &Analysis) -> Result<bool> {
     let (Analysis::Check { files } | Analysis::Lint { files, .. } | Analysis::Format { files, .. }) =
         command;
 
-    if let Analysis::Format { jobs, .. } | Analysis::Lint { jobs, .. } = command {
-        options.jobs = *jobs;
-    }
-
     let (paths, stdin) = inputs::load(
         files,
         arguments.stdin_filepath.as_deref(),
@@ -228,13 +224,7 @@ fn format(
 ) -> Result<(Completion, Vec<String>)> {
     reporter.phase("Formatting", Some(inputs.len()))?;
     let progress = reporter.progress();
-    let mut builder = rayon::ThreadPoolBuilder::new();
-
-    if let Some(jobs) = options.jobs {
-        builder = builder.num_threads(jobs.get());
-    }
-
-    let pool = builder.build()?;
+    let pool = rayon::ThreadPoolBuilder::new().build()?;
     let mut completion = Completion::Complete;
     let mut changed = Vec::new();
     let (dispatch, receive) = mpsc::channel::<usize>();

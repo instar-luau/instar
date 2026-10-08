@@ -1,4 +1,4 @@
-use std::{num::NonZeroUsize, path::PathBuf};
+use std::path::PathBuf;
 
 use clap::{
     Parser, Subcommand, ValueEnum,
@@ -63,16 +63,10 @@ pub(crate) enum Analysis {
         files: Vec<PathBuf>,
         #[arg(long)]
         check: bool,
-        #[arg(long)]
-        jobs: Option<NonZeroUsize>,
     },
 
     #[command(about = "Lint source files and their dependencies")]
-    Lint {
-        files: Vec<PathBuf>,
-        #[arg(long, help = "Maximum concurrent Instar syntax-lint jobs")]
-        jobs: Option<NonZeroUsize>,
-    },
+    Lint { files: Vec<PathBuf> },
 }
 
 #[derive(Parser)]

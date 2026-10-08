@@ -129,8 +129,7 @@ impl Project {
     /// declarations when no native warning or inferred-type rule is requested.
     /// Roblox environments load the configured generated asset bundle.
     /// Native analysis is isolated in a cancellable worker process.
-    /// Syntax linting uses `Options.jobs`, defaulting to at most four workers,
-    /// limited by available parallelism.
+    /// Syntax linting concurrency is limited by available parallelism and module count.
     /// No fixes are executed.
     /// Expected runtime member requires follow configured lint rules. Static resolution,
     /// syntax, declaration environment and analysis failures remain explicit diagnostics.
@@ -441,12 +440,8 @@ impl Analysis {
         options: &Options,
         started: Instant,
     ) -> io::Result<()> {
-        let jobs = options
-            .jobs
-            .map_or_else(
-                || thread::available_parallelism().map_or(1, |jobs| jobs.get().min(4)),
-                NonZeroUsize::get,
-            )
+        let jobs = thread::available_parallelism()
+            .map_or(1, NonZeroUsize::get)
             .min(self.modules.len());
 
         let window = if jobs > 1 {

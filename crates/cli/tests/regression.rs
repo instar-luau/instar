@@ -281,28 +281,19 @@ fn mapped_lint_visits_every_placement_and_its_dependencies() -> io::Result<()> {
         include_str!("fixtures/mapping/sourcemap.json"),
     )?;
 
-    let mut sequential = None;
+    let mut previous = None;
 
-    for (stdin, jobs) in [(false, "1"), (false, "4"), (true, "1"), (true, "4")] {
+    for stdin in [false, false, true, true] {
         let output = if stdin {
             input(
                 directory.path(),
-                &[
-                    "--json",
-                    "--stdin-filepath",
-                    "shared.luau",
-                    "lint",
-                    "--jobs",
-                    jobs,
-                    "-",
-                ],
+                &["--json", "--stdin-filepath", "shared.luau", "lint", "-"],
                 source.as_bytes(),
             )?
         } else {
             Command::new(env!("CARGO_BIN_EXE_instar"))
                 .current_dir(directory.path())
                 .args(["--json", "--color", "never", "lint"])
-                .args(["--jobs", jobs])
                 .arg("shared.luau")
                 .output()?
         };
@@ -311,11 +302,11 @@ fn mapped_lint_visits_every_placement_and_its_dependencies() -> io::Result<()> {
         assert!(output.stderr.is_empty(), "{output:?}");
         let report: serde_json::Value = serde_json::from_slice(&output.stdout)?;
 
-        if jobs == "1" {
-            sequential = Some(report.clone());
-        } else {
-            assert_eq!(Some(&report), sequential.as_ref());
+        if let Some(previous) = &previous {
+            assert_eq!(&report, previous);
         }
+
+        previous = Some(report.clone());
 
         assert_eq!(report["completion"], "Complete");
         let diagnostics = report["diagnostics"].as_array().expect("diagnostics");
@@ -365,7 +356,7 @@ fn mapped_lint_visits_every_placement_and_its_dependencies() -> io::Result<()> {
 }
 
 #[test]
-fn jobs_flag_is_limited_to_lint_and_format_and_rejects_zero() -> io::Result<()> {
+fn concurrency_is_not_a_command_line_setting() -> io::Result<()> {
     for operation in ["lint", "format", "check"] {
         let help = Command::new(env!("CARGO_BIN_EXE_instar"))
             .args([operation, "--help"])
@@ -373,15 +364,12 @@ fn jobs_flag_is_limited_to_lint_and_format_and_rejects_zero() -> io::Result<()> 
 
         assert!(help.status.success(), "{help:?}");
 
-        assert_eq!(
-            String::from_utf8_lossy(&help.stdout).contains("--jobs"),
-            operation != "check"
-        );
+        assert!(!String::from_utf8_lossy(&help.stdout).contains("--jobs"));
     }
 
-    for arguments in [["lint", "--jobs", "0"], ["check", "--jobs", "1"]] {
+    for operation in ["lint", "format", "check"] {
         let output = Command::new(env!("CARGO_BIN_EXE_instar"))
-            .args(arguments)
+            .args([operation, "--jobs", "1"])
             .output()?;
 
         assert_eq!(output.status.code(), Some(2), "{output:?}");

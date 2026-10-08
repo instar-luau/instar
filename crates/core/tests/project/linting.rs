@@ -2,7 +2,6 @@
 
 use std::{
     io,
-    num::NonZeroUsize,
     sync::{Arc, Mutex},
     thread,
     time::Duration,
@@ -280,10 +279,8 @@ fn inferred_any_uses_native_types_and_per_module_selection() -> io::Result<()> {
         text: Some(include_str!("../fixtures/linting/inferred/replacement.luau").to_owned()),
     })?;
 
-    let mut limits = options();
-    limits.jobs = NonZeroUsize::new(1);
+    let limits = options();
     let nonstrict = project.lint(&[Entry::new(entry.clone())], &limits)?;
-    limits.jobs = NonZeroUsize::new(4);
 
     assert_eq!(
         project.lint(&[Entry::new(entry.clone())], &limits)?,
@@ -454,10 +451,8 @@ fn source_updates_and_contexts_keep_exact_revision_identity() -> io::Result<()> 
         })
         .collect::<Vec<_>>();
 
-    let mut limits = options();
-    limits.jobs = NonZeroUsize::new(1);
+    let limits = options();
     let result = project.lint(&entries, &limits)?;
-    limits.jobs = NonZeroUsize::new(4);
     assert_eq!(project.lint(&entries, &limits)?, result);
     assert_eq!(result.modules.len(), 2);
 
@@ -514,14 +509,13 @@ fn syntax_jobs_preserve_order_and_coordinator_progress() -> io::Result<()> {
 
     let mut project = project();
     let mut limits = options();
-    limits.jobs = NonZeroUsize::new(1);
-    let sequential = project.lint(&entries, &limits)?;
-    assert_eq!(sequential.completion, Completion::Complete);
-    assert_eq!(sequential.modules.len(), 10);
-    assert!(rule(&sequential, Rule::RestrictedModulePaths));
+    let original = project.lint(&entries, &limits)?;
+    assert_eq!(original.completion, Completion::Complete);
+    assert_eq!(original.modules.len(), 10);
+    assert!(rule(&original, Rule::RestrictedModulePaths));
 
     assert_eq!(
-        sequential
+        original
             .diagnostics
             .iter()
             .filter(|diagnostic| diagnostic.kind == Kind::Rule(Rule::DivideByZero))
@@ -532,7 +526,6 @@ fn syntax_jobs_preserve_order_and_coordinator_progress() -> io::Result<()> {
     let progress = Arc::new(Mutex::new(Vec::new()));
     let recorded = Arc::clone(&progress);
     let coordinator = thread::current().id();
-    limits.jobs = NonZeroUsize::new(4);
 
     limits.progress = Some(Arc::new(move |event| {
         if event.phase == "Syntax linting" {
@@ -545,7 +538,7 @@ fn syntax_jobs_preserve_order_and_coordinator_progress() -> io::Result<()> {
         }
     }));
 
-    assert_eq!(project.lint(&entries, &limits)?, sequential);
+    assert_eq!(project.lint(&entries, &limits)?, original);
     let progress = progress.lock().expect("syntax progress");
     assert_eq!(progress.first(), Some(&(0, Some(10))));
     assert_eq!(progress.last(), Some(&(10, Some(10))));
@@ -565,11 +558,9 @@ fn syntax_jobs_preserve_native_syntax_deduplication() -> io::Result<()> {
 
     let mut project = project();
     let checked = project.check(&entries, &options())?;
-    let mut limits = options();
-    limits.jobs = NonZeroUsize::new(1);
-    let sequential = project.lint(&entries, &limits)?;
-    limits.jobs = NonZeroUsize::new(4);
-    assert_eq!(project.lint(&entries, &limits)?, sequential);
+    let limits = options();
+    let original = project.lint(&entries, &limits)?;
+    assert_eq!(project.lint(&entries, &limits)?, original);
 
     let mut expected = vec![Diagnostic {
         location: analysis::Location {
@@ -587,7 +578,7 @@ fn syntax_jobs_preserve_native_syntax_deduplication() -> io::Result<()> {
     }];
 
     expected.extend(checked.diagnostics.into_iter().map(Diagnostic::from));
-    assert_eq!(sequential.diagnostics, expected);
+    assert_eq!(original.diagnostics, expected);
 
     Ok(())
 }
@@ -607,7 +598,6 @@ fn syntax_jobs_stop_accepting_results_after_cancellation() -> io::Result<()> {
 
     for completed in [0, 1] {
         let mut limits = options();
-        limits.jobs = NonZeroUsize::new(4);
         let cancellation = limits.cancellation.clone();
 
         limits.progress = Some(Arc::new(move |event| {
@@ -626,8 +616,7 @@ fn syntax_jobs_stop_accepting_results_after_cancellation() -> io::Result<()> {
         assert_eq!(interrupted.modules.len(), 8);
         assert_eq!(interrupted.diagnostics.len(), completed);
 
-        let mut retry = options();
-        retry.jobs = limits.jobs;
+        let retry = options();
         let recovered = project.lint(&entries, &retry)?;
         assert_eq!(recovered.completion, Completion::Complete);
         assert_eq!(recovered.diagnostics.len(), 8);
@@ -653,7 +642,6 @@ fn syntax_jobs_keep_the_elapsed_operation_budget() -> io::Result<()> {
     );
 
     let mut limits = Options::new(Duration::from_secs(1));
-    limits.jobs = NonZeroUsize::new(4);
     let reached = Arc::new(Mutex::new(false));
     let observed = Arc::clone(&reached);
     let timeout = limits.timeout;

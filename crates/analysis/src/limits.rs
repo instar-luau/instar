@@ -1,6 +1,5 @@
 use std::{
     fmt, io,
-    num::NonZeroUsize,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -103,9 +102,6 @@ pub struct Options {
     /// individual parser and native configuration calls are not forcibly interrupted.
     pub timeout: Duration,
 
-    /// Maximum concurrent formatting or syntax-lint jobs; absent uses the service default.
-    pub jobs: Option<NonZeroUsize>,
-
     /// Shared cancellation signal.
     pub cancellation: Cancellation,
 
@@ -118,7 +114,6 @@ impl fmt::Debug for Options {
         formatter
             .debug_struct("Options")
             .field("timeout", &self.timeout)
-            .field("jobs", &self.jobs)
             .field("cancellation", &self.cancellation)
             .field("progress", &self.progress.is_some())
             .finish()
@@ -131,7 +126,6 @@ impl Options {
     pub fn new(timeout: Duration) -> Self {
         Self {
             timeout,
-            jobs: None,
             cancellation: Cancellation::default(),
             progress: None,
         }
@@ -183,7 +177,6 @@ impl Options {
     pub fn remaining(&self, started: Instant) -> Self {
         Self {
             timeout: self.timeout.saturating_sub(started.elapsed()),
-            jobs: self.jobs,
             cancellation: self.cancellation.clone(),
             progress: self.progress.clone(),
         }
