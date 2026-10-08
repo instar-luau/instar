@@ -332,8 +332,6 @@ impl Project {
         started: Instant,
     ) -> io::Result<BTreeMap<String, Vec<Inference>>> {
         let mut facts = BTreeMap::new();
-        let registration = Instant::now();
-        let modules = analysis.modules.len();
         let mut frontend = self.frontend.take().unwrap_or_default();
 
         let registered = (|| {
@@ -346,13 +344,6 @@ impl Project {
         })();
 
         self.frontend = Some(frontend);
-
-        tracing::debug!(
-            elapsed_seconds = registration.elapsed().as_secs_f64(),
-            modules,
-            success = registered.is_ok(),
-            "Native registration completed"
-        );
 
         registered?;
 

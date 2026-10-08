@@ -46,19 +46,8 @@ impl Project {
         context: Option<&Identity>,
         installed: &mut BTreeSet<Identity>,
     ) -> io::Result<Module> {
-        let started = Instant::now();
         let entry = self.links(source, context)?.module.clone();
         let identities = self.discovery(&entry, installed)?;
-        let modules = identities.len();
-
-        tracing::debug!(
-            elapsed_seconds = started.elapsed().as_secs_f64(),
-            modules,
-            "Dependency discovery completed"
-        );
-
-        let started = Instant::now();
-
         let mut frontend = self.frontend.take().unwrap_or_default();
 
         let result = (|| {
@@ -87,13 +76,6 @@ impl Project {
         })();
 
         self.frontend = Some(frontend);
-
-        tracing::debug!(
-            elapsed_seconds = started.elapsed().as_secs_f64(),
-            modules,
-            success = result.is_ok(),
-            "Native registration completed"
-        );
 
         result
     }
