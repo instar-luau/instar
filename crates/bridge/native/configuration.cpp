@@ -112,6 +112,12 @@ namespace instar {
                 Luau::InterruptCallbacks callbacks;
 
                 callbacks.initCallback = [&execution](lua_State *state) {
+                    lua_setsafeenv(state, LUA_GLOBALSINDEX, false);
+                    lua_setreadonly(state, LUA_GLOBALSINDEX, false);
+                    lua_pushnil(state);
+                    lua_setglobal(state, "print");
+                    lua_setreadonly(state, LUA_GLOBALSINDEX, true);
+
                     execution.main = state;
                     lua_callbacks(state)->userdata = &execution;
 

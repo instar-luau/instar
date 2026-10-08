@@ -25,7 +25,7 @@ pub struct Overrides(pub(crate) BTreeMap<String, Value>);
 /// Validates and canonicalizes overrides without modifying native process state.
 ///
 /// # Errors
-/// Rejects unknown registry names and mismatched value types.
+/// Rejects unknown names, incorrect types, duplicate aliases, and enabled stdout flags.
 pub fn validate(flags: &BTreeMap<String, Value>) -> io::Result<Overrides> {
     Ok(Overrides(
         boundary::normalize_flags(&native(flags))

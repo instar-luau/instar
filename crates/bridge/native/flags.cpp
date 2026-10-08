@@ -21,6 +21,16 @@ namespace instar {
         }
 
         void validate_flags(rust::Slice<const NativeFlag> flags) {
+            static const std::unordered_set<std::string> stdout_flags{
+                "DebugLuauLogSolver",
+                "DebugLuauLogBindings",
+                "DebugLuauLogSolverToJson",
+                "DebugLuauLogCFG",
+                "DebugLuauDumpCFGJson",
+                "DebugLuauLogTypeFamilies",
+                "DebugLuauMagicTypes",
+            };
+
             std::unordered_set<const void *> registered;
 
             for (const auto &flag : flags) {
@@ -35,6 +45,11 @@ namespace instar {
 
                 if (!registered.insert(found).second) {
                     throw std::invalid_argument("duplicate Luau flag alias: " + name);
+                }
+
+                if (flag.is_boolean && flag.boolean &&
+                    stdout_flags.find(registered_flag<bool>(name)->name) != stdout_flags.end()) {
+                    throw std::invalid_argument("Luau flag writes to stdout and is unavailable: " + name);
                 }
             }
         }

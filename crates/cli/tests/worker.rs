@@ -1,6 +1,12 @@
 //! Worker execution from a standalone relocated CLI.
 
-use std::{env::consts::EXE_SUFFIX, fs, io, process::Command, str};
+use std::{
+    env::consts::EXE_SUFFIX,
+    fs,
+    io::{self, Write},
+    process::{Command, Stdio},
+    str,
+};
 
 #[test]
 fn relocated_executable_runs_all_workers() -> io::Result<()> {
@@ -60,4 +66,47 @@ fn completions_exclude_internal_worker_modes() -> io::Result<()> {
     }
 
     Ok(())
+}
+
+#[test]
+fn stdout_flag_is_rejected_by_worker_before_initialization() -> io::Result<()> {
+    let directory = tempfile::tempdir()?;
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_instar"))
+        .current_dir(directory.path())
+        .args(["worker", "analysis"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    let request = serde_json::json!({
+        "sources": {},
+        "declarations": {},
+        "environments": {},
+        "entries": [],
+        "modules": [],
+        "operation": "Parse",
+        "timeout": {"secs": 5, "nanos": 0},
+        "flags": {"DebugLuauLogSolver": true},
+        "progress": false
+    });
+
+    let mut input = child.stdin.take().expect("piped stdin");
+    serde_json::to_writer(&mut input, &request)?;
+    input.write_all(b"\n")?;
+    drop(input);
+    let output = child.wait_with_output()?;
+
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(response["Response"]["Err"]["kind"], "InvalidData");
+
+    assert_eq!(
+        response["Response"]["Err"]["message"],
+        "Luau flag writes to stdout and is unavailable: DebugLuauLogSolver"
+    );
+
+    directory.close()
 }

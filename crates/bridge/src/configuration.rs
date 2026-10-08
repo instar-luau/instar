@@ -101,7 +101,7 @@ impl Configuration {
     /// Applies a `.luaurc` or `.config.luau` layer transactionally.
     ///
     /// Alias paths retain their defining file's directory. Luau code runs in
-    /// the upstream sandbox without require, filesystem, or network access.
+    /// the upstream sandbox without print, require, filesystem, or network access.
     /// The timeout is checked at VM safepoints and during extraction guards;
     /// it is not a hard limit on compilation, native calls, or allocation.
     /// Upstream uses an unrestricted allocator. Returned tables are limited

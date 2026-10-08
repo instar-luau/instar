@@ -35,6 +35,32 @@ fn flags_validate_registry_names_types_and_aliases() {
 }
 
 #[test]
+fn stdout_flags_reject_enabling_and_accept_disabling() {
+    for name in [
+        "DebugLuauLogSolver",
+        "DebugLuauLogBindings",
+        "DebugLuauLogSolverToJson",
+        "DebugLuauLogCFG",
+        "DebugLuauDumpCFGJson",
+        "DebugLuauLogTypeFamilies",
+        "DebugLuauMagicTypes",
+    ] {
+        let error = flags::validate(&BTreeMap::from([(name.to_owned(), Value::Boolean(true))]))
+            .expect_err("stdout flag must fail");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+
+        assert_eq!(
+            error.to_string(),
+            format!("Luau flag writes to stdout and is unavailable: {name}")
+        );
+
+        flags::validate(&BTreeMap::from([(name.to_owned(), Value::Boolean(false))]))
+            .expect("disabling stdout must remain valid");
+    }
+}
+
+#[test]
 fn integer_changes_restart_cached_analysis_and_defaults_are_restored() -> io::Result<()> {
     let mut frontend = Frontend::default();
     let source = format!("return {}1{}", "(".repeat(40), ")".repeat(40));

@@ -389,3 +389,113 @@ fn jobs_flag_is_limited_to_lint_and_format_and_rejects_zero() -> io::Result<()> 
 
     Ok(())
 }
+
+#[test]
+fn configuration_print_is_rejected_without_contaminating_json() -> io::Result<()> {
+    let directory = tempfile::tempdir()?;
+
+    fs::write(
+        directory.path().join("instar.toml"),
+        "[roblox]\nenabled=false\n",
+    )?;
+
+    fs::write(directory.path().join("entry.luau"), "return 1\n")?;
+
+    for source in [
+        "print('CONFIG_STDOUT')\nreturn {}\n",
+        "local output = print\noutput('CONFIG_STDOUT')\nreturn {}\n",
+        "_G.print('CONFIG_STDOUT')\nreturn {}\n",
+    ] {
+        fs::write(directory.path().join(".config.luau"), source)?;
+
+        let output = Command::new(env!("CARGO_BIN_EXE_instar"))
+            .current_dir(directory.path())
+            .args(["--json", "--color", "never", "check", "entry.luau"])
+            .output()?;
+
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        assert!(output.stdout.is_empty(), "{output:?}");
+        let error: serde_json::Value = serde_json::from_slice(&output.stderr)?;
+        let message = error["error"].as_str().expect("JSON error");
+        assert!(message.contains(".config.luau"), "{error}");
+        assert!(message.contains("nil value"), "{error}");
+    }
+
+    directory.close()
+}
+
+#[test]
+fn configured_stdout_flags_report_validation_errors() -> io::Result<()> {
+    let directory = tempfile::tempdir()?;
+
+    fs::write(
+        directory.path().join(".luaurc"),
+        "{\"languageMode\":\"strict\"}",
+    )?;
+
+    for (name, settings, source) in [
+        (
+            "DebugLuauLogSolver",
+            "",
+            "local value: number = 1\nreturn value\n",
+        ),
+        (
+            "DebugLuauLogBindings",
+            "",
+            "local value: number = 1\nreturn value\n",
+        ),
+        (
+            "DebugLuauLogSolverToJson",
+            "LuauCyclicRequireTypeInference=false\n",
+            "local value: number = 1\nreturn value\n",
+        ),
+        (
+            "DebugLuauLogCFG",
+            "DebugLuauCFG=true\nLuauCyclicRequireTypeInference=false\n",
+            "local value: number = 1\nreturn value\n",
+        ),
+        (
+            "DebugLuauDumpCFGJson",
+            "DebugLuauCFG=true\nLuauCyclicRequireTypeInference=false\n",
+            "local value: number = 1\nreturn value\n",
+        ),
+        (
+            "DebugLuauLogTypeFamilies",
+            "",
+            "local function add<T>(value: T)\nreturn value + value\nend\nreturn add(1)\n",
+        ),
+        (
+            "DebugLuauMagicTypes",
+            "",
+            "local value: _luau_print<number> = 1\nreturn value\n",
+        ),
+    ] {
+        fs::write(
+            directory.path().join("instar.toml"),
+            format!("[roblox]\nenabled=false\n[luau.flags]\n{name}=true\n{settings}"),
+        )?;
+
+        fs::write(directory.path().join("entry.luau"), source)?;
+
+        let output = Command::new(env!("CARGO_BIN_EXE_instar"))
+            .current_dir(directory.path())
+            .args(["--json", "--color", "never", "check", "entry.luau"])
+            .output()?;
+
+        assert_eq!(output.status.code(), Some(2), "{name}: {output:?}");
+        assert!(output.stdout.is_empty(), "{name}: {output:?}");
+        let error: serde_json::Value = serde_json::from_slice(&output.stderr)?;
+
+        assert!(
+            error["error"]
+                .as_str()
+                .expect("JSON error")
+                .contains(&format!(
+                    "Luau flag writes to stdout and is unavailable: {name}"
+                )),
+            "{name}: {error}"
+        );
+    }
+
+    directory.close()
+}
