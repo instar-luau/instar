@@ -9,6 +9,10 @@ use crate::configuration::{BuiltinGroup, Group, Order};
 
 impl Builder<'_, '_> {
     pub(super) fn require(&self, index: NodeIndex) -> Option<Require> {
+        if self.configuration.requires.order == Order::Preserve {
+            return None;
+        }
+
         let NodeKind::Local {
             bindings, values, ..
         } = &self.tree.node(index).kind

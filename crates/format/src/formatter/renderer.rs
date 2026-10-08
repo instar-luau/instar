@@ -26,7 +26,7 @@ struct Renderer<'tree, 'source> {
     started: Instant,
     interruption: Option<Reason>,
     emitter: Option<Emitter<'source>>,
-    replacements: &'tree [Option<(Tree<'source>, TokenIndex)>],
+    replacements: &'tree [Option<Box<(Tree<'source>, TokenIndex)>>],
     indentation: usize,
     column: usize,
     lines: usize,
@@ -158,7 +158,7 @@ impl Renderer<'_, '_> {
         self.separate();
 
         let (tree, token) = self.replacements[index.get()]
-            .as_ref()
+            .as_deref()
             .map_or((self.tree, index), |(tree, token)| (tree, *token));
 
         if let Some(emitter) = &mut self.emitter {
@@ -291,7 +291,7 @@ pub(super) fn emit(
             return Output::failed("quoted-string transformation did not produce a string token");
         };
 
-        replacements.push(Some((replacement, TokenIndex::new(token))));
+        replacements.push(Some(Box::new((replacement, TokenIndex::new(token)))));
     }
 
     let mut renderer = Renderer {

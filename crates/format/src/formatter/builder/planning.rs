@@ -9,7 +9,7 @@ use vermis::{
 };
 
 use super::super::{document::Document, quotes::quote};
-use crate::Configuration;
+use crate::{Configuration, configuration::Order};
 
 pub(in crate::formatter) struct Plan {
     pub(in crate::formatter) document: Vec<Document>,
@@ -45,7 +45,11 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         options: &'tree Options,
         started: Instant,
     ) -> Result<Plan, Reason> {
-        let bindings = Bindings::analyze(tree, Some((options, started)));
+        let bindings = if configuration.requires.order == Order::Preserve {
+            Bindings::default()
+        } else {
+            Bindings::analyze(tree, Some((options, started)))
+        };
 
         if let Some(reason) = bindings.interruption {
             return Err(reason);
@@ -70,7 +74,6 @@ impl<'tree, 'source> Builder<'tree, 'source> {
                             options,
                             started,
                         )
-                        .map(Some)
                     } else {
                         Ok(None)
                     }

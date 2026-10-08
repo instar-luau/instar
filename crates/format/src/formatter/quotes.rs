@@ -9,9 +9,9 @@ pub(super) fn quote(
     style: QuoteStyle,
     options: &Options,
     started: Instant,
-) -> Result<Vec<u8>, Reason> {
+) -> Result<Option<Vec<u8>>, Reason> {
     if style == QuoteStyle::Preserve {
-        return Ok(bytes.to_vec());
+        return Ok(None);
     }
 
     let mut content = Vec::new();
@@ -89,5 +89,5 @@ pub(super) fn quote(
 
     result.push(delimiter);
 
-    Ok(result)
+    Ok((result.as_slice() != bytes).then_some(result))
 }
