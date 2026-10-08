@@ -12,80 +12,15 @@
 #include "Luau/Scope.h"
 #include "Luau/TypeArena.h"
 
-#include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
-#include <deque>
 #include <exception>
-#include <functional>
-#include <mutex>
 #include <thread>
 #include <utility>
 #include <vector>
 
 namespace instar::frontend {
     namespace {
-        struct Scheduler {
-            std::mutex mutex;
-            std::condition_variable ready;
-            std::deque<std::function<void()>> tasks;
-            bool stopped = false;
-            std::vector<std::thread> workers;
-
-            explicit Scheduler(size_t count) {
-                try {
-                    for (size_t index = 0; index < count; ++index) {
-                        workers.emplace_back([this] {
-                            for (;;) {
-                                std::function<void()> task;
-                                {
-                                    std::unique_lock<std::mutex> lock(mutex);
-                                    ready.wait(lock, [this] { return stopped || !tasks.empty(); });
-                                    if (tasks.empty()) {
-                                        return;
-                                    }
-                                    task = std::move(tasks.front());
-                                    tasks.pop_front();
-                                }
-                                task();
-                            }
-                        });
-                    }
-                } catch (...) {
-                    stop();
-                    throw;
-                }
-            }
-
-            ~Scheduler() { stop(); }
-
-            void stop() {
-                {
-                    std::lock_guard<std::mutex> lock(mutex);
-                    stopped = true;
-                }
-
-                ready.notify_all();
-
-                for (auto &worker : workers) {
-                    worker.join();
-                }
-            }
-
-            void submit(std::vector<std::function<void()>> work) {
-                {
-                    std::lock_guard<std::mutex> lock(mutex);
-
-                    for (auto &task : work) {
-                        tasks.push_back(std::move(task));
-                    }
-                }
-
-                ready.notify_all();
-            }
-        };
-
         struct Interruption {
             const Cancellation &cancellation;
             std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
@@ -374,7 +309,6 @@ namespace instar::frontend {
                 frontend.queueModuleCheck(std::string(entry));
             }
 
-            std::mutex collection;
             Luau::FrontendOptions options;
             options.cancellationToken = interruption.token;
             options.moduleTimeLimitSec = interruption.remaining();
@@ -382,7 +316,6 @@ namespace instar::frontend {
             options.customModuleCheck = [&](const Luau::SourceModule &source, const Luau::Module &module) {
                 if (!module.cancelled) {
                     try {
-                        std::lock_guard<std::mutex> lock(collection);
                         if (lint) {
                             collect(state, host, source, module);
                         }
@@ -393,15 +326,9 @@ namespace instar::frontend {
                 }
             };
 
-            const size_t requested = host.jobs();
-            const size_t jobs = requested ? requested : std::min(4u, std::max(1u, std::thread::hardware_concurrency()));
-            Scheduler scheduler(std::max(size_t(1), std::min(jobs, total)));
-
-            frontend.checkQueuedModules(
-                options,
-                [&](std::vector<std::function<void()>> tasks) { scheduler.submit(std::move(tasks)); },
-                [&](size_t, size_t) { return interruption.status() == NativeCompletion::Complete; }
-            );
+            frontend.checkQueuedModules(options, {}, [&](size_t, size_t) {
+                return interruption.status() == NativeCompletion::Complete;
+            });
 
             result.completion = interruption.status();
 

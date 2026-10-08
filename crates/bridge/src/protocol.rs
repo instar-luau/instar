@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, num::NonZeroUsize, time::Duration};
+use std::{collections::BTreeMap, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
@@ -18,7 +18,6 @@ pub(crate) struct Request {
     pub(crate) timeout: Duration,
     pub(crate) flags: BTreeMap<String, flags::Value>,
     pub(crate) progress: bool,
-    pub(crate) jobs: Option<NonZeroUsize>,
 }
 
 #[derive(Deserialize, Serialize)]

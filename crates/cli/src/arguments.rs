@@ -56,11 +56,7 @@ pub(crate) enum Command {
 #[derive(Subcommand)]
 pub(crate) enum Analysis {
     #[command(about = "Typecheck source files and their dependencies")]
-    Check {
-        files: Vec<PathBuf>,
-        #[arg(long)]
-        jobs: Option<NonZeroUsize>,
-    },
+    Check { files: Vec<PathBuf> },
 
     #[command(about = "Format files in place, check formatting, or format stdin to stdout")]
     Format {

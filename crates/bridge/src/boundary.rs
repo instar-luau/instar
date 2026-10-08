@@ -168,7 +168,6 @@ mod native {
 
     extern "Rust" {
         type Host;
-        fn jobs(self: &Host) -> usize;
         fn progress(
             self: &Host,
             phase: &str,

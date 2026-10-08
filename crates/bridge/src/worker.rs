@@ -75,7 +75,6 @@ impl Session {
         self.host.declarations = mem::take(&mut request.declarations);
         self.host.environments = mem::take(&mut request.environments);
         self.host.progress = request.progress;
-        self.host.jobs = request.jobs;
 
         Ok(())
     }

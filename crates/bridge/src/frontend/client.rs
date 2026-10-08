@@ -456,7 +456,6 @@ impl Frontend {
             timeout: options.timeout.saturating_sub(started.elapsed()),
             flags,
             progress: options.progress.is_some(),
-            jobs: options.jobs,
         };
 
         let result = self

@@ -344,3 +344,29 @@ fn mapped_lint_visits_every_placement_and_its_dependencies() -> io::Result<()> {
 
     directory.close()
 }
+
+#[test]
+fn jobs_flag_is_limited_to_lint_and_format_and_rejects_zero() -> io::Result<()> {
+    for operation in ["lint", "format", "check"] {
+        let help = Command::new(env!("CARGO_BIN_EXE_instar"))
+            .args([operation, "--help"])
+            .output()?;
+
+        assert!(help.status.success(), "{help:?}");
+
+        assert_eq!(
+            String::from_utf8_lossy(&help.stdout).contains("--jobs"),
+            operation != "check"
+        );
+    }
+
+    for arguments in [["lint", "--jobs", "0"], ["check", "--jobs", "1"]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_instar"))
+            .args(arguments)
+            .output()?;
+
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+    }
+
+    Ok(())
+}

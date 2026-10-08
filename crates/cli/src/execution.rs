@@ -68,11 +68,12 @@ pub(crate) fn run(arguments: &Arguments, command: &Analysis) -> Result<bool> {
     reporter.phase("Discovering", None)?;
     options.progress = Some(reporter.observer()?);
 
-    let (Analysis::Check { files, jobs }
-    | Analysis::Lint { files, jobs }
-    | Analysis::Format { files, jobs, .. }) = command;
+    let (Analysis::Check { files } | Analysis::Lint { files, .. } | Analysis::Format { files, .. }) =
+        command;
 
-    options.jobs = *jobs;
+    if let Analysis::Format { jobs, .. } | Analysis::Lint { jobs, .. } = command {
+        options.jobs = *jobs;
+    }
 
     let (paths, stdin) = inputs::load(
         files,

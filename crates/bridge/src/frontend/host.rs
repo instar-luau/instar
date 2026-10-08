@@ -1,7 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::{self, Write},
-    num::NonZeroUsize,
     sync::Arc,
 };
 
@@ -26,14 +25,9 @@ pub(crate) struct Host {
     classes: BTreeMap<Arc<[Class]>, u64>,
     revision: u64,
     pub(crate) progress: bool,
-    pub(crate) jobs: Option<NonZeroUsize>,
 }
 
 impl Host {
-    pub(crate) fn jobs(&self) -> usize {
-        self.jobs.map_or(0, NonZeroUsize::get)
-    }
-
     pub(crate) fn detach(&mut self, name: &str) {
         if let Some(source) = self.sources.get_mut(name) {
             for binding in source.definitions.drain(..) {
