@@ -7,7 +7,7 @@ use std::{
     sync::Arc,
 };
 
-use crate::project::Change;
+use crate::snapshot::Snapshot;
 
 /// One immutable source revision.
 #[derive(Clone, Debug)]
@@ -60,7 +60,7 @@ pub(crate) enum Kind {
 
 #[derive(Default)]
 pub(crate) struct View {
-    overlays: BTreeMap<PathBuf, Option<Arc<str>>>,
+    pub(crate) snapshot: Snapshot,
     documents: BTreeMap<PathBuf, Result<Option<Document>, Failure>>,
     kinds: BTreeMap<PathBuf, Result<Option<Kind>, Failure>>,
     revision: u64,
@@ -83,7 +83,7 @@ impl View {
             return document.clone().map_err(|error| error.error());
         }
 
-        let result = if let Some(overlay) = self.overlays.get(path) {
+        let result = if let Some(overlay) = self.snapshot.overlay(path) {
             Ok(overlay.clone())
         } else {
             match fs::read_to_string(path) {
@@ -124,15 +124,11 @@ impl View {
     pub(crate) fn kind(&mut self, path: &Path) -> io::Result<Option<Kind>> {
         self.consulted.insert(path.to_path_buf());
 
-        if let Some(overlay) = self.overlays.get(path) {
+        if let Some(overlay) = self.snapshot.overlay(path) {
             return Ok(overlay.as_ref().map(|_| Kind::File));
         }
 
-        if self
-            .overlays
-            .iter()
-            .any(|(file, text)| text.is_some() && file != path && file.starts_with(path))
-        {
+        if self.snapshot.directory(path) {
             return Ok(Some(Kind::Directory));
         }
 
@@ -191,20 +187,7 @@ impl View {
         changed
     }
 
-    pub(crate) fn change(&mut self, path: &Path, change: Change) {
-        match change {
-            Change::Overlay { text, .. } => {
-                self.overlays
-                    .insert(path.to_path_buf(), text.map(Arc::from));
-            }
-
-            Change::Close(_) => {
-                self.overlays.remove(path);
-            }
-
-            Change::Disk(_) => {}
-        }
-
+    pub(crate) fn invalidate(&mut self, path: &Path) {
         self.documents
             .retain(|candidate, _| !related(candidate, path) && !related(path, candidate));
 

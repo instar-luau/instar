@@ -51,6 +51,9 @@ pub(crate) enum Command {
         #[arg(value_parser = shells())]
         shell: String,
     },
+
+    #[command(about = "Run the language server over stdio")]
+    Server,
 }
 
 #[derive(Subcommand)]

@@ -20,7 +20,7 @@ use crate::{
     assets::{self, HOST, fetch, install, verify},
     configuration::Security,
     documentation::Index,
-    project::{Change, Project},
+    project::Project,
     source::Document,
 };
 
@@ -96,8 +96,7 @@ impl Project {
 
                 install(&directory, files, options, started)?;
 
-                self.view
-                    .change(&directory, Change::Disk(directory.clone()));
+                self.view.invalidate(&directory);
             }
 
             Err(error) => return Err(error),

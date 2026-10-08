@@ -19,6 +19,7 @@ use crate::{
     native,
     resolve::Identity,
     roblox::Assets,
+    snapshot,
     source::{Document, Failure, Kind, View, normalize, related},
     sourcemap::Map,
 };
@@ -97,20 +98,26 @@ impl Settings {
                 }
 
                 (Some(source), None) => {
-                    let remaining = operation.map_or(timeout, |(options, started)| {
-                        timeout.min(options.timeout.saturating_sub(started.elapsed()))
-                    });
+                    let mut remaining = operation.map_or_else(
+                        || Options::new(timeout),
+                        |(options, started)| options.remaining(*started),
+                    );
 
-                    native.apply(&source.text, &json, remaining)?;
+                    remaining.timeout = remaining.timeout.min(timeout);
+
+                    native.apply(&source.text, &json, &remaining)?;
                     files.push(json);
                 }
 
                 (None, Some(source)) => {
-                    let remaining = operation.map_or(timeout, |(options, started)| {
-                        timeout.min(options.timeout.saturating_sub(started.elapsed()))
-                    });
+                    let mut remaining = operation.map_or_else(
+                        || Options::new(timeout),
+                        |(options, started)| options.remaining(*started),
+                    );
 
-                    native.apply(&source.text, &luau, remaining)?;
+                    remaining.timeout = remaining.timeout.min(timeout);
+
+                    native.apply(&source.text, &luau, &remaining)?;
                     files.push(luau);
                 }
 
@@ -275,42 +282,23 @@ impl Project {
     /// Rejects relative event paths.
     pub fn change(&mut self, change: Change) -> io::Result<BTreeSet<Identity>> {
         let path = match &change {
-            Change::Disk(path) | Change::Close(path) | Change::Overlay { path, .. } => path,
+            Change::Disk(path) | Change::Close(path) | Change::Overlay { path, .. } => {
+                absolute(path)?
+            }
         };
 
-        let path = absolute(path)?;
-        let changed = self.view.changes(&path);
-        self.view.change(&path, change);
+        self.view.snapshot.change(change)?;
 
-        self.roblox.retain(|_, assets| {
-            !assets.definitions.iter().any(|(source, _)| {
-                source.parent().is_some_and(|directory| {
-                    path.starts_with(directory) || directory.starts_with(&path)
-                })
-            })
-        });
+        Ok(self.invalidate(&path))
+    }
 
-        self.settings.retain(|_, settings| {
-            !settings
-                .inputs
-                .iter()
-                .any(|input| changed.iter().any(|path| related(input, path)))
-        });
-
-        self.maps
-            .retain(|candidate, _| !changed.iter().any(|path| related(candidate, path)));
-
-        let mut affected = BTreeSet::new();
-
-        for path in changed {
-            affected.extend(self.graph.invalidate(&path));
+    /// Adopts host inputs, retaining caches unaffected by their changes.
+    pub fn apply(&mut self, snapshot: &snapshot::Snapshot) {
+        for path in snapshot.changes(&self.view.snapshot) {
+            self.invalidate(&path);
         }
 
-        if let Some(frontend) = &mut self.frontend {
-            frontend.invalidate(&affected.iter().map(native::name).collect::<Vec<_>>());
-        }
-
-        Ok(affected)
+        self.view.snapshot = snapshot.clone();
     }
 
     /// Returns every consulted present and absent host watch input.
@@ -376,6 +364,41 @@ impl Project {
         }
 
         Ok(maps)
+    }
+
+    fn invalidate(&mut self, path: &Path) -> BTreeSet<Identity> {
+        let changed = self.view.changes(path);
+        self.view.invalidate(path);
+
+        self.roblox.retain(|_, assets| {
+            !assets.definitions.iter().any(|(source, _)| {
+                source.parent().is_some_and(|directory| {
+                    path.starts_with(directory) || directory.starts_with(path)
+                })
+            })
+        });
+
+        self.settings.retain(|_, settings| {
+            !settings
+                .inputs
+                .iter()
+                .any(|input| changed.iter().any(|path| related(input, path)))
+        });
+
+        self.maps
+            .retain(|candidate, _| !changed.iter().any(|path| related(candidate, path)));
+
+        let mut affected = BTreeSet::new();
+
+        for path in changed {
+            affected.extend(self.graph.invalidate(&path));
+        }
+
+        if let Some(frontend) = &mut self.frontend {
+            frontend.invalidate(&affected.iter().map(native::name).collect::<Vec<_>>());
+        }
+
+        affected
     }
 }
 

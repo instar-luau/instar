@@ -1,5 +1,11 @@
 [bans]
-skip = ["getrandom", "windows-sys", "miniz_oxide"]
+skip = [
+  "getrandom",
+  "hashbrown",
+  "miniz_oxide",
+  "syn",
+  "windows-sys",
+]
 
 [licenses]
 include-dev = true

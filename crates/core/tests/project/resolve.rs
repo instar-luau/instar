@@ -1,6 +1,7 @@
 //! Synthetic require resolution fixtures with independent expected outcomes.
 use std::{error::Error, fs, io, path::Path, time::Duration};
 
+use instar_analysis::Options;
 use instar_bridge::Configuration;
 use instar_core::project::Project;
 use serde::Deserialize;
@@ -118,13 +119,17 @@ fn native_alias_rejections_are_transactional() -> io::Result<()> {
         native.apply(
             r#"{"aliases":{"retained":"./target"}}"#,
             Path::new(".luaurc"),
-            Duration::from_secs(2),
+            &Options::new(Duration::from_secs(2)),
         )?;
 
         let previous = native.snapshot()?;
 
         let error = native
-            .apply(source, Path::new(filename), Duration::from_secs(2))
+            .apply(
+                source,
+                Path::new(filename),
+                &Options::new(Duration::from_secs(2)),
+            )
             .expect_err("invalid alias layer must fail");
 
         assert_eq!(error.to_string(), format!("{filename}: {message}"));

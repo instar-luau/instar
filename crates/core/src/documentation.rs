@@ -19,7 +19,7 @@ use ureq::Agent;
 
 use crate::{
     assets,
-    project::{Change, Project, absolute},
+    project::{Project, absolute},
 };
 
 /// Documentation attached to one native symbol.
@@ -283,8 +283,7 @@ impl Project {
 
                 assets::install(&directory, files, options, started)?;
 
-                self.view
-                    .change(&directory, Change::Disk(directory.clone()));
+                self.view.invalidate(&directory);
             }
 
             Err(error) => return Err(error),

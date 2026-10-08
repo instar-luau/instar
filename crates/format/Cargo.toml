@@ -9,9 +9,10 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-glob.workspace = true
 instar-analysis.workspace = true
 instar-syntax.workspace = true
+
+glob.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

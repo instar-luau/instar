@@ -13,6 +13,7 @@ mod native {
     struct NativeOutcome {
         message: String,
         timed_out: bool,
+        cancelled: bool,
     }
 
     struct NativeLint {
@@ -186,6 +187,7 @@ mod native {
         fn resolve(self: &Host, name: &str, start: usize, end: usize) -> String;
         type Cancellation;
         fn requested(self: &Cancellation) -> bool;
+        fn started(self: &Cancellation);
     }
 
     unsafe extern "C++" {
@@ -233,6 +235,7 @@ mod native {
             path: &str,
             executable: bool,
             timeout_seconds: f64,
+            cancellation: &Cancellation,
         ) -> Result<NativeOutcome>;
         fn snapshot(self: &NativeConfiguration) -> Result<NativeSnapshot>;
         fn restore(self: Pin<&mut NativeConfiguration>, snapshot: &NativeSnapshot) -> Result<()>;

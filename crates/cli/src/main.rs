@@ -5,6 +5,7 @@ mod completion;
 mod execution;
 mod inputs;
 mod reporting;
+mod server;
 mod writing;
 
 use std::{
@@ -91,6 +92,7 @@ fn main() -> ExitCode {
     let result = match &arguments.command {
         Command::Analysis(command) => execution::run(&arguments, command),
         Command::Completions { shell } => completion::generate(shell).map(|()| true),
+        Command::Server => server::run(&arguments),
     };
 
     match result {

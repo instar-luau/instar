@@ -15,7 +15,12 @@ fn options() -> Options {
 
 fn configuration(source: &str, path: &str) -> io::Result<Configuration> {
     let mut configuration = Configuration::new()?;
-    configuration.apply(source, Path::new(path), Duration::from_secs(2))?;
+
+    configuration.apply(
+        source,
+        Path::new(path),
+        &Options::new(Duration::from_secs(2)),
+    )?;
 
     Ok(configuration)
 }

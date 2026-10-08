@@ -9,8 +9,9 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-cxx = "1"
 instar-analysis.workspace = true
+
+cxx = "1"
 serde = { workspace = true, features = ["rc"] }
 serde_json.workspace = true
 

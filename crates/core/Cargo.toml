@@ -9,13 +9,14 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-dirs = "7"
-glob.workspace = true
 instar-analysis.workspace = true
 instar-bridge.workspace = true
 instar-format.workspace = true
 instar-lint.workspace = true
 instar-syntax.workspace = true
+
+dirs = "7"
+glob.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -29,7 +30,7 @@ ureq = "3"
 vermis.workspace = true
 
 [dev-dependencies]
-similar-asserts = "2.0.0"
+similar-asserts = "2"
 
 [lints]
 workspace = true

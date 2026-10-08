@@ -8,6 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use instar_analysis::Options;
 use instar_bridge::{Configuration, Mode};
 
 fn isolated(name: &str) -> bool {
@@ -68,7 +69,7 @@ fn rejected(
         .apply(
             include_str!("fixtures/strict/.config.luau"),
             Path::new(".config.luau"),
-            Duration::from_secs(2),
+            &Options::new(Duration::from_secs(2)),
         )
         .expect("valid layer must load");
 
@@ -76,7 +77,7 @@ fn rejected(
     assert_eq!(previous.mode, Mode::Strict);
 
     let error = configuration
-        .apply(source, path, timeout)
+        .apply(source, path, &Options::new(timeout))
         .expect_err("invalid layer must fail");
 
     assert_eq!(error.kind(), kind);
@@ -173,7 +174,7 @@ fn sandbox_has_no_external_access() {
         .apply(
             include_str!("fixtures/sandbox/.config.luau"),
             Path::new(".config.luau"),
-            Duration::from_secs(2),
+            &Options::new(Duration::from_secs(2)),
         )
         .expect("sandbox checks must pass");
 

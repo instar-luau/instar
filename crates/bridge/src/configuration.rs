@@ -3,12 +3,13 @@ use std::{
     collections::BTreeMap,
     fmt, io,
     path::{self, Path, PathBuf},
-    time::Duration,
+    time::Instant,
 };
 
+use instar_analysis::Options;
 use serde::{Deserialize, Serialize};
 
-use crate::boundary;
+use crate::{boundary, frontend::Cancellation};
 
 /// An opaque configuration initialized and layered using upstream Luau APIs.
 pub struct Configuration {
@@ -102,16 +103,22 @@ impl Configuration {
     ///
     /// Alias paths retain their defining file's directory. Luau code runs in
     /// the upstream sandbox without print, require, filesystem, or network access.
-    /// The timeout is checked at VM safepoints and during extraction guards;
-    /// it is not a hard limit on compilation, native calls, or allocation.
+    /// Cancellation and timeout are checked at VM safepoints and during extraction guards.
+    /// Compilation, native calls, and allocation remain non-preemptible.
     /// Upstream uses an unrestricted allocator. Returned tables are limited
     /// to 128 levels and 100,000 expanded entries and cannot contain cycles.
     ///
     /// # Errors
     /// Returns a source-qualified error for unsupported paths, parsing,
-    /// execution, extraction limits, or allocation. Failure leaves the
+    /// execution, interruption, extraction limits, or allocation. Failure leaves the
     /// previous configuration unchanged.
-    pub fn apply(&mut self, source: &str, path: &Path, timeout: Duration) -> io::Result<()> {
+    pub fn apply(&mut self, source: &str, path: &Path, options: &Options) -> io::Result<()> {
+        let started = Instant::now();
+
+        options
+            .check(started)
+            .map_err(|error| source_error(path, error.kind(), error))?;
+
         let executable = match path.file_name().and_then(|name| name.to_str()) {
             Some(".luaurc") => false,
             Some(".config.luau") => true,
@@ -136,10 +143,21 @@ impl Configuration {
             )
         })?;
 
+        let cancellation = Cancellation(options.cancellation.clone(), Some(options.clone()));
+
         let outcome = self
             .native
             .pin_mut()
-            .apply(source, location, executable, timeout.as_secs_f64())
+            .apply(
+                source,
+                location,
+                executable,
+                options
+                    .timeout
+                    .saturating_sub(started.elapsed())
+                    .as_secs_f64(),
+                &cancellation,
+            )
             .map_err(|error| source_error(path, io::ErrorKind::Other, error))?;
 
         if outcome.message.is_empty() {
@@ -148,7 +166,9 @@ impl Configuration {
             return Ok(());
         }
 
-        let kind = if outcome.timed_out {
+        let kind = if outcome.cancelled {
+            io::ErrorKind::Interrupted
+        } else if outcome.timed_out {
             io::ErrorKind::TimedOut
         } else {
             io::ErrorKind::InvalidData

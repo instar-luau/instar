@@ -9,7 +9,7 @@ use std::{
 
 use codespan_reporting::term::termcolor::ColorChoice;
 use eyre::{Result, WrapErr, ensure};
-use instar_analysis::{Completion, Options, Reason, process, selection};
+use instar_analysis::{Completion, Options, Reason, process};
 
 use instar_core::{
     analysis::{Entry, Origin},
@@ -191,12 +191,13 @@ fn prepare(
     for path in paths {
         options.check(started)?;
         progress.set_message(path.display().to_string());
-        let settings = project.configuration(path.parent().expect("absolute source directory"))?;
-        let configuration = settings.configuration.format.clone();
 
-        if !selection::matches(&path, configuration.include.as_deref(), true)?
-            || selection::matches(&path, configuration.exclude.as_deref(), false)?
+        if let Some(configuration) =
+            project.formatting_configuration(&path, &options.remaining(started))?
         {
+            let source = project.source(&path)?.text;
+            inputs.push((path, source, configuration));
+        } else {
             reporter.skipped += 1;
 
             if matches!(mode, Mode::Stdout) {
@@ -204,9 +205,6 @@ fn prepare(
                     .lock()
                     .write_all(project.source(&path)?.text.as_bytes())?;
             }
-        } else {
-            let source = project.source(&path)?.text;
-            inputs.push((path, source, configuration));
         }
 
         progress.inc(1);

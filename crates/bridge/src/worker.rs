@@ -80,7 +80,7 @@ impl Session {
     }
 
     fn documentation(&mut self, request: &Request, symbol: &str) -> io::Result<Response> {
-        let cancellation = Cancellation(instar_analysis::Cancellation::default());
+        let cancellation = Cancellation(instar_analysis::Cancellation::default(), None);
 
         let result = self
             .native
@@ -119,7 +119,7 @@ impl Session {
         }
 
         self.synchronize(&mut request)?;
-        let cancellation = Cancellation(instar_analysis::Cancellation::default());
+        let cancellation = Cancellation(instar_analysis::Cancellation::default(), None);
 
         match &request.operation {
             Operation::Documentation(symbol) => self.documentation(&request, symbol),

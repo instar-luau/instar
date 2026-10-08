@@ -16,6 +16,10 @@ namespace instar {
             DeadlineExceeded() : std::runtime_error("configuration execution timed out") {}
         };
 
+        struct ExecutionCancelled final : std::runtime_error {
+            ExecutionCancelled() : std::runtime_error("configuration execution cancelled") {}
+        };
+
         struct ExtractionFailure final : std::runtime_error {
             using std::runtime_error::runtime_error;
         };
@@ -23,11 +27,17 @@ namespace instar {
         struct Execution {
             std::chrono::steady_clock::time_point started;
             double timeout_seconds;
+            const Cancellation &cancellation;
             lua_State *main = nullptr;
             size_t entries = 0;
             std::unordered_set<const void *> ancestors;
+            bool running = false;
 
-            void check_deadline() const {
+            void check() const {
+                if (cancellation.requested()) {
+                    throw ExecutionCancelled{};
+                }
+
                 const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - started);
 
                 if (elapsed.count() >= timeout_seconds) {
@@ -36,7 +46,7 @@ namespace instar {
             }
 
             void inspect(lua_State *state, size_t depth) {
-                check_deadline();
+                check();
 
                 if (depth > 128) {
                     throw ExtractionFailure{"configuration table exceeds extraction depth limit (128)"};
@@ -56,7 +66,7 @@ namespace instar {
                 lua_pushnil(state);
 
                 while (lua_next(state, table) != 0) {
-                    check_deadline();
+                    check();
 
                     if (++entries > 100000) {
                         throw ExtractionFailure{"configuration table exceeds extraction entry limit (100000)"};
@@ -100,14 +110,17 @@ namespace instar {
         return std::make_unique<NativeConfiguration>();
     }
 
-    NativeOutcome
-    NativeConfiguration::apply(rust::Str source, rust::Str path, bool executable, double timeout_seconds) {
-        Execution execution{std::chrono::steady_clock::now(), timeout_seconds, nullptr, 0, {}};
+    NativeOutcome NativeConfiguration::apply(
+        rust::Str source, rust::Str path, bool executable, double timeout_seconds, const Cancellation &cancellation
+    ) {
+        Execution execution{std::chrono::steady_clock::now(), timeout_seconds, cancellation, nullptr, 0, {}};
         auto next = std::make_unique<Luau::Config>(*configuration);
         Luau::ConfigOptions::AliasOptions aliases{std::string(path), true};
         std::optional<std::string> error;
 
         try {
+            execution.check();
+
             if (executable) {
                 Luau::InterruptCallbacks callbacks;
 
@@ -128,7 +141,7 @@ namespace instar {
                             return;
                         }
 
-                        execution.check_deadline();
+                        execution.check();
 
                         if (lua_status(resumed) == LUA_OK && lua_gettop(resumed) == 1 &&
                             lua_type(resumed, -1) == LUA_TTABLE) {
@@ -142,39 +155,53 @@ namespace instar {
                 };
 
                 callbacks.interruptCallback = [](lua_State *state, int) {
-                    static_cast<Execution *>(lua_callbacks(state)->userdata)->check_deadline();
+                    auto &execution = *static_cast<Execution *>(lua_callbacks(state)->userdata);
+
+                    if (!execution.running) {
+                        execution.running = true;
+                        execution.cancellation.started();
+                    }
+
+                    execution.check();
                 };
 
                 error = Luau::extractLuauConfig(std::string(source), *next, aliases, std::move(callbacks));
-                execution.check_deadline();
             } else {
                 Luau::ConfigOptions options;
                 options.aliasOptions = std::move(aliases);
                 error = Luau::parseConfig(std::string(source), *next, options);
             }
+
+            execution.check();
         } catch (const DeadlineExceeded &failure) {
-            return NativeOutcome{rust::String(failure.what()), true};
+            return NativeOutcome{rust::String(failure.what()), true, false};
+        } catch (const ExecutionCancelled &failure) {
+            return NativeOutcome{rust::String(failure.what()), false, true};
         } catch (const ExtractionFailure &failure) {
-            return NativeOutcome{rust::String(failure.what()), false};
+            return NativeOutcome{rust::String(failure.what()), false, false};
         }
 
         if (error) {
-            return NativeOutcome{rust::String(*error), false};
+            return NativeOutcome{rust::String(*error), false, false};
         }
 
         for (const auto &[name, alias] : next->aliases) {
             if (name == "self") {
-                return NativeOutcome{rust::String("alias @self is reserved"), false};
+                return NativeOutcome{rust::String("alias @self is reserved"), false, false};
             }
 
             if (!name.empty() && name.front() == '@') {
-                return NativeOutcome{rust::String("Invalid alias " + alias.originalCase), false};
+                return NativeOutcome{rust::String("Invalid alias " + alias.originalCase), false, false};
             }
+        }
+
+        if (cancellation.requested()) {
+            return NativeOutcome{rust::String("configuration execution cancelled"), false, true};
         }
 
         configuration.swap(next);
 
-        return NativeOutcome{rust::String(), false};
+        return NativeOutcome{rust::String(), false, false};
     }
 
     NativeSnapshot NativeConfiguration::snapshot() const {

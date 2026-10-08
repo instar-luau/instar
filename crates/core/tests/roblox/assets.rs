@@ -185,7 +185,7 @@ fn cold_publishers_preserve_the_first_bundle_and_reader_snapshot() -> io::Result
                 .expect("release publisher");
 
             install(&target, replacement, &limits, Instant::now())?;
-            project.view.change(&target, Change::Disk(target.clone()));
+            project.view.invalidate(&target);
             project.load_assets(&target, Security::None)?;
 
             Ok(())
@@ -203,7 +203,7 @@ fn cold_publishers_preserve_the_first_bundle_and_reader_snapshot() -> io::Result
             .expect("both publishers cold");
 
         install(&cache, original, &options, Instant::now())?;
-        project.view.change(&cache, Change::Disk(cache.clone()));
+        project.view.invalidate(&cache);
         project.source(&metadata)?;
         publish.send(()).expect("release publisher");
         publisher.join().expect("asset publisher")?;

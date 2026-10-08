@@ -4,16 +4,25 @@ use std::{
     sync::Arc,
 };
 
-use instar_analysis::{Progress, process::Message};
+use instar_analysis::{Options, Progress, process::Message};
 
 use super::source::{Class, Declaration, Environment, Source};
 use crate::{boundary, protocol::Response};
 
-pub(crate) struct Cancellation(pub(crate) instar_analysis::Cancellation);
+pub(crate) struct Cancellation(
+    pub(crate) instar_analysis::Cancellation,
+    pub(crate) Option<Options>,
+);
 
 impl Cancellation {
     pub(crate) fn requested(&self) -> bool {
         self.0.requested()
+    }
+
+    pub(crate) fn started(&self) {
+        if let Some(options) = &self.1 {
+            options.report("configuration", 0, None, None);
+        }
     }
 }
 

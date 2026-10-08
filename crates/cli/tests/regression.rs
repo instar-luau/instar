@@ -357,7 +357,7 @@ fn mapped_lint_visits_every_placement_and_its_dependencies() -> io::Result<()> {
 
 #[test]
 fn concurrency_is_not_a_command_line_setting() -> io::Result<()> {
-    for operation in ["lint", "format", "check"] {
+    for operation in ["lint", "format", "server", "check"] {
         let help = Command::new(env!("CARGO_BIN_EXE_instar"))
             .args([operation, "--help"])
             .output()?;
@@ -367,7 +367,7 @@ fn concurrency_is_not_a_command_line_setting() -> io::Result<()> {
         assert!(!String::from_utf8_lossy(&help.stdout).contains("--jobs"));
     }
 
-    for operation in ["lint", "format", "check"] {
+    for operation in ["lint", "format", "server", "check"] {
         let output = Command::new(env!("CARGO_BIN_EXE_instar"))
             .args([operation, "--jobs", "1"])
             .output()?;

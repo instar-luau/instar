@@ -10,6 +10,7 @@ categories.workspace = true
 
 [dependencies]
 instar-analysis.workspace = true
+
 vermis.workspace = true
 
 [lints]

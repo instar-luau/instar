@@ -77,18 +77,34 @@ impl Completion {
 
 /// A clonable cancellation signal that can be raised from another thread.
 #[derive(Clone, Debug, Default)]
-pub struct Cancellation(Arc<AtomicBool>);
+pub struct Cancellation {
+    signal: Arc<AtomicBool>,
+    parent: Option<Arc<Self>>,
+}
 
 impl Cancellation {
+    /// Creates an independently cancellable signal that also observes this signal.
+    #[must_use]
+    pub fn child(&self) -> Self {
+        Self {
+            signal: Arc::default(),
+            parent: Some(Arc::new(self.clone())),
+        }
+    }
+
     /// Requests cancellation of analyses using this signal.
     pub fn cancel(&self) {
-        self.0.store(true, Ordering::Relaxed);
+        self.signal.store(true, Ordering::Relaxed);
     }
 
     /// Whether cancellation was requested.
     #[must_use]
     pub fn requested(&self) -> bool {
-        self.0.load(Ordering::Relaxed)
+        self.signal.load(Ordering::Relaxed)
+            || self
+                .parent
+                .as_ref()
+                .is_some_and(|parent| parent.requested())
     }
 }
 
@@ -98,8 +114,8 @@ pub struct Options {
     /// Total elapsed budget, including host preparation and declarations.
     ///
     /// Native analysis runs in an isolated worker that is terminated on interruption.
-    /// Host preparation checks cancellation between phases and during traversal;
-    /// individual parser and native configuration calls are not forcibly interrupted.
+    /// Host preparation checks cancellation between phases, during traversal, and at
+    /// configuration VM safepoints. Parsing, compilation, and allocation remain non-preemptible.
     pub timeout: Duration,
 
     /// Shared cancellation signal.

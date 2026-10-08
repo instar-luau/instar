@@ -11,6 +11,7 @@ categories.workspace = true
 [dependencies]
 instar-analysis.workspace = true
 instar-syntax.workspace = true
+
 regex.workspace = true
 schemars.workspace = true
 serde.workspace = true
