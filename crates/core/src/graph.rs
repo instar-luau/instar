@@ -197,13 +197,22 @@ impl Project {
         context: Option<&Identity>,
     ) -> io::Result<BTreeSet<Identity>> {
         let entry = self.links(source, context)?;
+
+        self.discovery(&entry.module, &BTreeSet::new())
+    }
+
+    pub(crate) fn discovery(
+        &mut self,
+        entry: &Module,
+        discovered: &BTreeSet<Identity>,
+    ) -> io::Result<BTreeSet<Identity>> {
         let mut seen = BTreeSet::new();
-        let mut pending = vec![entry.module.clone()];
+        let mut pending = vec![entry.clone()];
 
         while let Some(module) = pending.pop() {
             self.interrupted()?;
 
-            if !seen.insert(module.identity.clone()) {
+            if discovered.contains(&module.identity) || !seen.insert(module.identity.clone()) {
                 continue;
             }
 

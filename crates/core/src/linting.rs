@@ -187,7 +187,8 @@ impl Project {
                 .roots
                 .insert(native::name(&node.module.identity), node.module.clone());
 
-            identities.extend(self.discover(&source, entry.context.as_ref())?);
+            let discovered = self.discovery(&node.module, &identities)?;
+            identities.extend(discovered);
 
             options.report(
                 "Discovering dependencies",
@@ -242,6 +243,7 @@ impl Project {
         started: Instant,
     ) -> io::Result<BTreeMap<String, Vec<Inference>>> {
         let mut facts = BTreeMap::new();
+        let mut installed = BTreeSet::new();
 
         for module in analysis.roots.values() {
             if let Some(reason) = options.interrupted(started) {
@@ -250,7 +252,7 @@ impl Project {
                 return Ok(facts);
             }
 
-            self.install(&module.source, Some(&module.identity))?;
+            self.install(&module.source, Some(&module.identity), &mut installed)?;
         }
 
         self.lint_environments(analysis, result, options, started);
