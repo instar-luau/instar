@@ -1,5 +1,12 @@
 //! Native and Instar lint policies over shared contextual project sources.
-use std::{io, time::Duration};
+
+use std::{
+    io,
+    num::NonZeroUsize,
+    sync::{Arc, Mutex},
+    thread,
+    time::Duration,
+};
 
 use instar_analysis::{self as analysis, Completion, Options, Reason};
 
@@ -273,7 +280,16 @@ fn inferred_any_uses_native_types_and_per_module_selection() -> io::Result<()> {
         text: Some(include_str!("../fixtures/linting/inferred/replacement.luau").to_owned()),
     })?;
 
-    let nonstrict = project.lint(&[Entry::new(entry.clone())], &options())?;
+    let mut limits = options();
+    limits.jobs = NonZeroUsize::new(1);
+    let nonstrict = project.lint(&[Entry::new(entry.clone())], &limits)?;
+    limits.jobs = NonZeroUsize::new(4);
+
+    assert_eq!(
+        project.lint(&[Entry::new(entry.clone())], &limits)?,
+        nonstrict
+    );
+
     assert_eq!(nonstrict.completion, Completion::Complete);
     assert!(rule(&nonstrict, Rule::ImplicitAnyParameter));
 
@@ -438,7 +454,11 @@ fn source_updates_and_contexts_keep_exact_revision_identity() -> io::Result<()> 
         })
         .collect::<Vec<_>>();
 
-    let result = project.lint(&entries, &options())?;
+    let mut limits = options();
+    limits.jobs = NonZeroUsize::new(1);
+    let result = project.lint(&entries, &limits)?;
+    limits.jobs = NonZeroUsize::new(4);
+    assert_eq!(project.lint(&entries, &limits)?, result);
     assert_eq!(result.modules.len(), 2);
 
     let findings = result
@@ -456,9 +476,204 @@ fn source_updates_and_contexts_keep_exact_revision_identity() -> io::Result<()> 
         text: Some(include_str!("../fixtures/linting/source/replacement.luau").to_owned()),
     })?;
 
-    let updated = project.lint(&entries, &options())?;
+    let updated = project.lint(&entries, &limits)?;
     assert!(!rule(&updated, Rule::DivideByZero));
     assert_ne!(project.source(&entries[0].source)?.revision, revision);
+
+    Ok(())
+}
+
+#[test]
+fn syntax_jobs_preserve_order_and_coordinator_progress() -> io::Result<()> {
+    let directory = Directory::new(Some(include_str!("../fixtures/linting/shared/.luaurc")))?;
+
+    directory.file(
+        "instar.toml",
+        include_str!("../fixtures/linting/shared/instar.toml"),
+    )?;
+
+    directory.file("dependency.luau", "return 1")?;
+    directory.file("child/instar.toml", "[lint.divide_by_zero]\nlevel='allow'")?;
+    let mut entries = Vec::new();
+
+    for index in 0..8 {
+        let prefix = "do local value = 1 end\n".repeat((8 - index) * 16);
+
+        let source = format!(
+            "{prefix}local path='./dependency'\nlocal dependency=require(path)\nreturn 1/0"
+        );
+
+        entries.push(Entry::new(
+            directory.file(&format!("entry{index}.luau"), &source)?,
+        ));
+    }
+
+    entries.push(Entry::new(
+        directory.file("child/entry.luau", "return 1/0")?,
+    ));
+
+    let mut project = project();
+    let mut limits = options();
+    limits.jobs = NonZeroUsize::new(1);
+    let sequential = project.lint(&entries, &limits)?;
+    assert_eq!(sequential.completion, Completion::Complete);
+    assert_eq!(sequential.modules.len(), 10);
+    assert!(rule(&sequential, Rule::RestrictedModulePaths));
+
+    assert_eq!(
+        sequential
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.kind == Kind::Rule(Rule::DivideByZero))
+            .count(),
+        8
+    );
+
+    let progress = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&progress);
+    let coordinator = thread::current().id();
+    limits.jobs = NonZeroUsize::new(4);
+
+    limits.progress = Some(Arc::new(move |event| {
+        if event.phase == "Syntax linting" {
+            assert_eq!(thread::current().id(), coordinator);
+
+            recorded
+                .lock()
+                .expect("syntax progress")
+                .push((event.completed, event.total));
+        }
+    }));
+
+    assert_eq!(project.lint(&entries, &limits)?, sequential);
+    let progress = progress.lock().expect("syntax progress");
+    assert_eq!(progress.first(), Some(&(0, Some(10))));
+    assert_eq!(progress.last(), Some(&(10, Some(10))));
+    assert!(progress.windows(2).all(|events| events[0].0 <= events[1].0));
+
+    Ok(())
+}
+
+#[test]
+fn syntax_jobs_preserve_native_syntax_deduplication() -> io::Result<()> {
+    let directory = Directory::new(Some(include_str!("../fixtures/linting/native/strict.json")))?;
+
+    let entries = [
+        Entry::new(directory.file("first.luau", "local =")?),
+        Entry::new(directory.file("second.luau", "return (")?),
+    ];
+
+    let mut project = project();
+    let checked = project.check(&entries, &options())?;
+    let mut limits = options();
+    limits.jobs = NonZeroUsize::new(1);
+    let sequential = project.lint(&entries, &limits)?;
+    limits.jobs = NonZeroUsize::new(4);
+    assert_eq!(project.lint(&entries, &limits)?, sequential);
+
+    let mut expected = vec![Diagnostic {
+        location: analysis::Location {
+            module: checked.modules[0].clone(),
+            revision: project.source(&entries[0].source)?.revision,
+            range: [6, 7],
+        },
+        kind: Kind::Native {
+            code: 7,
+            name: "LocalUnused".to_owned(),
+        },
+        level: Level::Warn,
+        message: "Variable '%error-id%' is never used; prefix with '_' to silence".to_owned(),
+        related: Vec::new(),
+    }];
+
+    expected.extend(checked.diagnostics.into_iter().map(Diagnostic::from));
+    assert_eq!(sequential.diagnostics, expected);
+
+    Ok(())
+}
+
+#[test]
+fn syntax_jobs_stop_accepting_results_after_cancellation() -> io::Result<()> {
+    let directory = Directory::new(Some(include_str!("../fixtures/linting/shared/.luaurc")))?;
+    let mut entries = Vec::new();
+
+    for index in 0..8 {
+        entries.push(Entry::new(
+            directory.file(&format!("entry{index}.luau"), "return 1/0")?,
+        ));
+    }
+
+    let mut project = project();
+
+    for completed in [0, 1] {
+        let mut limits = options();
+        limits.jobs = NonZeroUsize::new(4);
+        let cancellation = limits.cancellation.clone();
+
+        limits.progress = Some(Arc::new(move |event| {
+            if event.phase == "Syntax linting" && event.completed == completed {
+                cancellation.cancel();
+            }
+        }));
+
+        let interrupted = project.lint(&entries, &limits)?;
+
+        assert_eq!(
+            interrupted.completion,
+            Completion::Incomplete(Reason::Cancelled)
+        );
+
+        assert_eq!(interrupted.modules.len(), 8);
+        assert_eq!(interrupted.diagnostics.len(), completed);
+
+        let mut retry = options();
+        retry.jobs = limits.jobs;
+        let recovered = project.lint(&entries, &retry)?;
+        assert_eq!(recovered.completion, Completion::Complete);
+        assert_eq!(recovered.diagnostics.len(), 8);
+    }
+
+    Ok(())
+}
+
+#[test]
+fn syntax_jobs_keep_the_elapsed_operation_budget() -> io::Result<()> {
+    let directory = Directory::new(Some(include_str!("../fixtures/linting/shared/.luaurc")))?;
+
+    let entries = [
+        Entry::new(directory.file("first.luau", "return 1/0")?),
+        Entry::new(directory.file("second.luau", "return 1/0")?),
+    ];
+
+    let mut project = project();
+
+    assert_eq!(
+        project.lint(&entries, &options())?.completion,
+        Completion::Complete
+    );
+
+    let mut limits = Options::new(Duration::from_secs(1));
+    limits.jobs = NonZeroUsize::new(4);
+    let reached = Arc::new(Mutex::new(false));
+    let observed = Arc::clone(&reached);
+    let timeout = limits.timeout;
+
+    limits.progress = Some(Arc::new(move |event| {
+        if event.phase == "Syntax linting" && event.completed == 0 {
+            *observed.lock().expect("syntax deadline") = true;
+            thread::sleep(timeout);
+        }
+    }));
+
+    let interrupted = project.lint(&entries, &limits)?;
+    assert!(*reached.lock().expect("syntax deadline"));
+
+    assert_eq!(
+        interrupted.completion,
+        Completion::Incomplete(Reason::Timeout)
+    );
+
+    assert_eq!(interrupted.diagnostics, Vec::new());
 
     Ok(())
 }

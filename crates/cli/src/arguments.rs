@@ -70,7 +70,7 @@ pub(crate) enum Analysis {
     #[command(about = "Lint source files and their dependencies")]
     Lint {
         files: Vec<PathBuf>,
-        #[arg(long)]
+        #[arg(long, help = "Maximum concurrent Instar syntax-lint jobs")]
         jobs: Option<NonZeroUsize>,
     },
 }

@@ -1,10 +1,13 @@
 //! Lint orchestration over shared sources, contextual resolution and native analysis.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     io,
+    num::NonZeroUsize,
     path::{Path, PathBuf},
     rc::Rc,
+    sync::{Mutex, mpsc},
+    thread,
     time::Instant,
 };
 
@@ -19,11 +22,93 @@ use crate::{
     native,
     project::{Project, Settings, absolute},
     resolve::{self, Request},
+    source::Document,
 };
 
 struct Module {
     node: Rc<Node>,
     settings: Rc<Settings>,
+}
+
+type Output = io::Result<lint::Result<Origin>>;
+type Task<'facts> = (Syntax<'facts>, mpsc::SyncSender<Output>);
+
+struct Syntax<'facts> {
+    origin: Origin,
+    document: Document,
+    configuration: lint::Configuration,
+    globals: Vec<String>,
+    roblox: bool,
+    requires: Vec<Require>,
+    inferred: Option<&'facts [Inference]>,
+}
+
+impl<'facts> Syntax<'facts> {
+    fn new(module: &Module, inferred: Option<&'facts [Inference]>) -> Self {
+        Self {
+            origin: Origin::Module(module.node.module.clone()),
+            document: module.node.document.clone(),
+            configuration: module.settings.configuration.lint.clone(),
+            globals: module.settings.snapshot.globals.clone(),
+            roblox: module.settings.configuration.roblox.enabled == Some(true),
+            requires: module
+                .node
+                .sites
+                .iter()
+                .map(|site| Require {
+                    call: site.call,
+                    argument: site.range,
+                    constant: site.request.is_some(),
+                    path: match &site.request {
+                        Some(Request::String(path)) => Some(path.clone()),
+                        _ => None,
+                    },
+                })
+                .collect(),
+            inferred,
+        }
+    }
+
+    fn lint(self, options: &Options, started: Instant) -> io::Result<lint::Result<Origin>> {
+        lint::lint(
+            self.origin,
+            &Source {
+                text: &self.document.text,
+                revision: self.document.revision,
+                configuration: &self.configuration,
+                globals: &self.globals,
+                roblox: self.roblox,
+                requires: &self.requires,
+                inferred: self.inferred,
+            },
+            &options.remaining(started),
+        )
+    }
+
+    fn dispatch(
+        self,
+        dispatch: &mpsc::SyncSender<Task<'facts>>,
+    ) -> io::Result<mpsc::Receiver<Output>> {
+        let (send, results) = mpsc::sync_channel(1);
+
+        dispatch
+            .send((self, send))
+            .map_err(|_| io::Error::other("syntax lint worker stopped"))?;
+
+        Ok(results)
+    }
+
+    fn worker(receive: &Mutex<mpsc::Receiver<Task<'facts>>>, options: &Options, started: Instant) {
+        loop {
+            let Ok((syntax, send)) = receive.lock().expect("syntax dispatch lock").recv() else {
+                break;
+            };
+
+            if send.send(syntax.lint(options, started)).is_err() {
+                break;
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -44,10 +129,13 @@ impl Project {
     /// declarations when no native warning or inferred-type rule is requested.
     /// Roblox environments load the configured generated asset bundle.
     /// Native analysis is isolated in a cancellable worker process.
+    /// Syntax linting uses `Options.jobs`, defaulting to at most four workers,
+    /// limited by available parallelism.
     /// No fixes are executed.
     ///
     /// # Errors
-    /// Returns host source/configuration failures or invalid host/native agreement.
+    /// Returns host source/configuration or syntax-worker failures, or invalid
+    /// host/native agreement.
     pub fn lint(
         &mut self,
         entries: &[Entry],
@@ -349,83 +437,151 @@ impl Analysis {
         options: &Options,
         started: Instant,
     ) -> io::Result<()> {
-        for (completed, (name, module)) in self.modules.iter().enumerate() {
-            if let Some(reason) = options.interrupted(started) {
-                result.completion = Completion::Incomplete(reason);
+        let jobs = options
+            .jobs
+            .map_or_else(
+                || thread::available_parallelism().map_or(1, |jobs| jobs.get().min(4)),
+                NonZeroUsize::get,
+            )
+            .min(self.modules.len());
 
-                return Ok(());
-            }
+        let window = if jobs > 1 {
+            jobs.saturating_mul(2).min(self.modules.len())
+        } else {
+            0
+        };
 
-            options.report(
-                "Syntax linting",
-                completed,
-                Some(self.modules.len()),
-                Some(&module.node.module.source.to_string_lossy()),
-            );
+        let (dispatch, receive) = mpsc::sync_channel::<Task<'_>>(window);
+        let receive = Mutex::new(receive);
 
-            let requires = module
-                .node
-                .sites
-                .iter()
-                .map(|site| Require {
-                    call: site.call,
-                    argument: site.range,
-                    constant: site.request.is_some(),
-                    path: match &site.request {
-                        Some(Request::String(path)) => Some(path.clone()),
-                        _ => None,
-                    },
-                })
-                .collect::<Vec<_>>();
+        thread::scope(|scope| {
+            let mut pending = VecDeque::new();
+            let mut handles = Vec::new();
 
-            let inferred = facts.get(name).map(Vec::as_slice);
+            let mut outcome = (|| -> io::Result<()> {
+                if jobs > 1 {
+                    for worker in 0..jobs {
+                        let receive = &receive;
 
-            let syntax = lint::lint(
-                Origin::Module(module.node.module.clone()),
-                &Source {
-                    text: &module.node.document.text,
-                    revision: module.node.document.revision,
-                    configuration: &module.settings.configuration.lint,
-                    globals: &module.settings.snapshot.globals,
-                    roblox: module.settings.configuration.roblox.enabled == Some(true),
-                    requires: &requires,
-                    inferred,
-                },
-                &options.remaining(started),
-            )?;
-
-            result.completion = result.completion.combine(syntax.completion);
-
-            let native_syntax = self.report.diagnostics.iter().any(|existing| {
-                matches!(existing.kind, analysis::Kind::Syntax { .. })
-                    && existing.location.module == Origin::Module(module.node.module.clone())
-            });
-
-            for diagnostic in syntax.diagnostics {
-                if matches!(
-                    diagnostic.kind,
-                    Kind::Analysis(analysis::Kind::Syntax { .. })
-                ) && native_syntax
-                {
-                    continue;
+                        handles.push(
+                            thread::Builder::new()
+                                .name(format!("syntax-{worker}"))
+                                .spawn_scoped(scope, move || {
+                                    Syntax::worker(receive, options, started);
+                                })?,
+                        );
+                    }
                 }
 
-                if !result.diagnostics.contains(&diagnostic) {
-                    result.diagnostics.push(diagnostic);
+                let mut modules = self.modules.iter();
+
+                for (name, module) in modules.by_ref().take(window) {
+                    if options.interrupted(started).is_some() {
+                        break;
+                    }
+
+                    pending.push_back(
+                        Syntax::new(module, facts.get(name).map(Vec::as_slice))
+                            .dispatch(&dispatch)?,
+                    );
+                }
+
+                for (completed, (name, module)) in self.modules.iter().enumerate() {
+                    if let Some(reason) = options.interrupted(started) {
+                        result.completion = Completion::Incomplete(reason);
+
+                        return Ok(());
+                    }
+
+                    options.report(
+                        "Syntax linting",
+                        completed,
+                        Some(self.modules.len()),
+                        Some(&module.node.module.source.to_string_lossy()),
+                    );
+
+                    if let Some(reason) = options.interrupted(started) {
+                        result.completion = Completion::Incomplete(reason);
+
+                        return Ok(());
+                    }
+
+                    let syntax = if jobs <= 1 {
+                        Syntax::new(module, facts.get(name).map(Vec::as_slice))
+                            .lint(options, started)?
+                    } else {
+                        pending
+                            .pop_front()
+                            .expect("ordered syntax result")
+                            .recv()
+                            .map_err(|_| io::Error::other("syntax lint worker stopped"))??
+                    };
+
+                    let completion = syntax.completion;
+                    self.syntax_result(module, syntax, result);
+
+                    if completion == Completion::Complete {
+                        options.report(
+                            "Syntax linting",
+                            completed + 1,
+                            Some(self.modules.len()),
+                            Some(&module.node.module.source.to_string_lossy()),
+                        );
+                    }
+
+                    if jobs > 1
+                        && options.interrupted(started).is_none()
+                        && let Some((name, module)) = modules.next()
+                    {
+                        pending.push_back(
+                            Syntax::new(module, facts.get(name).map(Vec::as_slice))
+                                .dispatch(&dispatch)?,
+                        );
+                    }
+                }
+
+                Ok(())
+            })();
+
+            drop(dispatch);
+            drop(pending);
+
+            for handle in handles {
+                if handle.join().is_err() && outcome.is_ok() {
+                    outcome = Err(io::Error::other("syntax lint worker panicked"));
                 }
             }
 
-            if syntax.completion == Completion::Complete {
-                options.report(
-                    "Syntax linting",
-                    completed + 1,
-                    Some(self.modules.len()),
-                    Some(&module.node.module.source.to_string_lossy()),
-                );
+            outcome
+        })
+    }
+
+    fn syntax_result(
+        &self,
+        module: &Module,
+        syntax: lint::Result<Origin>,
+        result: &mut lint::Result<Origin>,
+    ) {
+        result.completion = result.completion.combine(syntax.completion);
+
+        let native_syntax = self.report.diagnostics.iter().any(|existing| {
+            matches!(existing.kind, analysis::Kind::Syntax { .. })
+                && existing.location.module == Origin::Module(module.node.module.clone())
+        });
+
+        for diagnostic in syntax.diagnostics {
+            if matches!(
+                diagnostic.kind,
+                Kind::Analysis(analysis::Kind::Syntax { .. })
+            ) && native_syntax
+            {
+                continue;
+            }
+
+            if !result.diagnostics.contains(&diagnostic) {
+                result.diagnostics.push(diagnostic);
             }
         }
-
-        Ok(())
     }
 
     fn native(

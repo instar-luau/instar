@@ -281,23 +281,42 @@ fn mapped_lint_visits_every_placement_and_its_dependencies() -> io::Result<()> {
         include_str!("fixtures/mapping/sourcemap.json"),
     )?;
 
-    for stdin in [false, true] {
+    let mut sequential = None;
+
+    for (stdin, jobs) in [(false, "1"), (false, "4"), (true, "1"), (true, "4")] {
         let output = if stdin {
             input(
                 directory.path(),
-                &["--json", "--stdin-filepath", "shared.luau", "lint", "-"],
+                &[
+                    "--json",
+                    "--stdin-filepath",
+                    "shared.luau",
+                    "lint",
+                    "--jobs",
+                    jobs,
+                    "-",
+                ],
                 source.as_bytes(),
             )?
         } else {
             Command::new(env!("CARGO_BIN_EXE_instar"))
                 .current_dir(directory.path())
-                .args(["--json", "--color", "never", "lint", "shared.luau"])
+                .args(["--json", "--color", "never", "lint"])
+                .args(["--jobs", jobs])
+                .arg("shared.luau")
                 .output()?
         };
 
         assert!(output.status.success(), "{output:?}");
         assert!(output.stderr.is_empty(), "{output:?}");
         let report: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+
+        if jobs == "1" {
+            sequential = Some(report.clone());
+        } else {
+            assert_eq!(Some(&report), sequential.as_ref());
+        }
+
         assert_eq!(report["completion"], "Complete");
         let diagnostics = report["diagnostics"].as_array().expect("diagnostics");
 

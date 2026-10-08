@@ -103,7 +103,7 @@ pub struct Options {
     /// individual parser and native configuration calls are not forcibly interrupted.
     pub timeout: Duration,
 
-    /// Maximum concurrent analysis jobs; absent uses the service default.
+    /// Maximum concurrent formatting or syntax-lint jobs; absent uses the service default.
     pub jobs: Option<NonZeroUsize>,
 
     /// Shared cancellation signal.
