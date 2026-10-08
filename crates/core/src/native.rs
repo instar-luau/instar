@@ -15,7 +15,8 @@ use instar_bridge::frontend::{Frontend, Link, Site};
 use crate::{
     analysis::Origin,
     environment::Environment,
-    project::Project,
+    graph::Node,
+    project::{Project, Settings},
     resolve::{Identity, Module},
 };
 
@@ -77,28 +78,7 @@ impl Project {
 
                 let settings = self.configuration(directory)?;
 
-                let sites = node
-                    .sites
-                    .iter()
-                    .map(|site| Site {
-                        call: site.call,
-                        argument: site.range,
-                        static_request: site.request.is_some(),
-                        target: site.target.as_ref().map(|target| name(&target.identity)),
-                    })
-                    .collect::<Vec<_>>();
-
-                let name = name(identity);
-
-                frontend.insert(
-                    &name,
-                    Arc::clone(&node.document.text),
-                    node.document.revision,
-                    &settings.native,
-                    &sites,
-                )?;
-
-                frontend.flags(&name, &settings.flags)?;
+                register(&node, &settings, &mut frontend)?;
             }
 
             installed.extend(identities);
@@ -138,6 +118,35 @@ impl Project {
 #[must_use]
 pub fn name(identity: &Identity) -> String {
     format!("{identity:?}")
+}
+
+pub(crate) fn register(
+    node: &Node,
+    settings: &Settings,
+    frontend: &mut Frontend,
+) -> io::Result<()> {
+    let sites = node
+        .sites
+        .iter()
+        .map(|site| Site {
+            call: site.call,
+            argument: site.range,
+            static_request: site.request.is_some(),
+            target: site.target.as_ref().map(|target| name(&target.identity)),
+        })
+        .collect::<Vec<_>>();
+
+    let name = name(&node.module.identity);
+
+    frontend.insert(
+        &name,
+        Arc::clone(&node.document.text),
+        node.document.revision,
+        &settings.native,
+        &sites,
+    )?;
+
+    frontend.flags(&name, &settings.flags)
 }
 
 pub(crate) fn definitions(

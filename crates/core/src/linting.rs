@@ -21,7 +21,7 @@ use crate::{
     graph::Node,
     native,
     project::{Project, Settings, absolute},
-    resolve::{self, Request},
+    resolve::Request,
     source::Document,
 };
 
@@ -113,7 +113,7 @@ impl<'facts> Syntax<'facts> {
 
 #[derive(Default)]
 struct Analysis {
-    roots: BTreeMap<String, resolve::Module>,
+    roots: BTreeSet<String>,
     report: Report,
     modules: BTreeMap<String, Module>,
     environments: BTreeMap<String, Rc<Environment>>,
@@ -274,9 +274,7 @@ impl Project {
 
             let node = self.links(&source, entry.context.as_ref())?;
 
-            analysis
-                .roots
-                .insert(native::name(&node.module.identity), node.module.clone());
+            analysis.roots.insert(native::name(&node.module.identity));
 
             let discovered = self.discovery(&node.module, &identities)?;
             identities.extend(discovered);
@@ -334,17 +332,29 @@ impl Project {
         started: Instant,
     ) -> io::Result<BTreeMap<String, Vec<Inference>>> {
         let mut facts = BTreeMap::new();
-        let mut installed = BTreeSet::new();
+        let registration = Instant::now();
+        let modules = analysis.modules.len();
+        let mut frontend = self.frontend.take().unwrap_or_default();
 
-        for module in analysis.roots.values() {
-            if let Some(reason) = options.interrupted(started) {
-                result.completion = Completion::Incomplete(reason);
-
-                return Ok(facts);
+        let registered = (|| {
+            for module in analysis.modules.values() {
+                self.interrupted()?;
+                native::register(&module.node, &module.settings, &mut frontend)?;
             }
 
-            self.install(&module.source, Some(&module.identity), &mut installed)?;
-        }
+            Ok::<(), io::Error>(())
+        })();
+
+        self.frontend = Some(frontend);
+
+        tracing::debug!(
+            elapsed_seconds = registration.elapsed().as_secs_f64(),
+            modules,
+            success = registered.is_ok(),
+            "Native registration completed"
+        );
+
+        registered?;
 
         self.lint_environments(analysis, result, options, started);
 
@@ -370,7 +380,7 @@ impl Project {
             return Ok(facts);
         }
 
-        let roots = analysis.roots.keys().cloned().collect::<Vec<_>>();
+        let roots = analysis.roots.iter().cloned().collect::<Vec<_>>();
         let limits = native::progress(&result.modules, options).remaining(started);
 
         let native = if semantic.is_empty() {
