@@ -800,3 +800,141 @@ fn native_analysis_identity_survives_lint_conversion() -> io::Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn runtime_member_requires_preserve_lint_rules_and_static_failures() -> io::Result<()> {
+    let directory = Directory::new(Some(include_str!("../fixtures/linting/shared/.luaurc")))?;
+
+    directory.file("instar.toml", "[roblox]\nenabled=true\n")?;
+
+    directory.file(
+        "sourcemap.json",
+        include_str!("../fixtures/lifecycle/reference/sourcemap.json"),
+    )?;
+
+    let source = "require(script.Parent.Reference.Value)\nrequire(script.Parent.Model.PrimaryPart)\nreturn 1/0";
+    let entry = directory.file("caller.luau", source)?;
+    let entries = [Entry::new(entry.clone())];
+    let mut project = project();
+
+    for configuration in [
+        include_str!("../fixtures/linting/shared/.luaurc"),
+        include_str!("../fixtures/linting/conversion/strict.json"),
+    ] {
+        project.change(Change::Overlay {
+            path: directory.path().join(".luaurc"),
+            text: Some(configuration.to_owned()),
+        })?;
+
+        let linted = project.lint(&entries, &options())?;
+        assert_eq!(linted.completion, Completion::Complete);
+        assert!(rule(&linted, Rule::DivideByZero));
+
+        assert!(!linted.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic.kind,
+            Kind::Analysis(analysis::Kind::Resolution { .. } | analysis::Kind::Type { .. })
+        )));
+
+        let checked = project.check(&entries, &options())?;
+        assert_eq!(checked.completion, Completion::Complete);
+
+        assert_eq!(
+            checked
+                .diagnostics
+                .iter()
+                .filter(
+                    |diagnostic| matches!(diagnostic.kind, analysis::Kind::Resolution { .. })
+                        && diagnostic.message.contains("runtime member")
+                )
+                .count(),
+            2
+        );
+
+        assert_eq!(project.lint(&entries, &options())?, linted);
+    }
+
+    project.change(Change::Overlay {
+        path: directory.path().join("instar.toml"),
+        text: Some("[roblox]\nenabled=true\n[lint.non_const_require]\nlevel='warn'\n".to_owned()),
+    })?;
+
+    let configured = project.lint(&entries, &options())?;
+
+    assert_eq!(
+        configured
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.kind == Kind::Rule(Rule::NonConstRequire))
+            .count(),
+        2
+    );
+
+    project.change(Change::Overlay {
+        path: entry.clone(),
+        text: Some(format!("require('./missing')\n{source}")),
+    })?;
+
+    let missing = project.lint(&entries, &options())?;
+    assert_eq!(missing.completion, Completion::Complete);
+    assert!(rule(&missing, Rule::DivideByZero));
+    assert!(rule(&missing, Rule::NonConstRequire));
+
+    let failures = missing
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            matches!(
+                diagnostic.kind,
+                Kind::Analysis(analysis::Kind::Resolution { .. })
+            )
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(failures.len(), 1);
+
+    assert_eq!(
+        &project.source(&entry)?.text[failures[0].location.range[0]..failures[0].location.range[1]],
+        "'./missing'"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn source_type_errors_stay_with_check_while_lint_findings_remain() -> io::Result<()> {
+    let directory = Directory::new(Some(include_str!(
+        "../fixtures/linting/conversion/strict.json"
+    )))?;
+
+    let entry = directory.file(
+        "entry.luau",
+        "local number: number = 'bad'\nreturn number/0",
+    )?;
+
+    let entries = [Entry::new(entry)];
+    let mut project = project();
+    let linted = project.lint(&entries, &options())?;
+    assert_eq!(linted.completion, Completion::Complete);
+    assert!(rule(&linted, Rule::DivideByZero));
+
+    assert!(
+        !linted.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic.kind,
+            Kind::Analysis(analysis::Kind::Type { .. })
+        ))
+    );
+
+    let checked = project.check(&entries, &options())?;
+    assert_eq!(checked.completion, Completion::Complete);
+
+    assert!(
+        checked
+            .diagnostics
+            .iter()
+            .any(|diagnostic| matches!(diagnostic.kind, analysis::Kind::Type { .. }))
+    );
+
+    assert_eq!(project.lint(&entries, &options())?, linted);
+
+    Ok(())
+}

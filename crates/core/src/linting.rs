@@ -132,6 +132,8 @@ impl Project {
     /// Syntax linting uses `Options.jobs`, defaulting to at most four workers,
     /// limited by available parallelism.
     /// No fixes are executed.
+    /// Expected runtime member requires follow configured lint rules. Static resolution,
+    /// syntax, declaration environment and analysis failures remain explicit diagnostics.
     ///
     /// # Errors
     /// Returns host source/configuration or syntax-worker failures, or invalid
@@ -150,6 +152,7 @@ impl Project {
         };
 
         let mut analysis = Analysis::default();
+        analysis.report.lint = true;
 
         let preparation = self.during(
             |project| project.lint_sources(entries, &mut analysis, &mut result, options, started),

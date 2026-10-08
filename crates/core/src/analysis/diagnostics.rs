@@ -8,10 +8,12 @@ use crate::{graph::Node, native, source::Document};
 struct Resolution {
     location: Location<Origin>,
     call: [usize; 2],
+    runtime: bool,
 }
 
 #[derive(Default)]
 pub(crate) struct Report {
+    pub(crate) lint: bool,
     pub(crate) sources: BTreeMap<String, (Origin, Document)>,
     pub(crate) diagnostics: Vec<Diagnostic<Origin>>,
     resolutions: Vec<Resolution>,
@@ -34,10 +36,17 @@ impl Report {
                     range: site.range,
                 };
 
+                let runtime = failure.kind == io::ErrorKind::Unsupported && site.request.is_none();
+
                 self.resolutions.push(Resolution {
                     location: location.clone(),
                     call: site.call,
+                    runtime,
                 });
+
+                if runtime && self.lint {
+                    continue;
+                }
 
                 self.record(Diagnostic {
                     location,
@@ -96,22 +105,27 @@ impl Report {
                     && resolution.location.revision == location.revision
                     && overlaps
             })
-            && let Some(existing) = self.diagnostics.iter_mut().find(|existing| {
-                matches!(existing.kind, Kind::Resolution { .. })
-                    && existing.location == resolution.location
-            })
         {
-            existing.kind = Kind::Resolution {
-                code: code.or(existing.kind.native_code()),
-            };
-
-            for related in related {
-                if !existing.related.contains(&related) {
-                    existing.related.push(related);
-                }
+            if resolution.runtime && self.lint {
+                return Ok(());
             }
 
-            return Ok(());
+            if let Some(existing) = self.diagnostics.iter_mut().find(|existing| {
+                matches!(existing.kind, Kind::Resolution { .. })
+                    && existing.location == resolution.location
+            }) {
+                existing.kind = Kind::Resolution {
+                    code: code.or(existing.kind.native_code()),
+                };
+
+                for related in related {
+                    if !existing.related.contains(&related) {
+                        existing.related.push(related);
+                    }
+                }
+
+                return Ok(());
+            }
         }
 
         if matches!(diagnostic.kind, Kind::Syntax { code: Some(_) }) {
