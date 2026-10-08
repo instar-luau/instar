@@ -1,7 +1,5 @@
 #include "diagnostics.hpp"
 
-#include <stdexcept>
-
 namespace instar::frontend {
     size_t offset(const Host &host, const std::string &name, Luau::Position position) {
         return host.offset(name, position.line, position.column);
@@ -26,14 +24,8 @@ namespace instar::frontend {
     }
 
     NativeLocation location(const Host &host, const Luau::ModuleName &name, Luau::Location range) {
-        const NativeDocument source = host.read_document(name);
-
-        if (!source.found) {
-            throw std::runtime_error("native diagnostic source is unavailable: " + name);
-        }
-
         return NativeLocation{rust::String(name),
-            source.revision,
+            host.revision(name),
             offset(host, name, range.begin),
             offset(host, name, range.end)};
     }

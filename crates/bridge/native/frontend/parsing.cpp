@@ -55,7 +55,7 @@ namespace instar::frontend {
         size_t completed = 0;
 
         for (const std::string &name : modules) {
-            const NativeSource source = host.read_source(name);
+            const NativeModule source = host.read_module(name);
             Luau::SourceModule *module = frontend.getSourceModule(name);
             const auto node = frontend.sourceNodes.find(name);
 

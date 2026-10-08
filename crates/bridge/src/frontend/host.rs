@@ -154,6 +154,20 @@ impl Host {
         }
     }
 
+    pub(crate) fn revision(&self, name: &str) -> io::Result<u64> {
+        self.sources
+            .get(name)
+            .map(|source| source.revision)
+            .or_else(|| {
+                self.declarations
+                    .get(name)
+                    .map(|declaration| declaration.revision)
+            })
+            .ok_or_else(|| {
+                io::Error::other(format!("native diagnostic source is unavailable: {name}"))
+            })
+    }
+
     pub(crate) fn offset(&self, name: &str, line: usize, column: usize) -> io::Result<usize> {
         let (text, lines) = self
             .sources
@@ -182,24 +196,44 @@ impl Host {
             .is_some_and(|source| source.sites.iter().any(|site| site.call == [start, end]))
     }
 
+    pub(crate) fn read_module(&self, name: &str) -> boundary::NativeModule {
+        let Some(source) = self.sources.get(name) else {
+            let declaration = self.declarations.get(name);
+
+            return boundary::NativeModule {
+                found: declaration.is_some(),
+                revision: declaration.map_or(0, |declaration| declaration.revision),
+                sites: Vec::new(),
+            };
+        };
+
+        boundary::NativeModule {
+            found: true,
+            revision: source.revision,
+            sites: source
+                .sites
+                .iter()
+                .map(|site| boundary::NativeSite {
+                    call_start: site.call[0],
+                    call_end: site.call[1],
+                    argument_start: site.argument[0],
+                    argument_end: site.argument[1],
+                    static_request: site.static_request,
+                    target: site.target.clone().unwrap_or_default(),
+                })
+                .collect(),
+        }
+    }
+
     pub(crate) fn read_source(&self, name: &str) -> boundary::NativeSource {
         let Some(source) = self.sources.get(name) else {
-            let document = self.read_document(name);
-
             return boundary::NativeSource {
-                found: document.found,
-                text: document.text,
-                revision: document.revision,
-                sites: Vec::new(),
                 definitions: Vec::new(),
                 classes: Vec::new(),
             };
         };
 
         boundary::NativeSource {
-            found: true,
-            text: source.text.to_string(),
-            revision: source.revision,
             classes: source
                 .environment
                 .into_iter()
@@ -230,18 +264,6 @@ impl Host {
                         namespace: binding.namespace.clone(),
                         revision: declaration.revision,
                     }
-                })
-                .collect(),
-            sites: source
-                .sites
-                .iter()
-                .map(|site| boundary::NativeSite {
-                    call_start: site.call[0],
-                    call_end: site.call[1],
-                    argument_start: site.argument[0],
-                    argument_end: site.argument[1],
-                    static_request: site.static_request,
-                    target: site.target.clone().unwrap_or_default(),
                 })
                 .collect(),
         }

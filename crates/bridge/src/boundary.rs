@@ -1,8 +1,8 @@
 pub(super) use native::{
     NativeAlias, NativeCheck, NativeClass, NativeCompletion, NativeConfiguration, NativeDefinition,
     NativeDiagnostic, NativeDocument, NativeFact, NativeFactKind, NativeFlag, NativeFrontend,
-    NativeKind, NativeLink, NativeLint, NativeLintResult, NativeLocation, NativeProperty,
-    NativeSite, NativeSnapshot, NativeSource, apply_flags, create, create_frontend,
+    NativeKind, NativeLink, NativeLint, NativeLintResult, NativeLocation, NativeModule,
+    NativeProperty, NativeSite, NativeSnapshot, NativeSource, apply_flags, create, create_frontend,
     normalize_flags,
 };
 
@@ -52,11 +52,13 @@ mod native {
         revision: u64,
     }
 
-    struct NativeSource {
+    struct NativeModule {
         found: bool,
-        text: String,
         revision: u64,
         sites: Vec<NativeSite>,
+    }
+
+    struct NativeSource {
         definitions: Vec<NativeDefinition>,
         classes: Vec<NativeClass>,
     }
@@ -175,8 +177,10 @@ mod native {
             completed: usize,
             total: usize,
         ) -> Result<()>;
+        fn read_module(self: &Host, name: &str) -> NativeModule;
         fn read_source(self: &Host, name: &str) -> NativeSource;
         fn read_document(self: &Host, name: &str) -> NativeDocument;
+        fn revision(self: &Host, name: &str) -> Result<u64>;
         fn offset(self: &Host, name: &str, line: usize, column: usize) -> Result<usize>;
         fn require(self: &Host, name: &str, start: usize, end: usize) -> bool;
         fn resolve(self: &Host, name: &str, start: usize, end: usize) -> String;
