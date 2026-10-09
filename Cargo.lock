@@ -881,7 +881,6 @@ dependencies = [
  "console",
  "eyre",
  "glob",
- "ignore",
  "indicatif",
  "instar-analysis",
  "instar-bridge",
@@ -903,6 +902,7 @@ version = "0.1.0"
 dependencies = [
  "dirs",
  "glob",
+ "ignore",
  "instar-analysis",
  "instar-bridge",
  "instar-format",

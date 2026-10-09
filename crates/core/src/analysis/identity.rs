@@ -4,9 +4,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use instar_analysis::{Location, error::invalid};
+use instar_analysis::{Location, Options, error::invalid};
 
 use crate::{
+    project::Project,
     resolve::{Identity, Module},
     source::Document,
 };
@@ -32,7 +33,7 @@ impl Entry {
     }
 }
 
-/// The exact source owner of an analysis diagnostic.
+/// The exact source owner of an analysis location.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Origin {
     /// A module in the Rust-owned graph, retaining its contextual identity.
@@ -53,13 +54,39 @@ impl Origin {
     }
 }
 
+impl Project {
+    /// Expands source paths into every mapped analysis context.
+    ///
+    /// # Errors
+    /// Returns source, configuration, resolution, or interruption failures.
+    pub fn entries(&mut self, paths: &[PathBuf], options: &Options) -> io::Result<Vec<Entry>> {
+        self.during(
+            |project| {
+                let mut entries = Vec::new();
+
+                for path in paths {
+                    project.interrupted()?;
+
+                    entries.extend(project.contexts(path)?.into_iter().map(|module| Entry {
+                        source: module.source,
+                        context: Some(module.identity),
+                    }));
+                }
+
+                Ok(entries)
+            },
+            options,
+        )
+    }
+}
+
 pub(crate) fn locate(
     location: &Location<String>,
     sources: &BTreeMap<String, (Origin, Document)>,
 ) -> io::Result<Location<Origin>> {
     let (origin, document) = sources
         .get(&location.module)
-        .ok_or_else(|| invalid("native diagnostic has an unknown host identity"))?;
+        .ok_or_else(|| invalid("native location has an unknown host identity"))?;
 
     if document.revision != location.revision
         || location.range[0] > location.range[1]
@@ -68,7 +95,7 @@ pub(crate) fn locate(
         || !document.text.is_char_boundary(location.range[1])
     {
         return Err(invalid(
-            "native diagnostic is not anchored to its host revision",
+            "native location is not anchored to its host revision",
         ));
     }
 

@@ -84,6 +84,22 @@ impl Snapshot {
             })
     }
 
+    pub(crate) fn sources(&self) -> impl Iterator<Item = &Path> {
+        self.inputs
+            .iter()
+            .filter(|(_, input)| matches!(input.as_ref(), Input::Overlay(Some(_))))
+            .map(|(path, _)| path.as_path())
+    }
+
+    pub(crate) fn children(&self, path: &Path) -> BTreeSet<PathBuf> {
+        self.inputs
+            .iter()
+            .filter(|(_, input)| matches!(input.as_ref(), Input::Overlay(Some(_))))
+            .filter_map(|(file, _)| file.strip_prefix(path).ok()?.components().next())
+            .map(|component| path.join(component))
+            .collect()
+    }
+
     pub(crate) fn directory(&self, path: &Path) -> bool {
         self.inputs.iter().any(|(file, input)| {
             matches!(input.as_ref(), Input::Overlay(Some(_)))

@@ -17,6 +17,7 @@ instar-syntax.workspace = true
 
 dirs = "7"
 glob.workspace = true
+ignore = "0.4"
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

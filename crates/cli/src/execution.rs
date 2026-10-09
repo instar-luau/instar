@@ -11,10 +11,7 @@ use codespan_reporting::term::termcolor::ColorChoice;
 use eyre::{Result, WrapErr, ensure};
 use instar_analysis::{Completion, Options, Reason, process};
 
-use instar_core::{
-    analysis::{Entry, Origin},
-    project::Project,
-};
+use instar_core::{analysis::Origin, project::Project};
 
 use instar_format::{Configuration, Formatter};
 
@@ -104,7 +101,7 @@ pub(crate) fn run(arguments: &Arguments, command: &Analysis) -> Result<bool> {
         }
 
         Analysis::Check { .. } => {
-            let entries = entries(paths, &mut project, &options, started)?;
+            let entries = project.entries(&paths, &options.remaining(started))?;
             reporter.phase("Checking", None)?;
 
             let result = project.check(&entries, &options.remaining(started))?;
@@ -125,7 +122,7 @@ pub(crate) fn run(arguments: &Arguments, command: &Analysis) -> Result<bool> {
         }
 
         Analysis::Lint { .. } => {
-            let entries = entries(paths, &mut project, &options, started)?;
+            let entries = project.entries(&paths, &options.remaining(started))?;
             reporter.phase("Linting", None)?;
 
             let result = project.lint(&entries, &options.remaining(started))?;
@@ -154,26 +151,6 @@ pub(crate) fn run(arguments: &Arguments, command: &Analysis) -> Result<bool> {
 
     Ok(!reporter.failed
         && (!matches!(command, Analysis::Format { check: true, .. }) || changed.is_empty()))
-}
-
-fn entries(
-    paths: Vec<PathBuf>,
-    project: &mut Project,
-    options: &Options,
-    started: Instant,
-) -> Result<Vec<Entry>> {
-    let mut entries = Vec::new();
-
-    for path in paths {
-        options.check(started)?;
-
-        entries.extend(project.contexts(&path)?.into_iter().map(|module| Entry {
-            source: module.source,
-            context: Some(module.identity),
-        }));
-    }
-
-    Ok(entries)
 }
 
 fn prepare(

@@ -4,6 +4,7 @@ pub mod analysis;
 pub(crate) mod assets;
 mod checking;
 pub mod configuration;
+pub mod discovery;
 pub mod documentation;
 pub(crate) mod environment;
 pub(crate) mod extract;

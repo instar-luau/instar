@@ -10,7 +10,11 @@ use std::{
 
 use eyre::{Result, WrapErr, ensure};
 use instar_analysis::Options;
-use instar_core::project::{Change, Project};
+
+use instar_core::{
+    discovery,
+    project::{Change, Project},
+};
 
 pub(crate) fn load(
     files: &[PathBuf],
@@ -179,29 +183,19 @@ fn walk(
     options: &Options,
     started: Instant,
 ) -> Result<()> {
-    for entry in ignore::WalkBuilder::new(root).require_git(false).build() {
+    for path in discovery::files(root, &options.remaining(started))? {
         options.check(started)?;
-        let entry = entry?;
 
-        if !entry.file_type().is_some_and(|kind| kind.is_file()) {
-            continue;
-        }
-
-        let path = entry.path();
-
-        if matches!(
-            path.extension().and_then(|extension| extension.to_str()),
-            Some("lua" | "luau")
-        ) && pattern.is_none_or(|pattern| {
+        if pattern.is_none_or(|pattern| {
             pattern.matches_path_with(
-                path,
+                &path,
                 glob::MatchOptions {
                     require_literal_separator: true,
                     ..glob::MatchOptions::new()
                 },
             )
         }) {
-            selected.insert(path.to_owned());
+            selected.insert(path);
         }
     }
 
