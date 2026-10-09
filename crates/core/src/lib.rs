@@ -24,3 +24,6 @@ mod signatures;
 pub mod snapshot;
 pub mod source;
 pub(crate) mod sourcemap;
+pub mod structure;
+pub mod symbols;
+pub mod tokens;
