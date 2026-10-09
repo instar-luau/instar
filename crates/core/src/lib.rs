@@ -1,23 +1,29 @@
 //! Project orchestration for the Luau toolchain.
 
+pub mod actions;
 pub mod analysis;
 pub(crate) mod assets;
 mod checking;
 pub mod configuration;
 pub mod discovery;
 pub mod documentation;
+mod editing;
 pub(crate) mod environment;
 pub(crate) mod extract;
+mod extraction;
 mod formatting;
 pub mod graph;
 mod hierarchy;
 mod hints;
 mod hover;
+mod imports;
+pub mod links;
 mod linting;
 pub mod native;
 mod navigation;
 pub mod project;
 mod references;
+mod rename;
 pub mod resolve;
 pub mod roblox;
 mod signatures;
@@ -25,5 +31,6 @@ pub mod snapshot;
 pub mod source;
 pub(crate) mod sourcemap;
 pub mod structure;
+pub mod suggestions;
 pub mod symbols;
 pub mod tokens;

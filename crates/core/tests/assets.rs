@@ -7,8 +7,8 @@ mod implementation;
 mod tests;
 
 pub use implementation::{
-    analysis, configuration, documentation, graph, native, project, resolve, roblox, snapshot,
-    source,
+    actions, analysis, configuration, discovery, documentation, graph, links, native, project,
+    resolve, roblox, snapshot, source, structure, suggestions, symbols, tokens,
 };
 
 use implementation::{assets, environment, extract, sourcemap};

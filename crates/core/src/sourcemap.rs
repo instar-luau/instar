@@ -168,6 +168,13 @@ impl Map {
         &self.nodes[node].class
     }
 
+    pub(crate) fn children(&self, node: usize) -> impl Iterator<Item = &str> {
+        self.nodes[node]
+            .children
+            .iter()
+            .map(|&child| self.nodes[child].name.as_str())
+    }
+
     pub(crate) fn field(&self, node: usize, name: &str, member: bool) -> io::Result<usize> {
         if member {
             return Err(io::Error::new(

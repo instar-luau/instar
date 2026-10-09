@@ -5,9 +5,12 @@ use std::{
     fs, io,
     path::{Component, Path, PathBuf},
     sync::Arc,
+    time::Instant,
 };
 
-use crate::snapshot::Snapshot;
+use instar_analysis::Options;
+
+use crate::{project::Change, snapshot::Snapshot};
 
 /// One immutable source revision.
 #[derive(Clone, Debug)]
@@ -74,6 +77,23 @@ impl View {
                 self.consulted.insert(path.clone());
             }
         }
+    }
+
+    pub(crate) fn frozen(&self, options: &Options, started: Instant) -> io::Result<Snapshot> {
+        let mut snapshot = self.snapshot.clone();
+
+        for (path, source) in &self.documents {
+            options.check(started)?;
+
+            if let Ok(source) = source {
+                snapshot.change(Change::Overlay {
+                    path: path.clone(),
+                    text: source.as_ref().map(|source| source.text.to_string()),
+                })?;
+            }
+        }
+
+        Ok(snapshot)
     }
 
     pub(crate) fn read(&mut self, path: &Path) -> io::Result<Option<Document>> {

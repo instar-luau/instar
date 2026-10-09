@@ -13,6 +13,7 @@ use instar_bridge::Snapshot;
 use crate::{
     project::Project,
     source::{Failure, Kind, normalize},
+    sourcemap::Map,
 };
 
 /// A module identity independent of its backing source.
@@ -318,6 +319,51 @@ impl Project {
         ))
     }
 
+    pub(crate) fn import_path(&mut self, module: &Module, request: &str) -> io::Result<PathBuf> {
+        validate_request(request)?;
+        let request = request.replace('\\', "/");
+
+        if let Some(aliased) = request.strip_prefix('@') {
+            let (name, rest) = aliased.split_once('/').unwrap_or((aliased, ""));
+
+            let directory = module
+                .source
+                .parent()
+                .ok_or_else(|| invalid("source has no parent"))?;
+
+            let settings = self.configuration(directory)?;
+            let start = self.alias(&settings.snapshot, name, &module.path, &mut Vec::new())?;
+
+            self.walk(start, rest)
+        } else {
+            let parent = module
+                .path
+                .parent()
+                .ok_or_else(|| invalid("module has no parent"))?;
+
+            self.walk(parent.to_path_buf(), &request)
+        }
+    }
+
+    pub(crate) fn context_map(&mut self, module: &Module) -> io::Result<Rc<Map>> {
+        if let Identity::Instance { map: location, .. } = &module.identity {
+            return self.map(location);
+        }
+
+        let directory = module
+            .source
+            .parent()
+            .ok_or_else(|| invalid("source has no parent"))?;
+
+        let maps = self.maps(directory)?;
+
+        match maps.as_slice() {
+            [map] => Ok(Rc::clone(map)),
+            [] => Err(invalid("no sourcemap configured")),
+            _ => Err(invalid("instance request has multiple sourcemap contexts")),
+        }
+    }
+
     fn resolve_inner(&mut self, module: &Module, request: &Request) -> io::Result<Module> {
         let current = self.module(&module.source, Some(&module.identity))?;
 
@@ -360,21 +406,7 @@ impl Project {
                     );
                 }
 
-                let target = if let Some(aliased) = request.strip_prefix('@') {
-                    let (name, rest) = aliased.split_once('/').unwrap_or((aliased, ""));
-
-                    let start =
-                        self.alias(&settings.snapshot, name, &current.path, &mut Vec::new())?;
-
-                    self.walk(start, rest)?
-                } else {
-                    let parent = current
-                        .path
-                        .parent()
-                        .ok_or_else(|| invalid("module has no parent"))?;
-
-                    self.walk(parent.to_path_buf(), &request)?
-                };
+                let target = self.import_path(&current, &request)?;
 
                 let source = self.probe(&target)?.ok_or_else(|| {
                     invalid(format!(
@@ -392,22 +424,7 @@ impl Project {
                     .parent()
                     .ok_or_else(|| invalid("source has no parent"))?;
 
-                let map = if let Identity::Instance { map: location, .. } = &current.identity {
-                    self.map(location)?
-                } else {
-                    let maps = self.maps(directory)?;
-
-                    match maps.as_slice() {
-                        [map] => Rc::clone(map),
-                        [] => return Err(invalid("no sourcemap configured")),
-
-                        _ => {
-                            return Err(invalid(
-                                "instance request has multiple sourcemap contexts",
-                            ));
-                        }
-                    }
-                };
+                let map = self.context_map(&current)?;
 
                 let mut node = match root {
                     Root::Script => map.index(&current.identity)?,
