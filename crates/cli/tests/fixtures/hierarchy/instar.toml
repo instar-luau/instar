@@ -1,0 +1,6 @@
+[roblox]
+enabled = false
+
+[[environment]]
+namespace = "@hierarchy"
+definitions = ["definitions.luau"]

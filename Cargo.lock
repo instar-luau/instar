@@ -955,8 +955,11 @@ name = "instar-server"
 version = "0.1.0"
 dependencies = [
  "instar-analysis",
+ "instar-bridge",
  "instar-core",
  "instar-format",
+ "instar-lint",
+ "instar-syntax",
  "serde",
  "serde_json",
  "tempfile",

@@ -1,0 +1,7 @@
+[
+  {"method":"textDocument/definition","position":{"line":0,"character":31},"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}}},
+  {"method":"textDocument/definition","position":{"line":1,"character":25},"range":{"start":{"line":0,"character":12},"end":{"line":0,"character":18}}},
+  {"method":"textDocument/definition","position":{"line":1,"character":46},"range":{"start":{"line":2,"character":4},"end":{"line":2,"character":10}}},
+  {"method":"textDocument/typeDefinition","position":{"line":2,"character":8},"range":{"start":{"line":0,"character":21},"end":{"line":0,"character":36}}},
+  {"method":"textDocument/definition","position":{"line":2,"character":14},"range":{"start":{"line":0,"character":22},"end":{"line":0,"character":27}}}
+]

@@ -1,0 +1,7 @@
+{
+  "@hover/global/explain": {
+    "documentation": "Explains the supplied **number**.",
+    "code_sample": "explain(42)",
+    "learn_more_link": "https://example.invalid/explain"
+  }
+}

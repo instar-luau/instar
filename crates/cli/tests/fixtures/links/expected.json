@@ -1,0 +1,6 @@
+[
+  {"text":"\"./module\"","file":"module.luau"},
+  {"text":"\"@modules/module\"","file":"module.luau"},
+  {"text":"https://example.com/reference_(value)","address":"https://example.com/reference_(value)"},
+  {"text":"HTTPS://example.com/second","address":"https://example.com/second"}
+]

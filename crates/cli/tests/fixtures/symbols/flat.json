@@ -1,0 +1,10 @@
+[
+  {"name":"Record","kind":11,"location":{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":29}}}},
+  {"name":"value","kind":8,"containerName":"Record","location":{"range":{"start":{"line":0,"character":15},"end":{"line":0,"character":28}}}},
+  {"name":"table","kind":13,"location":{"range":{"start":{"line":1,"character":0},"end":{"line":4,"character":1}}}},
+  {"name":"𐐀","kind":8,"containerName":"table","location":{"range":{"start":{"line":2,"character":4},"end":{"line":2,"character":14}}}},
+  {"name":"nested","kind":8,"containerName":"table","location":{"range":{"start":{"line":3,"character":4},"end":{"line":3,"character":26}}}},
+  {"name":"answer","kind":8,"containerName":"nested","location":{"range":{"start":{"line":3,"character":14},"end":{"line":3,"character":25}}}},
+  {"name":"outer","kind":12,"location":{"range":{"start":{"line":5,"character":0},"end":{"line":10,"character":3}}}},
+  {"name":"inner","kind":12,"containerName":"outer","location":{"range":{"start":{"line":6,"character":4},"end":{"line":8,"character":7}}}}
+]

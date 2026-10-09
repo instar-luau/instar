@@ -1,0 +1,9 @@
+[roblox]
+enabled = false
+
+[editor.index]
+exclude = ["**/excluded.luau"]
+
+[[environment]]
+namespace = "@unavailable"
+definitions = ["missing.luau"]

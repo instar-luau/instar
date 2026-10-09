@@ -1,0 +1,5 @@
+[roblox]
+enabled = false
+
+[lint.parenthesized_conditions]
+level = "warn"

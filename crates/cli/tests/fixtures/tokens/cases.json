@@ -1,0 +1,16 @@
+[
+  {"query":"-- semantic 😀", "offset":0, "text":"-- semantic 😀", "kind":"comment", "modifiers":[]},
+  {"query":"export", "offset":0, "text":"export", "kind":"keyword", "modifiers":[]},
+  {"query":"type Point", "offset":0, "text":"type", "kind":"keyword", "modifiers":[]},
+  {"query":"type Point", "offset":5, "text":"Point", "kind":"type", "modifiers":["declaration"]},
+  {"query":"function adjust", "offset":9, "text":"adjust", "kind":"function", "modifiers":["declaration"]},
+  {"query":"adjust(value", "offset":7, "text":"value", "kind":"parameter", "modifiers":["declaration"]},
+  {"query":"return value", "offset":7, "text":"value", "kind":"parameter", "modifiers":[]},
+  {"query":"object.value +=", "offset":0, "text":"object", "kind":"variable", "modifiers":[]},
+  {"query":"object.value +=", "offset":7, "text":"value", "kind":"property", "modifiers":["modification"]},
+  {"query":"tostring", "offset":0, "text":"tostring", "kind":"function", "modifiers":["defaultLibrary"]},
+  {"query":"explain", "offset":0, "text":"explain", "kind":"function", "modifiers":["deprecated"]},
+  {"query":"\"😀\"", "offset":0, "text":"\"😀\"", "kind":"string", "modifiers":[]},
+  {"query":"[[first", "offset":0, "text":"[[first", "kind":"string", "modifiers":[]},
+  {"query":"second]]", "offset":0, "text":"second]]", "kind":"string", "modifiers":[]}
+]

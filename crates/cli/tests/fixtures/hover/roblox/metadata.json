@@ -1,0 +1,14 @@
+{
+  "revision": "0123456789012345678901234567890123456789",
+  "profiles": {
+    "none": "149a539264dd8924b6b9bc52c6dd1b6648f7d46ca8e546ae44f01f853c278e5b",
+    "local": "0340a53725d336dcc71fb331c3a7dd4b0513f8d81e315468e3cc14d35e42e2c5",
+    "plugin": "8d28311916dc40b5d153fe5653702f960463f31554e1f93856e4e2e73cc06be2",
+    "roblox": "8d28311916dc40b5d153fe5653702f960463f31554e1f93856e4e2e73cc06be2"
+  },
+  "properties": {"none": [], "local": [], "plugin": [], "roblox": []},
+  "services": ["DataModel"],
+  "creatable_instances": ["Part"],
+  "enumerations": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "documentation": "369737a8b7350b77d099d31be3193e895d4452db5e773eb9af706b2c429c473e"
+}

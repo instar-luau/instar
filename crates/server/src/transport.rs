@@ -18,7 +18,7 @@ use tokio::{
 
 use tower_lsp_server::{LspService, Server};
 
-use crate::{dispatch::Dispatch, session::Session, workers::Workers};
+use crate::{diagnostics::Diagnostics, dispatch::Dispatch, session::Session, workers::Workers};
 
 struct Connection<Stream> {
     stream: Stream,
@@ -90,21 +90,70 @@ where
     Output: AsyncWrite + Unpin + Send + 'static,
 {
     let workers = Arc::new(Workers::new(&options)?);
+    let queries = Arc::new(Workers::new(&options)?);
+    let diagnostics = Arc::new(Diagnostics::new(&options)?);
     let shutdown = Arc::new(AtomicBool::new(false));
     let exited = Arc::new(AtomicBool::new(false));
     let disconnected = Arc::new(Notify::new());
 
     let (service, socket) = LspService::build_with_lifecycle_methods(|client| {
-        Session::new(client, Arc::clone(&workers), options, Arc::clone(&shutdown))
+        Session::new(
+            client,
+            Arc::clone(&workers),
+            Arc::clone(&queries),
+            options,
+            Arc::clone(&shutdown),
+            Arc::clone(&diagnostics),
+        )
     })
     .custom_method("textDocument/didOpen", Session::open)
     .custom_method("textDocument/didChange", Session::change)
     .custom_method("textDocument/didClose", Session::close)
     .custom_method("textDocument/didSave", Session::save)
+    .custom_method("textDocument/diagnostic", Session::document_diagnostics)
+    .custom_method("workspace/diagnostic", Session::workspace_diagnostics)
     .custom_method("textDocument/formatting", Session::format)
+    .custom_method("textDocument/rangeFormatting", Session::format_range)
+    .custom_method("textDocument/onTypeFormatting", Session::format_character)
+    .custom_method("textDocument/hover", Session::hover)
+    .custom_method("textDocument/completion", Session::complete)
+    .custom_method("completionItem/resolve", Session::resolve_completion)
+    .custom_method("textDocument/signatureHelp", Session::signatures)
+    .custom_method("textDocument/definition", Session::definition)
+    .custom_method("textDocument/typeDefinition", Session::type_definition)
+    .custom_method("textDocument/implementation", Session::implementations)
+    .custom_method("textDocument/prepareCallHierarchy", Session::prepare_calls)
+    .custom_method("callHierarchy/incomingCalls", Session::incoming_calls)
+    .custom_method("callHierarchy/outgoingCalls", Session::outgoing_calls)
+    .custom_method("textDocument/prepareTypeHierarchy", Session::prepare_types)
+    .custom_method("typeHierarchy/supertypes", Session::supertypes)
+    .custom_method("typeHierarchy/subtypes", Session::subtypes)
+    .custom_method("textDocument/documentSymbol", Session::symbols)
+    .custom_method("workspace/symbol", Session::search_symbols)
+    .custom_method("textDocument/references", Session::references)
+    .custom_method("textDocument/documentHighlight", Session::highlights)
+    .custom_method("textDocument/prepareRename", Session::prepare_rename)
+    .custom_method("textDocument/rename", Session::rename)
+    .custom_method("textDocument/codeAction", Session::actions)
+    .custom_method("textDocument/semanticTokens/full", Session::tokens)
+    .custom_method(
+        "textDocument/semanticTokens/full/delta",
+        Session::token_changes,
+    )
+    .custom_method("textDocument/semanticTokens/range", Session::token_range)
+    .custom_method("textDocument/inlayHint", Session::hints)
+    .custom_method("inlayHint/resolve", Session::resolve_hint)
+    .custom_method("textDocument/foldingRange", Session::folds)
+    .custom_method("textDocument/selectionRange", Session::selections)
+    .custom_method("textDocument/documentLink", Session::links)
     .custom_method("workspace/didChangeWatchedFiles", Session::watched)
     .custom_method("workspace/didChangeWorkspaceFolders", Session::folders)
     .custom_method("workspace/didChangeConfiguration", Session::configuration)
+    .custom_method("workspace/didCreateFiles", Session::created)
+    .custom_method("workspace/willRenameFiles", Session::move_imports)
+    .custom_method("workspace/didRenameFiles", Session::renamed)
+    .custom_method("workspace/didDeleteFiles", Session::deleted)
+    .custom_method("workspace/textDocumentContent", Session::content)
     .finish();
 
     let dispatch = Dispatch {
@@ -127,6 +176,8 @@ where
         () = disconnected.notified() => {},
     }
 
+    diagnostics.finish()?;
+    queries.finish()?;
     workers.finish()?;
 
     Ok(shutdown.load(Ordering::Relaxed) && exited.load(Ordering::Relaxed))

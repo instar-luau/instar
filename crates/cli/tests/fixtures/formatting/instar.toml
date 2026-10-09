@@ -1,0 +1,7 @@
+[roblox]
+enabled = false
+
+[format]
+indent_style = "spaces"
+indent_width = 2
+line_ending = "crlf"

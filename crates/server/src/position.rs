@@ -1,3 +1,5 @@
+use std::io;
+
 use tower_lsp_server::{
     gen_lsp_types::{Position, PositionEncodingKind, Range},
     jsonrpc::{Error, Result},
@@ -68,6 +70,31 @@ pub(crate) fn end(text: &str, encoding: &PositionEncodingKind) -> Position {
     }
 
     position
+}
+
+pub(crate) fn range(
+    text: &str,
+    range: [usize; 2],
+    encoding: &PositionEncodingKind,
+) -> io::Result<Range> {
+    let [start, finish] = range;
+
+    if start > finish {
+        return Err(io::Error::other("source range is reversed"));
+    }
+
+    let start = text
+        .get(..start)
+        .ok_or_else(|| io::Error::other("invalid source location start"))?;
+
+    let finish = text
+        .get(..finish)
+        .ok_or_else(|| io::Error::other("invalid source location end"))?;
+
+    Ok(Range {
+        start: end(start, encoding),
+        end: end(finish, encoding),
+    })
 }
 
 pub(crate) fn replace(

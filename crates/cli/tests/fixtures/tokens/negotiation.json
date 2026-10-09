@@ -1,0 +1,5 @@
+[
+  {"formats":["relative"], "types":["variable"], "supported":true},
+  {"formats":["unsupported"], "types":["variable"], "supported":false},
+  {"formats":["relative"], "types":["unsupported"], "supported":false}
+]

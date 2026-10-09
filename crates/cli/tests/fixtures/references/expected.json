@@ -1,0 +1,36 @@
+[
+  {
+    "query": "dependency.value", "offset": 11, "length": 5,
+    "targets": [
+      {"file":"consumer.luau","query":"dependency.value","offset":11,"declaration":false,"write":false},
+      {"file":"dependency.luau","query":"value = 1","offset":0,"declaration":true,"write":true},
+      {"file":"input.luau","query":"dependency.value","offset":11,"declaration":false,"write":false},
+      {"file":"input.luau","query":"dependency.value =","offset":11,"declaration":false,"write":true},
+      {"file":"input.luau","query":"\"value\"","offset":0,"length":7,"declaration":false,"write":false}
+    ]
+  },
+  {
+    "query":"local dependency", "offset":6, "length":10,
+    "targets":[
+      {"file":"input.luau","query":"local dependency","offset":6,"declaration":true,"write":true},
+      {"file":"input.luau","query":"dependency.value","offset":0,"declaration":false,"write":false},
+      {"file":"input.luau","query":"dependency.value =","offset":0,"declaration":false,"write":false},
+      {"file":"input.luau","query":"dependency.Record","offset":0,"declaration":false,"write":false},
+      {"file":"input.luau","query":"dependency[","offset":0,"declaration":false,"write":false}
+    ]
+  },
+  {
+    "query":"dependency.Record", "offset":11, "length":6,
+    "targets":[
+      {"file":"dependency.luau","query":"type Record","offset":5,"declaration":true,"write":true},
+      {"file":"input.luau","query":"dependency.Record","offset":11,"declaration":false,"write":false}
+    ]
+  },
+  {
+    "query":"print(dependency.value)", "offset":17, "length":5,
+    "targets":[
+      {"file":"input.luau","query":"value = 2","offset":0,"declaration":true,"write":true},
+      {"file":"input.luau","query":"print(dependency.value)","offset":17,"declaration":false,"write":false}
+    ]
+  }
+]

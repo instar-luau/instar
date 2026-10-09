@@ -1,0 +1,7 @@
+[roblox]
+enabled = false
+
+[[environment]]
+namespace = "@hover"
+definitions = ["definitions.luau"]
+documentation = ["documentation.json"]

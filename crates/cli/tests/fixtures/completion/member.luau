@@ -1,0 +1,1 @@
+local marker = "😀"; local record = {value = 1, ["odd key"] = true}; record.

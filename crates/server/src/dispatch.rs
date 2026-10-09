@@ -35,6 +35,7 @@ impl Service<Request> for Dispatch {
         if request.method() == "exit" && request.id().is_none() {
             self.exited.store(true, Ordering::Relaxed);
             self.service.inner().workers.stop();
+            self.service.inner().diagnostics.stop();
         }
 
         let mut response = self.service.call(request);

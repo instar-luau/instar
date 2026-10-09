@@ -8,22 +8,23 @@ use std::{
     time::Instant,
 };
 
-use instar_analysis::{Cancellation, Completion, Options};
+use instar_analysis::{Cancellation, Options};
 use instar_core::{project::Project, snapshot::Snapshot};
 use instar_format::Formatter;
 use tokio::sync::oneshot;
 
-pub(crate) struct Output {
-    pub(crate) text: io::Result<Option<(Arc<str>, String)>>,
+pub(crate) struct Output<Response> {
+    pub(crate) result: io::Result<Response>,
     pub(crate) inputs: BTreeSet<PathBuf>,
 }
 
+type Operation = Box<dyn FnOnce(&mut Project, &mut Formatter, &Options, Instant) -> bool + Send>;
+
 struct Job {
     snapshot: Snapshot,
-    path: PathBuf,
     options: Options,
     started: Instant,
-    response: oneshot::Sender<Output>,
+    operation: Operation,
 }
 
 pub(crate) struct Guard(Arc<Cancellation>);
@@ -57,13 +58,13 @@ impl Workers {
             let timeout = options.timeout;
 
             let handle = thread::Builder::new()
-                .name("instar-formatting".to_owned())
+                .name("instar-worker".to_owned())
                 .spawn(move || {
                     let mut project = Project::new(timeout);
                     let mut formatter = Formatter::default();
 
                     loop {
-                        let Ok(job) = receiver.lock().expect("format queue lock").recv() else {
+                        let Ok(job) = receiver.lock().expect("work queue lock").recv() else {
                             break;
                         };
 
@@ -72,27 +73,13 @@ impl Workers {
                         }
 
                         project.apply(&job.snapshot);
-                        let text = format(&job, &mut project, &mut formatter);
 
-                        let inputs = if text.is_ok() {
-                            project
-                                .configuration(job.path.parent().expect("absolute source parent"))
-                                .map_or_else(
-                                    |_| project.watch_inputs(),
-                                    |settings| {
-                                        let mut inputs = settings.inputs.clone();
-                                        inputs.insert(job.path.clone());
-
-                                        inputs
-                                    },
-                                )
-                        } else {
-                            project.watch_inputs()
-                        };
-
-                        let output = Output { text, inputs };
-
-                        drop(job.response.send(output));
+                        let _ = (job.operation)(
+                            &mut project,
+                            &mut formatter,
+                            &job.options,
+                            job.started,
+                        );
                     }
                 })?;
 
@@ -106,12 +93,14 @@ impl Workers {
         Ok(workers)
     }
 
-    pub(crate) fn submit(
+    pub(crate) fn submit<Response: Send + 'static>(
         &self,
         snapshot: Snapshot,
-        path: PathBuf,
         options: Options,
-    ) -> io::Result<(Guard, oneshot::Receiver<Output>)> {
+        operation: impl FnOnce(&mut Project, &mut Formatter, &Options, Instant) -> Output<Response>
+        + Send
+        + 'static,
+    ) -> io::Result<(Guard, oneshot::Receiver<Output<Response>>)> {
         let cancellation = Arc::new(options.cancellation.clone());
         let guard = Guard(Arc::clone(&cancellation));
         let mut active = self.active.lock().expect("active work lock");
@@ -121,10 +110,13 @@ impl Workers {
 
         let job = Job {
             snapshot,
-            path,
             options,
             started: Instant::now(),
-            response,
+            operation: Box::new(move |project, formatter, options, started| {
+                response
+                    .send(operation(project, formatter, options, started))
+                    .is_ok()
+            }),
         };
 
         let sender = self.sender.lock().expect("work sender lock");
@@ -161,7 +153,7 @@ impl Workers {
         }
 
         if failed {
-            Err(io::Error::other("formatting worker thread failed"))
+            Err(io::Error::other("worker thread failed"))
         } else {
             Ok(())
         }
@@ -174,53 +166,4 @@ impl Drop for Workers {
             tracing::error!(%error, "Worker cleanup failed");
         }
     }
-}
-
-fn format(
-    job: &Job,
-    project: &mut Project,
-    formatter: &mut Formatter,
-) -> io::Result<Option<(Arc<str>, String)>> {
-    job.options.check(job.started)?;
-
-    let Some(configuration) =
-        project.formatting_configuration(&job.path, &job.options.remaining(job.started))?
-    else {
-        return Ok(None);
-    };
-
-    let source = project.source(&job.path)?;
-
-    let result = formatter.format(
-        source.text.as_bytes(),
-        &configuration,
-        &job.options.remaining(job.started),
-    )?;
-
-    job.options.check(job.started)?;
-
-    if let Completion::Incomplete(reason) = result.completion {
-        return Err(reason.error());
-    }
-
-    if !result.diagnostics.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            result
-                .diagnostics
-                .iter()
-                .map(|diagnostic| diagnostic.message.as_str())
-                .collect::<Vec<_>>()
-                .join("\n"),
-        ));
-    }
-
-    let text = result
-        .output
-        .ok_or_else(|| io::Error::other("formatter returned no output"))?;
-
-    let text = String::from_utf8(text)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-
-    Ok(Some((source.text, text)))
 }

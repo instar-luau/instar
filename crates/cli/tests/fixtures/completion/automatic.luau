@@ -1,0 +1,2 @@
+--!strict
+local value = dep

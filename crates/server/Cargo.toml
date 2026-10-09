@@ -10,10 +10,14 @@ categories.workspace = true
 
 [dependencies]
 instar-analysis.workspace = true
+instar-bridge.workspace = true
 instar-core.workspace = true
 instar-format.workspace = true
+instar-lint.workspace = true
+instar-syntax.workspace = true
 
 serde_json.workspace = true
+tempfile.workspace = true
 tokio = { version = "1", features = ["io-std", "io-util", "macros", "rt", "sync", "time"] }
 tower-lsp-server = { version = "0.24.0-rc.1", features = ["url-url"] }
 tower-service = "0.3"
@@ -21,7 +25,6 @@ tracing.workspace = true
 
 [dev-dependencies]
 serde.workspace = true
-tempfile.workspace = true
 
 [lints]
 workspace = true
