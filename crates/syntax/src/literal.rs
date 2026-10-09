@@ -1,6 +1,6 @@
-//! Typed Luau string literal values.
+//! Typed Luau string literal operations.
 
-use std::str;
+use std::{fmt::Write, str};
 
 use vermis::{
     token::TokenKind,
@@ -39,6 +39,29 @@ pub fn bytes(tree: &Tree<'_>, node: NodeIndex) -> Option<Vec<u8>> {
     }
 
     decode(tree.text(node))
+}
+
+/// Encodes UTF-8 text as a quoted Luau string literal.
+#[must_use]
+pub fn quote(value: &str) -> String {
+    let mut text = String::from("\"");
+
+    for character in value.chars() {
+        match character {
+            '\\' => text.push_str("\\\\"),
+            '"' => text.push_str("\\\""),
+
+            character if character.is_ascii_control() => {
+                write!(text, "\\{:03}", u32::from(character)).expect("string write");
+            }
+
+            character => text.push(character),
+        }
+    }
+
+    text.push('"');
+
+    text
 }
 
 fn decode(bytes: &[u8]) -> Option<Vec<u8>> {

@@ -2,6 +2,7 @@
 
 pub mod configuration;
 mod diagnostic;
+mod fixes;
 
 #[expect(
     clippy::arbitrary_source_item_ordering,
@@ -16,6 +17,7 @@ mod source;
 
 pub use configuration::{Configuration, Level};
 pub use diagnostic::{Diagnostic, Kind};
+pub use fixes::fixes;
 pub use instar_analysis::{Cancellation, Completion, Location, Options, Reason, Related};
 pub use result::Result;
 pub use rule::Rule;
