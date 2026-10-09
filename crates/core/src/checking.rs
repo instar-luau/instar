@@ -1,29 +1,14 @@
 //! Native checking over the shared project source and dependency graph.
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    io,
-    path::PathBuf,
-    rc::Rc,
-    time::Instant,
-};
+use std::{collections::BTreeSet, io, time::Instant};
 
 use instar_analysis::{self as analysis, Completion, Options, error::invalid, selection};
 
 use crate::{
-    analysis::{Entry, Origin, Report},
-    environment::Environment,
+    analysis::{Entry, Origin, Preparation},
     native,
     project::{Project, absolute},
-    resolve::Identity,
 };
-
-#[derive(Default)]
-struct Analysis {
-    report: Report,
-    environments: BTreeMap<String, Rc<Environment>>,
-    prepared: BTreeMap<PathBuf, Rc<Environment>>,
-}
 
 impl Project {
     /// Checks selected entries and reports dependency errors once per exact module.
@@ -128,9 +113,9 @@ impl Project {
             return Ok(result);
         }
 
-        let mut analysis = Analysis::default();
+        let mut analysis = Preparation::default();
 
-        self.check_modules(identities, &mut analysis, &mut result, options, started)?;
+        self.prepare_modules(identities, &mut analysis, &mut result, options, started)?;
 
         if result.completion != Completion::Complete {
             result.diagnostics = analysis.report.diagnostics;
@@ -167,97 +152,5 @@ impl Project {
         }
 
         Ok(result)
-    }
-
-    fn check_modules(
-        &mut self,
-        identities: BTreeSet<Identity>,
-        analysis: &mut Analysis,
-        result: &mut analysis::Result<Origin>,
-        options: &Options,
-        started: Instant,
-    ) -> io::Result<()> {
-        for identity in &identities {
-            let node = self
-                .graph
-                .node(identity)
-                .ok_or_else(|| invalid("checker module is missing from the Rust graph"))?;
-
-            result.modules.push(analysis.report.collect(&node));
-        }
-
-        let total = identities.len();
-
-        for (completed, identity) in identities.into_iter().enumerate() {
-            if let Some(reason) = options.interrupted(started) {
-                result.completion = Completion::Incomplete(reason);
-                break;
-            }
-
-            let source = result.modules[completed].source().to_string_lossy();
-
-            options.report(
-                "Preparing environments",
-                completed,
-                Some(total),
-                Some(&source),
-            );
-
-            self.check_module(&identity, analysis, result, options, started)?;
-
-            if result.completion == Completion::Complete {
-                options.report(
-                    "Preparing environments",
-                    completed + 1,
-                    Some(total),
-                    Some(&result.modules[completed].source().to_string_lossy()),
-                );
-            }
-        }
-
-        Ok(())
-    }
-
-    fn check_module(
-        &mut self,
-        identity: &Identity,
-        analysis: &mut Analysis,
-        result: &mut analysis::Result<Origin>,
-        options: &Options,
-        started: Instant,
-    ) -> io::Result<()> {
-        let node = self
-            .graph
-            .node(identity)
-            .ok_or_else(|| invalid("checker module is missing from the Rust graph"))?;
-
-        let name = native::name(identity);
-
-        let directory = node
-            .module
-            .source
-            .parent()
-            .ok_or_else(|| invalid("module source has no directory"))?;
-
-        let settings = self.configuration(directory)?;
-
-        let environment = self.environment(
-            &node,
-            &settings,
-            &mut analysis.report.sources,
-            &mut analysis.prepared,
-            options,
-            started,
-        );
-
-        result.completion = result.completion.combine(environment.completion);
-
-        for diagnostic in environment.diagnostics.iter().cloned() {
-            analysis.report.record(diagnostic);
-        }
-
-        analysis.environments.insert(name, environment);
-
-        Ok(())
     }
 }

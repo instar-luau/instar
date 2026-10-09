@@ -225,12 +225,47 @@ impl Project {
     /// Returns configuration, download, malformed-documentation, duplicate-symbol or interruption errors.
     pub fn documentation(&mut self, source: &Path, options: &Options) -> io::Result<Index> {
         self.during(
-            |project| project.documentation_index(source, options),
+            |project| project.documentation_index(source, None, options),
             options,
         )
     }
 
-    fn documentation_index(&mut self, source: &Path, options: &Options) -> io::Result<Index> {
+    /// Loads the documentation entry for an exact native symbol without unrelated namespaces.
+    ///
+    /// # Errors
+    /// Returns invalid symbols, configuration, download, documentation, or interruption failures.
+    pub fn documentation_for(
+        &mut self,
+        source: &Path,
+        symbol: &str,
+        options: &Options,
+    ) -> io::Result<Option<Entry>> {
+        let (namespace, path) = symbol
+            .split_once('/')
+            .ok_or_else(|| invalid("documentation symbol requires a namespace"))?;
+
+        frontend::validate_namespace(namespace)?;
+
+        if path.is_empty() || symbol.contains('\0') {
+            return Err(invalid("invalid documentation symbol"));
+        }
+
+        self.during(
+            |project| {
+                let index = project.documentation_index(source, Some(namespace), options)?;
+
+                Ok(index.get(symbol).cloned())
+            },
+            options,
+        )
+    }
+
+    fn documentation_index(
+        &mut self,
+        source: &Path,
+        namespace: Option<&str>,
+        options: &Options,
+    ) -> io::Result<Index> {
         let started = Instant::now();
         let source = absolute(source)?;
 
@@ -240,9 +275,15 @@ impl Project {
 
         let settings = self.configuration(directory)?;
 
-        let mut index = self.builtin_documentation(options, started)?;
+        let mut index = if namespace.is_none_or(|namespace| namespace == "@luau") {
+            self.builtin_documentation(options, started)?
+        } else {
+            Index::default()
+        };
 
-        if settings.configuration.roblox.enabled == Some(true) {
+        if namespace.is_none_or(|namespace| namespace == "@roblox")
+            && settings.configuration.roblox.enabled == Some(true)
+        {
             index.merge(
                 self.roblox_assets(settings.configuration.roblox.security, options, started)?
                     .documentation
@@ -250,7 +291,14 @@ impl Project {
             )?;
         }
 
-        for environment in &settings.configuration.environment {
+        for environment in settings
+            .configuration
+            .environment
+            .iter()
+            .filter(|environment| {
+                namespace.is_none_or(|namespace| namespace == environment.namespace)
+            })
+        {
             for path in &environment.documentation {
                 options.check(started)?;
 
