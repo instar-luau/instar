@@ -3,6 +3,7 @@
 
 #include "rust/cxx.h"
 
+#include <cstdint>
 #include <memory>
 
 namespace instar {
@@ -11,6 +12,12 @@ namespace instar {
     struct NativeCheck;
     struct NativeLintResult;
     struct NativeLink;
+    struct NativeHover;
+    struct NativeLocation;
+    struct NativeSuggestions;
+    struct NativeSignatures;
+    struct NativeReference;
+    struct NativeHierarchy;
     class NativeConfiguration;
 
     namespace frontend {
@@ -25,6 +32,20 @@ namespace instar {
         rust::Vec<NativeLink> prepare(const Host &host, rust::Slice<const rust::String> names);
         void invalidate(rust::Slice<const rust::String> names);
         rust::String documentation(rust::Str module, rust::Str symbol) const;
+        void retain();
+        NativeHover hover(const Host &host, rust::Str module, uint32_t line, uint32_t column);
+
+        rust::Vec<NativeLocation>
+        definition(const Host &host, rust::Str module, uint32_t line, uint32_t column, bool type_definition);
+
+        NativeSuggestions suggest(const Host &host, rust::Str module, uint32_t line, uint32_t column);
+        NativeSignatures signatures(const Host &host, rust::Str module, uint32_t line, uint32_t column);
+        rust::Vec<NativeReference> references(const Host &host, rust::Slice<const rust::String> modules);
+
+        NativeHierarchy hierarchy(
+            const Host &host, rust::Slice<const rust::String> modules, rust::Str module,
+            rust::Slice<const uint32_t> position
+        );
 
         NativeCheck check(
             const Host &host, rust::Slice<const rust::String> entries, double timeout_seconds,

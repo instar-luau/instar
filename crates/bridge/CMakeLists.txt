@@ -17,10 +17,16 @@ add_library(bridge STATIC
     native/frontend/checking.cpp
     native/frontend/diagnostics.cpp
     native/frontend/documentation.cpp
+    native/frontend/hierarchy.cpp
+    native/frontend/hover.cpp
     native/frontend/linting.cpp
+    native/frontend/navigation.cpp
     native/frontend/parsing.cpp
+    native/frontend/references.cpp
     native/frontend/roblox.cpp
+    native/frontend/signatures.cpp
     native/frontend/state.cpp
+    native/frontend/suggestions.cpp
     "${CXX_BRIDGE_SOURCE}"
 )
 target_include_directories(bridge PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CXX_INCLUDE_DIRECTORY}" "${CXX_CRATE_DIRECTORY}")

@@ -2,6 +2,7 @@
 #include "diagnostics.hpp"
 #include "documentation.hpp"
 #include "linting.hpp"
+#include "navigation.hpp"
 #include "parsing.hpp"
 #include "roblox.hpp"
 #include "state.hpp"
@@ -226,6 +227,7 @@ namespace instar::frontend {
                             return result;
                         }
 
+                        register_declarations(state, host, *loaded.parseResult.root, definition_name, environment);
                         assign_documentation(scope, definition_name, std::string(definition.namespace_name));
                     }
 
@@ -309,7 +311,7 @@ namespace instar::frontend {
                 frontend.queueModuleCheck(std::string(entry));
             }
 
-            Luau::FrontendOptions options;
+            Luau::FrontendOptions options = frontend.options;
             options.cancellationToken = interruption.token;
             options.moduleTimeLimitSec = interruption.remaining();
 

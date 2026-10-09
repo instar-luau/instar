@@ -1,0 +1,6 @@
+[
+  {"query":"identity(record)","offset":3,"context":"Expression","name":"identity","kind":"Binding","detail":"Record","callable":true,"target":"identity(record)","target_offset":0,"length":8},
+  {"query":"record.value","offset":8,"context":"Property","name":"value","kind":"Property","detail":"number","callable":false,"target":"record.value","target_offset":7,"length":5},
+  {"query":"local value: Record","offset":16,"context":"Type","name":"Record","kind":"Type","detail":"Record","callable":false,"target":"local value: Record","target_offset":13,"length":6},
+  {"query":"return record.value","offset":10,"context":"Expression","name":"record","kind":"Binding","detail":"Record","callable":false,"target":"return record.value","target_offset":7,"length":6}
+]

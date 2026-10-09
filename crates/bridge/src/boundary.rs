@@ -1,8 +1,9 @@
 pub(super) use native::{
     NativeAlias, NativeCheck, NativeClass, NativeCompletion, NativeConfiguration, NativeDefinition,
     NativeDiagnostic, NativeDocument, NativeFact, NativeFactKind, NativeFlag, NativeFrontend,
-    NativeKind, NativeLink, NativeLint, NativeLintResult, NativeLocation, NativeModule,
-    NativeProperty, NativeSite, NativeSnapshot, NativeSource, apply_flags, create, create_frontend,
+    NativeHierarchy, NativeKind, NativeLink, NativeLint, NativeLintResult, NativeLocation,
+    NativeModule, NativeProperty, NativeReference, NativeSignatures, NativeSite, NativeSnapshot,
+    NativeSource, NativeSuggestion, NativeSuggestions, apply_flags, create, create_frontend,
     normalize_flags,
 };
 
@@ -110,6 +111,101 @@ mod native {
         end: usize,
     }
 
+    struct NativeHover {
+        found: bool,
+        location: NativeLocation,
+        text: String,
+        documentation: String,
+        deprecated: bool,
+    }
+
+    struct NativeSuggestion {
+        name: String,
+        kind: u8,
+        detail: String,
+        documentation: String,
+        insert_text: String,
+        parentheses: u8,
+        deprecated: bool,
+        callable: bool,
+        preferred: bool,
+        notation: u8,
+    }
+
+    struct NativeSuggestions {
+        location: NativeLocation,
+        context: u8,
+        index_start: usize,
+        index_end: usize,
+        has_index: bool,
+        require: bool,
+        loader: bool,
+        prefix: String,
+        has_prefix: bool,
+        entries: Vec<NativeSuggestion>,
+    }
+
+    struct NativeParameter {
+        start: usize,
+        end: usize,
+    }
+
+    struct NativeSignature {
+        label: String,
+        parameters: Vec<NativeParameter>,
+        variadic: bool,
+    }
+
+    struct NativeSignatures {
+        found: bool,
+        location: NativeLocation,
+        entries: Vec<NativeSignature>,
+        active: usize,
+        has_active: bool,
+        argument: usize,
+        documentation: String,
+    }
+
+    struct NativeReference {
+        location: NativeLocation,
+        targets: Vec<NativeLocation>,
+        documentation: String,
+        name: String,
+        kind: u8,
+        declaration: bool,
+        write: bool,
+        literal: bool,
+        function: bool,
+        parameter: bool,
+        deprecated: bool,
+    }
+
+    struct NativeHierarchyItem {
+        name: String,
+        kind: u8,
+        location: NativeLocation,
+        selection_start: usize,
+        selection_end: usize,
+    }
+
+    struct NativeCall {
+        caller: usize,
+        callee: usize,
+        location: NativeLocation,
+    }
+
+    struct NativeInheritance {
+        child: usize,
+        parent: usize,
+    }
+
+    struct NativeHierarchy {
+        items: Vec<NativeHierarchyItem>,
+        calls: Vec<NativeCall>,
+        inheritance: Vec<NativeInheritance>,
+        selected: Vec<usize>,
+    }
+
     struct NativeRelated {
         location: NativeLocation,
         message: String,
@@ -200,6 +296,48 @@ mod native {
         fn normalize_flags(flags: &[NativeFlag]) -> Result<Vec<NativeFlag>>;
         fn create_frontend() -> Result<UniquePtr<NativeFrontend>>;
         fn documentation(self: &NativeFrontend, module: &str, symbol: &str) -> Result<String>;
+        fn retain(self: Pin<&mut NativeFrontend>) -> Result<()>;
+        fn hover(
+            self: Pin<&mut NativeFrontend>,
+            host: &Host,
+            module: &str,
+            line: u32,
+            column: u32,
+        ) -> Result<NativeHover>;
+        fn definition(
+            self: Pin<&mut NativeFrontend>,
+            host: &Host,
+            module: &str,
+            line: u32,
+            column: u32,
+            type_definition: bool,
+        ) -> Result<Vec<NativeLocation>>;
+        fn suggest(
+            self: Pin<&mut NativeFrontend>,
+            host: &Host,
+            module: &str,
+            line: u32,
+            column: u32,
+        ) -> Result<NativeSuggestions>;
+        fn signatures(
+            self: Pin<&mut NativeFrontend>,
+            host: &Host,
+            module: &str,
+            line: u32,
+            column: u32,
+        ) -> Result<NativeSignatures>;
+        fn references(
+            self: Pin<&mut NativeFrontend>,
+            host: &Host,
+            modules: &[String],
+        ) -> Result<Vec<NativeReference>>;
+        fn hierarchy(
+            self: Pin<&mut NativeFrontend>,
+            host: &Host,
+            modules: &[String],
+            module: &str,
+            position: &[u32],
+        ) -> Result<NativeHierarchy>;
         fn configure(
             self: Pin<&mut NativeFrontend>,
             name: &str,

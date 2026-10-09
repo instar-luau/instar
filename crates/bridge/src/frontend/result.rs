@@ -47,6 +47,22 @@ pub struct Fact {
     pub message: String,
 }
 
+/// A detached type and documentation reference at an exact source revision.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct Hover<Module = String> {
+    /// Source expression or binding range.
+    pub location: Location<Module>,
+
+    /// Native rendered type or function signature.
+    pub text: String,
+
+    /// Namespaced documentation identifier, when available.
+    pub documentation: Option<String>,
+
+    /// Whether native semantic metadata marks the symbol as deprecated.
+    pub deprecated: bool,
+}
+
 /// Native lint output, retaining diagnostics when analysis is incomplete.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct LintResult {
@@ -139,7 +155,7 @@ fn fact(value: boundary::NativeFact) -> io::Result<Fact> {
     })
 }
 
-fn location(value: boundary::NativeLocation) -> Location<String> {
+pub(crate) fn location(value: boundary::NativeLocation) -> Location<String> {
     Location {
         module: value.module,
         revision: value.revision,

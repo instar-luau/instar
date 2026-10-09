@@ -8,7 +8,10 @@ use instar_analysis::{Completion, error::Failure, process::Message};
 
 use crate::{
     Configuration, boundary, flags,
-    frontend::{Cancellation, Host, Link, LintResult, checking, completion},
+    frontend::{
+        Cancellation, Hierarchy, Host, Hover, Link, LintResult, Reference, Signatures, Suggestions,
+        checking, completion, location,
+    },
     protocol::{Operation, Request, Response},
 };
 
@@ -80,23 +83,7 @@ impl Session {
     }
 
     fn documentation(&mut self, request: &Request, symbol: &str) -> io::Result<Response> {
-        let cancellation = Cancellation(instar_analysis::Cancellation::default(), None);
-
-        let result = self
-            .native
-            .pin_mut()
-            .check(
-                &self.host,
-                &request.entries,
-                request.timeout.as_secs_f64(),
-                &request.modules,
-                &cancellation,
-            )
-            .map_err(io::Error::other)?;
-
-        if let Completion::Incomplete(reason) = completion(result.completion)? {
-            return Err(reason.error());
-        }
+        self.checked(request)?;
 
         let entry = request
             .entries
@@ -113,6 +100,118 @@ impl Session {
         ))
     }
 
+    fn hover(&mut self, request: &Request, line: u32, column: u32) -> io::Result<Response> {
+        let entry = self.semantic(request)?;
+
+        let result = self
+            .native
+            .pin_mut()
+            .hover(&self.host, entry, line, column)
+            .map_err(io::Error::other)?;
+
+        Ok(Response::Hover(result.found.then(|| Hover {
+            location: location(result.location),
+            text: result.text,
+            documentation: (!result.documentation.is_empty()).then_some(result.documentation),
+            deprecated: result.deprecated,
+        })))
+    }
+
+    fn definition(
+        &mut self,
+        request: &Request,
+        line: u32,
+        column: u32,
+        type_definition: bool,
+    ) -> io::Result<Response> {
+        let entry = self.semantic(request)?;
+
+        let locations = self
+            .native
+            .pin_mut()
+            .definition(&self.host, entry, line, column, type_definition)
+            .map_err(io::Error::other)?;
+
+        Ok(Response::Locations(
+            locations.into_iter().map(location).collect(),
+        ))
+    }
+
+    fn suggest(&mut self, request: &Request, line: u32, column: u32) -> io::Result<Response> {
+        let entry = self.semantic(request)?;
+
+        let suggestions = self
+            .native
+            .pin_mut()
+            .suggest(&self.host, entry, line, column)
+            .map_err(io::Error::other)?;
+
+        Ok(Response::Suggestions(Suggestions::try_from(suggestions)?))
+    }
+
+    fn signatures(&mut self, request: &Request, line: u32, column: u32) -> io::Result<Response> {
+        let entry = self.semantic(request)?;
+
+        let result = self
+            .native
+            .pin_mut()
+            .signatures(&self.host, entry, line, column)
+            .map_err(io::Error::other)?;
+
+        Ok(Response::Signatures(if result.found {
+            Some(Signatures::try_from(result)?)
+        } else {
+            None
+        }))
+    }
+
+    fn references(&mut self, request: &Request) -> io::Result<Response> {
+        self.semantic(request)?;
+
+        let references = self
+            .native
+            .pin_mut()
+            .references(&self.host, &request.modules)
+            .map_err(io::Error::other)?;
+
+        Ok(Response::References(
+            references
+                .into_iter()
+                .map(Reference::try_from)
+                .collect::<io::Result<_>>()?,
+        ))
+    }
+
+    fn hierarchy(&mut self, request: &Request, position: Option<[u32; 2]>) -> io::Result<Response> {
+        let entry = self.semantic(request)?;
+
+        let hierarchy = self
+            .native
+            .pin_mut()
+            .hierarchy(
+                &self.host,
+                &request.modules,
+                entry,
+                position
+                    .as_ref()
+                    .map_or(&[][..], |position| position.as_slice()),
+            )
+            .map_err(io::Error::other)?;
+
+        Ok(Response::Hierarchy(Hierarchy::try_from(hierarchy)?))
+    }
+
+    fn semantic<'request>(&mut self, request: &'request Request) -> io::Result<&'request str> {
+        self.native.pin_mut().retain().map_err(io::Error::other)?;
+        self.checked(request)?;
+
+        request
+            .entries
+            .first()
+            .map(String::as_str)
+            .ok_or_else(|| io::Error::other("semantic entry is missing"))
+    }
+
     fn execute(&mut self, mut request: Request) -> io::Result<Response> {
         if self.flags != request.flags {
             return Err(io::Error::other("native worker flag configuration changed"));
@@ -123,6 +222,18 @@ impl Session {
 
         match &request.operation {
             Operation::Documentation(symbol) => self.documentation(&request, symbol),
+
+            Operation::Hover { line, column } => self.hover(&request, *line, *column),
+            Operation::Suggest { line, column } => self.suggest(&request, *line, *column),
+            Operation::Signatures { line, column } => self.signatures(&request, *line, *column),
+            Operation::References => self.references(&request),
+            Operation::Hierarchy { position } => self.hierarchy(&request, *position),
+
+            Operation::Definition {
+                line,
+                column,
+                type_definition,
+            } => self.definition(&request, *line, *column, *type_definition),
 
             Operation::Parse => {
                 let links = self
@@ -172,6 +283,28 @@ impl Session {
                 )?))
             }
         }
+    }
+
+    fn checked(&mut self, request: &Request) -> io::Result<()> {
+        let cancellation = Cancellation(instar_analysis::Cancellation::default(), None);
+
+        let result = self
+            .native
+            .pin_mut()
+            .check(
+                &self.host,
+                &request.entries,
+                request.timeout.as_secs_f64(),
+                &request.modules,
+                &cancellation,
+            )
+            .map_err(io::Error::other)?;
+
+        if let Completion::Incomplete(reason) = completion(result.completion)? {
+            return Err(reason.error());
+        }
+
+        Ok(())
     }
 }
 

@@ -1,9 +1,15 @@
 #include "frontend.hpp"
 #include "frontend/checking.hpp"
 #include "frontend/documentation.hpp"
+#include "frontend/hierarchy.hpp"
+#include "frontend/hover.hpp"
 #include "frontend/linting.hpp"
+#include "frontend/navigation.hpp"
 #include "frontend/parsing.hpp"
+#include "frontend/references.hpp"
+#include "frontend/signatures.hpp"
 #include "frontend/state.hpp"
+#include "frontend/suggestions.hpp"
 
 #include "instar-bridge/src/boundary.rs.h"
 
@@ -47,6 +53,7 @@ namespace instar {
         state->resolver.environments.clear();
         state->definitions.clear();
         state->environments.clear();
+        state->locations.clear();
         state->lints.clear();
 
         for (const auto &[name, node] : state->frontend.sourceNodes) {
@@ -56,6 +63,45 @@ namespace instar {
 
     rust::String NativeFrontend::documentation(rust::Str module, rust::Str symbol) const {
         return frontend::documentation(*state, module, symbol);
+    }
+
+    void NativeFrontend::retain() {
+        if (!state->frontend.options.retainFullTypeGraphs) {
+            state->frontend.options.retainFullTypeGraphs = true;
+
+            for (const auto &[name, node] : state->frontend.sourceNodes) {
+                state->frontend.markDirty(name);
+            }
+        }
+    }
+
+    NativeHover NativeFrontend::hover(const Host &host, rust::Str module, uint32_t line, uint32_t column) {
+        return frontend::hover(*state, host, module, line, column);
+    }
+
+    rust::Vec<NativeLocation> NativeFrontend::definition(
+        const Host &host, rust::Str module, uint32_t line, uint32_t column, bool type_definition
+    ) {
+        return frontend::definition(*state, host, module, line, column, type_definition);
+    }
+
+    NativeSuggestions NativeFrontend::suggest(const Host &host, rust::Str module, uint32_t line, uint32_t column) {
+        return frontend::suggest(*state, host, module, line, column);
+    }
+
+    NativeSignatures NativeFrontend::signatures(const Host &host, rust::Str module, uint32_t line, uint32_t column) {
+        return frontend::signatures(*state, host, module, line, column);
+    }
+
+    rust::Vec<NativeReference> NativeFrontend::references(const Host &host, rust::Slice<const rust::String> modules) {
+        return frontend::references(*state, host, modules);
+    }
+
+    NativeHierarchy NativeFrontend::hierarchy(
+        const Host &host, rust::Slice<const rust::String> modules, rust::Str module,
+        rust::Slice<const uint32_t> position
+    ) {
+        return frontend::hierarchy(*state, host, modules, module, position);
     }
 
     NativeCheck NativeFrontend::check(

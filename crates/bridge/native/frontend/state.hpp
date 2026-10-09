@@ -72,6 +72,7 @@ namespace instar::frontend {
         Luau::Frontend frontend{Luau::SolverMode::New, &resolver, &resolver};
         std::map<Signature, std::string> environments;
         std::map<std::string, const Signature *> definitions;
+        std::map<std::string, std::map<std::string, NativeLocation>> locations;
         std::map<std::string, NativeLintResult> lints;
         uint64_t environment_revision = 0;
 

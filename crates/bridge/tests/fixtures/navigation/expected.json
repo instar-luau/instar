@@ -1,0 +1,8 @@
+[
+  {"query":"print(record)","offset":6,"type_definition":false,"target":"local record =","target_offset":6,"length":6},
+  {"query":"identity(record)","offset":9,"type_definition":false,"target":"local record:","target_offset":6,"length":6},
+  {"query":"identity(record)","offset":0,"type_definition":false,"target":"local function identity","target_offset":15,"length":8},
+  {"query":"record: Record","offset":8,"type_definition":false,"target":"type Record","target_offset":5,"length":6},
+  {"query":".value","offset":1,"type_definition":false,"target":"value: number","target_offset":0,"length":5},
+  {"query":"identity(record)","offset":9,"type_definition":true,"target":"{value: number}","target_offset":0,"length":15}
+]
