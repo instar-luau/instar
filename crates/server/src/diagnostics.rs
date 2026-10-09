@@ -9,7 +9,11 @@ use std::{
 };
 
 use instar_analysis::{Cancellation, Completion, Options};
-use instar_core::{analysis::Origin, project::Project, snapshot::Snapshot};
+
+use instar_core::{
+    analysis::Origin, configuration::Operation, project::Project, snapshot::Snapshot,
+};
+
 use instar_lint::{self as lint, Level};
 use tokio::sync::{oneshot, watch};
 
@@ -438,19 +442,20 @@ fn analyze(
     paths.extend_from_slice(requested);
     paths.sort();
     paths.dedup();
-    let entries = project.entries(&paths, &options.remaining(started))?;
+
+    let checking =
+        project.selected_sources(&paths, Operation::Check, &options.remaining(started))?;
+
+    let linting = project.selected_sources(&paths, Operation::Lint, &options.remaining(started))?;
 
     for path in &paths {
         report.insert(path.clone(), Vec::new());
     }
 
-    if entries.is_empty() {
-        return Ok(report);
-    }
-
+    let entries = project.entries(&checking, &options.remaining(started))?;
     let checked = project.check(&entries, &options.remaining(started))?;
+    let entries = project.entries(&linting, &options.remaining(started))?;
     let linted = project.lint(&entries, &options.remaining(started))?;
-    let completion = checked.completion.combine(linted.completion);
 
     let mut findings: Vec<lint::Diagnostic<Origin>> =
         checked.diagnostics.into_iter().map(Into::into).collect();
@@ -483,12 +488,17 @@ fn analyze(
         }
     }
 
-    if let Completion::Incomplete(reason) = completion {
-        for path in &paths {
-            report
-                .entry(path.clone())
-                .or_default()
-                .push(failure(&format!("Analysis incomplete: {}", reason.error())));
+    for (completion, targets) in [(checked.completion, checking), (linted.completion, linting)] {
+        if let Completion::Incomplete(reason) = completion {
+            let diagnostic = failure(&format!("Analysis incomplete: {}", reason.error()));
+
+            for path in targets {
+                let diagnostics = report.entry(path).or_default();
+
+                if !diagnostics.contains(&diagnostic) {
+                    diagnostics.push(diagnostic.clone());
+                }
+            }
         }
     }
 

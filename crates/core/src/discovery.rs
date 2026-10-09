@@ -29,48 +29,10 @@ impl Project {
 
         self.during(
             |project| {
-                let mut paths = BTreeSet::new();
-
-                for root in roots {
-                    project.interrupted()?;
-                    let root = absolute(root)?;
-                    project.view.consult(iter::once(&root));
-
-                    match fs::metadata(&root) {
-                        Ok(_) => paths.extend(files(&root, &options.remaining(started))?),
-
-                        Err(error)
-                            if matches!(
-                                error.kind(),
-                                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
-                            ) => {}
-
-                        Err(error) => return Err(error),
-                    }
-
-                    for path in project
-                        .view
-                        .snapshot
-                        .sources()
-                        .filter(|path| path.starts_with(&root))
-                    {
-                        project.interrupted()?;
-                        paths.insert(path.to_path_buf());
-                    }
-                }
-
                 let mut selected = Vec::new();
 
-                for path in paths {
+                for path in project.workspace_sources(roots, &options.remaining(started))? {
                     project.interrupted()?;
-
-                    if !matches!(
-                        path.extension().and_then(|extension| extension.to_str()),
-                        Some("lua" | "luau")
-                    ) || project.view.kind(&path)? != Some(Kind::File)
-                    {
-                        continue;
-                    }
 
                     let settings = project.configuration(
                         path.parent()
@@ -79,9 +41,11 @@ impl Project {
 
                     let index = &settings.configuration.editor.index;
 
-                    if selection::matches(&path, index.include.as_deref(), true)?
-                        && !selection::matches(&path, index.exclude.as_deref(), false)?
-                    {
+                    if selection::selected(
+                        &path,
+                        index.include.as_deref(),
+                        index.exclude.as_deref(),
+                    )? {
                         selected.push(path);
                     }
                 }
@@ -124,6 +88,65 @@ impl Project {
                 }
 
                 Ok(selected)
+            },
+            options,
+        )
+    }
+
+    pub(crate) fn workspace_sources(
+        &mut self,
+        roots: &[PathBuf],
+        options: &Options,
+    ) -> io::Result<Vec<PathBuf>> {
+        let started = Instant::now();
+
+        self.during(
+            |project| {
+                let mut paths = BTreeSet::new();
+
+                for root in roots {
+                    project.interrupted()?;
+                    let root = absolute(root)?;
+                    project.view.consult(iter::once(&root));
+
+                    match fs::metadata(&root) {
+                        Ok(_) => paths.extend(files(&root, &options.remaining(started))?),
+
+                        Err(error)
+                            if matches!(
+                                error.kind(),
+                                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                            ) => {}
+
+                        Err(error) => return Err(error),
+                    }
+
+                    for path in project
+                        .view
+                        .snapshot
+                        .sources()
+                        .filter(|path| path.starts_with(&root))
+                    {
+                        project.interrupted()?;
+                        paths.insert(path.to_path_buf());
+                    }
+                }
+
+                let mut candidates = Vec::new();
+
+                for path in paths {
+                    project.interrupted()?;
+
+                    if matches!(
+                        path.extension().and_then(|extension| extension.to_str()),
+                        Some("lua" | "luau")
+                    ) && project.view.kind(&path)? == Some(Kind::File)
+                    {
+                        candidates.push(path);
+                    }
+                }
+
+                Ok(candidates)
             },
             options,
         )

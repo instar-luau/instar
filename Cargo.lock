@@ -880,7 +880,6 @@ dependencies = [
  "color-eyre",
  "console",
  "eyre",
- "glob",
  "indicatif",
  "instar-analysis",
  "instar-bridge",
@@ -901,7 +900,6 @@ name = "instar-core"
 version = "0.1.0"
 dependencies = [
  "dirs",
- "glob",
  "ignore",
  "instar-analysis",
  "instar-bridge",

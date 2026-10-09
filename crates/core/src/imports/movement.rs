@@ -40,7 +40,7 @@ impl Project {
                     return Ok(Vec::new());
                 }
 
-                let mut paths = project.index_sources(roots, &options.remaining(started))?;
+                let mut paths = project.workspace_sources(roots, &options.remaining(started))?;
                 paths.extend(movements.keys().cloned());
                 paths.sort();
                 paths.dedup();

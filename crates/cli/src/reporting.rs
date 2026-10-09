@@ -1,6 +1,6 @@
 use std::{
     io::{self, IsTerminal, Write},
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
@@ -36,7 +36,7 @@ pub(crate) struct Reporter {
     pub(crate) processed: usize,
     pub(crate) formatted: usize,
     pub(crate) unchanged: usize,
-    pub(crate) skipped: usize,
+    pub(crate) skipped: Vec<PathBuf>,
     pub(crate) unsuccessful: usize,
 }
 
@@ -59,7 +59,7 @@ impl Reporter {
             processed: 0,
             formatted: 0,
             unchanged: 0,
-            skipped: 0,
+            skipped: Vec::new(),
             unsuccessful: 0,
         }
     }
@@ -256,7 +256,7 @@ impl Reporter {
         if self.json {
             serde_json::to_writer(
                 io::stdout().lock(),
-                &json!({"diagnostics": self.records, "completion": completion, "changed": changed}),
+                &json!({"diagnostics": self.records, "completion": completion, "changed": changed, "skipped": self.skipped}),
             )?;
 
             writeln!(io::stdout().lock())?;
@@ -280,13 +280,17 @@ impl Reporter {
                     if *check { "would change" } else { "formatted" },
                     self.unchanged,
                     self.unsuccessful,
-                    self.skipped,
+                    self.skipped.len(),
                 ),
 
-                _ => String::new(),
+                _ => format!(", {} skipped", self.skipped.len()),
             };
 
-            let files = self.processed + self.skipped;
+            let files = self.processed + self.skipped.len();
+
+            for path in &self.skipped {
+                eprintln!("Skipped {}", path.display());
+            }
 
             eprintln!(
                 "{operation} {state}: {files} file{}{details}; {} diagnostic{}; {:.2}s",

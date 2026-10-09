@@ -27,9 +27,11 @@ impl Project {
                 let settings = project.configuration(directory)?;
                 let configuration = &settings.configuration.format;
 
-                if selection::matches(path, configuration.include.as_deref(), true)?
-                    && !selection::matches(path, configuration.exclude.as_deref(), false)?
-                {
+                if selection::selected(
+                    path,
+                    configuration.include.as_deref(),
+                    configuration.exclude.as_deref(),
+                )? {
                     Ok(Some(configuration.clone()))
                 } else {
                     Ok(None)

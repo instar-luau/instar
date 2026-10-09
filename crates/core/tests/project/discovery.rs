@@ -1,6 +1,7 @@
 //! Synthetic configuration discovery and inheritance fixtures.
-use std::{error::Error, fs, io, path::Path, time::Duration};
+use std::{error::Error, fs, io, path::Path, slice, time::Duration};
 
+use instar_analysis::selection;
 use instar_core::project::Project;
 use serde_json::{Map, Value, json};
 
@@ -66,6 +67,50 @@ fn configuration_projects() -> Result<(), Box<dyn Error>> {
             }
         }
     }
+
+    Ok(())
+}
+
+#[test]
+fn file_patterns_share_directory_and_wildcard_semantics() -> Result<(), Box<dyn Error>> {
+    let fixture: Value = serde_json::from_str(include_str!("../fixtures/selection/cases.json"))?;
+    let directory = Directory::new(None)?;
+
+    for case in fixture["cases"].as_array().expect("matching cases") {
+        let pattern =
+            selection::anchor(directory.path(), case["pattern"].as_str().expect("pattern"))?;
+
+        let mut found = Vec::new();
+
+        for source in fixture["sources"].as_array().expect("sources") {
+            let source = source.as_str().expect("source");
+
+            if selection::matches(
+                &directory.path().join(source),
+                Some(slice::from_ref(&pattern)),
+                false,
+            )? {
+                found.push(source);
+            }
+        }
+
+        assert_eq!(json!(found), case["expected"], "{case}");
+    }
+
+    for pattern in fixture["invalid"].as_array().expect("invalid patterns") {
+        let patterns = vec![pattern.as_str().expect("pattern").to_owned()];
+
+        assert!(
+            selection::validate(Some(&patterns), "selection").is_err(),
+            "{pattern}"
+        );
+    }
+
+    assert!(selection::string("@vendor/item", "@vendor/*")?);
+    assert!(!selection::string("@vendor/nested/item", "@vendor/*")?);
+    assert!(selection::string("@vendor/nested/item", "@vendor/**")?);
+    assert!(!selection::string("./nested/item", "item")?);
+    assert!(selection::string("./item", "./**/item")?);
 
     Ok(())
 }

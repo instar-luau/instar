@@ -245,7 +245,7 @@ fn informational_lint_retains_severity_and_success() -> io::Result<()> {
 }
 
 #[test]
-fn mapped_lint_visits_every_placement_and_its_dependencies() -> io::Result<()> {
+fn mapped_lint_visits_every_target_placement_and_analyzes_dependencies() -> io::Result<()> {
     let directory = tempfile::tempdir()?;
     let source = include_str!("fixtures/mapping/shared.luau");
 
@@ -316,9 +316,9 @@ fn mapped_lint_visits_every_placement_and_its_dependencies() -> io::Result<()> {
             .filter(|diagnostic| diagnostic["kind"] == "Rule(DivideByZero)")
             .collect::<Vec<_>>();
 
-        assert_eq!(findings.len(), 4, "{report}");
+        assert_eq!(findings.len(), 2, "{report}");
 
-        for (name, count) in [("shared.luau", 2), ("first.luau", 1), ("second.luau", 1)] {
+        for (name, count) in [("shared.luau", 2), ("first.luau", 0), ("second.luau", 0)] {
             assert_eq!(
                 findings
                     .iter()
@@ -482,6 +482,142 @@ fn configured_stdout_flags_report_validation_errors() -> io::Result<()> {
                     "Luau flag writes to stdout and is unavailable: {name}"
                 )),
             "{name}: {error}"
+        );
+    }
+
+    directory.close()
+}
+
+#[test]
+fn cli_patterns_match_configuration_selection_and_preserve_literals() -> io::Result<()> {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../core/tests/fixtures/selection/cases.json"
+    ))?;
+
+    let directory = tempfile::tempdir()?;
+
+    for source in fixture["sources"].as_array().expect("sources") {
+        let path = directory.path().join(source.as_str().expect("source"));
+        fs::create_dir_all(path.parent().expect("source parent"))?;
+        fs::write(path, include_bytes!("fixtures/selection/original.luau"))?;
+    }
+
+    fs::write(
+        directory.path().join("instar.toml"),
+        "[roblox]\nenabled=false",
+    )?;
+
+    fs::write(directory.path().join(".ignore"), "ignored.luau\n")?;
+
+    fs::write(
+        directory.path().join("ignored.luau"),
+        include_bytes!("fixtures/selection/original.luau"),
+    )?;
+
+    for case in fixture["cases"]
+        .as_array()
+        .expect("cases")
+        .iter()
+        .filter(|case| case["cli"] != false)
+    {
+        let pattern = case["pattern"].as_str().expect("pattern");
+
+        let output = Command::new(env!("CARGO_BIN_EXE_instar"))
+            .current_dir(directory.path())
+            .args(["--json", "format", "--check", pattern])
+            .output()?;
+
+        assert_eq!(output.status.code(), Some(1), "{case}: {output:?}");
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+
+        let mut found = report["changed"]
+            .as_array()
+            .expect("changed sources")
+            .iter()
+            .map(|path| {
+                Path::new(path.as_str().expect("path"))
+                    .strip_prefix(directory.path())
+                    .expect("relative source")
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect::<Vec<_>>();
+
+        let mut expected = case["expected"]
+            .as_array()
+            .expect("expected sources")
+            .iter()
+            .map(|source| source.as_str().expect("source").to_owned())
+            .collect::<Vec<_>>();
+
+        found.sort();
+        expected.sort();
+        assert_eq!(found, expected, "{case}: {report}");
+    }
+
+    for arguments in [
+        vec!["entry.luau"],
+        vec!["src"],
+        vec!["src/"],
+        vec!["entry.luau", "entry.luau"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_instar"))
+            .current_dir(directory.path())
+            .args(["--json", "format", "--check"])
+            .args(&arguments)
+            .output()?;
+
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+
+        assert_eq!(
+            report["changed"].as_array().expect("changes").len(),
+            if arguments[0].starts_with("src") {
+                4
+            } else {
+                1
+            }
+        );
+    }
+
+    let output = Command::new(env!("CARGO_BIN_EXE_instar"))
+        .current_dir(directory.path())
+        .args(["--json", "format", "--check"])
+        .arg(directory.path().join("entry.luau"))
+        .output()?;
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(report["changed"].as_array().expect("changes").len(), 1);
+
+    for pattern in ["missing.luau", "*missing*", "[", "!src/**", "src/**x"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_instar"))
+            .current_dir(directory.path())
+            .args(["--json", "format", "--check", pattern])
+            .output()?;
+
+        assert_eq!(output.status.code(), Some(2), "{pattern}: {output:?}");
+        assert!(output.stdout.is_empty(), "{output:?}");
+        let error: serde_json::Value = serde_json::from_slice(&output.stderr)?;
+        assert!(error["error"].is_string(), "{error}");
+    }
+
+    fs::write(
+        directory.path().join("instar.toml"),
+        "exclude=['entry.luau']\n[roblox]\nenabled=false",
+    )?;
+
+    for operation in ["check", "lint"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_instar"))
+            .current_dir(directory.path())
+            .args(["--color", "never", operation, "entry.luau"])
+            .output()?;
+
+        assert!(output.status.success(), "{output:?}");
+
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("1 skipped"),
+            "{output:?}"
         );
     }
 

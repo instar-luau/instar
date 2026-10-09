@@ -10,7 +10,7 @@ use crate::{
 };
 
 impl Project {
-    /// Returns native hierarchies for the entry and selected editor roots.
+    /// Returns native hierarchies for the entry and workspace roots.
     ///
     /// Only the entry graph contains a position selection. Empty roots restrict
     /// discovery to that graph.
@@ -43,7 +43,7 @@ impl Project {
                 }
 
                 let mut graphs = vec![selected];
-                let paths = project.index_sources(roots, &options.remaining(started))?;
+                let paths = project.workspace_sources(roots, &options.remaining(started))?;
                 let entries = project.entries(&paths, &options.remaining(started))?;
 
                 for entry in entries {

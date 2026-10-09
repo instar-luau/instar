@@ -93,7 +93,7 @@ fn native_and_instar_policies_are_independent_and_checker_stays_clean() -> io::R
 }
 
 #[test]
-fn selection_chooses_entries_and_reports_reachable_dependencies() -> io::Result<()> {
+fn selection_reports_targets_and_attributes_dependency_failures() -> io::Result<()> {
     let directory = Directory::new(Some(include_str!("../fixtures/linting/native/strict.json")))?;
 
     directory.file(
@@ -112,7 +112,7 @@ fn selection_chooses_entries_and_reports_reachable_dependencies() -> io::Result<
     )?;
 
     let mut project = project();
-    let entries = [Entry::new(entry)];
+    let entries = [Entry::new(entry.clone())];
     let result = project.lint(&entries, &options())?;
     assert_eq!(result.modules.len(), 2);
     assert_eq!(result.modules, project.check(&entries, &options())?.modules);
@@ -121,26 +121,27 @@ fn selection_chooses_entries_and_reports_reachable_dependencies() -> io::Result<
         result
             .diagnostics
             .iter()
-            .any(
-                |diagnostic| diagnostic.location.module.source() == dependency
-                    && diagnostic.kind == Kind::Rule(Rule::UnusedVariable)
-            )
+            .all(|diagnostic| diagnostic.location.module.source() == entry)
     );
 
-    assert!(result.diagnostics.iter().any(|diagnostic| diagnostic.location.module.source() == dependency && matches!(&diagnostic.kind, Kind::Native { name, .. } if name == "LocalUnused")));
+    assert!(!rule(&result, Rule::UnusedVariable));
 
     assert!(
-        result
+        !result
             .diagnostics
             .iter()
-            .any(
-                |diagnostic| diagnostic.location.module.source() == dependency
-                    && matches!(
-                        diagnostic.kind,
-                        Kind::Analysis(analysis::Kind::Resolution { .. })
-                    )
-            )
+            .any(|diagnostic| matches!(diagnostic.kind, Kind::Native { .. }))
     );
+
+    assert!(result.diagnostics.iter().any(|diagnostic| {
+        matches!(
+            diagnostic.kind,
+            Kind::Analysis(analysis::Kind::Analysis { .. })
+        ) && diagnostic
+            .related
+            .iter()
+            .any(|related| related.location.module.source() == dependency)
+    }));
 
     assert_eq!(
         project
@@ -330,13 +331,17 @@ fn missing_and_invalid_definitions_remain_explicit_with_syntax_findings() -> io:
 
     assert!(rule(&missing, Rule::DivideByZero));
 
-    assert!(missing.diagnostics.iter().any(|diagnostic| matches!(
-        diagnostic.location.module,
-        Origin::Definition(_)
-    ) && matches!(
-        diagnostic.kind,
-        Kind::Analysis(analysis::Kind::Analysis { .. })
-    )));
+    assert!(missing.diagnostics.iter().any(|diagnostic| {
+        matches!(diagnostic.location.module, Origin::Module(_))
+            && matches!(
+                diagnostic.kind,
+                Kind::Analysis(analysis::Kind::Analysis { .. })
+            )
+            && diagnostic
+                .related
+                .iter()
+                .any(|related| matches!(related.location.module, Origin::Definition(_)))
+    }));
 
     let definition = directory.path().join("globals.luau");
 
@@ -352,18 +357,16 @@ fn missing_and_invalid_definitions_remain_explicit_with_syntax_findings() -> io:
         Completion::Incomplete(Reason::Environment)
     );
 
-    assert!(
-        invalid
-            .diagnostics
+    assert!(invalid.diagnostics.iter().any(|diagnostic| {
+        diagnostic
+            .related
             .iter()
-            .any(
-                |diagnostic| diagnostic.location.module.source() == definition
-                    && matches!(
-                        diagnostic.kind,
-                        Kind::Analysis(analysis::Kind::Syntax { .. })
-                    )
+            .any(|related| related.location.module.source() == definition)
+            && matches!(
+                diagnostic.kind,
+                Kind::Analysis(analysis::Kind::Analysis { .. })
             )
-    );
+    }));
 
     project.change(Change::Overlay {
         path: definition,

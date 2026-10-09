@@ -1,7 +1,6 @@
 //! Formatter configuration and require grouping policies.
-use std::{collections::BTreeSet, io, num::NonZeroUsize};
+use std::{collections::BTreeSet, io, num::NonZeroUsize, slice};
 
-use glob::Pattern;
 use instar_analysis::{error::invalid, selection};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -184,12 +183,10 @@ impl Requires {
                             )));
                         }
 
-                        Pattern::new(pattern).map_err(|error| {
-                            invalid(format!(
-                                "format.requires.groups: group {:?} has invalid glob {pattern:?}: {error}",
-                                group.name
-                            ))
-                        })?;
+                        selection::validate(
+                            Some(slice::from_ref(pattern)),
+                            "format.requires.groups",
+                        )?;
                     }
 
                     group.name.as_str()

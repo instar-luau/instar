@@ -1,0 +1,4 @@
+exclude = ['**']
+
+[roblox]
+enabled = false

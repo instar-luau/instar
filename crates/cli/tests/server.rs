@@ -799,7 +799,8 @@ fn diagnostics_follow_versions_clear_on_close_and_recover_from_configuration_err
 }
 
 #[test]
-fn dependency_diagnostics_follow_disk_changes_and_deletion() -> io::Result<()> {
+fn dependency_failures_follow_disk_changes_without_standalone_dependency_findings() -> io::Result<()>
+{
     let directory = tempfile::tempdir()?;
 
     fs::write(
@@ -812,10 +813,7 @@ fn dependency_diagnostics_follow_disk_changes_and_deletion() -> io::Result<()> {
     let caller = include_str!("fixtures/diagnostics/caller.luau");
     fs::write(&path, caller)?;
 
-    fs::write(
-        &dependency,
-        include_str!("fixtures/diagnostics/invalid.luau"),
-    )?;
+    fs::write(&dependency, "local =")?;
 
     let document = uri(&path);
     let imported = uri(&dependency);
@@ -831,16 +829,16 @@ fn dependency_diagnostics_follow_disk_changes_and_deletion() -> io::Result<()> {
 
     assert_ne!(
         client
-            .diagnostics(&imported, None)
+            .diagnostics(&document, Some(1))
             .as_array()
-            .expect("dependency diagnostics")
+            .expect("attributed dependency diagnostics")
             .as_slice(),
         Vec::<Value>::new().as_slice()
     );
 
     fs::write(&dependency, include_str!("fixtures/diagnostics/valid.luau"))?;
     client.send(&json!({"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles","params":{"changes":[{"uri":imported,"type":2}]}}))?;
-    assert_eq!(client.diagnostics(&imported, None), json!([]));
+    assert_eq!(client.diagnostics(&document, Some(1)), json!([]));
     fs::remove_file(&dependency)?;
     client.send(&json!({"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles","params":{"changes":[{"uri":imported,"type":3}]}}))?;
 
@@ -2601,7 +2599,7 @@ fn rename_validates_cross_file_edits_and_negotiates_document_versions() -> io::R
 
     fs::write(
         directory.path().join("instar.toml"),
-        include_str!("fixtures/diagnostics/instar.toml"),
+        include_str!("fixtures/selection/graph.toml"),
     )?;
 
     for (name, source, _, _) in files {
@@ -2986,7 +2984,7 @@ fn movements_update_imports_and_moved_consumers_without_writing_sources() -> io:
 
         fs::write(
             directory.path().join("instar.toml"),
-            include_str!("fixtures/symbols/instar.toml"),
+            include_str!("fixtures/selection/graph.toml"),
         )?;
 
         fs::write(
@@ -4572,4 +4570,167 @@ fn diagnostics_preserve_mapped_contexts_and_follow_source_map_changes() -> io::R
     assert!(client.wait()?.success());
 
     Ok(())
+}
+
+#[test]
+fn diagnostic_selection_agrees_across_push_and_pulls_and_clears_live_results() -> io::Result<()> {
+    let cases: Vec<Value> =
+        serde_json::from_str(include_str!("fixtures/selection/diagnostics.json"))?;
+
+    let source = include_str!("fixtures/selection/diagnostics.luau");
+    let directory = tempfile::tempdir()?;
+    let configuration = directory.path().join("instar.toml");
+    let document = uri(&directory.path().join("entry.luau"));
+    fs::write(directory.path().join("entry.luau"), source)?;
+    let mut expected = Vec::new();
+
+    for pull in [false, true] {
+        fs::write(
+            &configuration,
+            cases[0]["configuration"].as_str().expect("configuration"),
+        )?;
+
+        let mut client = Client::new(directory.path())?;
+
+        let capabilities = if pull {
+            json!({"textDocument":{"diagnostic":{}}})
+        } else {
+            json!({})
+        };
+
+        client.send(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":capabilities,"workspaceFolders":[{"uri":uri(directory.path()),"name":"selection"}]}}))?;
+        assert!(client.receive(1).get("error").is_none());
+        client.send(&json!({"jsonrpc":"2.0","method":"initialized","params":{}}))?;
+        client.send(&json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":document,"languageId":"luau","version":1,"text":source}}}))?;
+
+        for (index, case) in cases.iter().enumerate() {
+            if index > 0 {
+                fs::write(
+                    &configuration,
+                    case["configuration"].as_str().expect("configuration"),
+                )?;
+
+                client.send(&json!({"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles","params":{"changes":[{"uri":uri(&configuration),"type":2}]}}))?;
+            }
+
+            let findings = if pull {
+                client.send(&json!({"jsonrpc":"2.0","id":2,"method":"textDocument/diagnostic","params":{"textDocument":{"uri":document}}}))?;
+                let response = client.receive(2);
+                assert!(response.get("error").is_none(), "{response}");
+
+                response["result"]["items"].clone()
+            } else {
+                client.diagnostics(&document, Some(1))
+            };
+
+            let diagnostics = findings.as_array().expect("diagnostics");
+
+            assert_eq!(
+                diagnostics
+                    .iter()
+                    .any(|finding| finding["source"] == "Luau"),
+                case["checking"].as_bool().expect("checking"),
+                "{case}: {findings}"
+            );
+
+            assert_eq!(
+                diagnostics
+                    .iter()
+                    .any(|finding| finding["code"] == "divide_by_zero"),
+                case["linting"].as_bool().expect("linting"),
+                "{case}: {findings}"
+            );
+
+            if pull {
+                assert_eq!(findings, expected[index], "{case}");
+                client.send(&json!({"jsonrpc":"2.0","id":3,"method":"workspace/diagnostic","params":{"previousResultIds":[]}}))?;
+                let response = client.receive(3);
+
+                let reports = response["result"]["items"]
+                    .as_array()
+                    .expect("workspace reports");
+
+                assert_eq!(reports.len(), 1, "{response}");
+                assert_eq!(reports[0]["uri"], document);
+                assert_eq!(reports[0]["items"], findings);
+            } else {
+                expected.push(findings);
+            }
+        }
+
+        client.send(&json!({"jsonrpc":"2.0","id":4,"method":"shutdown"}))?;
+        assert_eq!(client.receive(4)["result"], Value::Null);
+        client.send(&json!({"jsonrpc":"2.0","method":"exit"}))?;
+        assert!(client.wait()?.success());
+    }
+
+    directory.close()
+}
+
+#[test]
+fn automatic_import_selection_refreshes_and_rejects_stale_edits() -> io::Result<()> {
+    let cases: Vec<Value> = serde_json::from_str(include_str!("fixtures/selection/imports.json"))?;
+    let directory = tempfile::tempdir()?;
+    let configuration = directory.path().join("instar.toml");
+
+    fs::write(
+        &configuration,
+        cases[0]["configuration"].as_str().expect("configuration"),
+    )?;
+
+    fs::write(
+        directory.path().join("dependency.luau"),
+        include_str!("fixtures/completion/dependency.luau"),
+    )?;
+
+    let source = include_str!("fixtures/completion/automatic.luau");
+    let document = uri(&directory.path().join("entry.luau"));
+    let mut client = Client::new(directory.path())?;
+    client.send(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"textDocument":{"completion":{"completionItem":{"resolveSupport":{"properties":["additionalTextEdits"]}}}}},"workspaceFolders":[{"uri":uri(directory.path()),"name":"selection"}]}}))?;
+    assert!(client.receive(1).get("error").is_none());
+    client.send(&json!({"jsonrpc":"2.0","method":"initialized","params":{}}))?;
+    client.send(&json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":document,"languageId":"luau","version":1,"text":source}}}))?;
+    let mut previous = None;
+
+    for (index, case) in cases.iter().enumerate() {
+        if index > 0 {
+            fs::write(
+                &configuration,
+                case["configuration"].as_str().expect("configuration"),
+            )?;
+
+            client.send(&json!({"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles","params":{"changes":[{"uri":uri(&configuration),"type":2}]}}))?;
+
+            if let Some(candidate) = previous.take() {
+                client.send(&json!({"jsonrpc":"2.0","id":3,"method":"completionItem/resolve","params":candidate}))?;
+                assert_eq!(client.receive(3)["error"]["code"], -32801);
+            }
+        }
+
+        client.send(&json!({"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":{"uri":document},"position":{"line":1,"character":17}}}))?;
+        let response = client.receive(2);
+        assert!(response.get("error").is_none(), "{response}");
+
+        let candidate = response["result"]["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .find(|item| item["label"] == "dependency")
+            .cloned();
+
+        assert_eq!(
+            candidate.is_some(),
+            case["available"].as_bool().expect("availability"),
+            "{case}: {response}"
+        );
+
+        previous = candidate;
+    }
+
+    client.send(&json!({"jsonrpc":"2.0","id":4,"method":"shutdown"}))?;
+    assert_eq!(client.receive(4)["result"], Value::Null);
+    client.send(&json!({"jsonrpc":"2.0","method":"exit"}))?;
+    assert!(client.wait()?.success());
+
+    directory.close()
 }

@@ -1,0 +1,21 @@
+{
+  "sources": ["entry.luau", "src/a.luau", "src/b.lua", "src/entry.luau", "src/nested/entry.luau", "other/src/a.luau", "other/Entry.luau", "named.luau/child.lua"],
+  "cases": [
+    {"pattern": "*.luau", "expected": ["entry.luau", "src/a.luau", "src/entry.luau", "src/nested/entry.luau", "other/src/a.luau", "other/Entry.luau", "named.luau/child.lua"]},
+    {"pattern": "src/*.luau", "expected": ["src/a.luau", "src/entry.luau"]},
+    {"pattern": "src/**/*.luau", "expected": ["src/a.luau", "src/entry.luau", "src/nested/entry.luau"]},
+    {"pattern": "src/?.luau", "expected": ["src/a.luau"]},
+    {"pattern": "src/[ab].l[ua][au]", "expected": ["src/b.lua"]},
+    {"pattern": "src\\*.luau", "expected": ["src/a.luau", "src/entry.luau"]},
+    {"pattern": "s*/", "expected": ["src/a.luau", "src/b.lua", "src/entry.luau", "src/nested/entry.luau", "other/src/a.luau"]},
+    {"pattern": "src", "cli": false, "expected": ["src/a.luau", "src/b.lua", "src/entry.luau", "src/nested/entry.luau", "other/src/a.luau"]},
+    {"pattern": "src/", "cli": false, "expected": ["src/a.luau", "src/b.lua", "src/entry.luau", "src/nested/entry.luau", "other/src/a.luau"]},
+    {"pattern": "/src/", "cli": false, "expected": ["src/a.luau", "src/b.lua", "src/entry.luau", "src/nested/entry.luau"]},
+    {"pattern": "/entry.luau", "cli": false, "expected": ["entry.luau"]},
+    {"pattern": "entry.luau", "cli": false, "expected": ["entry.luau", "src/entry.luau", "src/nested/entry.luau"]},
+    {"pattern": "**/entry.luau", "expected": ["entry.luau", "src/entry.luau", "src/nested/entry.luau"]},
+    {"pattern": "named.luau/", "cli": false, "expected": ["named.luau/child.lua"]},
+    {"pattern": "**/named.luau/", "expected": ["named.luau/child.lua"]}
+  ],
+  "invalid": ["", "!src/**", "[", "src/**x", "nul\u0000name"]
+}

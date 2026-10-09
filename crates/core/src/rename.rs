@@ -102,7 +102,7 @@ impl Project {
                     roots
                 };
 
-                let paths = project.index_sources(roots, &options.remaining(started))?;
+                let paths = project.workspace_sources(roots, &options.remaining(started))?;
                 let mut entries = project.entries(&paths, &options.remaining(started))?;
                 entries.insert(0, entry.clone());
                 let original = project.rename_index(&entries, options, started)?;

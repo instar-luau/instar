@@ -10,7 +10,7 @@ use crate::{
 };
 
 impl Project {
-    /// Finds native references in the entry graph and selected editor roots.
+    /// Finds native references in the entry graph and workspace roots.
     ///
     /// Empty roots restrict discovery to the entry's reachable graph.
     ///
@@ -63,7 +63,7 @@ impl Project {
                     .filter(|reference| related(reference, &selected))
                     .collect::<Vec<_>>();
 
-                let paths = project.index_sources(roots, &options.remaining(started))?;
+                let paths = project.workspace_sources(roots, &options.remaining(started))?;
                 let entries = project.entries(&paths, &options.remaining(started))?;
 
                 found.extend(

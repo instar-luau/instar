@@ -26,6 +26,7 @@ mod references;
 mod rename;
 pub mod resolve;
 pub mod roblox;
+mod selection;
 mod signatures;
 pub mod snapshot;
 pub mod source;

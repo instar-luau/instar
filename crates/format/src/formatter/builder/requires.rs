@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use glob::Pattern;
+use instar_analysis::selection;
 use instar_syntax::literal;
 use vermis::tree::{NodeIndex, NodeKind};
 
@@ -127,9 +127,10 @@ impl Builder<'_, '_> {
 
                 Group::Builtin(BuiltinGroup::Other) => true,
 
-                Group::Custom(group) => group.patterns.iter().any(|pattern| {
-                    Pattern::new(pattern).is_ok_and(|pattern| pattern.matches(path))
-                }),
+                Group::Custom(group) => group
+                    .patterns
+                    .iter()
+                    .any(|pattern| selection::string(path, pattern).unwrap_or(false)),
             })
             .unwrap_or(self.configuration.requires.groups.len())
     }

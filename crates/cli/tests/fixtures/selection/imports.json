@@ -1,0 +1,7 @@
+[
+  {"configuration":"[roblox]\nenabled=false\n", "available":true},
+  {"configuration":"[roblox]\nenabled=false\n[editor.imports]\nexclude=['dependency.luau']\n", "available":false},
+  {"configuration":"[roblox]\nenabled=false\n[editor.imports]\ninclude=['different.luau']\n", "available":false},
+  {"configuration":"[roblox]\nenabled=false\n[editor.index]\nexclude=['dependency.luau']\n[editor.imports]\ninclude=['dependency.luau']\nexclude=[]\n", "available":false},
+  {"configuration":"[roblox]\nenabled=false\n[editor.imports]\ninclude=[]\nexclude=[]\n", "available":true}
+]

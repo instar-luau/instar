@@ -8,8 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use glob::Pattern;
-use instar_analysis::{Options, error::invalid};
+use instar_analysis::{Options, error::invalid, selection};
 use instar_bridge::{self as bridge, Snapshot, flags, frontend::Frontend};
 use toml::{Value, map};
 
@@ -496,17 +495,7 @@ fn anchor_list(
             continue;
         }
 
-        if Path::new(text).is_absolute() {
-            continue;
-        }
-
-        let directory = directory
-            .to_str()
-            .ok_or_else(|| invalid("configuration directories must be UTF-8"))?;
-
-        let prefix = Pattern::escape(&directory.replace('\\', "/"));
-
-        *text = format!("{prefix}/{text}");
+        *text = selection::anchor(directory, text)?;
     }
 
     Ok(())

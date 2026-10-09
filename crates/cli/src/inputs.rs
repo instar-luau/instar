@@ -1,15 +1,16 @@
 use std::{
     collections::BTreeSet,
-    fs,
+    env, fs,
     io::{self, Read},
     path::{self, Path, PathBuf},
+    slice,
     sync::mpsc,
     thread,
     time::{Duration, Instant},
 };
 
 use eyre::{Result, WrapErr, ensure};
-use instar_analysis::Options;
+use instar_analysis::{Options, selection};
 
 use instar_core::{
     discovery,
@@ -59,6 +60,15 @@ pub(crate) fn load(
 
         match fs::metadata(&path) {
             Ok(metadata) if metadata.is_file() => {
+                ensure!(
+                    matches!(
+                        path.extension().and_then(|extension| extension.to_str()),
+                        Some("lua" | "luau")
+                    ),
+                    "input is not a supported source file: {}",
+                    path.display()
+                );
+
                 selected.insert(path);
             }
 
@@ -75,9 +85,10 @@ pub(crate) fn load(
                 if error.kind() == io::ErrorKind::NotFound
                     || path.to_string_lossy().contains(['*', '?', '[']) =>
             {
-                let text = path
+                let text = input
                     .to_str()
-                    .ok_or_else(|| eyre::eyre!("glob paths must be UTF-8"))?;
+                    .ok_or_else(|| eyre::eyre!("glob paths must be UTF-8"))?
+                    .replace('\\', "/");
 
                 ensure!(
                     text.contains(['*', '?', '[']),
@@ -85,22 +96,28 @@ pub(crate) fn load(
                     path.display()
                 );
 
-                let pattern = glob::Pattern::new(text)
-                    .wrap_err_with(|| format!("invalid glob: {}", input.display()))?;
+                selection::validate(Some(slice::from_ref(&text)), "input")?;
+                let mut base = env::current_dir()?;
 
-                let mut base = PathBuf::new();
+                let pattern = if input.is_absolute() {
+                    base = PathBuf::new();
 
-                for component in path.components() {
-                    if component
-                        .as_os_str()
-                        .to_string_lossy()
-                        .contains(['*', '?', '['])
-                    {
-                        break;
+                    for component in path.components() {
+                        if component
+                            .as_os_str()
+                            .to_string_lossy()
+                            .contains(['*', '?', '['])
+                        {
+                            break;
+                        }
+
+                        base.push(component);
                     }
 
-                    base.push(component);
-                }
+                    text
+                } else {
+                    selection::anchor(&base, &text)?
+                };
 
                 let mut matches = BTreeSet::new();
                 walk(&base, Some(&pattern), &mut matches, options, started)?;
@@ -178,7 +195,7 @@ fn stdin(options: &Options, started: Instant) -> Result<String> {
 
 fn walk(
     root: &Path,
-    pattern: Option<&glob::Pattern>,
+    pattern: Option<&String>,
     selected: &mut BTreeSet<PathBuf>,
     options: &Options,
     started: Instant,
@@ -186,15 +203,10 @@ fn walk(
     for path in discovery::files(root, &options.remaining(started))? {
         options.check(started)?;
 
-        if pattern.is_none_or(|pattern| {
-            pattern.matches_path_with(
-                &path,
-                glob::MatchOptions {
-                    require_literal_separator: true,
-                    ..glob::MatchOptions::new()
-                },
-            )
-        }) {
+        if match pattern {
+            Some(pattern) => selection::matches(&path, Some(slice::from_ref(pattern)), false)?,
+            None => true,
+        } {
             selected.insert(path);
         }
     }

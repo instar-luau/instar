@@ -58,18 +58,31 @@ pub(crate) enum Command {
 
 #[derive(Subcommand)]
 pub(crate) enum Analysis {
-    #[command(about = "Typecheck source files and their dependencies")]
-    Check { files: Vec<PathBuf> },
+    #[command(about = "Typecheck selected source files, retaining dependency analysis")]
+    Check {
+        #[arg(
+            help = "Files, directories, or quoted patterns (cwd when omitted); bare patterns match at any depth, directories include descendants, trailing / is directories only, slash patterns anchor to cwd; *, ? do not cross / and ** spans levels; case-sensitive, no ! negation"
+        )]
+        files: Vec<PathBuf>,
+    },
 
     #[command(about = "Format files in place, check formatting, or format stdin to stdout")]
     Format {
+        #[arg(
+            help = "Files, directories, or quoted patterns (cwd when omitted); bare patterns match at any depth, directories include descendants, trailing / is directories only, slash patterns anchor to cwd; *, ? do not cross / and ** spans levels; case-sensitive, no ! negation"
+        )]
         files: Vec<PathBuf>,
         #[arg(long)]
         check: bool,
     },
 
-    #[command(about = "Lint source files and their dependencies")]
-    Lint { files: Vec<PathBuf> },
+    #[command(about = "Lint selected source files, retaining dependency analysis")]
+    Lint {
+        #[arg(
+            help = "Files, directories, or quoted patterns (cwd when omitted); bare patterns match at any depth, directories include descendants, trailing / is directories only, slash patterns anchor to cwd; *, ? do not cross / and ** spans levels; case-sensitive, no ! negation"
+        )]
+        files: Vec<PathBuf>,
+    },
 }
 
 #[derive(Parser)]

@@ -1,9 +1,19 @@
-use std::{collections::BTreeMap, io};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io, mem,
+    rc::Rc,
+};
 
 use instar_analysis::{Diagnostic, Kind, Location, Related};
 
 use super::{Origin, locate};
-use crate::{graph::Node, native, source::Document};
+
+use crate::{
+    environment::Environment,
+    graph::{Graph, Node},
+    native,
+    source::Document,
+};
 
 struct Resolution {
     location: Location<Origin>,
@@ -144,5 +154,121 @@ impl Report {
         });
 
         Ok(())
+    }
+
+    pub(crate) fn target(origin: &Origin, targets: &BTreeSet<String>) -> bool {
+        matches!(origin, Origin::Module(module) if targets.contains(&native::name(&module.identity)))
+    }
+
+    pub(crate) fn select(
+        &mut self,
+        targets: &BTreeSet<String>,
+        graph: &Graph,
+        environments: &BTreeMap<String, Rc<Environment>>,
+    ) -> Vec<Diagnostic<Origin>> {
+        for diagnostic in mem::take(&mut self.diagnostics) {
+            if Self::target(&diagnostic.location.module, targets) {
+                self.record(diagnostic.clone());
+            }
+
+            if matches!(diagnostic.kind, Kind::Type { .. })
+                && matches!(diagnostic.location.module, Origin::Module(_))
+            {
+                continue;
+            }
+
+            let mut affected = match &diagnostic.location.module {
+                Origin::Module(module) => BTreeSet::from([module.identity.clone()]),
+
+                Origin::Definition(path) => {
+                    let name = format!("Definition({})", path.display());
+
+                    graph
+                        .nodes
+                        .keys()
+                        .filter(|identity| {
+                            environments
+                                .get(&native::name(identity))
+                                .is_some_and(|environment| {
+                                    environment
+                                        .definitions
+                                        .iter()
+                                        .any(|definition| definition.name == name)
+                                        || environment.diagnostics.iter().any(|failure| {
+                                            failure.location.module == diagnostic.location.module
+                                        })
+                                })
+                        })
+                        .cloned()
+                        .collect()
+                }
+            };
+
+            let mut pending = affected.iter().cloned().collect::<Vec<_>>();
+
+            while let Some(identity) = pending.pop() {
+                for dependent in graph.dependents(&identity) {
+                    if affected.insert(dependent.clone()) {
+                        pending.push(dependent);
+                    }
+                }
+            }
+
+            for identity in &affected {
+                let name = native::name(identity);
+
+                if !targets.contains(&name) {
+                    continue;
+                }
+
+                let Some((origin, document)) = self.sources.get(&name) else {
+                    continue;
+                };
+
+                if *origin == diagnostic.location.module {
+                    continue;
+                }
+
+                let range = graph
+                    .node(identity)
+                    .and_then(|node| {
+                        node.sites
+                            .iter()
+                            .find(|site| {
+                                site.target
+                                    .as_ref()
+                                    .is_some_and(|target| affected.contains(&target.identity))
+                            })
+                            .map(|site| site.range)
+                    })
+                    .unwrap_or([0, 0]);
+
+                let mut related = vec![Related {
+                    location: diagnostic.location.clone(),
+                    message: diagnostic.message.clone(),
+                }];
+
+                related.extend(diagnostic.related.iter().cloned());
+
+                self.record(Diagnostic {
+                    location: Location {
+                        module: origin.clone(),
+                        revision: document.revision,
+                        range,
+                    },
+                    kind: Kind::Analysis {
+                        code: diagnostic.kind.native_code(),
+                    },
+                    message: format!(
+                        "Dependency {}: {}",
+                        diagnostic.location.module.source().display(),
+                        diagnostic.message
+                    ),
+                    related,
+                });
+            }
+        }
+
+        mem::take(&mut self.diagnostics)
     }
 }

@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     env,
     io::{self, IsTerminal, Write},
     path::PathBuf,
@@ -11,7 +11,7 @@ use codespan_reporting::term::termcolor::ColorChoice;
 use eyre::{Result, WrapErr, ensure};
 use instar_analysis::{Completion, Options, Reason, process};
 
-use instar_core::{analysis::Origin, project::Project};
+use instar_core::{configuration::Operation, project::Project};
 
 use instar_format::{Configuration, Formatter};
 
@@ -101,17 +101,21 @@ pub(crate) fn run(arguments: &Arguments, command: &Analysis) -> Result<bool> {
         }
 
         Analysis::Check { .. } => {
+            let paths = selected(
+                paths,
+                command,
+                &mut project,
+                &mut reporter,
+                &options,
+                started,
+            )?;
+
             let entries = project.entries(&paths, &options.remaining(started))?;
             reporter.phase("Checking", None)?;
 
             let result = project.check(&entries, &options.remaining(started))?;
 
-            reporter.processed = result
-                .modules
-                .iter()
-                .map(Origin::source)
-                .collect::<BTreeSet<_>>()
-                .len();
+            reporter.processed = paths.len();
 
             for diagnostic in result.diagnostics {
                 reporter.diagnostic(&mut project, &diagnostic.into())?;
@@ -122,17 +126,21 @@ pub(crate) fn run(arguments: &Arguments, command: &Analysis) -> Result<bool> {
         }
 
         Analysis::Lint { .. } => {
+            let paths = selected(
+                paths,
+                command,
+                &mut project,
+                &mut reporter,
+                &options,
+                started,
+            )?;
+
             let entries = project.entries(&paths, &options.remaining(started))?;
             reporter.phase("Linting", None)?;
 
             let result = project.lint(&entries, &options.remaining(started))?;
 
-            reporter.processed = result
-                .modules
-                .iter()
-                .map(Origin::source)
-                .collect::<BTreeSet<_>>()
-                .len();
+            reporter.processed = paths.len();
 
             for diagnostic in result.diagnostics {
                 reporter.diagnostic(&mut project, &diagnostic)?;
@@ -151,6 +159,31 @@ pub(crate) fn run(arguments: &Arguments, command: &Analysis) -> Result<bool> {
 
     Ok(!reporter.failed
         && (!matches!(command, Analysis::Format { check: true, .. }) || changed.is_empty()))
+}
+
+fn selected(
+    paths: Vec<PathBuf>,
+    command: &Analysis,
+    project: &mut Project,
+    reporter: &mut Reporter,
+    options: &Options,
+    started: Instant,
+) -> Result<Vec<PathBuf>> {
+    let operation = match command {
+        Analysis::Check { .. } => Operation::Check,
+        Analysis::Lint { .. } => Operation::Lint,
+        Analysis::Format { .. } => unreachable!("formatter uses its configuration gate"),
+    };
+
+    let targets = project.selected_sources(&paths, operation, &options.remaining(started))?;
+
+    for path in paths {
+        if targets.binary_search(&path).is_err() {
+            reporter.skipped.push(path);
+        }
+    }
+
+    Ok(targets)
 }
 
 fn prepare(
@@ -175,7 +208,7 @@ fn prepare(
             let source = project.source(&path)?.text;
             inputs.push((path, source, configuration));
         } else {
-            reporter.skipped += 1;
+            reporter.skipped.push(path.clone());
 
             if matches!(mode, Mode::Stdout) {
                 io::stdout()

@@ -1,0 +1,7 @@
+exclude = ['dependency/']
+
+[roblox]
+enabled = false
+
+[lint.implicit_any_local]
+level = 'warn'

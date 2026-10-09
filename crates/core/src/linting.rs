@@ -123,10 +123,10 @@ struct Analysis {
 impl Project {
     /// Lints selected contextual sources using independent native and Instar policies.
     ///
-    /// Include/exclude settings select root entries. All reachable modules contribute
-    /// findings according to their own rule settings. Native warnings use the shared
-    /// native frontend and declaration environments. Instar syntax rules do not load
-    /// declarations when no native warning or inferred-type rule is requested.
+    /// Include/exclude settings select diagnostic targets from candidate entries.
+    /// Dependencies retain analysis and validation without standalone findings.
+    /// Native warnings use the shared native frontend and declaration environments.
+    /// Instar syntax rules do not load declarations for syntax-only policies.
     /// Roblox environments load the configured generated asset bundle.
     /// Native analysis is isolated in a cancellable worker process.
     /// Syntax linting concurrency is limited by available parallelism and module count.
@@ -167,9 +167,13 @@ impl Project {
         if let Some(reason) = options.interrupted(started) {
             result.completion = Completion::Incomplete(reason);
 
-            result
-                .diagnostics
-                .extend(analysis.report.diagnostics.into_iter().map(Into::into));
+            result.diagnostics.extend(
+                analysis
+                    .report
+                    .select(&analysis.roots, &self.graph, &analysis.environments)
+                    .into_iter()
+                    .map(Into::into),
+            );
 
             return Ok(result);
         }
@@ -224,7 +228,33 @@ impl Project {
 
         result
             .diagnostics
-            .extend(analysis.report.diagnostics.into_iter().map(Into::into));
+            .retain(|diagnostic| Report::target(&diagnostic.location.module, &analysis.roots));
+
+        let diagnostics =
+            analysis
+                .report
+                .select(&analysis.roots, &self.graph, &analysis.environments);
+
+        for diagnostic in &mut result.diagnostics {
+            if matches!(
+                diagnostic.kind,
+                Kind::Analysis(analysis::Kind::Unsupported | analysis::Kind::Analysis { .. })
+            ) {
+                for failure in &diagnostics {
+                    if failure.location.module == diagnostic.location.module {
+                        for related in &failure.related {
+                            if !diagnostic.related.contains(related) {
+                                diagnostic.related.push(related.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        result
+            .diagnostics
+            .extend(diagnostics.into_iter().map(Into::into));
 
         Ok(result)
     }
@@ -656,6 +686,5 @@ impl Analysis {
 fn eligible(source: &Path, settings: &Settings) -> io::Result<bool> {
     let lint = &settings.configuration.lint;
 
-    Ok(selection::matches(source, lint.include.as_deref(), true)?
-        && !selection::matches(source, lint.exclude.as_deref(), false)?)
+    selection::selected(source, lint.include.as_deref(), lint.exclude.as_deref())
 }

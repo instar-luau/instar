@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, io, path::PathBuf, time::Instant};
 
-use instar_analysis::{Edit, Location, Options, error::invalid};
+use instar_analysis::{Edit, Location, Options, error::invalid, selection};
 
 use instar_bridge::frontend::{
     Notation, Parentheses, Suggestion, SuggestionContext, SuggestionKind,
@@ -83,6 +83,21 @@ impl Project {
             options.check(started)?;
 
             if path == module.source {
+                continue;
+            }
+
+            let settings = self.configuration(
+                path.parent()
+                    .ok_or_else(|| invalid("import candidate has no parent"))?,
+            )?;
+
+            let imports = &settings.configuration.editor.imports;
+
+            if !selection::selected(
+                &path,
+                imports.include.as_deref(),
+                imports.exclude.as_deref(),
+            )? {
                 continue;
             }
 

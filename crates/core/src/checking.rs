@@ -11,10 +11,10 @@ use crate::{
 };
 
 impl Project {
-    /// Checks selected entries and reports dependency errors once per exact module.
+    /// Checks selected targets while retaining dependency analysis and validation.
     ///
-    /// Instar patterns select entries only. Native configuration controls language
-    /// modes and type error visibility; native lint warnings are never emitted.
+    /// Only selected candidates report standalone findings. Dependency failures are
+    /// attributed to affected targets. Native configuration controls language modes.
     /// Roblox environments use automatically downloaded and verified assets.
     /// Native analysis is isolated in a cancellable worker process.
     /// Missing declaration files use revision zero and an empty source range.
@@ -60,14 +60,10 @@ impl Project {
 
                     let settings = project.configuration(directory)?;
 
-                    if !selection::matches(
+                    if !selection::selected(
                         &source,
                         settings.configuration.check.include.as_deref(),
-                        true,
-                    )? || selection::matches(
-                        &source,
                         settings.configuration.check.exclude.as_deref(),
-                        false,
                     )? {
                         options.report(
                             "Discovering dependencies",
@@ -118,7 +114,10 @@ impl Project {
         self.prepare_modules(identities, &mut analysis, &mut result, options, started)?;
 
         if result.completion != Completion::Complete {
-            result.diagnostics = analysis.report.diagnostics;
+            result.diagnostics =
+                analysis
+                    .report
+                    .select(&roots, &self.graph, &analysis.environments);
 
             return Ok(result);
         }
@@ -132,20 +131,25 @@ impl Project {
             native::definitions(&analysis.environments, frontend, options, started)?;
 
         if result.completion != Completion::Complete {
-            result.diagnostics = analysis.report.diagnostics;
+            result.diagnostics =
+                analysis
+                    .report
+                    .select(&roots, &self.graph, &analysis.environments);
 
             return Ok(result);
         }
 
         let remaining = native::progress(&result.modules, options).remaining(started);
-        let checked = frontend.check(&roots.into_iter().collect::<Vec<_>>(), &remaining)?;
+        let checked = frontend.check(&roots.iter().cloned().collect::<Vec<_>>(), &remaining)?;
         result.completion = result.completion.combine(checked.completion);
 
         for diagnostic in checked.diagnostics {
             analysis.report.native(diagnostic)?;
         }
 
-        result.diagnostics = analysis.report.diagnostics;
+        result.diagnostics = analysis
+            .report
+            .select(&roots, &self.graph, &analysis.environments);
 
         if let Some(reason) = options.interrupted(started) {
             result.completion = Completion::Incomplete(reason);

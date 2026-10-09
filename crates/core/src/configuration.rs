@@ -17,12 +17,19 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Configuration {
-    /// Global include patterns; an empty list selects every source.
+    /// Global include patterns; empty selects all discovered candidates.
+    /// Bare names match at any depth, directories include descendants, and trailing
+    /// slashes match directories only. Slash-containing patterns are anchored to the
+    /// declaring configuration directory, including leading slashes. Matching is
+    /// case-sensitive with normalized `/` separators; `*` and `?` do not cross `/`,
+    /// `**` spans zero or more levels, and character classes are supported.
+    /// Negation is invalid. Child arrays replace inherited arrays; omissions inherit
+    /// with the declaring directory retained. Filesystem ignores govern discovery.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Vec<String>")]
     pub include: Option<Vec<String>>,
 
-    /// Global exclusions; exclusions take precedence over includes.
+    /// Global exclusions applied after includes; empty excludes nothing.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Vec<String>")]
     pub exclude: Option<Vec<String>>,
@@ -149,16 +156,26 @@ impl Configuration {
     }
 }
 
+/// Diagnostic operation used to select source candidates independently.
+#[derive(Clone, Copy)]
+pub enum Operation {
+    /// Native type checking.
+    Check,
+
+    /// Native and Instar linting.
+    Lint,
+}
+
 /// Optional file-selection overrides.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Selection {
-    /// Include patterns; omission falls back to global selection.
+    /// Include patterns; an explicit list replaces global includes, otherwise inherits.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Vec<String>")]
     pub include: Option<Vec<String>>,
 
-    /// Exclude patterns; omission falls back to global selection.
+    /// Exclude patterns; an explicit list replaces global exclusions, otherwise inherits.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Vec<String>")]
     pub exclude: Option<Vec<String>>,
@@ -171,7 +188,7 @@ pub struct Editor {
     /// Diagnostic publication scope.
     pub diagnostics: Diagnostics,
 
-    /// Workspace indexing selection.
+    /// Workspace indexing selection, independent of dependency availability and graph-safe edits.
     pub index: Selection,
 
     /// Completion preferences.
@@ -192,15 +209,15 @@ pub struct Diagnostics {
     pub scope: Scope,
 }
 
-/// Diagnostic publication scope; dependencies may still be analyzed.
+/// Diagnostic publication scope; check and lint filters apply independently.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Scope {
-    /// Publish diagnostics for open files.
+    /// Publish diagnostics for open or directly requested documents, even outside the index.
     #[default]
     OpenFiles,
 
-    /// Publish diagnostics across selected workspace files.
+    /// Additionally publish diagnostics for index-selected discovered workspace files.
     Workspace,
 }
 
@@ -225,7 +242,7 @@ pub struct Imports {
     /// Offer import completions.
     pub enabled: bool,
 
-    /// Independently selected import candidates.
+    /// Import candidates narrowed from the index; includes cannot restore excluded candidates.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Vec<String>")]
     pub include: Option<Vec<String>>,

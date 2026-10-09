@@ -62,7 +62,7 @@ fn imported_types_and_source_updates() -> io::Result<()> {
 }
 
 #[test]
-fn dependency_errors_are_not_filtered_or_repeated() -> io::Result<()> {
+fn dependency_type_findings_are_filtered_without_dropping_analysis() -> io::Result<()> {
     let directory = Directory::new(Some(include_str!(
         "../fixtures/checking/imported/strict.json"
     )))?;
@@ -99,8 +99,12 @@ fn dependency_errors_are_not_filtered_or_repeated() -> io::Result<()> {
             .count()
     };
 
-    assert!(dependency_errors(&single) > 0);
-    assert_eq!(dependency_errors(&multiple), dependency_errors(&single));
+    assert_eq!(dependency_errors(&single), 0);
+    assert_eq!(dependency_errors(&multiple), 0);
+    assert_eq!(single.modules.len(), 2);
+    assert_eq!(multiple.modules.len(), 3);
+    assert_eq!(single.completion, Completion::Complete);
+    assert_eq!(multiple.completion, Completion::Complete);
 
     assert_eq!(
         project
@@ -209,15 +213,14 @@ fn declarations_are_scoped_and_invalidated() -> io::Result<()> {
 
     let invalid = project.check(&[Entry::new(entry.clone())], &options())?;
 
-    assert!(
-        invalid
-            .diagnostics
-            .iter()
-            .any(
-                |diagnostic| diagnostic.location.module.source() == definition
-                    && matches!(diagnostic.kind, Kind::Syntax { .. })
-            )
-    );
+    assert!(invalid.diagnostics.iter().any(|diagnostic| {
+        diagnostic.location.module.source() == entry
+            && diagnostic
+                .related
+                .iter()
+                .any(|related| related.location.module.source() == definition)
+            && matches!(diagnostic.kind, Kind::Analysis { .. })
+    }));
 
     project.change(Change::Overlay {
         path: definition,
@@ -441,7 +444,7 @@ fn invalid_roblox_metadata_is_explicitly_incomplete() -> io::Result<()> {
 }
 
 #[test]
-fn broken_dependency_reports_syntax_without_a_generic_import_failure() -> io::Result<()> {
+fn broken_dependency_reports_failure_on_the_selected_importer() -> io::Result<()> {
     let directory = Directory::new(Some(include_str!(
         "../fixtures/checking/imported/strict.json"
     )))?;
@@ -453,18 +456,17 @@ fn broken_dependency_reports_syntax_without_a_generic_import_failure() -> io::Re
         include_str!("../fixtures/checking/dependency/first.luau"),
     )?;
 
-    let result = project().check(&[Entry::new(entry)], &options())?;
+    let result = project().check(&[Entry::new(entry.clone())], &options())?;
     assert_eq!(result.completion, Completion::Complete);
 
-    assert!(
-        result
-            .diagnostics
-            .iter()
-            .any(
-                |diagnostic| diagnostic.location.module.source() == dependency.as_path()
-                    && matches!(diagnostic.kind, Kind::Syntax { .. })
-            )
-    );
+    assert!(result.diagnostics.iter().any(|diagnostic| {
+        diagnostic.location.module.source() == entry.as_path()
+            && matches!(diagnostic.kind, Kind::Analysis { .. })
+            && diagnostic
+                .related
+                .iter()
+                .any(|related| related.location.module.source() == dependency)
+    }));
 
     assert!(
         !result
@@ -728,6 +730,87 @@ fn nonstrict_keeps_native_unknown_global_errors() -> io::Result<()> {
                 |diagnostic| diagnostic.location.module.source() == entry.as_path()
                     && matches!(diagnostic.kind, Kind::Type { .. })
             )
+    );
+
+    Ok(())
+}
+
+#[test]
+fn excluded_dependency_environment_failures_are_attributed_and_recover() -> io::Result<()> {
+    let directory = Directory::new(Some(include_str!(
+        "../fixtures/checking/imported/strict.json"
+    )))?;
+
+    directory.file(
+        "instar.toml",
+        include_str!("../fixtures/selection/instar.toml"),
+    )?;
+
+    directory.file(
+        "dependency/instar.toml",
+        include_str!("../fixtures/selection/dependency.toml"),
+    )?;
+
+    directory.file("dependency/init.luau", "return 1")?;
+
+    let entry = directory.file(
+        "entry.luau",
+        include_str!("../fixtures/checking/dependency/first.luau"),
+    )?;
+
+    let definition = directory.path().join("dependency/missing.luau");
+    let entries = [Entry::new(entry.clone())];
+    let mut project = project();
+    let checked = project.check(&entries, &options())?;
+    let linted = project.lint(&entries, &options())?;
+
+    assert_eq!(
+        checked.completion,
+        Completion::Incomplete(Reason::Environment)
+    );
+
+    assert_eq!(linted.completion, checked.completion);
+    assert_eq!(checked.modules.len(), 2);
+    assert_eq!(linted.modules, checked.modules);
+
+    for diagnostic in &checked.diagnostics {
+        assert_eq!(diagnostic.location.module.source(), entry);
+
+        assert!(
+            diagnostic
+                .related
+                .iter()
+                .any(|related| related.location.module.source() == definition)
+        );
+    }
+
+    assert_ne!(checked.diagnostics, Vec::new());
+    assert_ne!(linted.diagnostics, Vec::new());
+
+    for diagnostic in &linted.diagnostics {
+        assert_eq!(diagnostic.location.module.source(), entry);
+
+        assert!(
+            diagnostic
+                .related
+                .iter()
+                .any(|related| related.location.module.source() == definition)
+        );
+    }
+
+    project.change(Change::Overlay {
+        path: definition,
+        text: Some(include_str!("../fixtures/checking/declarations/globals.luau").to_owned()),
+    })?;
+
+    assert_eq!(
+        project.check(&entries, &options())?.completion,
+        Completion::Complete
+    );
+
+    assert_eq!(
+        project.lint(&entries, &options())?.completion,
+        Completion::Complete
     );
 
     Ok(())

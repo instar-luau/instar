@@ -1,0 +1,6 @@
+[
+  {"configuration":"[roblox]\nenabled=false\n[editor.diagnostics]\nscope='workspace'\n[editor.index]\nexclude=['entry.luau']\n[lint]\nexclude=['entry.luau']\n", "checking":true, "linting":false},
+  {"configuration":"[roblox]\nenabled=false\n[editor.diagnostics]\nscope='workspace'\n[editor.index]\nexclude=['entry.luau']\n[check]\nexclude=['entry.luau']\n", "checking":false, "linting":true},
+  {"configuration":"exclude=['entry.luau']\n[roblox]\nenabled=false\n[editor.diagnostics]\nscope='workspace'\n", "checking":false, "linting":false},
+  {"configuration":"exclude=['entry.luau']\n[roblox]\nenabled=false\n[editor.diagnostics]\nscope='workspace'\n[check]\nexclude=[]\n[lint]\nexclude=[]\n", "checking":true, "linting":true}
+]
