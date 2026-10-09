@@ -8,12 +8,13 @@ use vermis::{
     tree::{NodeIndex, Tree},
 };
 
-use super::super::{document::Document, quotes::quote};
+use super::super::{document::Document, quotes::quote, selection::Selection};
 use crate::{Configuration, configuration::Order};
 
 pub(in crate::formatter) struct Plan {
     pub(in crate::formatter) document: Vec<Document>,
     pub(in crate::formatter) quotes: Vec<Option<Vec<u8>>>,
+    pub(in crate::formatter) indentation: usize,
 }
 
 pub(super) struct Statement {
@@ -41,6 +42,7 @@ pub(in crate::formatter) struct Builder<'tree, 'source> {
 impl<'tree, 'source> Builder<'tree, 'source> {
     pub(in crate::formatter) fn build(
         tree: &'tree Tree<'source>,
+        selection: Option<&Selection>,
         configuration: &'tree Configuration,
         options: &'tree Options,
         started: Instant,
@@ -67,7 +69,10 @@ impl<'tree, 'source> Builder<'tree, 'source> {
                 .tokens
                 .iter()
                 .map(|token| {
-                    if token.kind == TokenKind::QuotedString {
+                    if token.kind == TokenKind::QuotedString
+                        && selection
+                            .is_none_or(|selection| selection.range.contains(&token.span.start))
+                    {
                         quote(
                             token.bytes(tree.source),
                             configuration.quote_style,
@@ -82,7 +87,17 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         };
 
         builder.prepare_spacing()?;
-        let document = builder.node(tree.root);
+
+        let document = selection.map_or_else(
+            || builder.node(tree.root),
+            |selection| {
+                builder.block(
+                    &selection.statements,
+                    selection.tokens(tree),
+                    selection.indentation == 0,
+                )
+            },
+        );
 
         if let Some(reason) = builder
             .interruption
@@ -95,6 +110,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         Ok(Plan {
             document,
             quotes: builder.quotes,
+            indentation: selection.map_or(0, |selection| selection.indentation),
         })
     }
 

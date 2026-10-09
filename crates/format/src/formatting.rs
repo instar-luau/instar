@@ -15,6 +15,7 @@ use crate::{Configuration, Result};
 #[derive(Deserialize, Serialize)]
 pub(crate) struct Request {
     pub(crate) source: Vec<u8>,
+    pub(crate) range: Option<[usize; 2]>,
     pub(crate) configuration: Configuration,
     pub(crate) timeout: Duration,
 }
@@ -38,6 +39,33 @@ impl Formatter {
         configuration: &Configuration,
         options: &Options,
     ) -> io::Result<Result> {
+        self.request(source, None, configuration, options)
+    }
+
+    /// Formats complete statements intersecting a byte range, expanding to syntax and line boundaries.
+    ///
+    /// Preserves bytes outside the expanded range and uses the enclosing block's indentation.
+    /// Incomplete selections produce unchanged output; interruption never produces partial output.
+    ///
+    /// # Errors
+    /// Returns invalid ranges, invalid configuration, unavailable worker, or transport failures.
+    pub fn format_range(
+        &mut self,
+        source: &[u8],
+        range: [usize; 2],
+        configuration: &Configuration,
+        options: &Options,
+    ) -> io::Result<Result> {
+        self.request(source, Some(range), configuration, options)
+    }
+
+    fn request(
+        &mut self,
+        source: &[u8],
+        range: Option<[usize; 2]>,
+        configuration: &Configuration,
+        options: &Options,
+    ) -> io::Result<Result> {
         let started = Instant::now();
 
         if let Some(reason) = options.interrupted(started) {
@@ -50,6 +78,7 @@ impl Formatter {
 
         let request = Request {
             source: source.to_vec(),
+            range,
             configuration: configuration.clone(),
             timeout: options.timeout.saturating_sub(started.elapsed()),
         };

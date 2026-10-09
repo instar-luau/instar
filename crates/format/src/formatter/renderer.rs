@@ -302,7 +302,7 @@ pub(super) fn emit(
         interruption: None,
         emitter: Some(Emitter::from_tree(tree, line_ending)),
         replacements: &replacements,
-        indentation: 0,
+        indentation: plan.indentation,
         column: 0,
         lines: 0,
         space: false,

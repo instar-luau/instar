@@ -18,6 +18,7 @@ pub fn run() -> io::Result<()> {
 
         let response = formatter::format(
             &request.source,
+            request.range,
             &request.configuration,
             &Options::new(request.timeout),
         )
