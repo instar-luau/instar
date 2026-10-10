@@ -1,91 +1,72 @@
-//! Analysis input error construction.
-use std::{fmt::Display, io};
+//! Structured invocation failures and invalid-input error construction.
+
+use std::{
+    error::Error,
+    fmt::{self, Display},
+    io,
+};
 
 use serde::{Deserialize, Serialize};
 
-const KINDS: &[io::ErrorKind] = &[
-    io::ErrorKind::NotFound,
-    io::ErrorKind::PermissionDenied,
-    io::ErrorKind::ConnectionRefused,
-    io::ErrorKind::ConnectionReset,
-    io::ErrorKind::HostUnreachable,
-    io::ErrorKind::NetworkUnreachable,
-    io::ErrorKind::ConnectionAborted,
-    io::ErrorKind::NotConnected,
-    io::ErrorKind::AddrInUse,
-    io::ErrorKind::AddrNotAvailable,
-    io::ErrorKind::NetworkDown,
-    io::ErrorKind::BrokenPipe,
-    io::ErrorKind::AlreadyExists,
-    io::ErrorKind::WouldBlock,
-    io::ErrorKind::NotADirectory,
-    io::ErrorKind::IsADirectory,
-    io::ErrorKind::DirectoryNotEmpty,
-    io::ErrorKind::ReadOnlyFilesystem,
-    io::ErrorKind::StaleNetworkFileHandle,
-    io::ErrorKind::InvalidInput,
-    io::ErrorKind::InvalidData,
-    io::ErrorKind::TimedOut,
-    io::ErrorKind::WriteZero,
-    io::ErrorKind::StorageFull,
-    io::ErrorKind::NotSeekable,
-    io::ErrorKind::QuotaExceeded,
-    io::ErrorKind::FileTooLarge,
-    io::ErrorKind::ResourceBusy,
-    io::ErrorKind::ExecutableFileBusy,
-    io::ErrorKind::Deadlock,
-    io::ErrorKind::CrossesDevices,
-    io::ErrorKind::TooManyLinks,
-    io::ErrorKind::InvalidFilename,
-    io::ErrorKind::ArgumentListTooLong,
-    io::ErrorKind::Interrupted,
-    io::ErrorKind::Unsupported,
-    io::ErrorKind::UnexpectedEof,
-    io::ErrorKind::OutOfMemory,
-    io::ErrorKind::Other,
-];
+use crate::{Completion, Diagnostic, EditOutcome, SourceOutcome};
 
-/// An error crossing the local worker process boundary.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct Failure {
-    kind: String,
-    code: Option<i32>,
-    message: String,
+/// The boundary at which an invocation failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub enum FailureKind {
+    /// The invocation's inputs or requested operation are invalid.
+    InvalidInvocation,
+
+    /// Bounded admission rejected work because the operation queue is saturated.
+    Busy,
+
+    /// An operational prerequisite, worker or transport failed.
+    Operational,
 }
 
-impl From<io::Error> for Failure {
-    fn from(error: io::Error) -> Self {
-        Self {
-            kind: format!("{:?}", error.kind()),
-            code: error.raw_os_error(),
-            message: error.to_string(),
-        }
+/// An invocation failure preserving findings and completed work accumulated before failure.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct OperationFailure {
+    /// Invalid invocation, saturated admission or operational failure classification.
+    pub kind: FailureKind,
+
+    /// Failure explanation.
+    pub message: String,
+
+    /// Explicit coverage and interruption outcome.
+    pub completion: Completion,
+
+    /// Findings retained before failure.
+    pub diagnostics: Vec<Diagnostic>,
+
+    /// Source outcomes retained before failure.
+    pub completed_sources: Vec<SourceOutcome>,
+
+    /// Edit outcomes retained before failure.
+    pub completed_edits: Vec<EditOutcome>,
+}
+
+impl Display for OperationFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
     }
 }
 
-impl TryFrom<Failure> for io::Error {
-    type Error = io::Error;
+impl Error for OperationFailure {}
 
-    fn try_from(failure: Failure) -> Result<Self, Self::Error> {
-        let kind = if let Some(code) = failure.code {
-            let kind = Self::from_raw_os_error(code).kind();
+impl From<OperationFailure> for io::Error {
+    fn from(failure: OperationFailure) -> Self {
+        let kind = match &failure.completion {
+            Completion::Cancelled => io::ErrorKind::Interrupted,
+            Completion::TimedOut => io::ErrorKind::TimedOut,
 
-            if format!("{kind:?}") != failure.kind {
-                return Err(invalid(
-                    "worker error category does not match its operating system code",
-                ));
-            }
-
-            kind
-        } else {
-            KINDS
-                .iter()
-                .copied()
-                .find(|kind| format!("{kind:?}") == failure.kind)
-                .ok_or_else(|| invalid("unrecognized worker error category"))?
+            Completion::Complete | Completion::Incomplete(_) => match failure.kind {
+                FailureKind::InvalidInvocation => io::ErrorKind::InvalidInput,
+                FailureKind::Busy => io::ErrorKind::WouldBlock,
+                FailureKind::Operational => io::ErrorKind::Other,
+            },
         };
 
-        Ok(Self::new(kind, failure.message))
+        Self::new(kind, failure)
     }
 }
 

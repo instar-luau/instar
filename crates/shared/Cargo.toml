@@ -1,15 +1,15 @@
 [package]
-name = "instar-analysis"
+name = "instar-shared"
 version.workspace = true
 edition.workspace = true
-description = "Shared source analysis contracts"
+description = "Immutable source inputs and shared execution contracts"
 repository.workspace = true
 license.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-glob.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true

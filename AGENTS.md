@@ -21,7 +21,7 @@ Keep corrections complete across declarations, producers, callers, consumers, te
 
 - Group Rust imports as standard library, external crates, then local modules. Workspace crates belong in the external group. Follow `rustfmt.toml` for crate-level import granularity.
 - Put ordinary imports at file scope. Import types directly or import a module for short, meaningful qualification such as `io::Result` or `mpsc::channel`. Use explicit ownership qualification or complete-word aliases when names collide.
-- Internal code imports shared analysis contracts from `instar_analysis`, their owner. Public facades may re-export them for consumers.
+- Internal code imports shared analysis contracts from `instar_shared`, their owner. Public facades may re-export them for consumers.
 - Tests explicitly import their dependencies, including private production items accessed through local module paths. Do not inherit dependencies through wildcard imports.
 - Use complete role names for project-controlled identifiers, including generic parameters and necessary explicit lifetimes. Examples are `Request`, `Response`, `Output`, `'source`, and `'tree`. Prefer lifetime elision when it expresses the same relationship.
 - Trait methods, external overrides, wire formats, language constructs, and tools retain required spelling. A trait's example generic parameter spelling does not prescribe the local implementation's parameter names.
@@ -31,7 +31,7 @@ Keep corrections complete across declarations, producers, callers, consumers, te
 
 - Equivalent helpers use the same parameter order: primary inputs, mutable analysis/output state, then operation options and start time. Keep `options, started` adjacent and migrate callers with the declaration.
 - Shared operation settings travel through `Options`. Concurrency comes from `Options.jobs`; helpers do not receive a duplicate concurrency argument. Preserve the remaining elapsed budget and cancellation signal across phases.
-- Host-side isolated worker clients use infallible `Default` construction and start their subprocess on the first request. Reuse `instar_analysis::process::Process`. Successful requests retain the process; interrupted or failed transport outcomes discard it. Report startup errors from the requesting operation.
+- Host-side isolated worker clients use infallible `Default` construction and start their subprocess on the first request. Reuse `instar_shared::process::Process`. Successful requests retain the process; interrupted or failed transport outcomes discard it. Report startup errors from the requesting operation.
 - Native resource construction remains fallible when it performs an allocation or another fallible operation. Return types and error documentation describe actual work and failure timing.
 - Host snapshot invalidation is infallible. Synchronization with the native worker retains its own real failure handling.
 - Preserve the ownership distinction between `Rc` for thread-local state and `Arc` for cross-thread shared data. Preserve validation, interruption handling, diagnostic fidelity, deterministic output, and write protections.

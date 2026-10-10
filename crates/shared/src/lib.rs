@@ -1,18 +1,33 @@
-//! Shared source analysis contracts.
+//! Immutable source inputs, revision-anchored findings and shared execution contracts.
+
+pub mod error;
+pub mod process;
 
 mod diagnostic;
 mod edit;
-pub mod error;
-mod limits;
+mod event;
+mod execution;
 mod location;
-pub mod process;
-mod progress;
-mod result;
-pub mod selection;
+mod source;
 
-pub use diagnostic::{Diagnostic, Kind};
-pub use edit::Edit;
-pub use limits::{Cancellation, Completion, Options, Reason};
-pub use location::{Location, Related};
-pub use progress::Progress;
-pub use result::Result;
+pub use diagnostic::{
+    Diagnostic, DiagnosticCategory, DiagnosticTag, FindingIdentity, RelatedLocation, Severity,
+};
+
+pub use edit::{EditIdentity, EditIntent, EditProposal, TextEdit};
+pub use error::{FailureKind, OperationFailure};
+
+pub use event::{
+    EditOutcome, Event, EventPayload, LogLevel, OperationalLog, Progress, SourceOutcome,
+};
+
+pub use execution::{
+    Availability, Cancellation, CancellationGuard, Completion, Knowledge, Options, Reason,
+};
+
+pub use location::{Location, Span};
+
+pub use source::{
+    ContextIdentity, LineIndex, LinePosition, SourceEncoding, SourceIdentity, SourceSnapshot,
+    SourceVersion,
+};

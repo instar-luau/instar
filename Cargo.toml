@@ -11,21 +11,23 @@ keywords = ["formatter", "linter", "lsp", "luau", "roblox"]
 categories = ["development-tools"]
 
 [workspace.dependencies]
-instar-analysis = { path = "crates/shared" }
-instar-bridge = { path = "crates/luau" }
-instar-core = { path = "crates/project" }
+instar-shared = { path = "crates/shared" }
+instar-luau = { path = "crates/luau" }
+instar-project = { path = "crates/project" }
 instar-format = { path = "crates/format" }
 instar-lint = { path = "crates/lint" }
 instar-server = { path = "crates/server" }
 instar-syntax = { path = "crates/syntax" }
 
-glob = "0.3"
+globset = "0.4.20"
+notify = "8.2.0"
+petgraph = { version = "0.8.3", default-features = false, features = ["std", "graphmap"] }
 regex = "1"
 schemars = "1"
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
+similar = "3.2.0"
 tempfile = "3"
-thiserror = "2"
 toml = "1"
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 vermis = "0.7"
