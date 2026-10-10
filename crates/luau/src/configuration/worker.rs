@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, io, sync::Arc, time::Instant};
 
 use instar_shared::{
-    Completion, EventPayload, Reason, SourceOutcome,
+    Completion, EventPayload, Reason,
     process::{self, Emitter},
 };
 
@@ -94,11 +94,6 @@ pub fn run_configuration_worker() -> io::Result<()> {
             for diagnostic in &response.diagnostics {
                 emitter.emit(EventPayload::Diagnostic(diagnostic.clone()))?;
             }
-
-            emitter.emit(EventPayload::SourceOutcome(SourceOutcome {
-                source: response.source,
-                completion: response.completion.clone(),
-            }))?;
 
             Ok(response)
         },
