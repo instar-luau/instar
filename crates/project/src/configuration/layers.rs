@@ -644,7 +644,7 @@ impl Runtime {
                 },
             };
 
-            let value = self.evaluated_configuration(input, filename, diagnostics, options)?;
+            let value = self.evaluated_configuration(input, diagnostics, options)?;
 
             if filename.file_name().is_some_and(|name| name == ".luaurc") {
                 language_patch(value)?
@@ -694,7 +694,6 @@ impl Runtime {
     fn evaluated_configuration(
         &mut self,
         input: ConfigurationInput,
-        filename: &Path,
         diagnostics: &mut Vec<Diagnostic>,
         options: &Options,
     ) -> io::Result<Value> {
@@ -760,7 +759,13 @@ impl Runtime {
                         && finding.severity == Severity::Error
                         && finding.primary.source == result.source
                 })
-                .map(|finding| format!("{}: {}", filename.display(), finding.message))
+                .map(|finding| {
+                    if let Some(name) = finding.message.strip_prefix("Invalid alias ") {
+                        format!("invalid module alias name {name}")
+                    } else {
+                        finding.message.clone()
+                    }
+                })
         } else {
             None
         };

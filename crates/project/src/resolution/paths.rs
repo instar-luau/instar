@@ -359,9 +359,22 @@ fn navigation(
                     && !directory(&current, capture, options)?
                     && failure.is_none()
                 {
+                    let message = match probe(&current, capture, options) {
+                        Ok(_) => "navigation directory not found",
+
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                            "module path not found"
+                        }
+
+                        Err(error) => {
+                            failure = Some(error);
+                            continue;
+                        }
+                    };
+
                     failure = Some(io::Error::new(
                         io::ErrorKind::NotFound,
-                        format!("navigation directory not found: {}", current.display()),
+                        format!("{message}: {}", current.display()),
                     ));
                 }
             }

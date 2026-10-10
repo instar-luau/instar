@@ -26,7 +26,7 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
 use super::layers::TYPE_FUNCTION_MEMORY;
-use crate::{inputs::normalize, selection::Matcher};
+use crate::{inputs::normalize, resolution::module_path, selection::Matcher};
 
 /// Operation whose selection and overrides are being resolved.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, JsonSchema)]
@@ -1145,8 +1145,8 @@ impl ResolutionSettings {
         }
 
         match self.targets.get(&name) {
-            Some(AliasTarget::Path(path)) => Ok(path.clone()),
-            Some(AliasTarget::SelfRelative(suffix)) => Ok(current.join(suffix)),
+            Some(AliasTarget::Path(path)) => Ok(module_path(path)),
+            Some(AliasTarget::SelfRelative(suffix)) => Ok(module_path(&current.join(suffix))),
             Some(AliasTarget::Failure(reason)) => Err(invalid(reason.as_ref())),
             None => Err(invalid(&format!("unknown alias @{name}"))),
         }
