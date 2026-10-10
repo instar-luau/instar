@@ -412,6 +412,17 @@ pub(super) fn write_frame(output: &mut impl Write, value: &impl Serialize) -> io
             Ok(written)
         }
 
+        fn write_all(&mut self, buffer: &[u8]) -> io::Result<()> {
+            if buffer.len() > FRAME_LIMIT.saturating_sub(self.length) {
+                return Err(invalid("worker protocol frame exceeds the size limit"));
+            }
+
+            self.output.write_all(buffer)?;
+            self.length += buffer.len();
+
+            Ok(())
+        }
+
         fn flush(&mut self) -> io::Result<()> {
             self.output.flush()?;
 

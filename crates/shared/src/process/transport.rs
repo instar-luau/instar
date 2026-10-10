@@ -740,6 +740,12 @@ fn write_checked(
             self.output.write(buffer)
         }
 
+        fn write_all(&mut self, buffer: &[u8]) -> io::Result<()> {
+            self.options.check()?;
+
+            self.output.write_all(buffer)
+        }
+
         fn flush(&mut self) -> io::Result<()> {
             self.options.check()?;
             self.output.flush()?;
