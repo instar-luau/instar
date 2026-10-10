@@ -7,8 +7,8 @@ use instar_project::{
 
 use instar_shared::{
     Completion, Diagnostic as DomainDiagnostic, DiagnosticCategory,
-    DiagnosticTag as DomainDiagnosticTag, Location as DomainLocation, Reason, Severity,
-    SourceVersion,
+    DiagnosticTag as DomainDiagnosticTag, FailureKind, Location as DomainLocation, Reason,
+    Severity, SourceVersion,
 };
 
 use serde_json::Value;
@@ -505,13 +505,19 @@ impl Server {
         let snapshot = project.snapshot();
         let options = self.options.child();
         let cancellation = options.cancellation.clone();
-        let progress = self.prepare_progress(None, &options.cancellation);
+        let inputs = inputs(self);
+
+        let progress = if inputs.iter().any(|input| matches!(input, Input::Source(_))) {
+            self.prepare_progress(None, &options.cancellation)
+        } else {
+            Ok(None)
+        };
 
         let task = project.query(
             QueryRequest {
                 snapshot: snapshot.clone(),
                 operation: Query::Diagnostics(DiagnosticQuery {
-                    inputs: inputs(self),
+                    inputs,
                     lint: true,
                     checking: true,
                 }),
@@ -582,18 +588,28 @@ impl Server {
                 }
 
                 Err(error) => {
-                    client
-                        .log_message(MessageType::Error, error.to_string())
-                        .await;
+                    if matches!(
+                        &error.completion,
+                        Completion::Incomplete(reasons) if reasons.contains(&Reason::StaleQuery)
+                    ) {
+                        return;
+                    }
+
+                    if error.kind != FailureKind::InvalidInvocation
+                        || !error
+                            .diagnostics
+                            .iter()
+                            .any(|finding| finding.code == "resolution.sourcemap")
+                    {
+                        client
+                            .log_message(MessageType::Error, error.to_string())
+                            .await;
+                    }
 
                     if error.diagnostics.is_empty()
                         || matches!(
                             error.completion,
                             Completion::Cancelled | Completion::TimedOut
-                        )
-                        || matches!(
-                            &error.completion,
-                            Completion::Incomplete(reasons) if reasons.contains(&Reason::StaleQuery)
                         )
                     {
                         return;
