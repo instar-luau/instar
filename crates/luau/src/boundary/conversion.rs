@@ -2845,60 +2845,9 @@ pub(crate) fn configuration_failure(
     })
 }
 
-pub(crate) fn configuration_result(
-    output: &native::NativeConfigurationResult,
-    input: &ConfigurationInput,
-) -> io::Result<ConfigurationResult> {
-    let completed = completion(output.completion)?;
-
-    if !output.has_values {
-        if !output.nodes.is_empty() || matches!(completed, Completion::Complete) {
-            return Err(invalid(
-                "native configuration omitted values without an incomplete outcome",
-            ));
-        }
-
-        return configuration_failure(input, output.message.clone(), completed);
-    }
-
-    if !matches!(completed, Completion::Complete)
-        || !output.message.is_empty()
-        || output.nodes.len() > input.limits.extraction_entries as usize + 1
-    {
-        return Err(invalid(
-            "native configuration values have inconsistent completion or bounds",
-        ));
-    }
-
-    let mut visited = BTreeSet::new();
-    let mut entries = 0;
-
-    let values = extract_configuration(
-        output.root,
-        &output.nodes,
-        &mut visited,
-        &mut entries,
-        1,
-        &input.limits,
-    )?;
-
-    if visited.len() != output.nodes.len() || !matches!(values, ConfigurationValue::Table(_)) {
-        return Err(invalid(
-            "native configuration contains unreachable values or omits its root table",
-        ));
-    }
-
-    Ok(ConfigurationResult {
-        source: input.source.version,
-        values: Some(values),
-        diagnostics: Vec::new(),
-        completion: completed,
-    })
-}
-
 fn extract_configuration(
     index: u32,
-    nodes: &[native::NativeConfigurationNode],
+    nodes: &[Node],
     visited: &mut BTreeSet<u32>,
     count: &mut u32,
     depth: u32,
@@ -3003,13 +2952,31 @@ pub(crate) fn configuration_response(
     input: &ConfigurationInput,
     identities: (u64, u64),
 ) -> io::Result<ConfigurationResponse> {
-    let result = configuration_result(&output, input)?;
+    let completed = completion(output.completion)?;
 
-    Ok(ConfigurationResponse {
+    let diagnostics = if output.has_values {
+        if !output.message.is_empty() {
+            return Err(invalid(
+                "native configuration values have inconsistent completion or bounds",
+            ));
+        }
+
+        Vec::new()
+    } else {
+        if !output.nodes.is_empty() || matches!(completed, Completion::Complete) {
+            return Err(invalid(
+                "native configuration omitted values without an incomplete outcome",
+            ));
+        }
+
+        configuration_failure(input, output.message, completed.clone())?.diagnostics
+    };
+
+    let response = ConfigurationResponse {
         request: identities.0,
         generation: identities.1,
-        source: result.source,
-        root: result.values.is_some().then_some(output.root),
+        source: input.source.version,
+        root: output.has_values.then_some(output.root),
         nodes: output
             .nodes
             .into_iter()
@@ -3030,13 +2997,17 @@ pub(crate) fn configuration_response(
                     .collect(),
             })
             .collect(),
-        diagnostics: result.diagnostics,
-        completion: result.completion,
-    })
+        diagnostics,
+        completion: completed,
+    };
+
+    configuration_wire_result(&response, input)?;
+
+    Ok(response)
 }
 
 pub(crate) fn configuration_wire_result(
-    output: ConfigurationResponse,
+    output: &ConfigurationResponse,
     input: &ConfigurationInput,
 ) -> io::Result<ConfigurationResult> {
     let captured = Captured::configuration(&input.source)?;
@@ -3060,34 +3031,19 @@ pub(crate) fn configuration_wire_result(
             ));
         }
 
-        let nodes = output
-            .nodes
-            .into_iter()
-            .map(|node| native::NativeConfigurationNode {
-                kind: node.kind,
-                text: node.text,
-                number: node.number,
-                boolean: node.boolean,
-                entries: node
-                    .entries
-                    .into_iter()
-                    .map(|entry| native::NativeConfigurationEntry {
-                        key_kind: entry.key_kind,
-                        key_text: entry.key_text,
-                        key_number: entry.key_number,
-                        value_index: entry.value_index,
-                    })
-                    .collect(),
-            })
-            .collect::<Vec<_>>();
-
         let mut visited = BTreeSet::new();
         let mut entries = 0;
 
-        let values =
-            extract_configuration(root, &nodes, &mut visited, &mut entries, 1, &input.limits)?;
+        let values = extract_configuration(
+            root,
+            &output.nodes,
+            &mut visited,
+            &mut entries,
+            1,
+            &input.limits,
+        )?;
 
-        if visited.len() != nodes.len() || !matches!(values, ConfigurationValue::Table(_)) {
+        if visited.len() != output.nodes.len() || !matches!(values, ConfigurationValue::Table(_)) {
             return Err(invalid(
                 "configuration result contains unreachable values or omits its root table",
             ));
@@ -3107,8 +3063,8 @@ pub(crate) fn configuration_wire_result(
     Ok(ConfigurationResult {
         source: output.source,
         values,
-        diagnostics: output.diagnostics,
-        completion: output.completion,
+        diagnostics: output.diagnostics.clone(),
+        completion: output.completion.clone(),
     })
 }
 

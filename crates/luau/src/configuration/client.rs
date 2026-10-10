@@ -90,7 +90,7 @@ impl ConfigurationEvaluator {
             self.process.discard()?;
         }
 
-        match conversion::configuration_wire_result(response, input) {
+        match conversion::configuration_wire_result(&response, input) {
             Ok(result) => Ok(result),
             Err(error) => self.reject(error),
         }

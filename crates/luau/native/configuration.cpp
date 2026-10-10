@@ -1,5 +1,4 @@
 #include "configuration.hpp"
-#include "flags.hpp"
 #include "lualib.h"
 
 #include "Luau/Compiler.h"
@@ -205,176 +204,13 @@ namespace instar {
             return text ? std::string(text, length) : "configuration execution failed";
         }
 
-        const NativeConfigurationNode &value(const rust::Vec<NativeConfigurationNode> &nodes, uint32_t index) {
-            if (index >= nodes.size()) {
-                throw std::runtime_error("configuration value index is invalid");
-            }
-
-            return nodes[index];
-        }
-
-        const NativeConfigurationNode *
-        field(const rust::Vec<NativeConfigurationNode> &nodes, const NativeConfigurationNode &table, const char *name) {
-            if (table.kind != 3) {
-                throw std::runtime_error("configuration language settings must be a table");
-            }
-
-            for (const auto &entry : table.entries) {
-                if (entry.key_kind == 0 && std::string(entry.key_text) == name) {
-                    return &value(nodes, entry.value_index);
-                }
-            }
-
-            return nullptr;
-        }
-
-        void validate_language(
-            const NativeConfigurationInput &input, const rust::Vec<NativeConfigurationNode> &nodes, uint32_t root
-        ) {
+        void validate_language(const NativeConfigurationInput &input) {
             Luau::Config configuration;
             Luau::ConfigOptions options;
             options.aliasOptions = Luau::ConfigOptions::AliasOptions{std::string(input.base), true};
 
-            if (!input.executable) {
-                if (const auto error = Luau::parseConfig(std::string(input.text), configuration, options)) {
-                    throw std::runtime_error(*error);
-                }
-            } else {
-                const auto &settings = value(nodes, root);
-
-                if (const auto *checking = field(nodes, settings, "checking")) {
-                    if (const auto *mode = field(nodes, *checking, "mode")) {
-                        if (mode->kind != 0) {
-                            throw std::runtime_error("checking.mode must be a string");
-                        }
-
-                        if (const auto error = Luau::parseModeString(configuration.mode, std::string(mode->text))) {
-                            throw std::runtime_error(*error);
-                        }
-                    }
-
-                    if (const auto *errors = field(nodes, *checking, "type_errors"); errors && errors->kind != 2) {
-                        throw std::runtime_error("checking.type_errors must be a boolean");
-                    }
-                }
-
-                if (const auto *language = field(nodes, settings, "language")) {
-                    if (const auto *declarations = field(nodes, *language, "declaration_syntax");
-                        declarations && declarations->kind != 2) {
-                        throw std::runtime_error("language.declaration_syntax must be a boolean");
-                    }
-
-                    if (const auto *flags = field(nodes, *language, "flags")) {
-                        if (flags->kind != 3) {
-                            throw std::runtime_error("language.flags must be a table");
-                        }
-
-                        rust::Vec<NativeFlag> selected;
-
-                        for (const auto &entry : flags->entries) {
-                            if (entry.key_kind != 0) {
-                                throw std::runtime_error("language flag names must be strings");
-                            }
-
-                            const auto &flag = value(nodes, entry.value_index);
-                            NativeFlag selection{};
-                            selection.name = entry.key_text;
-
-                            if (flag.kind == 2) {
-                                selection.is_boolean = true;
-                                selection.boolean = flag.boolean;
-                            } else if (flag.kind == 1 && std::floor(flag.number) == flag.number &&
-                                       flag.number >= std::numeric_limits<int32_t>::min() &&
-                                       flag.number <= std::numeric_limits<int32_t>::max()) {
-                                selection.integer = static_cast<int32_t>(flag.number);
-                            } else {
-                                throw std::runtime_error(
-                                    "language flags must have boolean or signed 32-bit integer values"
-                                );
-                            }
-
-                            selected.push_back(std::move(selection));
-                        }
-
-                        static_cast<void>(
-                            normalize_flags(rust::Slice<const NativeFlag>(selected.data(), selected.size()))
-                        );
-                    }
-                }
-
-                if (const auto *environment = field(nodes, settings, "environment")) {
-                    if (const auto *globals = field(nodes, *environment, "globals")) {
-                        if (globals->kind != 3) {
-                            throw std::runtime_error("environment.globals must be an array of strings");
-                        }
-
-                        std::unordered_set<size_t> indices;
-
-                        for (const auto &global : globals->entries) {
-                            if (global.key_kind != 1 || global.key_number < 1 ||
-                                global.key_number > globals->entries.size() ||
-                                std::floor(global.key_number) != global.key_number ||
-                                value(nodes, global.value_index).kind != 0 ||
-                                !indices.insert(static_cast<size_t>(global.key_number)).second) {
-                                throw std::runtime_error("environment.globals contains invalid numeric key or value");
-                            }
-                        }
-                    }
-                }
-
-                if (const auto *resolution = field(nodes, settings, "resolution")) {
-                    if (const auto *aliases = field(nodes, *resolution, "aliases")) {
-                        if (aliases->kind != 3) {
-                            throw std::runtime_error("resolution.aliases must be a table");
-                        }
-
-                        for (const auto &alias : aliases->entries) {
-                            const auto &target = value(nodes, alias.value_index);
-
-                            if (alias.key_kind != 0 || target.kind != 0) {
-                                throw std::runtime_error("resolution.aliases must have string keys and values");
-                            }
-
-                            if (const auto error = Luau::parseAlias(
-                                    configuration,
-                                    std::string(alias.key_text),
-                                    std::string(target.text),
-                                    options.aliasOptions
-                                )) {
-                                throw std::runtime_error(*error);
-                            }
-                        }
-                    }
-                }
-
-                if (const auto *linting = field(nodes, settings, "linting")) {
-                    if (const auto *errors = field(nodes, *linting, "upstream_errors"); errors && errors->kind != 2) {
-                        throw std::runtime_error("linting.upstream_errors must be a boolean");
-                    }
-
-                    if (const auto *warnings = field(nodes, *linting, "warnings")) {
-                        if (warnings->kind != 3) {
-                            throw std::runtime_error("linting.warnings must be a table");
-                        }
-
-                        for (const auto &warning : warnings->entries) {
-                            const auto &enabled = value(nodes, warning.value_index);
-
-                            if (warning.key_kind != 0 || enabled.kind != 2) {
-                                throw std::runtime_error("linting.warnings must have string keys and boolean values");
-                            }
-
-                            if (const auto error = Luau::parseLintRuleString(
-                                    configuration.enabledLint,
-                                    configuration.fatalLint,
-                                    std::string(warning.key_text),
-                                    enabled.boolean ? "true" : "false"
-                                )) {
-                                throw std::runtime_error(*error);
-                            }
-                        }
-                    }
-                }
+            if (const auto error = Luau::parseConfig(std::string(input.text), configuration, options)) {
+                throw std::runtime_error(*error);
             }
 
             for (const auto &[name, alias] : configuration.aliases) {
@@ -406,7 +242,7 @@ namespace instar {
             if (!input.executable) {
                 result.nodes = input.nodes;
                 result.root = input.root;
-                validate_language(input, result.nodes, result.root);
+                validate_language(input);
             } else {
                 const std::string bytecode = Luau::compile(std::string(input.text));
                 execution.check();
@@ -462,7 +298,6 @@ namespace instar {
 
                 result.root = execution.extract(state.get(), -1, 1);
                 result.nodes = std::move(execution.nodes);
-                validate_language(input, result.nodes, result.root);
             }
 
             execution.check();
