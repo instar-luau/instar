@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io, mem,
+    io, iter, mem,
     sync::Arc,
 };
 
@@ -38,7 +38,7 @@ use crate::{
     execution::{Runtime, Work, WorkOutput},
     graph::{ClosureRecipe, DependencyGraph, ModuleNode, syntax_settings},
     inputs::{ProjectSnapshot, SourceOrigin},
-    report::{Counts, LintReport, ModuleDiagnostic},
+    report::{Counts, DiagnosticRecord, LintReport, ModuleDiagnostic},
     request::{CheckRequest, FixMode, Input, Invocation, LintRequest},
     selection::{SelectionPurpose, SelectionResult},
 };
@@ -54,8 +54,7 @@ struct LintContext {
 }
 
 struct LintState {
-    findings: Vec<Diagnostic>,
-    module_findings: Vec<ModuleDiagnostic>,
+    findings: Vec<DiagnosticRecord>,
     fixes: Vec<RuleFix>,
     availability: Vec<RuleAvailability>,
     suppressions: BTreeMap<SourceVersion, Vec<Directive>>,
@@ -76,8 +75,7 @@ struct LintState {
 impl LintState {
     fn new(context: &LintContext) -> Self {
         Self {
-            findings: context.graph.diagnostics.clone(),
-            module_findings: context.graph.module_findings.clone(),
+            findings: context.graph.findings.clone(),
             fixes: Vec::new(),
             availability: Vec::new(),
             suppressions: BTreeMap::new(),
@@ -365,13 +363,7 @@ impl Runtime {
 
         state.completed = state.completed.clone().combine(completion);
 
-        state.findings.extend(
-            closure_diagnostics
-                .iter()
-                .map(|finding| finding.diagnostic.clone()),
-        );
-
-        state.module_findings.extend(closure_diagnostics);
+        state.findings.extend(closure_diagnostics);
 
         for recipe in &mut recipes {
             let required = recipe.request.modules.iter().any(|module| {
@@ -479,12 +471,10 @@ impl Runtime {
                             Span { start: 0, end: 0 },
                         );
 
-                        state.module_findings.push(ModuleDiagnostic {
-                            module: module.analysis.module,
-                            diagnostic: finding.clone(),
+                        state.findings.push(DiagnosticRecord {
+                            module: Some(module.analysis.module),
+                            diagnostic: finding,
                         });
-
-                        state.findings.push(finding);
                     }
                 }
             }
@@ -532,23 +522,13 @@ impl Runtime {
                     );
 
                     state
-                        .module_findings
+                        .findings
                         .extend(result.diagnostics.iter().cloned().map(|diagnostic| {
-                            ModuleDiagnostic {
-                                module: identity,
+                            DiagnosticRecord {
+                                module: Some(identity),
                                 diagnostic,
                             }
                         }));
-
-                    state.findings.extend(
-                        result
-                            .diagnostics
-                            .iter()
-                            .filter(|finding| {
-                                retained(finding, &context.ordinary, &state.prerequisites)
-                            })
-                            .cloned(),
-                    );
 
                     state.facts.insert(identity, result);
                 }
@@ -589,12 +569,10 @@ impl Runtime {
                         Span { start: 0, end: 0 },
                     );
 
-                    state.module_findings.push(ModuleDiagnostic {
-                        module: identity,
-                        diagnostic: finding.clone(),
+                    state.findings.push(DiagnosticRecord {
+                        module: Some(identity),
+                        diagnostic: finding,
                     });
-
-                    state.findings.push(finding);
                 }
             }
         }
@@ -611,15 +589,19 @@ impl Runtime {
                     .iter()
                     .any(|target| edit.location.source.identity == target.identity)
             }) && fix.proposal.edits.iter().all(|edit| {
-                state.findings.iter().any(|finding| {
-                    finding.code == fix.rule.name()
-                        && finding.primary.source == edit.location.source
-                        && (finding.primary.span.start <= edit.location.span.start
-                            && edit.location.span.end <= finding.primary.span.end
-                            || edit.location.span.start <= finding.primary.span.start
-                                && finding.primary.span.end <= edit.location.span.end)
-                        && !suppressed(finding, &state.suppressions, &context.capture.snapshot)
-                })
+                state
+                    .findings
+                    .iter()
+                    .map(|finding| &finding.diagnostic)
+                    .any(|finding| {
+                        finding.code == fix.rule.name()
+                            && finding.primary.source == edit.location.source
+                            && (finding.primary.span.start <= edit.location.span.start
+                                && edit.location.span.end <= finding.primary.span.end
+                                || edit.location.span.start <= finding.primary.span.start
+                                    && finding.primary.span.end <= edit.location.span.end)
+                            && !suppressed(finding, &state.suppressions, &context.capture.snapshot)
+                    })
             })
         });
 
@@ -923,6 +905,11 @@ fn lint_syntax(context: &LintContext, state: &mut LintState, options: &Options) 
             .suppressions
             .insert(node.source.version, directives.directives.clone());
 
+        if !context.graph.roots.contains(&node.identity) {
+            progress(options, index + 1, context.graph.modules.len());
+            continue;
+        }
+
         let imports = dependencies(&node.imports);
         let mut settings = node.effective.settings.linting.clone();
 
@@ -951,21 +938,18 @@ fn lint_syntax(context: &LintContext, state: &mut LintState, options: &Options) 
             .syntax_completion
             .insert(node.identity, result.completion.clone());
 
-        state
-            .module_findings
-            .extend(
-                result
-                    .findings
-                    .iter()
-                    .cloned()
-                    .map(|diagnostic| ModuleDiagnostic {
-                        module: node.identity,
-                        diagnostic,
-                    }),
-            );
+        state.findings.extend(
+            result
+                .findings
+                .iter()
+                .cloned()
+                .map(|diagnostic| DiagnosticRecord {
+                    module: Some(node.identity),
+                    diagnostic,
+                }),
+        );
 
         state.completed = state.completed.clone().combine(result.completion);
-        state.findings.extend(result.findings);
         state.fixes.extend(result.fixes);
         progress(options, index + 1, context.graph.modules.len());
     }
@@ -980,6 +964,7 @@ fn stream_early_findings(
     let early = state
         .findings
         .iter()
+        .map(|finding| &finding.diagnostic)
         .filter(|finding| retained(finding, &context.ordinary, &state.prerequisites))
         .filter(|finding| {
             !context.requested_native
@@ -999,13 +984,14 @@ fn stream_early_findings(
                         })
                 })
         })
-        .cloned()
+        .map(|diagnostic| DiagnosticRecord {
+            module: None,
+            diagnostic: diagnostic.clone(),
+        })
         .collect();
 
     drop(reporting(
-        early,
-        &state.suppressions,
-        &context.capture.snapshot,
+        prepared(early, &state.suppressions, &context.capture.snapshot),
         &context.graph,
         &request.overrides.diagnostics,
         &mut state.emitted,
@@ -1028,7 +1014,7 @@ fn record_lint_analysis(module: &ModuleAnalysis, context: &LintContext, state: &
         module.completion.clone(),
     );
 
-    state.module_findings.extend(
+    state.findings.extend(
         module
             .parsed
             .diagnostics
@@ -1044,31 +1030,13 @@ fn record_lint_analysis(module: &ModuleAnalysis, context: &LintContext, state: &
                     module.analysis.module,
                 )
             })
-            .map(|diagnostic| ModuleDiagnostic {
-                module: module.analysis.module,
+            .map(|diagnostic| DiagnosticRecord {
+                module: Some(module.analysis.module),
                 diagnostic,
             }),
     );
 
     state.completed = state.completed.clone().combine(module.completion.clone());
-    state.findings.extend(module.parsed.diagnostics.clone());
-
-    state.findings.extend(
-        module
-            .diagnostics
-            .iter()
-            .filter(|finding| retained(finding, &context.ordinary, &state.prerequisites))
-            .filter(|diagnostic| {
-                !checking::duplicate_resolution(diagnostic, &context.graph, module.analysis.module)
-            })
-            .map(|diagnostic| {
-                checking::prerequisite_resolution(
-                    diagnostic,
-                    &context.graph,
-                    module.analysis.module,
-                )
-            }),
-    );
 
     if let Some(metadata) = &module.environment
         && context.graph.modules[&module.analysis.module]
@@ -1098,17 +1066,15 @@ fn record_lint_analysis(module: &ModuleAnalysis, context: &LintContext, state: &
             state.prerequisites.insert(finding.identity.clone());
         }
 
-        state.findings.extend(metadata.diagnostics.clone());
-
         state
-            .module_findings
+            .findings
             .extend(
                 metadata
                     .diagnostics
                     .iter()
                     .cloned()
-                    .map(|diagnostic| ModuleDiagnostic {
-                        module: module.analysis.module,
+                    .map(|diagnostic| DiagnosticRecord {
+                        module: Some(module.analysis.module),
                         diagnostic,
                     }),
             );
@@ -1122,10 +1088,8 @@ fn record_lint_analysis(module: &ModuleAnalysis, context: &LintContext, state: &
                 "requested declaration environment is unavailable".to_owned(),
             );
 
-            state.findings.push(diagnostic.clone());
-
-            state.module_findings.push(ModuleDiagnostic {
-                module: module.analysis.module,
+            state.findings.push(DiagnosticRecord {
+                module: Some(module.analysis.module),
                 diagnostic,
             });
         }
@@ -1285,20 +1249,16 @@ fn record_native_warnings(
             .map(|finding| finding.identity.clone()),
     );
 
-    state
-        .module_findings
-        .extend(
-            result
-                .prerequisite_diagnostics
-                .iter()
-                .cloned()
-                .map(|diagnostic| ModuleDiagnostic {
-                    module: identity,
-                    diagnostic,
-                }),
-        );
-
-    state.findings.extend(result.prerequisite_diagnostics);
+    state.findings.extend(
+        result
+            .prerequisite_diagnostics
+            .iter()
+            .cloned()
+            .map(|diagnostic| DiagnosticRecord {
+                module: Some(identity),
+                diagnostic,
+            }),
+    );
 
     for diagnostic in &result.suppression_findings {
         diagnostic.primary.validate(&node.source)?;
@@ -1363,12 +1323,10 @@ fn record_native_findings(
         diagnostic.category = DiagnosticCategory::Lint;
         diagnostic.severity = configuration.severity;
 
-        state.module_findings.push(ModuleDiagnostic {
-            module: identity,
-            diagnostic: diagnostic.clone(),
+        state.findings.push(DiagnosticRecord {
+            module: Some(identity),
+            diagnostic,
         });
-
-        state.findings.push(diagnostic);
     }
 
     Ok(())
@@ -1439,12 +1397,10 @@ fn record_native_availability(
                 Span { start: 0, end: 0 },
             );
 
-            state.module_findings.push(ModuleDiagnostic {
-                module: identity,
-                diagnostic: finding.clone(),
+            state.findings.push(DiagnosticRecord {
+                module: Some(identity),
+                diagnostic: finding,
             });
-
-            state.findings.push(finding);
         }
     }
 
@@ -1520,21 +1476,22 @@ fn lint_modules(context: &LintContext, state: &mut LintState, options: &Options)
             source_completion = completion.clone();
         }
 
-        state
-            .module_findings
-            .extend(
-                result
-                    .findings
-                    .iter()
-                    .cloned()
-                    .map(|diagnostic| ModuleDiagnostic {
-                        module: node.identity,
-                        diagnostic,
-                    }),
-            );
+        state.findings.extend(
+            result
+                .findings
+                .iter()
+                .filter(|finding| {
+                    context.graph.roots.contains(&node.identity)
+                        || finding.category != DiagnosticCategory::Lint
+                })
+                .cloned()
+                .map(|diagnostic| DiagnosticRecord {
+                    module: Some(node.identity),
+                    diagnostic,
+                }),
+        );
 
         state.completed = state.completed.clone().combine(result.completion);
-        state.findings.extend(result.findings);
         state.fixes.extend(result.fixes);
 
         let evaluated = result
@@ -1622,12 +1579,10 @@ fn record_rule_coverage(
                     Span { start: 0, end: 0 },
                 );
 
-                state.module_findings.push(ModuleDiagnostic {
-                    module: node.identity,
-                    diagnostic: finding.clone(),
+                state.findings.push(DiagnosticRecord {
+                    module: Some(node.identity),
+                    diagnostic: finding,
                 });
-
-                state.findings.push(finding);
             }
         }
     }
@@ -1669,14 +1624,6 @@ fn stream_lint_outcomes(context: &LintContext, state: &mut LintState, options: &
 
 fn filter_lint_findings(context: &LintContext, state: &mut LintState) {
     state.findings.retain(|finding| {
-        retained(finding, &context.ordinary, &state.prerequisites)
-            && !(finding.category == DiagnosticCategory::Syntax
-                && finding.code == "syntax.parse"
-                && finding.identity.producer() == "syntax"
-                && state.native_syntax.contains(&finding.primary.source))
-    });
-
-    state.module_findings.retain(|finding| {
         retained(&finding.diagnostic, &context.ordinary, &state.prerequisites)
             && !(finding.diagnostic.category == DiagnosticCategory::Syntax
                 && finding.diagnostic.code == "syntax.parse"
@@ -1686,39 +1633,44 @@ fn filter_lint_findings(context: &LintContext, state: &mut LintState) {
                     .contains(&finding.diagnostic.primary.source))
     });
 
-    let prerequisites = checking::dependency_findings(&context.graph, &state.module_findings);
-
-    state.findings.extend(
-        prerequisites
-            .iter()
-            .map(|finding| finding.diagnostic.clone()),
-    );
-
-    state.module_findings.extend(prerequisites);
+    let prerequisites = checking::dependency_findings(&context.graph, &state.findings);
+    state.findings.extend(prerequisites);
 
     let directive_diagnostics = suppression_diagnostics(
-        &state.findings,
+        &state
+            .findings
+            .iter()
+            .map(|finding| finding.diagnostic.clone())
+            .collect::<Vec<_>>(),
         &state.suppression_findings,
         &state.suppressions,
         &context.capture.snapshot,
         state.completed == Completion::Complete,
     );
 
-    for finding in &directive_diagnostics {
-        state.module_findings.extend(
-            context
-                .graph
-                .modules
-                .values()
-                .filter(|node| node.source.version == finding.primary.source)
-                .map(|node| ModuleDiagnostic {
-                    module: node.identity,
-                    diagnostic: finding.clone(),
-                }),
-        );
-    }
+    for diagnostic in directive_diagnostics {
+        let modules = context
+            .graph
+            .modules
+            .values()
+            .filter(|node| node.source.version == diagnostic.primary.source)
+            .map(|node| node.identity)
+            .collect::<Vec<_>>();
 
-    state.findings.extend(directive_diagnostics);
+        if modules.is_empty() {
+            state.findings.push(DiagnosticRecord {
+                module: None,
+                diagnostic,
+            });
+        } else {
+            state
+                .findings
+                .extend(modules.into_iter().map(|module| DiagnosticRecord {
+                    module: Some(module),
+                    diagnostic: diagnostic.clone(),
+                }));
+        }
+    }
 }
 
 fn lint_report(
@@ -1727,19 +1679,16 @@ fn lint_report(
     state: &mut LintState,
     options: &Options,
 ) -> LintReport {
-    let module_findings = associated(
-        mem::take(&mut state.module_findings),
-        &state.findings,
-        &state.suppressions,
-        &context.capture.snapshot,
-        &context.graph,
-        &request.overrides.diagnostics,
-    );
-
-    let (findings, failed) = reporting(
+    let findings = prepared(
         mem::take(&mut state.findings),
         &state.suppressions,
         &context.capture.snapshot,
+    );
+
+    let module_findings = associated(&findings, &context.graph, &request.overrides.diagnostics);
+
+    let (findings, failed) = reporting(
+        findings,
         &context.graph,
         &request.overrides.diagnostics,
         &mut state.emitted,
@@ -1864,9 +1813,14 @@ fn record_fix_failure(
         );
 
         let (additional, failed) = reporting(
-            vec![finding],
-            &state.suppressions,
-            &report.snapshot,
+            prepared(
+                vec![DiagnosticRecord {
+                    module: None,
+                    diagnostic: finding,
+                }],
+                &state.suppressions,
+                &report.snapshot,
+            ),
             &context.graph,
             &request.overrides.diagnostics,
             &mut state.emitted,
@@ -2163,31 +2117,24 @@ fn precedence(settings: &EffectiveSettings, code: &str) -> usize {
 }
 
 fn associated(
-    original: Vec<ModuleDiagnostic>,
-    findings: &[Diagnostic],
-    suppressions: &BTreeMap<SourceVersion, Vec<Directive>>,
-    snapshot: &ProjectSnapshot,
+    original: &[DiagnosticRecord],
     graph: &DependencyGraph,
     policy: &DiagnosticPolicy,
 ) -> Vec<ModuleDiagnostic> {
     let mut grouped =
         BTreeMap::<(ModuleIdentity, Location, DiagnosticCategory, String), ModuleDiagnostic>::new();
 
-    for mut association in original {
-        canonicalize(&mut association.diagnostic);
+    for record in original {
+        let Some(module) = record.module else {
+            continue;
+        };
+
+        let association = ModuleDiagnostic {
+            module,
+            diagnostic: record.diagnostic.clone(),
+        };
+
         let finding = &association.diagnostic;
-
-        if suppressed(finding, suppressions, snapshot) {
-            continue;
-        }
-
-        if !findings.iter().any(|retained| {
-            retained.primary == finding.primary
-                && retained.category == finding.category
-                && family(retained) == family(finding)
-        }) {
-            continue;
-        }
 
         let key = (
             association.module,
@@ -2282,10 +2229,23 @@ fn suppressed(
             })
 }
 
-fn reporting(
-    findings: Vec<Diagnostic>,
+fn prepared(
+    findings: Vec<DiagnosticRecord>,
     suppressions: &BTreeMap<SourceVersion, Vec<Directive>>,
     snapshot: &ProjectSnapshot,
+) -> Vec<DiagnosticRecord> {
+    findings
+        .into_iter()
+        .filter_map(|mut finding| {
+            canonicalize(&mut finding.diagnostic);
+
+            (!suppressed(&finding.diagnostic, suppressions, snapshot)).then_some(finding)
+        })
+        .collect()
+}
+
+fn reporting(
+    findings: Vec<DiagnosticRecord>,
     graph: &DependencyGraph,
     policy: &DiagnosticPolicy,
     emitted: &mut BTreeSet<FindingIdentity>,
@@ -2303,12 +2263,8 @@ fn reporting(
             .unwrap_or(0)
     };
 
-    for mut finding in findings {
-        canonicalize(&mut finding);
-
-        if suppressed(&finding, suppressions, snapshot) {
-            continue;
-        }
+    for record in findings {
+        let finding = record.diagnostic;
 
         let key = (finding.primary, finding.category, family(&finding));
 
@@ -2331,6 +2287,15 @@ fn reporting(
                 || policy.warnings_as_errors && finding.severity == Severity::Warning;
 
             displayed(finding, policy)
+        })
+        .flat_map(|finding| {
+            let placements = graph
+                .roots
+                .iter()
+                .filter(|module| module.source == finding.primary.source.identity)
+                .count();
+
+            iter::repeat_n(finding, placements.max(1))
         })
         .collect::<Vec<_>>();
 

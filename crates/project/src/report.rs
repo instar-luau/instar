@@ -337,6 +337,12 @@ pub struct ProjectLink {
     pub address: Option<String>,
 }
 
+#[derive(Clone)]
+pub(crate) struct DiagnosticRecord {
+    pub(crate) module: Option<ModuleIdentity>,
+    pub(crate) diagnostic: Diagnostic,
+}
+
 /// One finding attributed to its analyzed module context.
 #[derive(Clone, Debug, Serialize)]
 pub struct ModuleDiagnostic {

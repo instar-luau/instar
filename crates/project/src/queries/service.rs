@@ -354,7 +354,11 @@ impl Runtime {
                     Some(error),
                     failures.clone(),
                     graph.completion.clone(),
-                    graph.diagnostics.clone(),
+                    graph
+                        .findings
+                        .iter()
+                        .map(|finding| finding.diagnostic.clone())
+                        .collect(),
                     Vec::new(),
                     options,
                 )
@@ -365,7 +369,12 @@ impl Runtime {
             .map(|finding| finding.diagnostic)
             .collect::<Vec<_>>();
 
-        diagnostics.extend(graph.diagnostics.clone());
+        diagnostics.extend(
+            graph
+                .findings
+                .iter()
+                .map(|finding| finding.diagnostic.clone()),
+        );
 
         let mut state = QueryCapture {
             capture,
@@ -663,7 +672,13 @@ impl Runtime {
         );
 
         state.completion = graph.completion;
-        state.diagnostics = graph.diagnostics;
+
+        state.diagnostics = graph
+            .findings
+            .into_iter()
+            .map(|finding| finding.diagnostic)
+            .collect();
+
         let mut links = Vec::new();
 
         for node in graph
@@ -1439,7 +1454,21 @@ pub(crate) fn selected_recipe(
         .find(|(_, module)| *module == requested)
         .copied()
         .or_else(|| (matches.len() == 1).then(|| matches[0]))
-        .ok_or_else(|| invalid("source has unavailable or ambiguous semantic contexts"))?;
+        .ok_or_else(|| {
+            if matches.len() > 1 {
+                OperationFailure {
+                    kind: FailureKind::Operational,
+                    message: "source has ambiguous semantic contexts".to_owned(),
+                    completion: Completion::Incomplete(vec![Reason::UnavailableSemantics]),
+                    diagnostics: Vec::new(),
+                    completed_sources: Vec::new(),
+                    completed_edits: Vec::new(),
+                }
+                .into()
+            } else {
+                Reason::UnavailableSemantics.error()
+            }
+        })?;
 
     Ok((recipe.clone(), module))
 }

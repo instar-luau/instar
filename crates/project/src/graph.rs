@@ -33,7 +33,7 @@ use crate::{
     execution::Runtime,
     extract::extract,
     inputs::{InputVersion, SourceOrigin},
-    report::{ImportExplanation, ImportFailure, ModuleDiagnostic},
+    report::{DiagnosticRecord, ImportExplanation, ImportFailure},
     request::{Input, Invocation},
     selection::SelectedSource,
     sourcemap::Map,
@@ -65,9 +65,8 @@ pub(crate) struct DependencyGraph {
     pub(crate) modules: BTreeMap<ModuleIdentity, ModuleNode>,
     pub(crate) edges: Vec<DependencyEdge>,
     pub(crate) imports: Vec<ImportExplanation>,
-    pub(crate) module_findings: Vec<ModuleDiagnostic>,
+    pub(crate) findings: Vec<DiagnosticRecord>,
     pub(crate) roots: BTreeSet<ModuleIdentity>,
-    pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) completion: Completion,
 }
 
@@ -117,9 +116,8 @@ impl Runtime {
                 modules: BTreeMap::new(),
                 edges: Vec::new(),
                 imports: Vec::new(),
-                module_findings: Vec::new(),
+                findings: Vec::new(),
                 roots: BTreeSet::new(),
-                diagnostics: Vec::new(),
                 completion: Completion::Complete,
             },
             pending: Vec::new(),
@@ -289,19 +287,18 @@ impl Runtime {
         graph.completion = graph.completion.clone().combine(syntax.completion.clone());
 
         graph
-            .module_findings
+            .findings
             .extend(
                 syntax
                     .diagnostics
                     .iter()
                     .cloned()
-                    .map(|diagnostic| ModuleDiagnostic {
-                        module: identity,
+                    .map(|diagnostic| DiagnosticRecord {
+                        module: Some(identity),
                         diagnostic,
                     }),
             );
 
-        graph.diagnostics.extend(syntax.diagnostics.clone());
         let sites = extract(&syntax.tree, options)?;
         let member_precedence = sites.iter().any(|site| matches!(&site.request, ImportRequest::Instance(path) if path.steps.iter().any(|step| matches!(step, InstanceStep::Field(_)))));
 
@@ -328,19 +325,17 @@ impl Runtime {
             .combine(environment.completion.clone());
 
         graph
-            .module_findings
+            .findings
             .extend(
                 environment
                     .diagnostics
                     .iter()
                     .cloned()
-                    .map(|diagnostic| ModuleDiagnostic {
-                        module: identity,
+                    .map(|diagnostic| DiagnosticRecord {
+                        module: Some(identity),
                         diagnostic,
                     }),
             );
-
-        graph.diagnostics.extend(environment.diagnostics.clone());
 
         let node = ModuleNode {
             identity,
@@ -517,21 +512,17 @@ impl Runtime {
                     .combine(node.environment.completion.clone());
 
                 graph
-                    .module_findings
+                    .findings
                     .extend(
                         node.environment
                             .diagnostics
                             .iter()
                             .cloned()
-                            .map(|diagnostic| ModuleDiagnostic {
-                                module: identity,
+                            .map(|diagnostic| DiagnosticRecord {
+                                module: Some(identity),
                                 diagnostic,
                             }),
                     );
-
-                graph
-                    .diagnostics
-                    .extend(node.environment.diagnostics.clone());
             }
         }
 
@@ -614,7 +605,7 @@ impl Runtime {
         semantic: &[SemanticCategory],
         capture: &Capture,
         options: &Options,
-    ) -> io::Result<(Vec<ClosureRecipe>, Completion, Vec<ModuleDiagnostic>)> {
+    ) -> io::Result<(Vec<ClosureRecipe>, Completion, Vec<DiagnosticRecord>)> {
         let mut connected = UnGraphMap::<ModuleIdentity, ()>::new();
         let mut directed = DiGraphMap::<ModuleIdentity, ()>::new();
 
@@ -660,8 +651,8 @@ impl Runtime {
                     completion.combine(Completion::Incomplete(vec![Reason::UnsupportedFeature]));
 
                 for identity in &component {
-                    diagnostics.push(ModuleDiagnostic {
-                        module: *identity,
+                    diagnostics.push(DiagnosticRecord {
+                        module: Some(*identity),
                         diagnostic: environments::diagnostic(&graph.modules[identity].source, "analysis.cross_profile", DiagnosticCategory::Analysis, "imports span incompatible process-global language profiles; cross-profile semantic exports are unavailable".to_owned()),
                     });
                 }
@@ -757,19 +748,17 @@ fn resolution_failure(
         graph.completion = graph.completion.clone().combine(failure.completion.clone());
 
         graph
-            .module_findings
+            .findings
             .extend(
                 failure
                     .diagnostics
                     .iter()
                     .cloned()
-                    .map(|diagnostic| ModuleDiagnostic {
-                        module: node.identity,
+                    .map(|diagnostic| DiagnosticRecord {
+                        module: Some(node.identity),
                         diagnostic,
                     }),
             );
-
-        graph.diagnostics.extend(failure.diagnostics.clone());
     } else {
         let diagnostic = Diagnostic {
             identity: FindingIdentity::new(
@@ -787,12 +776,10 @@ fn resolution_failure(
             tags: Vec::new(),
         };
 
-        graph.module_findings.push(ModuleDiagnostic {
-            module: node.identity,
-            diagnostic: diagnostic.clone(),
+        graph.findings.push(DiagnosticRecord {
+            module: Some(node.identity),
+            diagnostic,
         });
-
-        graph.diagnostics.push(diagnostic);
     }
 
     if error.kind() == io::ErrorKind::Unsupported {

@@ -313,7 +313,13 @@ impl Runtime {
                     .flat_map(|node| node.environment.failures.iter().cloned()),
             );
 
-            completions.native.diagnostics.extend(reachable.diagnostics);
+            completions.native.diagnostics.extend(
+                reachable
+                    .findings
+                    .into_iter()
+                    .map(|finding| finding.diagnostic),
+            );
+
             let available = reachable.completion == Completion::Complete;
 
             completions.native.completion = completions

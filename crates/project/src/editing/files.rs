@@ -56,7 +56,14 @@ impl Runtime {
         capture.consult_inventory();
         report.snapshot = capture.snapshot.clone();
         report.inputs = capture.guards();
-        report.diagnostics.extend(before.diagnostics.clone());
+
+        report.diagnostics.extend(
+            before
+                .findings
+                .iter()
+                .map(|finding| finding.diagnostic.clone()),
+        );
+
         report.completion = report.completion.clone().combine(before.completion.clone());
 
         if before.completion != Completion::Complete {
@@ -107,7 +114,14 @@ impl Runtime {
         let proposed = transform(&text, &changes, &created, options)?;
         let (after, after_capture) = self.file_graph(&before, &proposed, options)?;
         report.snapshots.push(after_capture.snapshot.clone());
-        report.diagnostics.extend(after.diagnostics.clone());
+
+        report.diagnostics.extend(
+            after
+                .findings
+                .iter()
+                .map(|finding| finding.diagnostic.clone()),
+        );
+
         report.completion = report.completion.clone().combine(after.completion.clone());
 
         if after.completion != Completion::Complete {
@@ -536,15 +550,15 @@ fn validate_movement(
     }
 
     let allowed = before
-        .diagnostics
+        .findings
         .iter()
-        .map(|finding| (&finding.code, &finding.message))
+        .map(|finding| (&finding.diagnostic.code, &finding.diagnostic.message))
         .collect::<BTreeSet<_>>();
 
     if after
-        .diagnostics
+        .findings
         .iter()
-        .any(|finding| !allowed.contains(&(&finding.code, &finding.message)))
+        .any(|finding| !allowed.contains(&(&finding.diagnostic.code, &finding.diagnostic.message)))
     {
         return Err(unavailable(
             "file proposal introduces a syntax, environment, or resolution diagnostic",

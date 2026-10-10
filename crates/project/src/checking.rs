@@ -21,15 +21,14 @@ use crate::{
     execution::{Runtime, Work, WorkOutput, failure},
     graph::{ClosureRecipe, DependencyGraph},
     inputs::ProjectSnapshot,
-    report::{CheckReport, Counts, ModuleDiagnostic},
+    report::{CheckReport, Counts, DiagnosticRecord, ModuleDiagnostic},
     request::CheckRequest,
     selection::{SelectionPurpose, SelectionResult},
 };
 
 struct CheckState {
     completion: Completion,
-    findings: Vec<Diagnostic>,
-    module_findings: Vec<ModuleDiagnostic>,
+    findings: Vec<DiagnosticRecord>,
     deferred: Option<io::Error>,
     outcomes: BTreeMap<SourceVersion, Completion>,
 }
@@ -68,13 +67,8 @@ impl Runtime {
         let (recipes, completion, closure_findings) =
             self.closures(&graph, AnalysisPurpose::Source, &[], &capture, options)?;
 
-        let mut module_findings = graph.module_findings.clone();
-        module_findings.extend(closure_findings);
-
-        let findings = module_findings
-            .iter()
-            .map(|finding| finding.diagnostic.clone())
-            .collect();
+        let mut findings = graph.findings.clone();
+        findings.extend(closure_findings);
 
         let deferred = graph
             .modules
@@ -87,22 +81,14 @@ impl Runtime {
         let mut state = CheckState {
             completion,
             findings,
-            module_findings,
             deferred,
             outcomes: BTreeMap::new(),
         };
 
         let results = self.analyze(&recipes, options);
         collect_analysis(results, &graph, &mut state, options);
-        let prerequisites = dependency_findings(&graph, &state.module_findings);
-
-        state.findings.extend(
-            prerequisites
-                .iter()
-                .map(|finding| finding.diagnostic.clone()),
-        );
-
-        state.module_findings.extend(prerequisites);
+        let prerequisites = dependency_findings(&graph, &state.findings);
+        state.findings.extend(prerequisites);
 
         self.check_report(request, selected, graph, capture, state, options)
     }
@@ -119,10 +105,24 @@ impl Runtime {
         let CheckState {
             completion,
             findings,
-            mut module_findings,
             deferred,
             ..
         } = state;
+
+        let mut module_findings = findings
+            .iter()
+            .filter_map(|finding| {
+                finding.module.map(|module| ModuleDiagnostic {
+                    module,
+                    diagnostic: finding.diagnostic.clone(),
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let findings = findings
+            .into_iter()
+            .map(|finding| finding.diagnostic)
+            .collect::<Vec<_>>();
 
         let environment_diagnostics = findings
             .iter()
@@ -328,8 +328,8 @@ pub(crate) fn duplicate_resolution(
                 && import.site.call.source == diagnostic.primary.source
                 && import.site.call.span.start < diagnostic.primary.span.end
                 && diagnostic.primary.span.start < import.site.call.span.end
-                && graph.module_findings.iter().any(|finding| {
-                    finding.module == module
+                && graph.findings.iter().any(|finding| {
+                    finding.module == Some(module)
                         && finding.diagnostic.identity.producer() == "project"
                         && finding.diagnostic.code == "resolution.unresolved"
                         && finding.diagnostic.category == DiagnosticCategory::Resolution
@@ -359,9 +359,9 @@ pub(crate) fn prerequisite_resolution(
         }
 
         let prerequisites = graph
-            .module_findings
+            .findings
             .iter()
-            .filter(|finding| finding.module == edge.target)
+            .filter(|finding| finding.module == Some(edge.target))
             .map(|finding| &finding.diagnostic)
             .filter(|finding| {
                 finding.severity == Severity::Error
@@ -404,8 +404,8 @@ pub(crate) fn prerequisite_resolution(
 
 pub(crate) fn dependency_findings(
     graph: &DependencyGraph,
-    findings: &[ModuleDiagnostic],
-) -> Vec<ModuleDiagnostic> {
+    findings: &[DiagnosticRecord],
+) -> Vec<DiagnosticRecord> {
     let mut result = Vec::new();
 
     for edge in &graph.edges {
@@ -413,7 +413,7 @@ pub(crate) fn dependency_findings(
 
         let prerequisites = findings
             .iter()
-            .filter(|finding| finding.module == edge.target)
+            .filter(|finding| finding.module == Some(edge.target))
             .map(|finding| &finding.diagnostic)
             .filter(|finding| {
                 finding.severity == Severity::Error
@@ -433,8 +433,8 @@ pub(crate) fn dependency_findings(
         let primary = edge.site.argument;
         let code = "analysis.dependency";
 
-        result.push(ModuleDiagnostic {
-            module: edge.importer,
+        result.push(DiagnosticRecord {
+            module: Some(edge.importer),
             diagnostic: Diagnostic {
                 identity: FindingIdentity::new(
                     "project",
@@ -478,12 +478,6 @@ fn collect_analysis(
 
                     if module.parsed.completion == Completion::Complete {
                         state.findings.retain(|finding| {
-                            !(finding.category == DiagnosticCategory::Syntax
-                                && finding.identity.producer() == "syntax"
-                                && finding.primary.source == module.parsed.input.source.version)
-                        });
-
-                        state.module_findings.retain(|finding| {
                             !(finding.diagnostic.category == DiagnosticCategory::Syntax
                                 && finding.diagnostic.identity.producer() == "syntax"
                                 && finding.diagnostic.primary.source
@@ -516,11 +510,9 @@ fn collect_analysis(
 
                         let diagnostic = prerequisite_resolution(diagnostic, graph, identity);
 
-                        state.findings.push(diagnostic.clone());
-
-                        state.module_findings.push(ModuleDiagnostic {
-                            module: identity,
-                            diagnostic: diagnostic.clone(),
+                        state.findings.push(DiagnosticRecord {
+                            module: Some(identity),
+                            diagnostic,
                         });
                     }
 
@@ -535,10 +527,8 @@ fn collect_analysis(
                             "requested declaration environment is unavailable".to_owned(),
                         );
 
-                        state.findings.push(diagnostic.clone());
-
-                        state.module_findings.push(ModuleDiagnostic {
-                            module: identity,
+                        state.findings.push(DiagnosticRecord {
+                            module: Some(identity),
                             diagnostic,
                         });
                     }

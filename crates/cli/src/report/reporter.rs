@@ -623,7 +623,10 @@ impl Reporter {
         let diagnostics = report
             .findings()
             .into_iter()
-            .filter(|finding| identities.insert(finding.identity.clone()))
+            .filter(|finding| {
+                matches!(report, CommandReport::Lint(_, _))
+                    || identities.insert(finding.identity.clone())
+            })
             .map(|finding| self.diagnostics.record(finding))
             .collect::<Vec<_>>();
 
