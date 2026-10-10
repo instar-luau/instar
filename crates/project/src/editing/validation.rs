@@ -20,6 +20,7 @@ use crate::{
     configuration::{CheckOverrides, DiagnosticPolicy, SelectionOverrides},
     execution::Runtime,
     inputs::{InputIdentity, InputVersion, ProjectSnapshot, SourceOrigin},
+    queries::service::QueryEvidence,
     report::CheckReport,
     request::{CheckRequest, Input, Invocation},
 };
@@ -110,7 +111,7 @@ impl Runtime {
                 Capture::new(Arc::clone(&self.host), original),
                 proposal.guards.first().map(|source| source.identity),
                 true,
-                &categories,
+                QueryEvidence::Inventory(&categories),
                 Some(context),
                 options,
             )?;

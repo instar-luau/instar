@@ -428,6 +428,26 @@ pub fn documentation_cache_directory() -> io::Result<PathBuf> {
     directory("documentation")
 }
 
+pub(crate) fn declaration(path: &Path, directory: Option<&Path>) -> io::Result<bool> {
+    let Some(profile) = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_suffix(".d.luau"))
+    else {
+        return Ok(false);
+    };
+
+    if profile != "enumerations" && !PROFILES.contains(&profile) {
+        return Ok(false);
+    }
+
+    let directory = directory.map_or_else(roblox_cache_directory, |directory| {
+        Ok(directory.to_path_buf())
+    })?;
+
+    Ok(path.parent() == Some(directory.as_path()))
+}
+
 pub(crate) fn directory(namespace: &str) -> io::Result<PathBuf> {
     let base = dirs::cache_dir().ok_or_else(|| {
         io::Error::new(

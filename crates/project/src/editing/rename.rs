@@ -10,7 +10,10 @@ use crate::{
     capture::Capture,
     execution::Runtime,
     inputs::SourceOrigin,
-    queries::{ReferenceQuery, navigation, service::checked_position},
+    queries::{
+        ReferenceQuery, navigation,
+        service::{QueryEvidence, checked_position},
+    },
     report::EditReport,
     request::CheckRequest,
 };
@@ -29,7 +32,7 @@ impl Runtime {
             Capture::new(Arc::clone(&self.host), request.snapshot),
             Some(request.position.source.identity),
             request.workspace,
-            &categories,
+            QueryEvidence::Inventory(&categories),
             None,
             options,
         )?;
@@ -53,10 +56,12 @@ impl Runtime {
             return Err(Reason::UnavailableSemantics.error());
         };
 
-        if targets.len() != 1 || !matches!(targets[0], SemanticIdentity::Source { .. }) {
-            return Err(invalid(
-                "rename includes ambiguous or read-only declarations",
-            ));
+        if targets.len() != 1 {
+            return Err(Reason::UnavailableSemantics.error());
+        }
+
+        if !matches!(targets[0], SemanticIdentity::Source { .. }) {
+            return Err(invalid("rename includes read-only declarations"));
         }
 
         let references = navigation::references(
@@ -89,17 +94,19 @@ impl Runtime {
                     state.capture.snapshot.origin(source.version.identity),
                     Some(SourceOrigin::Virtual { .. })
                 )
-                || state
-                    .graph
-                    .modules
-                    .keys()
-                    .filter(|module| module.source == source.version.identity)
-                    .count()
-                    != 1
             {
-                return Err(invalid(
-                    "rename includes a read-only or multiply mapped source",
-                ));
+                return Err(invalid("rename includes a read-only source"));
+            }
+
+            if state
+                .graph
+                .modules
+                .keys()
+                .filter(|module| module.source == source.version.identity)
+                .count()
+                != 1
+            {
+                return Err(Reason::UnavailableSemantics.error());
             }
 
             let spelling = &source.text[reference.location.span.start..reference.location.span.end];

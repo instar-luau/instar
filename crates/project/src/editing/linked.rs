@@ -9,7 +9,10 @@ use super::request::LinkedRequest;
 use crate::{
     capture::Capture,
     execution::Runtime,
-    queries::{ReferenceQuery, navigation, service::checked_position},
+    queries::{
+        ReferenceQuery, navigation,
+        service::{QueryEvidence, checked_position},
+    },
     report::EditReport,
 };
 
@@ -27,7 +30,7 @@ impl Runtime {
             Capture::new(Arc::clone(&self.host), request.snapshot),
             Some(request.position.source.identity),
             false,
-            &categories,
+            QueryEvidence::Inventory(&categories),
             None,
             options,
         )?;

@@ -9,6 +9,7 @@ use crate::{
     capture::Capture,
     execution::Runtime,
     inputs::{InputVersion, ProjectSnapshot},
+    queries::service::QueryEvidence,
     request::CheckRequest,
 };
 
@@ -29,7 +30,7 @@ impl Runtime {
             Capture::new(Arc::clone(&self.host), original.clone()),
             source,
             workspace,
-            &categories,
+            QueryEvidence::Inventory(&categories),
             Some(context),
             options,
         )?;
@@ -38,7 +39,7 @@ impl Runtime {
             Capture::new(Arc::clone(&self.host), proposed.clone()),
             source,
             workspace,
-            &categories,
+            QueryEvidence::Inventory(&categories),
             Some(context),
             options,
         )?;

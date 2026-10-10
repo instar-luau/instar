@@ -48,6 +48,11 @@ use crate::{
     symbols,
 };
 
+pub(crate) enum QueryEvidence<'categories> {
+    Position(&'categories [SemanticCategory]),
+    Inventory(&'categories [SemanticCategory]),
+}
+
 pub(crate) struct QueryCapture {
     pub(crate) capture: Capture,
     pub(crate) graph: DependencyGraph,
@@ -313,10 +318,15 @@ impl Runtime {
         mut capture: Capture,
         source: Option<SourceIdentity>,
         workspace: bool,
-        categories: &[SemanticCategory],
+        evidence: QueryEvidence<'_>,
         context: Option<&CheckRequest>,
         options: &Options,
     ) -> io::Result<QueryCapture> {
+        let (categories, inventory) = match evidence {
+            QueryEvidence::Position(categories) => (categories, false),
+            QueryEvidence::Inventory(categories) => (categories, true),
+        };
+
         let selected = self.editor_targets(source, workspace, &mut capture, context, options)?;
 
         let invocation =
@@ -388,7 +398,10 @@ impl Runtime {
         };
 
         self.query_analysis(&mut state, options)?;
-        self.query_facts(&mut state, categories, options)?;
+
+        if inventory {
+            self.query_facts(&mut state, categories, options)?;
+        }
 
         if workspace {
             state.capture.admit_inventory(options)?;
@@ -925,7 +938,10 @@ impl Runtime {
                 capture,
                 Some(source.version.identity),
                 false,
-                &[SemanticCategory::Bindings, SemanticCategory::Occurrences],
+                QueryEvidence::Inventory(&[
+                    SemanticCategory::Bindings,
+                    SemanticCategory::Occurrences,
+                ]),
                 None,
                 options,
             )?;
@@ -995,11 +1011,23 @@ impl Runtime {
             PositionQueryKind::Implementation | PositionQueryKind::Lenses
         );
 
+        let evidence = if matches!(
+            request.kind,
+            PositionQueryKind::Implementation
+                | PositionQueryKind::Hints
+                | PositionQueryKind::Lenses
+                | PositionQueryKind::InlineValues
+        ) {
+            QueryEvidence::Inventory(&categories)
+        } else {
+            QueryEvidence::Position(&categories)
+        };
+
         let captured = self.query_capture(
             capture,
             Some(request.source.identity),
             workspace,
-            &categories,
+            evidence,
             None,
             options,
         )?;
@@ -1133,7 +1161,7 @@ impl Runtime {
             capture,
             Some(request.position.source.identity),
             request.workspace,
-            &[SemanticCategory::Bindings, SemanticCategory::Occurrences],
+            QueryEvidence::Inventory(&[SemanticCategory::Bindings, SemanticCategory::Occurrences]),
             None,
             options,
         )?;
@@ -1198,7 +1226,14 @@ impl Runtime {
             }
         };
 
-        let captured = self.query_capture(capture, source, true, &categories, None, options)?;
+        let captured = self.query_capture(
+            capture,
+            source,
+            true,
+            QueryEvidence::Inventory(&categories),
+            None,
+            options,
+        )?;
 
         state.include_capture(&captured);
 
@@ -1245,16 +1280,32 @@ impl Runtime {
             capture,
             Some(request.position.source.identity),
             false,
-            &[
+            QueryEvidence::Inventory(&[
                 SemanticCategory::Bindings,
                 SemanticCategory::Occurrences,
                 SemanticCategory::Types,
-            ],
+            ]),
             None,
             options,
         )?;
 
         state.include_capture(&captured);
+
+        if !captured
+            .graph
+            .modules
+            .contains_key(&request.position.module)
+            && captured
+                .graph
+                .modules
+                .keys()
+                .filter(|module| module.source == request.position.source.identity)
+                .count()
+                > 1
+        {
+            return Err(invalid("completion source has multiple module contexts"));
+        }
+
         let (closure, module) = selected_recipe(&captured, request.position.module)?;
 
         let WorkOutput::Completions(native) = self.workers.execute(
@@ -1566,6 +1617,20 @@ fn indexed(target: &SelectedSource, snapshot: &ProjectSnapshot) -> io::Result<bo
     let path = snapshot
         .origin(target.identity)
         .and_then(SourceOrigin::path);
+
+    if let Some(path) = path
+        && assets::declaration(
+            path,
+            target
+                .effective
+                .settings
+                .environment
+                .asset_directory
+                .as_deref(),
+        )?
+    {
+        return Ok(false);
+    }
 
     if path.is_some_and(|path| {
         target

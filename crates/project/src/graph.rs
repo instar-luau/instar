@@ -551,19 +551,6 @@ impl Runtime {
             )]);
         };
 
-        if matches!(
-            capture.snapshot.origin(source.version.identity),
-            Some(SourceOrigin::Stdin { .. })
-        ) {
-            return Ok(vec![(
-                ModuleIdentity {
-                    context: effective.context,
-                    source: source.version.identity,
-                },
-                None,
-            )]);
-        }
-
         let mut contexts = Vec::new();
 
         for map_path in &effective.settings.resolution.sourcemaps {
