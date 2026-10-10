@@ -25,9 +25,14 @@ struct Client {
 
 impl Client {
     fn new(directory: &Path) -> io::Result<Self> {
+        Self::with_arguments(directory, &[])
+    }
+
+    fn with_arguments(directory: &Path, arguments: &[&str]) -> io::Result<Self> {
         let mut child = Command::new(env!("CARGO_BIN_EXE_instar"))
             .current_dir(directory)
             .args(["--verbose", "server"])
+            .args(arguments)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -82,15 +87,24 @@ impl Client {
         input.flush()
     }
 
-    fn receive(&self, identifier: i64) -> Value {
+    fn receive(&mut self, identifier: i64) -> Value {
         let started = Instant::now();
 
         loop {
-            let response = self
-                .messages
-                .recv_timeout(Duration::from_secs(10).saturating_sub(started.elapsed()))
-                .expect("responsive server")
-                .expect("framed response");
+            let response = self.message(started);
+
+            if response["method"] == "client/unregisterCapability" {
+                assert_eq!(
+                    response["params"]["unregisterations"],
+                    json!([{"id":"instar-files","method":"workspace/didChangeWatchedFiles"}]),
+                    "{response}"
+                );
+
+                self.send(&json!({"jsonrpc":"2.0","id":response["id"],"result":null}))
+                    .expect("unregister response");
+
+                continue;
+            }
 
             if response.get("method").is_some() {
                 assert_eq!(
@@ -111,11 +125,7 @@ impl Client {
         let started = Instant::now();
 
         loop {
-            let message = self
-                .messages
-                .recv_timeout(Duration::from_secs(10).saturating_sub(started.elapsed()))
-                .expect("responsive diagnostics")
-                .expect("diagnostic notification");
+            let message = self.message(started);
 
             assert_eq!(
                 message["method"], "textDocument/publishDiagnostics",
@@ -127,6 +137,25 @@ impl Client {
             {
                 return message["params"]["diagnostics"].clone();
             }
+        }
+    }
+
+    fn error(&self, method: &str, text: &str) {
+        let started = Instant::now();
+
+        loop {
+            let message = self.message(started);
+
+            if message["method"] == "textDocument/publishDiagnostics" {
+                continue;
+            }
+
+            assert_eq!(
+                message,
+                json!({"jsonrpc":"2.0","method":method,"params":{"type":1,"message":text}})
+            );
+
+            return;
         }
     }
 
@@ -145,6 +174,40 @@ impl Client {
 
             thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    fn message(&self, started: Instant) -> Value {
+        loop {
+            let message = self
+                .messages
+                .recv_timeout(Duration::from_secs(10).saturating_sub(started.elapsed()))
+                .expect("responsive server")
+                .expect("framed response");
+
+            if !Self::logged(&message) {
+                return message;
+            }
+        }
+    }
+
+    fn logged(message: &Value) -> bool {
+        if !matches!(
+            message["method"].as_str(),
+            Some("window/logMessage" | "window/showMessage")
+        ) {
+            return false;
+        }
+
+        assert!(
+            message["params"]["type"]
+                .as_i64()
+                .is_some_and(|kind| (1..=4).contains(&kind)),
+            "{message}"
+        );
+
+        assert!(message["params"]["message"].is_string(), "{message}");
+
+        message["params"]["type"] != 1
     }
 }
 
@@ -433,6 +496,21 @@ fn contextual_assets(client: &mut Client) -> io::Result<()> {
     }
 
     Ok(())
+}
+
+#[test]
+fn client_preserves_error_notifications() {
+    for method in ["window/logMessage", "window/showMessage"] {
+        for severity in 1..=4 {
+            let message = json!({
+                "jsonrpc": "2.0",
+                "method": method,
+                "params": {"type": severity, "message": "notification"}
+            });
+
+            assert_eq!(Client::logged(&message), severity != 1, "{message}");
+        }
+    }
 }
 
 #[test]
@@ -772,9 +850,17 @@ fn diagnostics_follow_versions_clear_on_close_and_recover_from_configuration_err
     let configuration = uri(&directory.path().join("instar.toml"));
     client.send(&json!({"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles","params":{"changes":[{"uri":configuration,"type":2}]}}))?;
 
+    client.error(
+        "window/logMessage",
+        &format!(
+            "{}: TOML parse error at line 1, column 2\n  |\n1 | [\n  |  ^\nunquoted keys cannot be empty, expected letters, numbers, `-`, `_`\n",
+            directory.path().join("instar.toml").display()
+        ),
+    );
+
     assert_ne!(
         client
-            .diagnostics(&document, Some(3))
+            .diagnostics(&configuration, None)
             .as_array()
             .expect("failure diagnostics")
             .as_slice(),
@@ -1042,11 +1128,7 @@ fn workspace_diagnostics_discover_unopened_files_and_follow_deletion() -> io::Re
     assert!(client.receive(1).get("result").is_some());
     client.send(&json!({"jsonrpc":"2.0","method":"initialized","params":{}}))?;
 
-    let notification = client
-        .messages
-        .recv_timeout(Duration::from_secs(10))
-        .expect("workspace analysis")
-        .expect("diagnostic notification");
+    let notification = client.message(Instant::now());
 
     assert_eq!(notification["method"], "textDocument/publishDiagnostics");
     assert_eq!(notification["params"]["uri"], document);
@@ -1063,21 +1145,13 @@ fn workspace_diagnostics_discover_unopened_files_and_follow_deletion() -> io::Re
     fs::remove_file(source)?;
     client.send(&json!({"jsonrpc":"2.0","method":"workspace/didDeleteFiles","params":{"files":[{"uri":document}]}}))?;
 
-    let cleared = client
-        .messages
-        .recv_timeout(Duration::from_secs(10))
-        .expect("retired diagnostics")
-        .expect("clear notification");
+    let cleared = client.message(Instant::now());
 
     assert_eq!(cleared["params"]["uri"], document);
     assert_eq!(cleared["params"]["diagnostics"], json!([]));
     client.send(&json!({"jsonrpc":"2.0","id":2,"method":"shutdown"}))?;
 
-    let response = client
-        .messages
-        .recv_timeout(Duration::from_secs(10))
-        .expect("shutdown")
-        .expect("shutdown response");
+    let response = client.message(Instant::now());
 
     assert_eq!(response["id"], 2);
     assert_eq!(response["result"], Value::Null);
@@ -1469,29 +1543,12 @@ fn navigation_publishes_immutable_read_only_declarations() -> io::Result<()> {
     client.send(&json!({"jsonrpc":"2.0","id":4,"method":"textDocument/formatting","params":{"textDocument":{"uri":target},"options":{"tabSize":4,"insertSpaces":true}}}))?;
     assert_eq!(client.receive(4)["error"]["code"], -32602);
     client.send(&json!({"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":target,"version":2},"contentChanges":[{"text":"return 0"}]}}))?;
-    let started = Instant::now();
+    client.error("window/logMessage", "Invalid params: document is read-only");
 
-    loop {
-        let response = client
-            .messages
-            .recv_timeout(Duration::from_secs(10).saturating_sub(started.elapsed()))
-            .expect("rejected edit notification")
-            .expect("framed notification");
-
-        if response["method"] == "textDocument/publishDiagnostics" {
-            continue;
-        }
-
-        assert_eq!(response["method"], "window/logMessage");
-        assert_eq!(response["params"]["type"], 1);
-
-        assert_eq!(
-            response["params"]["message"],
-            "Invalid params: document is read-only"
-        );
-
-        break;
-    }
+    client.error(
+        "window/showMessage",
+        "Invalid params: document is read-only",
+    );
 
     client.send(&json!({"jsonrpc":"2.0","id":5,"method":"workspace/textDocumentContent","params":{"uri":target}}))?;
     assert_eq!(client.receive(5)["result"]["text"], definitions);
@@ -1948,11 +2005,13 @@ fn completion_uses_snapshot_roblox_constructor_metadata() -> io::Result<()> {
 fn completion_resolves_versioned_automatic_imports() -> io::Result<()> {
     let directory = tempfile::tempdir()?;
 
+    let configuration = format!(
+        "{}\n[editing]\nimport_binding = \"local\"\n",
+        include_str!("fixtures/diagnostics/instar.toml")
+    );
+
     for (name, text) in [
-        (
-            "instar.toml",
-            include_str!("fixtures/diagnostics/instar.toml"),
-        ),
+        ("instar.toml", configuration.as_str()),
         (
             "dependency.luau",
             include_str!("fixtures/completion/dependency.luau"),
@@ -2594,7 +2653,10 @@ fn rename_validates_cross_file_edits_and_negotiates_document_versions() -> io::R
 
     fs::write(
         directory.path().join("instar.toml"),
-        include_str!("fixtures/selection/graph.toml"),
+        format!(
+            "{}\n[selection.index]\noverride_exclusions = true\n",
+            include_str!("fixtures/selection/graph.toml")
+        ),
     )?;
 
     for (name, source, _, _) in files {
@@ -2606,7 +2668,7 @@ fn rename_validates_cross_file_edits_and_negotiates_document_versions() -> io::R
 
     for versioned in [true, false] {
         let mut client = Client::new(directory.path())?;
-        client.send(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"workspace":{"workspaceEdit":{"documentChanges":versioned}}},"workspaceFolders":[{"uri":root,"name":"rename"}]}}))?;
+        client.send(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"workspace":{"workspaceEdit":{"documentChanges":versioned}},"textDocument":{"rename":{"prepareSupport":true}}},"workspaceFolders":[{"uri":root,"name":"rename"}]}}))?;
 
         assert_eq!(
             client.receive(1)["result"]["capabilities"]["renameProvider"]["prepareProvider"],
@@ -2705,7 +2767,7 @@ fn rename_rejects_capture_keywords_and_read_only_symbols_without_rejecting_disjo
     let mut client = Client::new(directory.path())?;
 
     client.send(
-        &json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}),
+        &json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"textDocument":{"rename":{"prepareSupport":true}}}}}),
     )?;
 
     assert!(client.receive(1)["error"].is_null());
@@ -2776,7 +2838,7 @@ fn rename_preserves_unique_mapped_identity_and_rejects_multiple_placements() -> 
     let mut client = Client::new(directory.path())?;
 
     client.send(
-        &json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}),
+        &json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"textDocument":{"rename":{"prepareSupport":true}}}}}),
     )?;
 
     assert!(client.receive(1)["error"].is_null());
@@ -2838,7 +2900,11 @@ fn actions_apply_only_safe_current_diagnostic_fixes() -> io::Result<()> {
 
     client.send(&json!({"jsonrpc":"2.0","id":2,"method":"textDocument/codeAction","params":{"textDocument":{"uri":document},"range":range,"context":{"diagnostics":[],"only":["quickfix"]}}}))?;
     let response = client.receive(2);
-    let actions = response["result"].as_array().expect("quick fixes");
+
+    let actions = response["result"]
+        .as_array()
+        .unwrap_or_else(|| panic!("quick fixes: {response}"));
+
     assert_eq!(actions.len(), 2, "{response}");
     assert!(actions.iter().all(|action| action["kind"] == "quickfix"));
 
@@ -4088,11 +4154,7 @@ fn pull_diagnostics_negotiate_refresh_without_duplicate_publication() -> io::Res
     client.send(&json!({"jsonrpc":"2.0","id":refresh["id"],"result":null}))?;
     client.send(&json!({"jsonrpc":"2.0","id":2,"method":"textDocument/diagnostic","params":{"textDocument":{"uri":document}}}))?;
 
-    let report = client
-        .messages
-        .recv_timeout(Duration::from_secs(10))
-        .expect("pulled diagnostics")
-        .expect("diagnostic response");
+    let report = client.message(Instant::now());
 
     assert_eq!(report["id"], 2, "{report}");
     assert_eq!(report["result"]["kind"], "full");
@@ -4283,7 +4345,15 @@ fn hierarchy_exposes_only_native_nominal_inheritance() -> io::Result<()> {
 
     client.send(&json!({"jsonrpc":"2.0","id":3,"method":"typeHierarchy/supertypes","params":{"item":child}}))?;
     let parents = client.receive(3);
-    assert_eq!(parents["result"].as_array().expect("parents").len(), 1);
+
+    assert_eq!(
+        parents["result"]
+            .as_array()
+            .unwrap_or_else(|| panic!("parents: {parents}"))
+            .len(),
+        1
+    );
+
     assert_eq!(parents["result"][0]["name"], "Base");
 
     client.send(
@@ -4405,7 +4475,7 @@ fn diagnostics_recover_after_native_worker_termination() -> io::Result<()> {
     )?;
 
     let document = uri(&directory.path().join("entry.luau"));
-    let mut client = Client::new(directory.path())?;
+    let mut client = Client::with_arguments(directory.path(), &["--jobs", "1"])?;
 
     client.send(
         &json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}),
@@ -4440,18 +4510,7 @@ fn diagnostics_recover_after_native_worker_termination() -> io::Result<()> {
     assert_eq!(String::from_utf8_lossy(&terminated.stdout).trim(), "1");
     let valid = include_str!("fixtures/diagnostics/valid.luau");
     client.send(&json!({"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":document,"version":2},"contentChanges":[{"text":valid}]}}))?;
-    let failed = client.diagnostics(&document, Some(2));
-
-    assert!(
-        failed
-            .as_array()
-            .expect("worker failure")
-            .iter()
-            .any(|finding| finding["source"] == "Instar"
-                && finding["severity"] == 1
-                && finding["code"].is_null()),
-        "{failed}"
-    );
+    assert_eq!(client.diagnostics(&document, Some(2)), json!([]));
 
     client.send(&json!({"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":document,"version":3},"contentChanges":[{"text":valid}]}}))?;
     assert_eq!(client.diagnostics(&document, Some(3)), json!([]));

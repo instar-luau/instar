@@ -20,6 +20,7 @@ pub(crate) async fn open(server: &Server, parameters: DidOpenTextDocumentParams)
 
     server.schedule_diagnostics();
     server.report(result).await;
+    server.refresh().await;
 }
 
 pub(crate) async fn change(server: &Server, parameters: DidChangeTextDocumentParams) {
@@ -31,6 +32,7 @@ pub(crate) async fn change(server: &Server, parameters: DidChangeTextDocumentPar
 
     server.schedule_diagnostics();
     server.report(result).await;
+    server.refresh().await;
 }
 
 pub(crate) async fn close(server: &Server, parameters: DidCloseTextDocumentParams) {
@@ -42,21 +44,31 @@ pub(crate) async fn close(server: &Server, parameters: DidCloseTextDocumentParam
 
     server.schedule_diagnostics();
     server.report(result).await;
+    server.refresh().await;
 }
 
 pub(crate) async fn save(server: &Server, parameters: DidSaveTextDocumentParams) {
-    let result = server
-        .state
-        .lock()
-        .expect("session state")
-        .save(&server.project, parameters);
+    let options = server.options.child();
+
+    let result =
+        server
+            .state
+            .lock()
+            .expect("session state")
+            .save(&server.project, parameters, &options);
 
     server.schedule_diagnostics();
     server.report(result).await;
+    server.refresh().await;
 }
 
 pub(crate) async fn will_save(server: &Server, parameters: WillSaveTextDocumentParams) {
-    let result = server.capture(&parameters.text_document.uri).map(|_| ());
+    let options = server.options.child();
+
+    let result = server
+        .capture(&parameters.text_document.uri, &options)
+        .map(|_| ());
+
     server.report(result).await;
 }
 
@@ -70,7 +82,8 @@ pub(crate) async fn save_edits(
         .expect("session state")
         .editable(&parameters.text_document.uri)?;
 
-    let (snapshot, source) = server.capture(&parameters.text_document.uri)?;
+    let options = server.options.child();
+    let (snapshot, source) = server.capture(&parameters.text_document.uri, &options)?;
 
     let report = edit(
         server,
@@ -79,6 +92,7 @@ pub(crate) async fn save_edits(
             source: source.version,
         }),
         None,
+        &options,
     )
     .await?;
 

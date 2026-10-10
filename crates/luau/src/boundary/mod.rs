@@ -12,7 +12,7 @@ pub(crate) mod native {
         call_end: usize,
         argument_start: usize,
         argument_end: usize,
-        static_request: bool,
+        static_resolution: bool,
         target: String,
         request_kind: u8,
         request_text: String,
@@ -182,6 +182,7 @@ pub(crate) mod native {
         calls: Vec<NativeCall>,
         inheritance: Vec<NativeInheritance>,
         selected: Vec<usize>,
+        inheritance_complete: bool,
     }
 
     struct NativeRelated {
@@ -387,6 +388,7 @@ pub(crate) mod native {
 
     struct NativeLintResult {
         warnings: Vec<NativeWarning>,
+        suppression_warnings: Vec<NativeWarning>,
         availability: Vec<NativeWarningAvailability>,
         diagnostics: Vec<NativeDiagnostic>,
         completion: NativeCompletion,

@@ -22,10 +22,6 @@ impl Runtime {
         report: &mut EditReport,
         options: &Options,
     ) -> io::Result<ValidatedEdit> {
-        if !identifier(&request.name) {
-            return Err(invalid("rename requires one non-keyword Luau identifier"));
-        }
-
         checked_position(&request.snapshot, &request.position)?;
         let categories = [SemanticCategory::Bindings, SemanticCategory::Occurrences];
 
@@ -88,16 +84,18 @@ impl Runtime {
 
             reference.location.validate(source)?;
 
-            if matches!(
-                state.capture.snapshot.origin(source.version.identity),
-                Some(SourceOrigin::Virtual { .. })
-            ) || state
-                .graph
-                .modules
-                .keys()
-                .filter(|module| module.source == source.version.identity)
-                .count()
-                != 1
+            if state.capture.snapshot.is_declaration(source.version)
+                || matches!(
+                    state.capture.snapshot.origin(source.version.identity),
+                    Some(SourceOrigin::Virtual { .. })
+                )
+                || state
+                    .graph
+                    .modules
+                    .keys()
+                    .filter(|module| module.source == source.version.identity)
+                    .count()
+                    != 1
             {
                 return Err(invalid(
                     "rename includes a read-only or multiply mapped source",

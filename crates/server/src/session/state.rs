@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     path::PathBuf,
 };
 
@@ -7,7 +7,11 @@ use tower_lsp_server::gen_lsp_types::{
     ApplyWorkspaceEditResult, PositionEncodingKind, Registration, Uri,
 };
 
-use super::{capabilities::Capabilities, documents::Document, identities::Identities};
+use super::{
+    capabilities::Capabilities,
+    documents::{Declaration, Document},
+    identities::Identities,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Lifecycle {
@@ -24,6 +28,8 @@ pub(crate) struct State {
     pub(crate) encoding: PositionEncodingKind,
     pub(crate) workspace_folders: BTreeSet<PathBuf>,
     pub(crate) documents: BTreeMap<Uri, Document>,
+    pub(crate) declarations: BTreeMap<Uri, Declaration>,
+    pub(crate) declaration_order: VecDeque<Uri>,
     pub(crate) registrations: BTreeMap<String, Registration>,
     pub(crate) published: BTreeSet<Uri>,
     pub(crate) identities: Identities,
@@ -40,6 +46,8 @@ impl State {
             encoding: PositionEncodingKind::UTF16,
             workspace_folders: BTreeSet::new(),
             documents: BTreeMap::new(),
+            declarations: BTreeMap::new(),
+            declaration_order: VecDeque::new(),
             registrations: BTreeMap::new(),
             published: BTreeSet::new(),
             identities: Identities::new(session),

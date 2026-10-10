@@ -41,16 +41,20 @@ pub(crate) async fn tokens(
         return Err(Error::content_modified());
     }
 
-    let result_id = state.identities.store_tokens(TokenRecord {
-        source,
-        legend,
-        tokens: data.clone(),
-    })?;
+    let result_id = if state
+        .capabilities
+        .supports("/textDocument/semanticTokens/requests/full/delta")
+    {
+        Some(state.identities.store_tokens(TokenRecord {
+            source,
+            legend,
+            tokens: data.clone(),
+        })?)
+    } else {
+        None
+    };
 
-    Ok(Some(SemanticTokens {
-        result_id: Some(result_id),
-        data,
-    }))
+    Ok(Some(SemanticTokens { result_id, data }))
 }
 
 pub(crate) async fn delta(
@@ -137,7 +141,8 @@ pub(crate) async fn folds(
     server: &Server,
     parameters: FoldingRangeParams,
 ) -> Result<Option<Vec<FoldingRange>>> {
-    let (snapshot, source) = server.capture(&parameters.text_document.uri)?;
+    let options = server.options.child();
+    let (snapshot, source) = server.capture(&parameters.text_document.uri, &options)?;
 
     let report = server
         .query(
@@ -147,6 +152,7 @@ pub(crate) async fn folds(
                 kind: PresentationKind::Folds,
             }),
             parameters.work_done_progress_params.work_done_token,
+            &options,
         )
         .await?;
 
@@ -226,7 +232,7 @@ pub(crate) async fn folds(
 
         result.push(FoldingRange {
             start_line: range.start.line,
-            start_character: (!line_only).then_some(range.start.character),
+            start_character: None,
             end_line,
             end_character: (!line_only).then_some(range.end.character),
             kind: (comments && fold.comment).then_some(FoldingRangeKind::Comment),
@@ -241,7 +247,8 @@ pub(crate) async fn selections(
     server: &Server,
     parameters: SelectionRangeParams,
 ) -> Result<Option<Vec<SelectionRange>>> {
-    let (snapshot, source) = server.capture(&parameters.text_document.uri)?;
+    let options = server.options.child();
+    let (snapshot, source) = server.capture(&parameters.text_document.uri, &options)?;
     let encoding = server.state.lock().expect("session state").encoding.clone();
 
     let offsets = parameters
@@ -260,6 +267,7 @@ pub(crate) async fn selections(
                 kind: PresentationKind::Selections(offsets),
             }),
             parameters.work_done_progress_params.work_done_token,
+            &options,
         )
         .await?;
 
@@ -302,7 +310,8 @@ pub(crate) async fn colors(
     server: &Server,
     parameters: DocumentColorParams,
 ) -> Result<Vec<ColorInformation>> {
-    let (snapshot, source) = server.capture(&parameters.text_document.uri)?;
+    let options = server.options.child();
+    let (snapshot, source) = server.capture(&parameters.text_document.uri, &options)?;
 
     let report = server
         .query(
@@ -312,6 +321,7 @@ pub(crate) async fn colors(
                 kind: PresentationKind::Colors,
             }),
             parameters.work_done_progress_params.work_done_token,
+            &options,
         )
         .await?;
 
@@ -342,7 +352,8 @@ pub(crate) async fn color(
     server: &Server,
     parameters: ColorPresentationParams,
 ) -> Result<Vec<ColorPresentation>> {
-    let (snapshot, source) = server.capture(&parameters.text_document.uri)?;
+    let options = server.options.child();
+    let (snapshot, source) = server.capture(&parameters.text_document.uri, &options)?;
     let encoding = server.state.lock().expect("session state").encoding.clone();
 
     let range = Span::new(
@@ -370,6 +381,7 @@ pub(crate) async fn color(
                 kind: PresentationKind::Color { range, rgba },
             }),
             parameters.work_done_progress_params.work_done_token,
+            &options,
         )
         .await?;
 
@@ -401,7 +413,8 @@ async fn prepared(
     SemanticTokensLegend,
     Vec<SemanticToken>,
 )> {
-    let (snapshot, source) = server.capture(uri)?;
+    let options = server.options.child();
+    let (snapshot, source) = server.capture(uri, &options)?;
 
     let (provider, encoding) = {
         let state = server.state.lock().expect("session state");
@@ -445,6 +458,7 @@ async fn prepared(
                 kind: PresentationKind::Tokens { range: span },
             }),
             token,
+            &options,
         )
         .await?;
 

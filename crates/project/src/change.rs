@@ -44,6 +44,12 @@ pub enum ProjectChange {
         current: InputVersion,
     },
 
+    /// Invalidates current filesystem observations under the project change lock.
+    Invalidate {
+        /// Paths whose contents or membership require fresh observation.
+        paths: Vec<PathBuf>,
+    },
+
     /// Invalidates worker-backed state after an isolated worker is discarded.
     WorkerDiscarded(WorkerAffinity),
 }

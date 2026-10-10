@@ -92,7 +92,9 @@ fn verifies_profiles_and_loads_cache() -> io::Result<()> {
         project.change(ChangeBatch {
             changes: vec![ProjectChange::Source(SourceChange::Open {
                 identity: project.source_identity(),
-                origin: SourceOrigin::Disk(directory.path().join("unrelated.luau")),
+                origin: SourceOrigin::Disk(
+                    directory.path().join(format!("unrelated-{profile}.luau")),
+                ),
                 text: Arc::from("return 1"),
             })],
         })?;

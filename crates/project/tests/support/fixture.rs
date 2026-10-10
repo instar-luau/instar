@@ -171,7 +171,7 @@ fn assets(project: &Project) -> io::Result<()> {
             .join("tests/fixtures/assets")
             .join(fixture);
 
-        let mut files = fs::read_dir(source)?
+        let files = fs::read_dir(source)?
             .map(|entry| {
                 let entry = entry?;
 
@@ -185,7 +185,7 @@ fn assets(project: &Project) -> io::Result<()> {
             .collect::<io::Result<BTreeMap<_, _>>>()?;
 
         if fixture == "project" {
-            let mut metadata: Value = serde_json::from_str(
+            let metadata: Value = serde_json::from_str(
                 files
                     .get("metadata.json")
                     .ok_or_else(|| io::Error::other("fixture metadata is missing"))?,
@@ -193,17 +193,17 @@ fn assets(project: &Project) -> io::Result<()> {
             .map_err(io::Error::other)?;
 
             let profiles = metadata
-                .get_mut("profiles")
-                .and_then(Value::as_object_mut)
+                .get("profiles")
+                .and_then(Value::as_object)
                 .ok_or_else(|| io::Error::other("fixture metadata profiles are missing"))?;
 
             for profile in ["none", "local", "plugin", "roblox"] {
                 let declarations = files
-                    .get_mut(&format!("{profile}.d.luau"))
+                    .get(&format!("{profile}.d.luau"))
                     .ok_or_else(|| io::Error::other("fixture declarations are missing"))?;
 
                 let digest = profiles
-                    .get_mut(profile)
+                    .get(profile)
                     .ok_or_else(|| io::Error::other("fixture profile digest is missing"))?;
 
                 if digest.as_str()
@@ -214,38 +214,7 @@ fn assets(project: &Project) -> io::Result<()> {
                         "fixture declarations do not match their metadata",
                     ));
                 }
-
-                if profile == "none" {
-                    *declarations = declarations.replace(
-                        "declare extern type Model extends Instance with",
-                        "declare extern type PVInstance extends Instance with end\n\
-                        declare extern type Model extends PVInstance with",
-                    );
-                } else {
-                    declarations.push_str(
-                        "\ndeclare extern type PVInstance extends Instance with end\n\
-                        declare extern type Model extends PVInstance with PrimaryPart: Part? end\n",
-                    );
-                }
-
-                declarations.push_str(
-                    "\ndeclare extern type Folder extends Instance with end\n\
-                    declare extern type LuaSourceContainer extends Instance with end\n\
-                    declare extern type BaseScript extends LuaSourceContainer with end\n\
-                    declare extern type Script extends BaseScript with end\n\
-                    declare extern type ModuleScript extends LuaSourceContainer with end\n\
-                    declare extern type ReplicatedStorage extends Instance with end\n\
-                    declare extern type WorldRoot extends Model with end\n\
-                    declare extern type Workspace extends WorldRoot with end\n",
-                );
-
-                *digest = Value::String(format!("{:x}", Sha256::digest(declarations.as_bytes())));
             }
-
-            files.insert(
-                "metadata.json".to_owned(),
-                serde_json::to_string(&metadata).map_err(io::Error::other)?,
-            );
         }
 
         for (name, text) in files {

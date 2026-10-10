@@ -1,22 +1,36 @@
 //! Synthetic source, configuration, graph and sourcemap lifecycle fixtures.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs, io,
     path::{Path, PathBuf},
 };
 
-use instar_luau::{ImportOutcome, ImportRequest, ModuleIdentity};
+use instar_luau::{FlagValue, ImportOutcome, ImportRequest, ModuleIdentity};
 
 use instar_project::{
-    ChangeBatch, CheckReport, CheckRequest, ExplanationSelection, ImportExplanation, Input,
-    InputIdentity, InputState, InputVersion, Invocation, PositionQuery, PositionQueryKind, Project,
-    ProjectChange, Query, QueryRequest, SourceChange, SourceOrigin,
+    ChangeBatch, CheckOverrides, CheckReport, CheckRequest, CheckingMode, CheckingPatch,
+    ExplanationSelection, ImportExplanation, Input, InputIdentity, InputState, InputVersion,
+    Invocation, LanguagePatch, PositionQuery, PositionQueryKind, Project, ProjectChange, Query,
+    QueryRequest, SourceChange, SourceOrigin,
 };
 
 use instar_shared::{ContextIdentity, DiagnosticCategory};
+use serde::Deserialize;
 
 use crate::support::{Directory, complete, options, project, replace};
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LexicalCase {
+    source: String,
+    requests: Vec<Option<String>>,
+
+    #[serde(default)]
+    flags: BTreeMap<String, FlagValue>,
+
+    mode: Option<CheckingMode>,
+}
 
 fn analyze(
     project: &Project,
@@ -362,16 +376,48 @@ fn lexical_sites_keep_shadowing_mutations_and_revisions() -> io::Result<()> {
     let directory = Directory::new(None)?;
     directory.file("target.luau", "return 1")?;
 
-    let cases: Vec<(String, Vec<Option<String>>)> =
+    let cases: Vec<LexicalCase> =
         serde_json::from_str(include_str!("../fixtures/lifecycle/lexical/cases.json"))?;
 
     assert_eq!(cases.len(), 14);
     let caller = directory.file("caller.luau", "")?;
     let project = project();
 
-    for (source, expected) in cases {
+    for LexicalCase {
+        source,
+        requests: expected,
+        flags,
+        mode,
+    } in cases
+    {
         replace(&project, &caller, &source)?;
-        let report = analyze(&project, &caller, None)?;
+
+        let report = complete(project.check(
+            CheckRequest {
+                invocation: Invocation {
+                    inputs: vec![Input::Path(caller.clone())],
+                    explanations: ExplanationSelection {
+                        selection: true,
+                        settings: true,
+                        dependencies: true,
+                    },
+                    ..Invocation::default()
+                },
+                overrides: CheckOverrides {
+                    checking: CheckingPatch {
+                        mode,
+                        ..CheckingPatch::default()
+                    },
+                    language: LanguagePatch {
+                        flags,
+                        ..LanguagePatch::default()
+                    },
+                    ..CheckOverrides::default()
+                },
+            },
+            options(),
+        ))
+        .map_err(io::Error::from)?;
 
         assert!(
             !report
@@ -730,8 +776,14 @@ fn native_adapter_uses_rust_results_for_aliases_instances_and_lifecycle() -> io:
     let target_path = directory.file("target.luau", "return 1")?;
     let project = project();
     let original = analyze(&project, &caller, None)?;
-    assert_eq!(sites(&original, &caller).len(), 1);
+    assert_eq!(sites(&original, &caller).len(), 2);
     assert_eq!(original.dependencies.len(), 1);
+
+    assert!(matches!(
+        sites(&original, &caller)[1].outcome,
+        ImportOutcome::Nonconstant
+    ));
+
     let site = sites(&original, &caller)[0];
     assert_eq!(original.dependencies[0].importer, site.importer);
     assert_eq!(original.dependencies[0].site, site.site);

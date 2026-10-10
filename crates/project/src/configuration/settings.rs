@@ -558,6 +558,9 @@ pub struct FormatOverrides {
     /// Formatting target-selection overrides.
     pub selection: SelectionOverrides,
 
+    /// Formatting defaults applied before project and client configuration.
+    pub defaults: FormattingPatch,
+
     /// Formatting policy overrides.
     pub formatting: FormattingPatch,
 
@@ -1132,7 +1135,7 @@ impl ResolutionSettings {
                 .bytes()
                 .all(|character| character.is_ascii_alphanumeric() || b".-_".contains(&character))
         {
-            return Err(invalid(&format!("invalid alias name @{name}")));
+            return Err(invalid("invalid module alias name"));
         }
 
         let name = name.to_ascii_lowercase();

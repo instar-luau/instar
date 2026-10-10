@@ -48,11 +48,10 @@ where
 {
     let disconnected = Arc::new(Notify::new());
 
-    let (service, socket) = LspService::build_with_lifecycle_methods(|client| {
-        Server::new(client, Arc::clone(&project), options)
-    })
-    .custom_method("window/workDoneProgress/cancel", Server::cancel_progress)
-    .finish();
+    let (service, socket) =
+        LspService::build(|client| Server::new(client, Arc::clone(&project), options))
+            .custom_method("window/workDoneProgress/cancel", Server::cancel_progress)
+            .finish();
 
     let state = Arc::clone(&service.inner().state);
     let dispatch = Dispatch { service };

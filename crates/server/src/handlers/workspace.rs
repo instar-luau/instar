@@ -1,16 +1,12 @@
-use std::{
-    collections::{BTreeSet, HashMap},
-    path::PathBuf,
-};
+use std::{collections::HashMap, path::PathBuf};
 
 use instar_format::FormatScope;
 
 use instar_project::{
     ChangeBatch, CheckOverrides, CheckRequest, EditReport, EditRequest, ExtractionRequest,
     FileChange, FileRequest, FixMode, FixRequest, FormatMode, FormatOverrides, FormatRequest,
-    ImportRequest, Input, InputIdentity, InputState, InputVersion, Invocation, LintOverrides,
-    LintRequest, OperationOverrides, ProjectChange, ProjectSettingsPatch, ProjectSnapshot, Query,
-    QueryOutput, SettingsRequest,
+    ImportRequest, Input, Invocation, LintOverrides, LintRequest, OperationOverrides,
+    ProjectChange, ProjectSettingsPatch, ProjectSnapshot, Query, QueryOutput, SettingsRequest,
 };
 
 use instar_shared::{Completion, ContextIdentity, SourceIdentity, SourceVersion, Span};
@@ -207,7 +203,7 @@ pub(crate) async fn renamed(server: &Server, parameters: RenameFilesParams) {
             .flat_map(|(old, new)| [old.clone(), new.clone()])
             .collect();
 
-        let changes = invalidations(&server.project.snapshot(), paths)?;
+        let changes = vec![ProjectChange::Invalidate { paths }];
 
         server
             .state
@@ -275,20 +271,22 @@ pub(crate) async fn content(
     server: &Server,
     parameters: TextDocumentContentParams,
 ) -> Result<TextDocumentContentResult> {
-    if !server
-        .state
-        .lock()
-        .expect("session state")
-        .capabilities
-        .has("/workspace/textDocumentContent")
-    {
-        return Err(Error::invalid_params("virtual content was not negotiated"));
+    let options = server.options.child();
+    let (snapshot, source) = server.capture(&parameters.uri, &options)?;
+
+    if snapshot.is_declaration(source.version) {
+        return Ok(TextDocumentContentResult {
+            text: source.text.to_string(),
+        });
     }
 
-    let (snapshot, source) = server.capture(&parameters.uri)?;
-
     let report = server
-        .query(snapshot, Query::Content(source.version.identity), None)
+        .query(
+            snapshot,
+            Query::Content(source.version.identity),
+            None,
+            &options,
+        )
         .await?;
 
     let QueryOutput::Content(Some(source)) = report.output else {
@@ -480,6 +478,7 @@ pub(crate) async fn execute(
                     scope: FormatScope::Whole,
                     overrides: FormatOverrides::default(),
                     mode: FormatMode::Preview,
+                    snapshot: Some(snapshot),
                 },
                 options.clone(),
             );
@@ -551,7 +550,7 @@ pub(crate) async fn execute(
 
             apply_report(
                 server,
-                edit(server, request, token).await?,
+                edit(server, request, token, &options).await?,
                 parameters.command,
             )
             .await
@@ -607,8 +606,12 @@ pub(crate) async fn execute(
                 server,
                 edit(
                     server,
-                    EditRequest::Fixes(FixRequest { snapshot, fixes }),
+                    EditRequest::Fixes(FixRequest {
+                        snapshot: report.snapshot,
+                        fixes,
+                    }),
                     None,
+                    &options,
                 )
                 .await?,
                 parameters.command,
@@ -621,6 +624,8 @@ pub(crate) async fn execute(
 }
 
 async fn files(server: &Server, changes: Result<Vec<FileChange>>) -> Result<Option<WorkspaceEdit>> {
+    let options = server.options.child();
+
     let report = edit(
         server,
         EditRequest::Files(FileRequest {
@@ -628,6 +633,7 @@ async fn files(server: &Server, changes: Result<Vec<FileChange>>) -> Result<Opti
             changes: changes?,
         }),
         None,
+        &options,
     )
     .await?;
 
@@ -641,7 +647,7 @@ async fn files(server: &Server, changes: Result<Vec<FileChange>>) -> Result<Opti
 }
 
 fn invalidate(server: &Server, paths: Result<Vec<PathBuf>>) -> Result<()> {
-    let changes = invalidations(&server.project.snapshot(), paths?)?;
+    let changes = vec![ProjectChange::Invalidate { paths: paths? }];
 
     server
         .project
@@ -649,52 +655,6 @@ fn invalidate(server: &Server, paths: Result<Vec<PathBuf>>) -> Result<()> {
         .map_err(|error| failure(&error))?;
 
     Ok(())
-}
-
-fn invalidations(snapshot: &ProjectSnapshot, paths: Vec<PathBuf>) -> Result<Vec<ProjectChange>> {
-    let mut identities = BTreeSet::new();
-
-    for path in paths {
-        if let Some(parent) = path.parent() {
-            identities.insert(InputIdentity::Directory(parent.to_path_buf()));
-        }
-
-        identities.insert(InputIdentity::Path(path.clone()));
-
-        for identity in snapshot.input_versions.keys() {
-            if matches!(identity,InputIdentity::Directory(candidate)|InputIdentity::Path(candidate) if candidate.starts_with(&path) || path.starts_with(candidate))
-            {
-                identities.insert(identity.clone());
-            }
-        }
-    }
-
-    identities
-        .into_iter()
-        .map(|identity| {
-            let expected = snapshot.input_versions.get(&identity).cloned();
-
-            let revision = match &expected {
-                Some(expected) if expected.state == InputState::Stale => expected.revision,
-
-                Some(expected) => expected
-                    .revision
-                    .checked_add(1)
-                    .ok_or_else(Error::internal_error)?,
-
-                None => 1,
-            };
-
-            Ok(ProjectChange::Input {
-                expected,
-                current: InputVersion {
-                    identity,
-                    revision,
-                    state: InputState::Stale,
-                },
-            })
-        })
-        .collect()
 }
 
 fn command_source(

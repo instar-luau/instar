@@ -21,7 +21,7 @@ pub(crate) fn locations(
         PositionQueryKind::TypeDefinition => &occurrence.type_definitions,
 
         PositionQueryKind::Implementation => {
-            let Knowledge::Known(targets) = &occurrence.targets else {
+            let Knowledge::Known(targets) = &occurrence.hierarchy else {
                 return Err(Reason::UnavailableSemantics);
             };
 
@@ -30,17 +30,15 @@ pub(crate) fn locations(
             for facts in index.analyses.values() {
                 for function in &facts.facts.functions {
                     if targets.contains(&function.identity) {
-                        locations.push(function.body);
+                        locations.push(function.selection);
                     }
                 }
 
                 for nominal in &facts.facts.nominals {
-                    if targets.contains(&nominal.identity)
-                        || facts.facts.inheritance.iter().any(|edge| {
-                            edge.child == nominal.identity && targets.contains(&edge.parent)
-                        })
-                    {
-                        locations.push(nominal.declaration);
+                    if facts.facts.inheritance.iter().any(|edge| {
+                        edge.child == nominal.identity && targets.contains(&edge.parent)
+                    }) {
+                        locations.push(nominal.selection);
                     }
                 }
             }

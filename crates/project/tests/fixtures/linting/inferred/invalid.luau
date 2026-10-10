@@ -1,3 +1,5 @@
 --!nocheck
-local value=1
-return value
+local function identity<Values...>(...: Values...): Values...
+ return ...
+end
+return identity(1)

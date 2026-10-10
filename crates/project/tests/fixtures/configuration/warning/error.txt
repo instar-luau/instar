@@ -1,1 +1,1 @@
-unknown field `UnknownGlobal`
+unknown variant `MissingInstarRule`

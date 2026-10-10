@@ -9,7 +9,11 @@ use instar_luau::{ImportRequest, ImportSite, InstanceRoot, InstanceStep};
 use instar_shared::Options;
 
 use crate::{
-    capture::Capture, execution::Runtime, graph::ModuleNode, inputs::SourceOrigin, sourcemap::Map,
+    capture::{Capture, Listing},
+    execution::Runtime,
+    graph::ModuleNode,
+    inputs::SourceOrigin,
+    sourcemap::Map,
 };
 
 pub(crate) struct ResolvedTarget {
@@ -94,7 +98,24 @@ impl Runtime {
                     parent.join(request)
                 };
 
-                let path = probe(&navigation(&start, capture, options)?, capture, options)?;
+                let base = path
+                    .parent()
+                    .and_then(|parent| {
+                        parent
+                            .ancestors()
+                            .find(|ancestor| start.starts_with(ancestor))
+                    })
+                    .map(Path::to_path_buf);
+
+                let (path, failure) = navigation(&start, base.as_deref(), capture, options)?;
+                let target = probe(&path, capture, options);
+                options.check()?;
+
+                if let Some(error) = failure {
+                    return Err(error);
+                }
+
+                let path = target?;
 
                 let map = if let Some((map, caller)) = &importer.map {
                     capture.source(&map.path, options)?;
@@ -156,6 +177,7 @@ pub(crate) fn probe(path: &Path, capture: &mut Capture, options: &Options) -> io
     }
 
     let mut sources = Vec::new();
+    let mut aliases = Vec::new();
 
     for candidate in &candidates {
         if capture.read(candidate, options)?.is_some() {
@@ -166,8 +188,16 @@ pub(crate) fn probe(path: &Path, capture: &mut Capture, options: &Options) -> io
                 return Err(invalid("instar.luau is not an importable module"));
             }
 
-            sources.push(candidate.clone());
+            if module_path(candidate) == path {
+                sources.push(candidate.clone());
+            } else if path.file_name().is_some_and(|name| name == "init") {
+                aliases.push(candidate.clone());
+            }
         }
+    }
+
+    if sources.is_empty() {
+        sources = aliases;
     }
 
     match sources.as_slice() {
@@ -284,9 +314,23 @@ pub(crate) fn module_path(source: &Path) -> PathBuf {
     }
 }
 
-fn navigation(path: &Path, capture: &mut Capture, options: &Options) -> io::Result<PathBuf> {
-    let mut current = PathBuf::new();
-    let mut components = path.components().peekable();
+fn navigation(
+    path: &Path,
+    base: Option<&Path>,
+    capture: &mut Capture,
+    options: &Options,
+) -> io::Result<(PathBuf, Option<io::Error>)> {
+    let (mut current, relative) = if let Some(base) = base {
+        (
+            base.to_path_buf(),
+            path.strip_prefix(base).map_err(invalid)?,
+        )
+    } else {
+        (PathBuf::new(), path)
+    };
+
+    let mut components = relative.components().peekable();
+    let mut failure = None;
 
     while let Some(component) = components.next() {
         options.check()?;
@@ -296,8 +340,8 @@ fn navigation(path: &Path, capture: &mut Capture, options: &Options) -> io::Resu
             Component::CurDir => {}
 
             Component::ParentDir => {
-                if capture.listing(&current, options)?.is_none() {
-                    return Err(io::Error::new(
+                if !directory(&current, capture, options)? && failure.is_none() {
+                    failure = Some(io::Error::new(
                         io::ErrorKind::NotFound,
                         format!("navigation directory not found: {}", current.display()),
                     ));
@@ -311,8 +355,11 @@ fn navigation(path: &Path, capture: &mut Capture, options: &Options) -> io::Resu
             Component::Normal(name) => {
                 current.push(name);
 
-                if components.peek().is_some() && capture.listing(&current, options)?.is_none() {
-                    return Err(io::Error::new(
+                if components.peek().is_some()
+                    && !directory(&current, capture, options)?
+                    && failure.is_none()
+                {
+                    failure = Some(io::Error::new(
                         io::ErrorKind::NotFound,
                         format!("navigation directory not found: {}", current.display()),
                     ));
@@ -321,9 +368,90 @@ fn navigation(path: &Path, capture: &mut Capture, options: &Options) -> io::Resu
         }
     }
 
-    Ok(current)
+    Ok((current, failure))
+}
+
+fn directory(path: &Path, capture: &mut Capture, options: &Options) -> io::Result<bool> {
+    match capture.listing(path, options)? {
+        Listing::Directory(_) => return Ok(true),
+        Listing::NonDirectory => return Ok(false),
+        Listing::Missing => {}
+    }
+
+    let document = capture
+        .snapshot
+        .sources()
+        .find(|source| {
+            matches!(
+                capture.snapshot.origin(source.version.identity),
+                Some(SourceOrigin::Document {
+                    context: Some(context),
+                    ..
+                }) if context != path && context.starts_with(path)
+            )
+        })
+        .cloned();
+
+    if let Some(document) = document {
+        capture.consult_source(&document);
+
+        return Ok(true);
+    }
+
+    Ok(false)
 }
 
 fn invalid(message: impl Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, io, sync::Arc};
+
+    use instar_shared::Options;
+
+    use super::directory;
+
+    use crate::{
+        capture::Capture,
+        change::{ChangeBatch, ProjectChange, SourceChange},
+        inputs::SourceOrigin,
+        project::Project,
+    };
+
+    #[test]
+    fn document_contexts_only_virtualize_missing_strict_ancestors() -> io::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let missing = temporary.path().join("missing");
+        let document = missing.join("entry.luau");
+        let blocker = temporary.path().join("blocked");
+        fs::write(&blocker, "return 1")?;
+        let project = Project::new(Vec::new());
+
+        for context in [&document, &blocker.join("entry.luau")] {
+            project.change(ChangeBatch {
+                changes: vec![ProjectChange::Source(SourceChange::Open {
+                    identity: project.source_identity(),
+                    origin: SourceOrigin::Document {
+                        address: context.to_string_lossy().into_owned(),
+                        context: Some(context.clone()),
+                    },
+                    text: "return 1".into(),
+                })],
+            })?;
+        }
+
+        let options = Options::default();
+        let mut capture = Capture::live(Arc::clone(&project.host));
+        assert!(directory(&missing, &mut capture, &options)?);
+        assert!(!directory(&document, &mut capture, &options)?);
+        assert!(!directory(&blocker, &mut capture, &options)?);
+        let mut frozen = Capture::new(Arc::clone(&project.host), capture.snapshot);
+        assert!(directory(&missing, &mut frozen, &options)?);
+        assert!(!directory(&document, &mut frozen, &options)?);
+        assert!(!directory(&blocker, &mut frozen, &options)?);
+
+        Ok(())
+    }
 }

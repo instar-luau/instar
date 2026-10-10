@@ -66,7 +66,13 @@ impl Identities {
     }
 
     pub(crate) fn get(&self, data: Option<&Value>, operation: &str) -> Result<LazyRecord> {
-        let data = data.ok_or_else(|| Error::invalid_params("missing result identity"))?;
+        let data = data
+            .and_then(Value::as_object)
+            .ok_or_else(|| Error::invalid_params("invalid result identity"))?;
+
+        if data.len() != 2 || !data.contains_key("session") || !data.contains_key("identity") {
+            return Err(Error::invalid_params("invalid result identity"));
+        }
 
         if data.get("session").and_then(Value::as_u64) != Some(self.session) {
             return Err(Error::invalid_params("result belongs to another session"));
@@ -89,6 +95,20 @@ impl Identities {
         }
 
         Ok(record.clone())
+    }
+
+    pub(crate) fn find(&self, record: &LazyRecord) -> Option<Value> {
+        self.records
+            .iter()
+            .find(|(_, existing)| {
+                existing.operation == record.operation
+                    && existing.source == record.source
+                    && existing.inputs == record.inputs
+                    && existing.payload == record.payload
+                    && existing.edit.is_none()
+                    && record.edit.is_none()
+            })
+            .map(|(identity, _)| json!({"session": self.session, "identity": identity}))
     }
 
     pub(crate) fn store_tokens(&mut self, record: TokenRecord) -> Result<String> {

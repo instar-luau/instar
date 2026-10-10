@@ -614,7 +614,7 @@ impl Runtime {
         semantic: &[SemanticCategory],
         capture: &Capture,
         options: &Options,
-    ) -> io::Result<(Vec<ClosureRecipe>, Completion, Vec<Diagnostic>)> {
+    ) -> io::Result<(Vec<ClosureRecipe>, Completion, Vec<ModuleDiagnostic>)> {
         let mut connected = UnGraphMap::<ModuleIdentity, ()>::new();
         let mut directed = DiGraphMap::<ModuleIdentity, ()>::new();
 
@@ -660,7 +660,10 @@ impl Runtime {
                     completion.combine(Completion::Incomplete(vec![Reason::UnsupportedFeature]));
 
                 for identity in &component {
-                    diagnostics.push(environments::diagnostic(&graph.modules[identity].source, "analysis.cross_profile", DiagnosticCategory::Analysis, "imports span incompatible process-global language profiles; cross-profile semantic exports are unavailable".to_owned()));
+                    diagnostics.push(ModuleDiagnostic {
+                        module: *identity,
+                        diagnostic: environments::diagnostic(&graph.modules[identity].source, "analysis.cross_profile", DiagnosticCategory::Analysis, "imports span incompatible process-global language profiles; cross-profile semantic exports are unavailable".to_owned()),
+                    });
                 }
 
                 continue;

@@ -86,6 +86,9 @@ pub enum InputState {
     /// The input was absent or had no synchronized contents.
     Missing,
 
+    /// The directory input was present but could not be traversed as a directory.
+    NonDirectory,
+
     /// The input requires a fresh observation.
     Stale,
 
@@ -136,6 +139,7 @@ pub struct SourceRecord {
 pub struct SourceStore {
     pub(crate) records: BTreeMap<SourceIdentity, SourceRecord>,
     pub(crate) disk: BTreeMap<PathBuf, SourceIdentity>,
+    pub(crate) declarations: BTreeSet<SourceVersion>,
 }
 
 /// Immutable snapshot-owned workspace and client configuration.
@@ -162,6 +166,63 @@ pub struct ProjectSnapshot {
 }
 
 impl ProjectSnapshot {
+    /// Creates an isolated snapshot retaining one exact declaration and its origin.
+    ///
+    /// # Errors
+    /// Returns invalid-source or invalid-origin errors.
+    pub fn declaration(source: SourceSnapshot, origin: SourceOrigin) -> io::Result<Self> {
+        source.validate()?;
+        validate_origin(&origin)?;
+        let mut snapshot = initial(Vec::new());
+        let identity = source.version.identity;
+        let path = origin.path().map(Path::to_path_buf);
+        let sources = Arc::make_mut(&mut snapshot.sources);
+
+        if let SourceOrigin::Disk(path) = &origin {
+            sources.disk.insert(path.clone(), identity);
+        }
+
+        sources.declarations.insert(source.version);
+
+        sources.records.insert(
+            identity,
+            SourceRecord {
+                origin,
+                revision: source.version.revision,
+                snapshot: Some(source.clone()),
+            },
+        );
+
+        let inputs = Arc::make_mut(&mut snapshot.input_versions);
+        let source_identity = InputIdentity::Source(identity);
+
+        inputs.insert(
+            source_identity.clone(),
+            InputVersion {
+                identity: source_identity,
+                revision: 1,
+                state: InputState::Source(source.clone()),
+            },
+        );
+
+        if let Some(path) = path {
+            let identity = InputIdentity::Path(path);
+
+            inputs.insert(
+                identity.clone(),
+                InputVersion {
+                    identity,
+                    revision: 1,
+                    state: InputState::Source(source),
+                },
+            );
+        }
+
+        advance_inventory(sources, inputs, 1)?;
+
+        Ok(snapshot)
+    }
+
     /// Returns exact synchronized contents for a registered source.
     #[must_use]
     pub fn source(&self, identity: SourceIdentity) -> Option<&SourceSnapshot> {
@@ -208,6 +269,15 @@ impl ProjectSnapshot {
             .records
             .get(&identity)
             .map(|record| &record.origin)
+    }
+
+    /// Returns whether this exact source revision was captured as an environment declaration.
+    #[must_use]
+    pub fn is_declaration(&self, source: SourceVersion) -> bool {
+        self.sources.declarations.contains(&source)
+            && self
+                .source(source.identity)
+                .is_some_and(|snapshot| snapshot.version == source)
     }
 
     /// Iterates all sources with captured contents.
@@ -324,6 +394,10 @@ impl ProjectSnapshot {
                     advance_policy(inputs, context)?;
                 }
 
+                ProjectChange::Invalidate { paths } => {
+                    invalidate_inputs(sources, inputs, paths)?;
+                }
+
                 ProjectChange::Input { expected, current } => {
                     if inputs.get(&current.identity) != expected.as_ref() {
                         return Err(invalid("consulted input revision mismatch"));
@@ -352,6 +426,13 @@ impl ProjectSnapshot {
                         }
                     } else if current.revision != 1 {
                         return Err(invalid("new input revision must be one"));
+                    }
+
+                    if let InputIdentity::Path(path) = &current.identity
+                        && current.state == InputState::Stale
+                        && expected.as_ref() != Some(&current)
+                    {
+                        invalidate_path(sources, inputs, path)?;
                     }
 
                     inputs.insert(current.identity.clone(), current);
@@ -395,6 +476,29 @@ impl ProjectSnapshot {
                 .ok_or_else(|| invalid("source inventory revision overflow"))?;
         }
 
+        let declarations = observed
+            .sources
+            .declarations
+            .iter()
+            .filter(|source| {
+                !protected.contains(&InputIdentity::Source(source.identity))
+                    && observed
+                        .origin(source.identity)
+                        .and_then(SourceOrigin::path)
+                        .is_none_or(|path| {
+                            !protected.contains(&InputIdentity::Path(path.to_path_buf()))
+                        })
+                    && next
+                        .source(source.identity)
+                        .is_some_and(|snapshot| snapshot.version == **source)
+            })
+            .copied()
+            .collect::<Vec<_>>();
+
+        Arc::make_mut(&mut next.sources)
+            .declarations
+            .extend(declarations);
+
         for (identity, input) in observed.input_versions.iter() {
             if *identity == InputIdentity::Sources || protected.contains(identity) {
                 continue;
@@ -412,11 +516,16 @@ impl ProjectSnapshot {
             }
 
             if let Some(previous) = next.input_versions.get(identity) {
-                if previous != input {
-                    return Err(invalid("admitted input conflicts with recorded history"));
+                if previous == input {
+                    continue;
                 }
 
-                continue;
+                if previous.state != InputState::Stale
+                    || input.state == InputState::Stale
+                    || input.revision <= previous.revision
+                {
+                    return Err(invalid("admitted input conflicts with recorded history"));
+                }
             }
 
             validate_input(input)?;
@@ -570,6 +679,16 @@ fn apply_source(
     inputs: &mut BTreeMap<InputIdentity, InputVersion>,
     change: SourceChange,
 ) -> io::Result<()> {
+    let opening = matches!(&change, SourceChange::Open { .. });
+
+    let membership = matches!(
+        &change,
+        SourceChange::Open { .. }
+            | SourceChange::Move { .. }
+            | SourceChange::Close { .. }
+            | SourceChange::Remove { .. }
+    );
+
     let identity = match &change {
         SourceChange::Open { identity, .. } => *identity,
 
@@ -594,6 +713,10 @@ fn apply_source(
         _ => previous_path.clone(),
     };
 
+    let previous = inputs
+        .get(&InputIdentity::Source(identity))
+        .map(|input| input.revision);
+
     match change {
         SourceChange::Open {
             identity,
@@ -614,7 +737,19 @@ fn apply_source(
         SourceChange::Remove { expected } => remove_source(store, inputs, expected)?,
     }
 
+    if let Some(previous) = previous
+        && let Some(input) = inputs.get_mut(&InputIdentity::Source(identity))
+    {
+        input.revision = previous
+            .checked_add(1)
+            .ok_or_else(|| invalid("source input revision overflow"))?;
+    }
+
     for path in previous_path.into_iter().chain(next_path) {
+        if membership {
+            invalidate_directories(inputs, &path, opening)?;
+        }
+
         let snapshot = store
             .records
             .values()
@@ -647,6 +782,123 @@ fn apply_source(
                 },
             );
         }
+    }
+
+    Ok(())
+}
+
+fn invalidate_inputs(
+    sources: &SourceStore,
+    inputs: &mut BTreeMap<InputIdentity, InputVersion>,
+    paths: Vec<PathBuf>,
+) -> io::Result<()> {
+    let paths = paths
+        .into_iter()
+        .map(|path| absolute(&path))
+        .collect::<io::Result<BTreeSet<_>>>()?;
+
+    let mut identities = BTreeSet::new();
+
+    for path in paths {
+        if let Some(parent) = path.parent() {
+            identities.insert(InputIdentity::Directory(parent.to_path_buf()));
+        }
+
+        identities.insert(InputIdentity::Path(path.clone()));
+
+        for identity in inputs.keys() {
+            if matches!(identity, InputIdentity::Directory(candidate) | InputIdentity::Path(candidate)
+                if candidate.starts_with(&path) || path.starts_with(candidate))
+            {
+                identities.insert(identity.clone());
+            }
+        }
+    }
+
+    for identity in identities {
+        if inputs
+            .get(&identity)
+            .is_some_and(|input| input.state == InputState::Stale)
+        {
+            continue;
+        }
+
+        let revision = inputs
+            .get(&identity)
+            .map_or(Some(1), |input| input.revision.checked_add(1))
+            .ok_or_else(|| invalid("input revision overflow"))?;
+
+        if let InputIdentity::Path(path) = &identity {
+            invalidate_path(sources, inputs, path)?;
+        }
+
+        inputs.insert(
+            identity.clone(),
+            InputVersion {
+                identity,
+                revision,
+                state: InputState::Stale,
+            },
+        );
+    }
+
+    Ok(())
+}
+
+fn invalidate_path(
+    sources: &SourceStore,
+    inputs: &mut BTreeMap<InputIdentity, InputVersion>,
+    path: &Path,
+) -> io::Result<()> {
+    invalidate_directories(inputs, path, false)?;
+
+    if let Some(source) = sources.disk.get(path)
+        && let Some(input) = inputs.get_mut(&InputIdentity::Source(*source))
+        && input.state != InputState::Stale
+    {
+        input.revision = input
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| invalid("source input revision overflow"))?;
+
+        input.state = InputState::Stale;
+    }
+
+    Ok(())
+}
+
+fn invalidate_directories(
+    inputs: &mut BTreeMap<InputIdentity, InputVersion>,
+    path: &Path,
+    opening: bool,
+) -> io::Result<()> {
+    for (identity, input) in inputs.iter_mut() {
+        let InputIdentity::Directory(directory) = identity else {
+            continue;
+        };
+
+        let Some(child) = path
+            .strip_prefix(directory)
+            .ok()
+            .and_then(|relative| relative.components().next())
+        else {
+            continue;
+        };
+
+        if input.state == InputState::Stale
+            || opening
+                && matches!(&input.state, InputState::Directory(entries)
+                    if entries.contains(&directory.join(child.as_os_str())))
+        {
+            continue;
+        }
+
+        input.revision = input
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| invalid("directory revision overflow"))?;
+
+        input.state = InputState::Stale;
     }
 
     Ok(())
@@ -961,6 +1213,12 @@ fn validate_input(input: &InputVersion) -> io::Result<()> {
         }
 
         _ => {}
+    }
+
+    if input.state == InputState::NonDirectory
+        && !matches!(input.identity, InputIdentity::Directory(_))
+    {
+        return Err(invalid("non-directory state requires a directory identity"));
     }
 
     if let InputState::Directory(paths) = &input.state {

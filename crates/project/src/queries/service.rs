@@ -1,17 +1,21 @@
 use std::{
-    io,
+    collections::BTreeSet,
+    io, mem,
     sync::{Arc, Mutex},
 };
 
 use instar_luau::{
-    AnalysisPurpose, AnalysisRequest, ImportOutcome, ModuleIdentity, SemanticCategory,
-    SemanticIdentity,
+    AnalysisPurpose, AnalysisRequest, ImportOutcome, InspectionResult, ModuleIdentity,
+    SemanticAvailability, SemanticCategory, SemanticIdentity,
 };
 
 use instar_shared::{
-    Availability, Completion, Diagnostic, FailureKind, Location, OperationFailure, Options, Reason,
-    SourceIdentity, SourceOutcome, SourceSnapshot, SourceVersion, Span,
+    Availability, Completion, Diagnostic, FailureKind, Knowledge, Location, OperationFailure,
+    Options, Reason, SourceIdentity, SourceOutcome, SourceSnapshot, SourceVersion, Span,
 };
+
+use instar_syntax::{parse, token::TokenKind};
+use ureq::http::Uri;
 
 use super::{
     assistance::assistance,
@@ -21,8 +25,8 @@ use super::{
     output::{ProjectCandidate, ProjectCompletions, ProjectSymbol, QueryOutput},
     presentation::presentation,
     request::{
-        CompletionQuery, DiagnosticQuery, HierarchyQuery, LinkQuery, PositionQuery,
-        PositionQueryKind, PresentationKind, PresentationQuery, Query, QueryRequest,
+        CompletionQuery, DiagnosticQuery, HierarchyQuery, HierarchyQueryKind, LinkQuery,
+        PositionQuery, PositionQueryKind, PresentationKind, PresentationQuery, Query, QueryRequest,
         ReferenceQuery, SymbolQuery,
     },
 };
@@ -31,7 +35,8 @@ use crate::{
     assets,
     capture::Capture,
     configuration::{
-        CheckOverrides, LintOverrides, OperationOverrides, SelectionOverrides, worker_options,
+        CheckOverrides, DiagnosticScope, LintOverrides, OperationOverrides, SelectionOverrides,
+        worker_options,
     },
     documentation,
     execution::{Runtime, Work, WorkOutput, failure},
@@ -108,6 +113,15 @@ impl QueryState {
         self.diagnostics.clone_from(&capture.diagnostics);
     }
 
+    fn include_inspection(&mut self, inspection: &InspectionResult) {
+        self.completion = self
+            .completion
+            .clone()
+            .combine(inspection.completion.clone());
+
+        self.diagnostics.extend(inspection.diagnostics.clone());
+    }
+
     fn error(self, error: Option<io::Error>, options: &Options) -> io::Error {
         failed(
             error,
@@ -139,7 +153,14 @@ impl Runtime {
                 PositionQueryKind::Implementation | PositionQueryKind::Lenses
             ),
 
-            Query::Diagnostics(request) => request.inputs.is_empty(),
+            Query::Diagnostics(request) => {
+                request.inputs.is_empty()
+                    || request
+                        .inputs
+                        .iter()
+                        .any(|input| matches!(input, Input::Path(_) | Input::Pattern { .. }))
+            }
+
             _ => false,
         };
 
@@ -165,6 +186,7 @@ impl Runtime {
         }
 
         if workspace {
+            capture.admit_inventory(options)?;
             capture.consult_inventory();
         }
 
@@ -204,7 +226,7 @@ impl Runtime {
             ..context.map_or_else(CheckOverrides::default, |context| context.overrides.clone())
         });
 
-        let mut targets = self
+        let selected = self
             .select(
                 &invocation,
                 &overrides,
@@ -214,44 +236,63 @@ impl Runtime {
             )?
             .targets;
 
-        targets.retain(|target| {
-            if Some(target.identity) == source {
-                return true;
+        let mut targets = Vec::new();
+
+        for target in selected {
+            if Some(target.identity) == source || indexed(&target, &capture.snapshot)? {
+                targets.push(target);
             }
+        }
 
-            let policy = &target.effective.settings.selection.index;
-
-            let include = Matcher::new(
-                policy.include.as_deref().or(target
-                    .effective
-                    .settings
-                    .selection
-                    .include
-                    .as_deref()),
-            );
-
-            let exclude = Matcher::new(
-                policy.exclude.as_deref().or(target
-                    .effective
-                    .settings
-                    .selection
-                    .exclude
-                    .as_deref()),
-            );
-
-            let path = capture
+        if workspace {
+            let documents = capture
                 .snapshot
-                .origin(target.identity)
-                .and_then(SourceOrigin::path);
+                .sources()
+                .filter(|source| {
+                    matches!(
+                        capture.snapshot.origin(source.version.identity),
+                        Some(SourceOrigin::Document { .. })
+                    )
+                })
+                .cloned()
+                .collect::<Vec<_>>();
 
-            match (include, exclude) {
-                (Ok(include), Ok(exclude)) => path.is_none_or(|path| {
-                    include.includes(path) && (!exclude.matches(path) || policy.override_exclusions)
-                }),
+            for document in documents {
+                let identity = document.version.identity;
 
-                _ => false,
+                if capture
+                    .snapshot
+                    .origin(identity)
+                    .and_then(SourceOrigin::path)
+                    .is_some_and(|path| {
+                        path.file_name().is_some_and(|name| name == "instar.luau")
+                            || !matches!(
+                                path.extension().and_then(|extension| extension.to_str()),
+                                Some("lua" | "luau")
+                            )
+                    })
+                {
+                    continue;
+                }
+
+                if targets.iter().any(|target| target.identity == identity) {
+                    continue;
+                }
+
+                let effective =
+                    self.effective(identity, &invocation, &overrides, capture, options)?;
+
+                let target = SelectedSource {
+                    identity,
+                    effective,
+                };
+
+                if Some(identity) == source || indexed(&target, &capture.snapshot)? {
+                    capture.consult_source(&document);
+                    targets.push(target);
+                }
             }
-        });
+        }
 
         if let Some(identity) = source
             && !targets.iter().any(|target| target.identity == identity)
@@ -300,7 +341,7 @@ impl Runtime {
             .flat_map(|node| node.environment.failures.iter().cloned())
             .collect::<Vec<_>>();
 
-        let (recipes, completion, mut diagnostics) = self
+        let (recipes, completion, findings) = self
             .closures(
                 &graph,
                 AnalysisPurpose::Editor,
@@ -319,6 +360,11 @@ impl Runtime {
                 )
             })?;
 
+        let mut diagnostics = findings
+            .into_iter()
+            .map(|finding| finding.diagnostic)
+            .collect::<Vec<_>>();
+
         diagnostics.extend(graph.diagnostics.clone());
 
         let mut state = QueryCapture {
@@ -336,6 +382,7 @@ impl Runtime {
         self.query_facts(&mut state, categories, options)?;
 
         if workspace {
+            state.capture.admit_inventory(options)?;
             state.capture.consult_inventory();
         }
 
@@ -386,12 +433,55 @@ impl Runtime {
         state: &mut QueryState,
         options: &Options,
     ) -> io::Result<(QueryOutput, Capture)> {
-        let invocation = Invocation {
+        let mut invocation = Invocation {
             inputs: request.inputs,
             ..Invocation::default()
         };
 
-        let check = if request.checking {
+        let selected = self.select(
+            &invocation,
+            &OperationOverrides::Check(CheckOverrides {
+                selection: SelectionOverrides {
+                    include: Some(Vec::new()),
+                    exclude: Some(Vec::new()),
+                    override_exclusions: true,
+                },
+                ..CheckOverrides::default()
+            }),
+            &mut capture,
+            SelectionPurpose::Editor,
+            options,
+        )?;
+
+        let mut inputs = Vec::new();
+
+        for target in selected.targets {
+            let explicit = invocation.inputs.iter().any(|input| match input {
+                Input::Source(identity) => *identity == target.identity,
+                Input::Module(module) => module.source == target.identity,
+                _ => false,
+            });
+
+            let open = matches!(
+                capture.snapshot.origin(target.identity),
+                Some(SourceOrigin::Document { .. })
+            );
+
+            if explicit
+                || open
+                || matches!(
+                    target.effective.settings.editing.diagnostic_scope,
+                    DiagnosticScope::Workspace
+                ) && indexed(&target, &capture.snapshot)?
+            {
+                inputs.push(Input::Source(target.identity));
+            }
+        }
+
+        invocation.inputs = inputs;
+        let selected = !invocation.inputs.is_empty();
+
+        let check = if request.checking && selected {
             match self.check(
                 &CheckRequest {
                     invocation: invocation.clone(),
@@ -426,7 +516,7 @@ impl Runtime {
             }
         }
 
-        let lint = if request.lint {
+        let lint = if request.lint && selected {
             match self.lint(
                 &LintRequest {
                     invocation,
@@ -489,23 +579,48 @@ impl Runtime {
                 .source(target.identity)
                 .ok_or_else(|| invalid("symbol source is absent"))?;
 
-            for symbol in symbols::symbols(source, &syntax_settings(&target.effective), options)? {
+            let symbols = symbols::symbols(source, &syntax_settings(&target.effective), options)?;
+
+            let mut pending = symbols
+                .into_iter()
+                .rev()
+                .map(|symbol| (symbol, None))
+                .collect::<Vec<_>>();
+
+            while let Some((mut symbol, container)) = pending.pop() {
+                options.check()?;
+
+                if request.source.is_none() {
+                    pending.extend(
+                        mem::take(&mut symbol.children)
+                            .into_iter()
+                            .rev()
+                            .map(|child| (child, Some(symbol.name.clone()))),
+                    );
+                }
+
                 if request.search.is_empty()
                     || symbol
                         .name
                         .to_lowercase()
                         .contains(&request.search.to_lowercase())
                 {
+                    let range = if request.source.is_some() {
+                        symbol.range
+                    } else {
+                        symbol.selection
+                    };
+
                     output.push(ProjectSymbol {
                         location: Location::new(
                             source,
                             Span {
-                                start: symbol.range[0],
-                                end: symbol.range[1],
+                                start: range[0],
+                                end: range[1],
                             },
                         )?,
                         symbol,
-                        container: None,
+                        container,
                     });
                 }
             }
@@ -536,7 +651,7 @@ impl Runtime {
             &Invocation::default(),
             &OperationOverrides::Check(CheckOverrides::default()),
             &mut capture,
-            true,
+            false,
             options,
         )?;
 
@@ -576,11 +691,148 @@ impl Runtime {
         }
 
         links.sort_by_key(|link| (link.location.source, link.location.span));
+        let mut agreed = Vec::new();
 
-        links
-            .dedup_by(|left, right| left.location == right.location && left.target == right.target);
+        for group in links.chunk_by(|left, right| left.location == right.location) {
+            let link = &group[0];
 
-        Ok((QueryOutput::Links(links), capture))
+            if link.target.is_some()
+                && group
+                    .iter()
+                    .all(|candidate| candidate.target == link.target)
+            {
+                agreed.push(link.clone());
+            }
+        }
+
+        let source = checked_source(&capture.snapshot, request.source)?;
+
+        let target = selected
+            .iter()
+            .find(|target| target.identity == request.source.identity)
+            .ok_or_else(|| invalid("link source is absent"))?;
+
+        let parsed = parse(source, &syntax_settings(&target.effective), options);
+        state.completion = state.completion.clone().combine(parsed.completion);
+        state.diagnostics.extend(parsed.diagnostics);
+
+        for token in &parsed.tree.syntax().tokens {
+            options.check()?;
+
+            if !matches!(token.kind, TokenKind::Comment | TokenKind::BlockComment) {
+                continue;
+            }
+
+            let text = &source.text[token.span.start..token.span.end];
+            let mut covered = 0;
+
+            for (offset, character) in text.char_indices() {
+                options.check()?;
+
+                if offset < covered
+                    || !matches!(character, 'h' | 'H')
+                    || text[..offset]
+                        .chars()
+                        .next_back()
+                        .is_some_and(|previous| previous.is_alphanumeric() || previous == '_')
+                {
+                    continue;
+                }
+
+                let remaining = &text[offset..];
+
+                let scheme = if remaining
+                    .get(..8)
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"))
+                {
+                    "https://"
+                } else if remaining
+                    .get(..7)
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://"))
+                {
+                    "http://"
+                } else {
+                    continue;
+                };
+
+                let mut brackets = 0;
+
+                let end = remaining
+                    .char_indices()
+                    .find_map(|(index, character)| {
+                        if character == '[' {
+                            brackets += 1;
+                        } else if character == ']' {
+                            if brackets == 0 {
+                                return Some(index);
+                            }
+
+                            brackets -= 1;
+                        }
+
+                        (character.is_whitespace()
+                            || matches!(character, '<' | '>' | '"' | '\'' | '`' | '{' | '}'))
+                        .then_some(index)
+                    })
+                    .unwrap_or(remaining.len());
+
+                let mut address = &remaining[..end];
+
+                let opening = address
+                    .chars()
+                    .filter(|character| *character == '(')
+                    .count();
+
+                let mut closing = address
+                    .chars()
+                    .filter(|character| *character == ')')
+                    .count();
+
+                while address.ends_with(')') && closing > opening {
+                    address = &address[..address.len() - 1];
+                    closing -= 1;
+                }
+
+                let normalized = format!("{scheme}{}", &address[scheme.len()..]);
+                covered = offset + address.len();
+
+                if normalized
+                    .parse::<Uri>()
+                    .ok()
+                    .and_then(|address| address.host().map(str::to_owned))
+                    .is_none_or(|host| host.is_empty())
+                    || normalized.match_indices('%').any(|(offset, _)| {
+                        normalized.get(offset + 1..offset + 3).is_none_or(|digits| {
+                            !digits.bytes().all(|byte| byte.is_ascii_hexdigit())
+                        })
+                    })
+                {
+                    continue;
+                }
+
+                agreed.push(ProjectLink {
+                    location: Location::new(
+                        source,
+                        Span {
+                            start: token.span.start + offset,
+                            end: token.span.start + covered,
+                        },
+                    )?,
+                    target: None,
+                    address: Some(normalized),
+                });
+            }
+        }
+
+        agreed.sort_by_key(|link| (link.location.source, link.location.span));
+
+        agreed.dedup_by(|left, right| {
+            left.location == right.location
+                && left.target == right.target
+                && left.address == right.address
+        });
+
+        Ok((QueryOutput::Links(agreed), capture))
     }
 
     fn query_documentation(
@@ -739,6 +991,56 @@ impl Runtime {
 
         state.include_capture(&captured);
 
+        if matches!(
+            request.kind,
+            PositionQueryKind::Declaration
+                | PositionQueryKind::Definition
+                | PositionQueryKind::TypeDefinition
+                | PositionQueryKind::Implementation
+        ) && request.module.context == captured.capture.snapshot.context(request.source.identity)
+        {
+            let mut modules = BTreeSet::new();
+            let mut locations = Vec::new();
+
+            for recipe in &captured.recipes {
+                for module in &recipe.request.modules {
+                    if module.analysis.module.source != request.source.identity
+                        || !modules.insert(module.analysis.module)
+                    {
+                        continue;
+                    }
+
+                    let WorkOutput::Inspection(inspection) = self.workers.execute(
+                        Work::Inspect {
+                            closure: recipe.request.clone(),
+                            module: module.analysis.module,
+                            offset: request.offset,
+                        },
+                        &worker_options(options),
+                    )?
+                    else {
+                        return Err(io::Error::other("inspection lane returned wrong outcome"));
+                    };
+
+                    state.include_inspection(&inspection);
+
+                    locations.extend(
+                        navigation::locations(&inspection, request.kind, &captured.index)
+                            .map_err(Reason::error)?,
+                    );
+                }
+            }
+
+            if modules.is_empty() {
+                return Err(invalid("source has unavailable semantic contexts"));
+            }
+
+            locations.sort_by_key(|location| (location.source, location.span));
+            locations.dedup();
+
+            return Ok((QueryOutput::Locations(locations), captured.capture));
+        }
+
         let output = if matches!(
             request.kind,
             PositionQueryKind::Hints | PositionQueryKind::Lenses | PositionQueryKind::InlineValues
@@ -762,14 +1064,29 @@ impl Runtime {
                 return Err(io::Error::other("inspection lane returned wrong outcome"));
             };
 
-            state.completion = state
-                .completion
-                .clone()
-                .combine(inspection.completion.clone());
+            state.include_inspection(&inspection);
 
-            state.diagnostics.extend(inspection.diagnostics.clone());
+            if matches!(request.kind, PositionQueryKind::PrepareRename) {
+                let location = inspection
+                    .occurrence
+                    .as_ref()
+                    .map(|occurrence| match &occurrence.targets {
+                        Knowledge::Known(targets) => Ok((occurrence, targets)),
+                        Knowledge::Unavailable(reason) => Err(reason.error()),
+                    })
+                    .transpose()?
+                    .filter(|(_, targets)| {
+                        matches!(targets.as_slice(), [SemanticIdentity::Source { location, .. }]
+                        if !captured.capture.snapshot.is_declaration(location.source)
+                            && !matches!(
+                                captured.capture.snapshot.origin(location.source.identity),
+                                Some(SourceOrigin::Virtual { .. })
+                            ))
+                    })
+                    .map(|(occurrence, _)| occurrence.location);
 
-            if matches!(
+                QueryOutput::Locations(location.into_iter().collect())
+            } else if matches!(
                 request.kind,
                 PositionQueryKind::Declaration
                     | PositionQueryKind::Definition
@@ -834,7 +1151,8 @@ impl Runtime {
             .or_else(|| {
                 request.identity.as_ref().and_then(|identity| {
                     if let SemanticIdentity::Source { location, .. } = identity {
-                        Some(location.source.identity)
+                        (!capture.snapshot.is_declaration(location.source))
+                            .then_some(location.source.identity)
                     } else {
                         None
                     }
@@ -845,24 +1163,56 @@ impl Runtime {
             checked_position(&capture.snapshot, position)?;
         }
 
-        let captured = self.query_capture(
-            capture,
-            source,
-            true,
-            &[
+        let categories = match request.kind {
+            HierarchyQueryKind::PrepareCalls => vec![
                 SemanticCategory::Bindings,
                 SemanticCategory::Occurrences,
                 SemanticCategory::Functions,
-                SemanticCategory::Calls,
-                SemanticCategory::Nominals,
-                SemanticCategory::Inheritance,
             ],
-            None,
-            options,
-        )?;
+
+            HierarchyQueryKind::IncomingCalls | HierarchyQueryKind::OutgoingCalls => {
+                vec![SemanticCategory::Functions, SemanticCategory::Calls]
+            }
+
+            HierarchyQueryKind::PrepareTypes => {
+                vec![SemanticCategory::Types, SemanticCategory::Nominals]
+            }
+
+            HierarchyQueryKind::Supertypes | HierarchyQueryKind::Subtypes => {
+                vec![SemanticCategory::Nominals, SemanticCategory::Inheritance]
+            }
+        };
+
+        let captured = self.query_capture(capture, source, true, &categories, None, options)?;
 
         state.include_capture(&captured);
-        let output = hierarchy(request, &captured.index).map_err(Reason::error)?;
+
+        let inspection = if matches!(request.kind, HierarchyQueryKind::PrepareTypes)
+            && let Some(position) = &request.position
+        {
+            let (closure, module) = selected_recipe(&captured, position.module)?;
+
+            let WorkOutput::Inspection(inspection) = self.workers.execute(
+                Work::Inspect {
+                    closure,
+                    module,
+                    offset: position.offset,
+                },
+                &worker_options(options),
+            )?
+            else {
+                return Err(io::Error::other("inspection lane returned wrong outcome"));
+            };
+
+            state.include_inspection(&inspection);
+
+            Some(inspection)
+        } else {
+            None
+        };
+
+        let output =
+            hierarchy(request, &captured.index, inspection.as_ref()).map_err(Reason::error)?;
 
         Ok((QueryOutput::Hierarchy(output), captured.capture))
     }
@@ -951,19 +1301,26 @@ impl Runtime {
                     state.completion = state.completion.clone().combine(result.completion.clone());
 
                     for module in &result.modules {
-                        state.completion =
-                            state.completion.clone().combine(module.completion.clone());
+                        let mut completion = module.completion.clone().combine(
+                            state.graph.modules[&module.analysis.module]
+                                .environment
+                                .completion
+                                .clone(),
+                        );
 
                         state.diagnostics.extend(module.parsed.diagnostics.clone());
                         state.diagnostics.extend(module.diagnostics.clone());
 
                         if let Some(environment) = &module.environment {
+                            completion = completion.combine(environment.completion.clone());
                             state.diagnostics.extend(environment.diagnostics.clone());
                         }
 
+                        state.completion = state.completion.clone().combine(completion.clone());
+
                         state.outcomes.push(SourceOutcome {
                             source: module.parsed.input.source.version,
-                            completion: module.completion.clone(),
+                            completion,
                         });
                     }
                 }
@@ -1015,7 +1372,12 @@ impl Runtime {
         for result in self.workers.batch(work, &worker_options(options)) {
             match result {
                 Ok(WorkOutput::Facts(facts)) => {
-                    state.completion = state.completion.clone().combine(facts.completion.clone());
+                    state.completion = state.completion.clone().combine(requested_completion(
+                        facts.completion.clone(),
+                        &facts.availability,
+                        categories,
+                    ));
+
                     state.diagnostics.extend(facts.diagnostics.clone());
                     state.index.replace(facts);
                 }
@@ -1116,10 +1478,18 @@ fn categories(kind: PositionQueryKind) -> Vec<SemanticCategory> {
         }
 
         PositionQueryKind::Signatures => {
-            categories.extend([SemanticCategory::Types, SemanticCategory::Calls]);
+            categories.push(SemanticCategory::Calls);
         }
 
-        PositionQueryKind::Implementation | PositionQueryKind::Lenses => categories.extend([
+        PositionQueryKind::Implementation => {
+            categories.extend([
+                SemanticCategory::Functions,
+                SemanticCategory::Nominals,
+                SemanticCategory::Inheritance,
+            ]);
+        }
+
+        PositionQueryKind::Lenses => categories.extend([
             SemanticCategory::Functions,
             SemanticCategory::Calls,
             SemanticCategory::Nominals,
@@ -1130,6 +1500,64 @@ fn categories(kind: PositionQueryKind) -> Vec<SemanticCategory> {
     }
 
     categories
+}
+
+fn requested_completion(
+    mut completion: Completion,
+    availability: &SemanticAvailability,
+    categories: &[SemanticCategory],
+) -> Completion {
+    for category in categories {
+        if let Availability::Partial(reason) | Availability::Unavailable(reason) = availability
+            .categories
+            .get(category)
+            .copied()
+            .unwrap_or(Availability::Unavailable(Reason::UnavailableSemantics))
+        {
+            completion = completion.combine(Completion::Incomplete(vec![reason]));
+        }
+    }
+
+    completion
+}
+
+fn indexed(target: &SelectedSource, snapshot: &ProjectSnapshot) -> io::Result<bool> {
+    if snapshot
+        .source(target.identity)
+        .is_some_and(|source| snapshot.is_declaration(source.version))
+    {
+        return Ok(false);
+    }
+
+    let selection = &target.effective.settings.selection;
+    let policy = &selection.index;
+    let include = Matcher::new(policy.include.as_deref().or(selection.include.as_deref()))?;
+    let exclude = Matcher::new(policy.exclude.as_deref().or(selection.exclude.as_deref()))?;
+
+    let path = snapshot
+        .origin(target.identity)
+        .and_then(SourceOrigin::path);
+
+    if path.is_some_and(|path| {
+        target
+            .effective
+            .settings
+            .environment
+            .groups
+            .iter()
+            .any(|group| {
+                group
+                    .definitions
+                    .iter()
+                    .any(|definition| definition == path)
+            })
+    }) {
+        return Ok(false);
+    }
+
+    Ok(path.is_none_or(|path| {
+        include.includes(path) && (!exclude.matches(path) || policy.override_exclusions)
+    }))
 }
 
 fn deferred(error: &io::Error) -> bool {
@@ -1199,4 +1627,93 @@ fn failed(
 
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use instar_luau::{SemanticAvailability, SemanticCategory};
+    use instar_shared::{Availability, Completion, Reason};
+
+    use super::{categories, requested_completion};
+
+    use crate::queries::request::PositionQueryKind;
+
+    #[test]
+    fn inspection_plans_include_only_required_categories() {
+        assert_eq!(
+            categories(PositionQueryKind::Signatures),
+            vec![
+                SemanticCategory::Bindings,
+                SemanticCategory::Occurrences,
+                SemanticCategory::Calls,
+            ]
+        );
+
+        assert_eq!(
+            categories(PositionQueryKind::Implementation),
+            vec![
+                SemanticCategory::Bindings,
+                SemanticCategory::Occurrences,
+                SemanticCategory::Functions,
+                SemanticCategory::Nominals,
+                SemanticCategory::Inheritance,
+            ]
+        );
+    }
+
+    #[test]
+    fn requested_availability_preserves_missing_and_required_outcomes() {
+        let availability = SemanticAvailability {
+            categories: BTreeMap::from([
+                (SemanticCategory::Bindings, Availability::Available),
+                (SemanticCategory::Occurrences, Availability::Available),
+                (SemanticCategory::Calls, Availability::Available),
+                (
+                    SemanticCategory::Types,
+                    Availability::Unavailable(Reason::UnavailableSemantics),
+                ),
+            ]),
+        };
+
+        let requested = categories(PositionQueryKind::Signatures);
+
+        assert_eq!(
+            requested_completion(Completion::Complete, &availability, &requested),
+            Completion::Complete
+        );
+
+        for completion in [
+            Completion::Incomplete(vec![Reason::UnavailableEnvironment]),
+            Completion::Incomplete(vec![Reason::UnavailableSemantics]),
+            Completion::Incomplete(vec![Reason::AnalysisLimit]),
+            Completion::Incomplete(vec![Reason::FailedPrerequisite]),
+            Completion::Cancelled,
+            Completion::TimedOut,
+        ] {
+            assert_eq!(
+                requested_completion(completion.clone(), &availability, &requested),
+                completion
+            );
+        }
+
+        let mut missing = availability;
+        missing.categories.remove(&SemanticCategory::Calls);
+
+        assert_eq!(
+            requested_completion(Completion::Complete, &missing, &requested),
+            Completion::Incomplete(vec![Reason::UnavailableSemantics])
+        );
+
+        missing.categories.insert(
+            SemanticCategory::Calls,
+            Availability::Unavailable(Reason::UnavailableEnvironment),
+        );
+
+        assert_eq!(
+            requested_completion(Completion::Complete, &missing, &requested),
+            Completion::Incomplete(vec![Reason::UnavailableEnvironment])
+        );
+    }
 }

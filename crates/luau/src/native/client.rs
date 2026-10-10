@@ -245,6 +245,7 @@ impl Native {
                 return Ok(LintResult {
                     source,
                     findings: Vec::new(),
+                    suppression_findings: Vec::new(),
                     prerequisite_diagnostics: Vec::new(),
                     warnings: input
                         .warnings

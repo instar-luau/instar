@@ -225,12 +225,21 @@ fn invariant_facts(text: &str) -> io::Result<FactsResult> {
 
         let name = &text[span[0]..span[1]];
 
-        let call = matches!(
-            node.kind,
-            NodeKind::Call { .. } | NodeKind::MethodCall { .. }
-        );
+        let callee = match &node.kind {
+            NodeKind::Call { callee, .. } => {
+                let span = tree.node(*callee).span;
 
-        let pure = !call || name == "math.abs(1)";
+                Some([span.start, span.end])
+            }
+
+            NodeKind::MethodCall {
+                receiver, method, ..
+            } => Some([tree.node(*receiver).span.start, tree.node(*method).span.end]),
+
+            _ => None,
+        };
+
+        let pure = callee.is_none() || name == "math.abs(1)";
 
         let dependencies = if name.starts_with("math") {
             vec![environment_identity(
@@ -269,9 +278,16 @@ fn invariant_facts(text: &str) -> io::Result<FactsResult> {
             effects: Knowledge::Known(effect.clone()),
         });
 
-        if call {
+        if let Some(callee) = callee {
             output.facts.calls.push(CallFact {
                 location,
+                callee: Location::new(
+                    &source,
+                    Span {
+                        start: callee[0],
+                        end: callee[1],
+                    },
+                )?,
                 caller: environment_identity("fixture".to_owned(), SemanticKind::Function),
                 targets: Knowledge::Known(vec![environment_identity(
                     name.to_owned(),
@@ -298,6 +314,7 @@ fn argument_facts(text: &str) -> io::Result<FactsResult> {
     while let Some(node) = pending.pop() {
         if let NodeKind::Call { callee, .. } = &tree.node(node).kind {
             let span = tree.node(node).span;
+            let callee_span = tree.node(*callee).span;
 
             let signatures =
                 lexical
@@ -320,6 +337,7 @@ fn argument_facts(text: &str) -> io::Result<FactsResult> {
 
             output.facts.calls.push(CallFact {
                 location: location([span.start, span.end]),
+                callee: location([callee_span.start, callee_span.end]),
                 caller: environment_identity("fixture".to_owned(), SemanticKind::Function),
                 targets: Knowledge::Known(vec![environment_identity(
                     String::from_utf8_lossy(tree.text(*callee)).into_owned(),

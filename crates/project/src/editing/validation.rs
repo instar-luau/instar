@@ -19,7 +19,7 @@ use crate::{
     change::{ChangeBatch, ProjectChange, SourceChange},
     configuration::{CheckOverrides, DiagnosticPolicy, SelectionOverrides},
     execution::Runtime,
-    inputs::{InputIdentity, InputVersion, ProjectSnapshot},
+    inputs::{InputIdentity, InputVersion, ProjectSnapshot, SourceOrigin},
     report::CheckReport,
     request::{CheckRequest, Input, Invocation},
 };
@@ -310,6 +310,15 @@ pub(crate) fn overlay(
         let source = snapshot
             .source(edit.location.source.identity)
             .ok_or_else(|| invalid("proposal source is absent"))?;
+
+        if snapshot.is_declaration(source.version)
+            || matches!(
+                snapshot.origin(source.version.identity),
+                Some(SourceOrigin::Virtual { .. })
+            )
+        {
+            return Err(invalid("proposal edits a read-only declaration"));
+        }
 
         let replacement = replacements
             .entry(source.version.identity)

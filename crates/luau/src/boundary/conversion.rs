@@ -7,8 +7,9 @@ use std::{
 };
 
 use instar_shared::{
-    Availability, Completion, Diagnostic, DiagnosticCategory, FindingIdentity, Knowledge,
-    LinePosition, Location, Reason, RelatedLocation, Severity, SourceSnapshot, SourceVersion, Span,
+    Availability, Completion, Diagnostic, DiagnosticCategory, DiagnosticTag, FindingIdentity,
+    Knowledge, LinePosition, Location, Reason, RelatedLocation, Severity, SourceSnapshot,
+    SourceVersion, Span,
 };
 
 use serde_json::Value;
@@ -156,8 +157,7 @@ impl Captured {
             start: offset,
             end: offset,
         }
-        .validate(source)
-        .map_err(invalid)?;
+        .validate(source)?;
 
         let lines = self
             .lines
@@ -405,7 +405,10 @@ fn validate_imports(
         }
 
         match (&import.site.request, &import.outcome) {
-            (ImportRequest::Nonconstant, ImportOutcome::Nonconstant)
+            (
+                ImportRequest::Nonconstant | ImportRequest::Instance(_),
+                ImportOutcome::Nonconstant,
+            )
             | (ImportRequest::Static(_) | ImportRequest::Instance(_), ImportOutcome::Unresolved) => {
             }
 
@@ -731,7 +734,7 @@ pub(crate) fn import_site(input: &ResolvedImport) -> native::NativeSite {
         call_end: input.site.call.span.end,
         argument_start: input.site.argument.span.start,
         argument_end: input.site.argument.span.end,
-        static_request: !matches!(input.site.request, ImportRequest::Nonconstant),
+        static_resolution: !matches!(input.outcome, ImportOutcome::Nonconstant),
         target: match input.outcome {
             ImportOutcome::Module(module) => module_name(module),
             _ => String::new(),
@@ -1193,6 +1196,7 @@ fn environment_identity(
     module: &ModuleInput,
     documentation: &str,
     name: &str,
+    declaration: Option<Location>,
     kind: SemanticKind,
 ) -> io::Result<SemanticIdentity> {
     let environment = module
@@ -1200,11 +1204,35 @@ fn environment_identity(
         .as_ref()
         .ok_or_else(|| invalid("native environment binding has no captured environment"))?;
 
+    if let Some(declaration) = declaration {
+        let definition = environment
+            .declarations
+            .iter()
+            .flat_map(|group| &group.definitions)
+            .find(|definition| definition.source.version == declaration.source)
+            .ok_or_else(|| invalid("native environment declaration is not captured"))?;
+
+        return Ok(SemanticIdentity::Environment {
+            environment: environment.identity,
+            namespace: definition.namespace.clone(),
+            name: name.to_owned(),
+            kind,
+        });
+    }
+
+    let namespace = if kind == SemanticKind::Binding
+        && environment.globals.iter().any(|global| global == name)
+    {
+        ""
+    } else {
+        "@luau"
+    };
+
     let (namespace, qualified_name) = documentation
         .split_once("/global/")
         .or_else(|| documentation.split_once("/type/"))
         .or_else(|| documentation.split_once("/globaltype/"))
-        .map_or(("", name), |(namespace, qualified_name)| {
+        .map_or((namespace, name), |(namespace, qualified_name)| {
             (namespace, qualified_name)
         });
 
@@ -1459,10 +1487,21 @@ fn fact_identities(
             return Err(invalid("invalid native environment binding category"));
         };
 
-        let identity = environment_identity(module, &binding.documentation, &binding.name, kind)?;
+        let declaration = binding
+            .has_declaration
+            .then(|| captured.location(&binding.declaration))
+            .transpose()?;
 
-        if binding.has_declaration {
-            declarations.insert(captured.location(&binding.declaration)?, identity.clone());
+        let identity = environment_identity(
+            module,
+            &binding.documentation,
+            &binding.name,
+            declaration,
+            kind,
+        )?;
+
+        if let Some(declaration) = declaration {
+            declarations.insert(declaration, identity.clone());
         }
 
         environment_bindings.insert((binding.name.clone(), kind), identity);
@@ -1520,6 +1559,12 @@ fn reference_facts(
         let location = captured.location(&reference.location)?;
         let kind = reference_kind(reference)?;
 
+        let environment_kind = if reference.kind == 0 {
+            SemanticKind::Binding
+        } else {
+            kind
+        };
+
         let targets = if !reference.targets.is_empty() {
             Knowledge::Known(
                 reference
@@ -1535,18 +1580,18 @@ fn reference_facts(
                     })
                     .collect::<io::Result<Vec<_>>>()?,
             )
+        } else if let Some(identity) =
+            environment_bindings.get(&(reference.name.clone(), environment_kind))
+        {
+            Knowledge::Known(vec![identity.clone()])
         } else if !reference.documentation.is_empty() {
-            Knowledge::Known(vec![
-                environment_bindings
-                    .get(&(reference.name.clone(), kind))
-                    .cloned()
-                    .unwrap_or(environment_identity(
-                        module,
-                        &reference.documentation,
-                        &reference.name,
-                        kind,
-                    )?),
-            ])
+            Knowledge::Known(vec![environment_identity(
+                module,
+                &reference.documentation,
+                &reference.name,
+                None,
+                kind,
+            )?])
         } else {
             Knowledge::Unavailable(Reason::UnavailableSemantics)
         };
@@ -1783,6 +1828,7 @@ fn expression_facts(
                 module,
                 &format!("@luau/global/{}", expression.builtin_dependency),
                 &expression.builtin_dependency,
+                None,
                 kind,
             )?])
         } else if expression.has_dependency {
@@ -1925,6 +1971,7 @@ fn call_facts(
 
         facts.calls.push(CallFact {
             location,
+            callee,
             caller: enclosing_function,
             targets: if targets.is_empty() {
                 Knowledge::Unavailable(Reason::UnavailableSemantics)
@@ -2145,8 +2192,11 @@ fn fact_coverage(
                     && input.completion == native::NativeCompletion::Complete
                     && known
                     && match category {
-                        SemanticCategory::Calls => input.calls.is_empty(),
-                        SemanticCategory::Dependencies | SemanticCategory::Effects => true,
+                        SemanticCategory::Calls
+                        | SemanticCategory::Dependencies
+                        | SemanticCategory::Effects => true,
+
+                        SemanticCategory::Inheritance => input.hierarchy.inheritance_complete,
                         _ => false,
                     };
 
@@ -2231,6 +2281,22 @@ pub(crate) fn inspection_result(
 
     let signature_information = signatures(&input.signatures, captured)?;
     let completed = completion(input.completion)?;
+    let mut availability = result_availability(established, &completed);
+
+    if input.signatures.found
+        && matches!(
+            input.completion,
+            native::NativeCompletion::Complete | native::NativeCompletion::Analysis
+        )
+        && established
+            .categories
+            .get(&SemanticCategory::Calls)
+            .is_some_and(|status| !matches!(status, Availability::Unavailable(_)))
+    {
+        availability
+            .categories
+            .insert(SemanticCategory::Calls, Availability::Available);
+    }
 
     let occurrence = if input.hover.found
         || input.signatures.found
@@ -2257,7 +2323,7 @@ pub(crate) fn inspection_result(
     Ok(InspectionResult {
         analysis: request.analysis.analysis,
         occurrence,
-        availability: result_availability(established, &completed),
+        availability,
         diagnostics: Vec::new(),
         completion: completed,
     })
@@ -2338,8 +2404,7 @@ fn inspection_position(
         },
         documentation: inspection_documentation(
             input.hover.documentation,
-            input.signatures.documentation,
-            available(SemanticCategory::Types),
+            input.hover.found || available(SemanticCategory::Types),
         ),
         deprecated: input.hover.deprecated,
         signatures: signature_information,
@@ -2351,22 +2416,15 @@ fn inspection_position(
         hierarchy: inspection_hierarchy(
             &input.hierarchy,
             &identities,
-            available(SemanticCategory::Functions),
+            available(SemanticCategory::Functions)
+                || available(SemanticCategory::Nominals) && input.hierarchy.inheritance_complete,
         ),
     })
 }
 
-fn inspection_documentation(
-    hover: String,
-    signature: String,
-    available: bool,
-) -> Knowledge<Option<String>> {
-    if !hover.is_empty() || !signature.is_empty() || available {
-        Knowledge::Known(
-            (!hover.is_empty())
-                .then_some(hover)
-                .or_else(|| (!signature.is_empty()).then_some(signature)),
-        )
+fn inspection_documentation(hover: String, available: bool) -> Knowledge<Option<String>> {
+    if !hover.is_empty() || available {
+        Knowledge::Known((!hover.is_empty()).then_some(hover))
     } else {
         Knowledge::Unavailable(Reason::UnavailableSemantics)
     }
@@ -2538,46 +2596,64 @@ pub(crate) fn lint_result(
         ));
     }
 
+    let finding = |warning: native::NativeWarning| {
+        if warning.code <= 0 || !selected.contains(warning.name.as_str()) {
+            return Err(invalid("native warning has an invalid code or identity"));
+        }
+
+        let primary = captured.location(&warning.location)?;
+
+        if primary.source != module.source.source.version {
+            return Err(invalid("native warning addresses a different source"));
+        }
+
+        let identity = UpstreamWarningIdentity { name: warning.name };
+
+        let tags = match identity.name.as_str() {
+            "LocalUnused" | "FunctionUnused" | "ImportUnused" | "UnreachableCode" => {
+                vec![DiagnosticTag::Unnecessary]
+            }
+
+            "DeprecatedGlobal" | "DeprecatedApi" => vec![DiagnosticTag::Deprecated],
+            _ => Vec::new(),
+        };
+
+        Ok(UpstreamFinding {
+            warning: identity.clone(),
+            diagnostic: Diagnostic {
+                identity: FindingIdentity::new(
+                    "luau",
+                    captured.inputs(),
+                    warning.code.to_string(),
+                    primary,
+                ),
+                code: identity.name,
+                category: DiagnosticCategory::Lint,
+                severity: Severity::Warning,
+                message: warning.message,
+                primary,
+                related: Vec::new(),
+                tags,
+            },
+        })
+    };
+
     let findings = input
         .warnings
         .into_iter()
-        .map(|warning| {
-            if warning.code <= 0 || !selected.contains(warning.name.as_str()) {
-                return Err(invalid("native warning has an invalid code or identity"));
-            }
+        .map(finding)
+        .collect::<io::Result<_>>()?;
 
-            let primary = captured.location(&warning.location)?;
-
-            if primary.source != module.source.source.version {
-                return Err(invalid("native warning addresses a different source"));
-            }
-
-            let identity = UpstreamWarningIdentity { name: warning.name };
-
-            Ok(UpstreamFinding {
-                warning: identity.clone(),
-                diagnostic: Diagnostic {
-                    identity: FindingIdentity::new(
-                        "luau",
-                        captured.inputs(),
-                        &identity.name,
-                        primary,
-                    ),
-                    code: identity.name,
-                    category: DiagnosticCategory::Lint,
-                    severity: Severity::Warning,
-                    message: warning.message,
-                    primary,
-                    related: Vec::new(),
-                    tags: Vec::new(),
-                },
-            })
-        })
+    let suppression_findings = input
+        .suppression_warnings
+        .into_iter()
+        .map(|warning| finding(warning).map(|finding| finding.diagnostic))
         .collect::<io::Result<_>>()?;
 
     Ok(LintResult {
         source: module.source.source.version,
         findings,
+        suppression_findings,
         prerequisite_diagnostics: input
             .diagnostics
             .iter()
@@ -3053,6 +3129,23 @@ pub(crate) fn validate_diagnostic(diagnostic: &Diagnostic, captured: &Captured) 
         captured.validate_location(related.location)?;
     }
 
+    let code = if diagnostic.category == DiagnosticCategory::Lint {
+        let original = diagnostic.identity.code();
+
+        if !original
+            .parse::<i32>()
+            .is_ok_and(|code| code > 0 && code.to_string() == original)
+        {
+            return Err(invalid(
+                "native lint finding has an invalid original warning code",
+            ));
+        }
+
+        original
+    } else {
+        &diagnostic.code
+    };
+
     if diagnostic.identity
         != FindingIdentity::new(
             if captured.analysis.is_some() {
@@ -3061,7 +3154,7 @@ pub(crate) fn validate_diagnostic(diagnostic: &Diagnostic, captured: &Captured) 
                 "luau.configuration"
             },
             captured.inputs(),
-            &diagnostic.code,
+            code,
             diagnostic.primary,
         )
     {
@@ -3326,6 +3419,12 @@ pub(crate) fn validate_facts_result(
 
     for call in &output.facts.calls {
         captured.validate_location(call.location)?;
+        captured.validate_location(call.callee)?;
+
+        if !contains(call.location, call.callee) {
+            return Err(invalid("native callee escapes its call"));
+        }
+
         validate_identity(&call.caller, captured)?;
 
         if let Knowledge::Known(targets) = &call.targets {
@@ -3517,8 +3616,27 @@ pub(crate) fn validate_lint_result(
                 "native lint finding has an inconsistent warning identity or source",
             ));
         }
+    }
 
-        validate_diagnostic(&finding.diagnostic, captured)?;
+    for diagnostic in output
+        .findings
+        .iter()
+        .map(|finding| &finding.diagnostic)
+        .chain(&output.suppression_findings)
+    {
+        if !selected
+            .iter()
+            .any(|warning| warning.name == diagnostic.code)
+            || diagnostic.category != DiagnosticCategory::Lint
+            || diagnostic.severity != Severity::Warning
+            || diagnostic.primary.source != output.source
+        {
+            return Err(invalid(
+                "native lint finding has an inconsistent warning identity or source",
+            ));
+        }
+
+        validate_diagnostic(diagnostic, captured)?;
     }
 
     for diagnostic in &output.prerequisite_diagnostics {

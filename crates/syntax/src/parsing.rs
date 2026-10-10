@@ -125,7 +125,11 @@ pub fn parse<'source>(
         completion = completion.combine(Completion::Incomplete(vec![Reason::UnsupportedFeature]));
     }
 
-    if !settings.features.is_empty() {
+    if settings
+        .features
+        .iter()
+        .any(|feature| feature != "LuauExperimentalIfLocalSyntax=true")
+    {
         diagnostics.push(diagnostic(
             source,
             Span {
@@ -200,5 +204,89 @@ pub(crate) fn diagnostic(
         primary,
         related: Vec::new(),
         tags: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use instar_shared::{
+        Completion, Options, Reason, SourceIdentity, SourceSnapshot, SourceVersion,
+    };
+
+    use crate::{SyntaxSettings, imports, parse, tree::NodeKind};
+
+    #[test]
+    fn conditional_local_syntax_accepts_only_the_supported_positive_profile() {
+        let source = SourceSnapshot::from_bytes(
+            SourceVersion {
+                identity: SourceIdentity::new(1),
+                revision: 2,
+            },
+            b"local path='./target'\nlocal result=if local path=path then require(path) else require(path)\nrequire(path)",
+        )
+        .expect("UTF-8 conditional local source");
+
+        let options = Options::default();
+
+        for features in [
+            Vec::new(),
+            vec!["LuauExperimentalIfLocalSyntax=true".to_owned()],
+        ] {
+            let settings = SyntaxSettings {
+                features,
+                ..SyntaxSettings::default()
+            };
+
+            let parsed = parse(&source, &settings, &options);
+            assert_eq!(parsed.completion, Completion::Complete);
+            assert_eq!(parsed.tree.coverage(), &Completion::Complete);
+            assert_eq!(parsed.tree.settings(), &settings);
+            assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+            assert!(parsed.recovery.is_empty());
+            let tree = parsed.tree.syntax();
+
+            assert!(tree.nodes.iter().any(|node| matches!(
+                &node.kind,
+                NodeKind::Conditional { condition, .. }
+                    if matches!(tree.node(*condition).kind, NodeKind::Local { .. })
+            )));
+
+            let imports = imports(&parsed.tree, &options);
+            assert_eq!(imports.len(), 3);
+
+            for import in imports {
+                assert_eq!(import.source, source.version);
+                assert_eq!(import.request, None);
+
+                assert_eq!(
+                    &source.text[import.expression.start..import.expression.end],
+                    "path"
+                );
+            }
+        }
+
+        for features in [
+            vec!["LuauExperimentalIfLocalSyntax=false"],
+            vec!["LuauExperimentalIfLocalAnalysis=true"],
+            vec!["unknown=true"],
+            vec!["LuauExperimentalIfLocalSyntax=true", "unknown=true"],
+        ] {
+            let settings = SyntaxSettings {
+                features: features.into_iter().map(str::to_owned).collect(),
+                ..SyntaxSettings::default()
+            };
+
+            let parsed = parse(&source, &settings, &options);
+
+            assert_eq!(
+                parsed.completion,
+                Completion::Incomplete(vec![Reason::UnsupportedFeature])
+            );
+
+            assert_eq!(parsed.tree.coverage(), &parsed.completion);
+            assert_eq!(parsed.diagnostics.len(), 1);
+            assert_eq!(parsed.diagnostics[0].code, "syntax.profile");
+            assert_eq!(parsed.diagnostics[0].primary.source, source.version);
+        }
     }
 }

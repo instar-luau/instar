@@ -1,17 +1,18 @@
 use instar_luau::{CompletionCandidate, CompletionContext, CompletionKind, Notation, Parentheses};
 
 use instar_project::{
-    AssistanceOutput, CompletionQuery, PositionQueryKind, Query, QueryOutput, QueryReport,
+    AssistanceOutput, CompletionQuery, DocumentationEntry, PositionQueryKind, ProjectSnapshot,
+    Query, QueryOutput, QueryReport,
 };
 
-use instar_shared::{Completion, Location as DomainLocation, SourceVersion, Span};
+use instar_shared::{Completion, Location as DomainLocation, Options, SourceVersion, Span};
 use serde_json::{Value, json};
 
 use tower_lsp_server::{
     gen_lsp_types::{
         ActiveParameter, CodeLens, CodeLensParams, CompletionItem, CompletionItemKind,
-        CompletionItemTag, CompletionList, CompletionParams, CompletionResponse, Hover,
-        HoverParams, InlayHint, InlayHintKind, InlayHintParams, InlineCompletionParams,
+        CompletionItemTag, CompletionList, CompletionParams, CompletionResponse, Documentation,
+        Hover, HoverParams, InlayHint, InlayHintKind, InlayHintParams, InlineCompletionParams,
         InlineCompletionResponse, InlineValue, InlineValueParams, InsertTextFormat, MarkupContent,
         ParameterInformation, ParameterInformationLabel, SignatureHelp, SignatureHelpParams,
         SignatureInformation, TextEdit as ProtocolTextEdit,
@@ -27,17 +28,23 @@ use crate::{
 pub(crate) async fn hover(server: &Server, parameters: HoverParams) -> Result<Option<Hover>> {
     let parameters_position = parameters.text_document_position_params;
 
+    let options = server.options.child();
+
     let (snapshot, position) = server.position(
         &parameters_position.text_document.uri,
         parameters_position.position,
         PositionQueryKind::Hover,
+        &options,
     )?;
+
+    let source_version = position.source;
 
     let report = server
         .query(
             snapshot,
             Query::Inspect(position),
             parameters.work_done_progress_params.work_done_token,
+            &options,
         )
         .await?;
 
@@ -50,7 +57,7 @@ pub(crate) async fn hover(server: &Server, parameters: HoverParams) -> Result<Op
     };
 
     let information = known(occurrence.type_information)?;
-    let documentation = known(occurrence.documentation)?;
+    let symbol = known(occurrence.documentation)?;
 
     let format = server
         .state
@@ -65,9 +72,25 @@ pub(crate) async fn hover(server: &Server, parameters: HoverParams) -> Result<Op
         value.push_str("\n\nDeprecated.");
     }
 
-    if let Some(documentation) = documentation {
+    if let Some(symbol) = symbol
+        && let Some(entry) = documentation(
+            server,
+            report.snapshot.clone(),
+            source_version,
+            &symbol,
+            &options,
+        )
+        .await?
+    {
+        let content = markup::documentation(entry, format.clone());
+
+        let text = match content {
+            Documentation::String(text) => text,
+            Documentation::MarkupContent(content) => content.value,
+        };
+
         value.push_str("\n\n");
-        value.push_str(&documentation);
+        value.push_str(&text);
     }
 
     Ok(Some(Hover {
@@ -86,10 +109,13 @@ pub(crate) async fn completion(
 ) -> Result<Option<CompletionResponse>> {
     let parameters_position = parameters.text_document_position_params;
 
+    let options = server.options.child();
+
     let (snapshot, position) = server.position(
         &parameters_position.text_document.uri,
         parameters_position.position,
         PositionQueryKind::Hover,
+        &options,
     )?;
 
     let source_version = position.source;
@@ -102,6 +128,7 @@ pub(crate) async fn completion(
                 inline: false,
             }),
             parameters.work_done_progress_params.work_done_token,
+            &options,
         )
         .await?;
 
@@ -138,9 +165,24 @@ pub(crate) async fn completion(
         )
     };
 
+    let deferred = capabilities
+        .completion_item
+        .as_ref()
+        .and_then(|item| item.resolve_support.as_ref())
+        .is_some_and(|support| {
+            support
+                .properties
+                .iter()
+                .any(|property| property == "additionalTextEdits")
+        });
+
     let mut items = Vec::new();
 
     for proposed in &completions.candidates {
+        if !deferred && !proposed.edits.is_empty() {
+            continue;
+        }
+
         let candidate = &proposed.entry;
 
         let (text, filter_text, span, snippet) = insertion(
@@ -219,28 +261,6 @@ pub(crate) async fn completion(
             spans.push(edit.location.span);
         }
 
-        let deferred = server
-            .state
-            .lock()
-            .expect("session state")
-            .capabilities
-            .client
-            .text_document
-            .as_ref()
-            .and_then(|document| document.completion.as_ref())
-            .and_then(|completion| completion.completion_item.as_ref())
-            .and_then(|item| item.resolve_support.as_ref())
-            .is_some_and(|support| {
-                support
-                    .properties
-                    .iter()
-                    .any(|property| property == "additionalTextEdits")
-            });
-
-        if !deferred {
-            item.additional_text_edits = (!edits.is_empty()).then(|| edits.clone());
-        }
-
         item.data = Some(retain(
             server,
             &report,
@@ -269,6 +289,7 @@ pub(crate) async fn completion_resolve(
     item: CompletionItem,
 ) -> Result<CompletionItem> {
     let record = lazy(server, item.data.as_ref(), "completion")?;
+    let options = server.options.child();
 
     let mut resolved: CompletionItem = serde_json::from_value(record.payload["item"].clone())
         .map_err(|_| Error::internal_error())?;
@@ -279,20 +300,14 @@ pub(crate) async fn completion_resolve(
     resolved.additional_text_edits = (!edits.is_empty()).then_some(edits);
 
     if let Some(symbol) = record.payload["documentation"].as_str() {
-        let report = server
-            .query(
-                record.snapshot.clone(),
-                Query::Documentation {
-                    source: record.source.ok_or_else(Error::content_modified)?,
-                    symbol: symbol.to_owned(),
-                },
-                None,
-            )
-            .await?;
-
-        let QueryOutput::Documentation(documentation) = report.output else {
-            return Err(Error::internal_error());
-        };
+        let entry = documentation(
+            server,
+            record.snapshot.clone(),
+            record.source.ok_or_else(Error::content_modified)?,
+            symbol,
+            &options,
+        )
+        .await?;
 
         let format = server
             .state
@@ -301,8 +316,7 @@ pub(crate) async fn completion_resolve(
             .capabilities
             .markup("completion");
 
-        resolved.documentation =
-            documentation.map(|documentation| markup::documentation(documentation, format));
+        resolved.documentation = entry.map(|entry| markup::documentation(entry, format));
     }
 
     if !server
@@ -337,10 +351,13 @@ pub(crate) async fn inline_completion(
 
     let parameters_position = parameters.text_document_position_params;
 
+    let options = server.options.child();
+
     let (snapshot, position) = server.position(
         &parameters_position.text_document.uri,
         parameters_position.position,
         PositionQueryKind::Hover,
+        &options,
     )?;
 
     let source_version = position.source;
@@ -353,6 +370,7 @@ pub(crate) async fn inline_completion(
                 inline: true,
             }),
             parameters.work_done_progress_params.work_done_token,
+            &options,
         )
         .await?;
 
@@ -402,10 +420,13 @@ pub(crate) async fn signatures(
 ) -> Result<Option<SignatureHelp>> {
     let parameters_position = parameters.text_document_position_params;
 
+    let options = server.options.child();
+
     let (snapshot, position) = server.position(
         &parameters_position.text_document.uri,
         parameters_position.position,
         PositionQueryKind::Signatures,
+        &options,
     )?;
 
     let report = server
@@ -413,6 +434,7 @@ pub(crate) async fn signatures(
             snapshot,
             Query::Inspect(position),
             parameters.work_done_progress_params.work_done_token,
+            &options,
         )
         .await?;
 
@@ -485,15 +507,23 @@ pub(crate) async fn signatures(
             })
             .collect::<Result<Vec<_>>>()?;
 
+        let content = if let Some(symbol) = &signature.documentation {
+            documentation(
+                server,
+                report.snapshot.clone(),
+                occurrence.location.source,
+                symbol,
+                &options,
+            )
+            .await?
+            .map(|entry| markup::documentation(entry, format.clone()))
+        } else {
+            None
+        };
+
         signatures.push(SignatureInformation {
             label: signature.label,
-            documentation: signature.documentation.map(|documentation| {
-                MarkupContent {
-                    kind: format.clone(),
-                    value: documentation,
-                }
-                .into()
-            }),
+            documentation: content,
             parameters: Some(parameters),
             active_parameter: if active_support { active } else { None },
         });
@@ -518,10 +548,13 @@ pub(crate) async fn hints(
     server: &Server,
     parameters: InlayHintParams,
 ) -> Result<Option<Vec<InlayHint>>> {
+    let options = server.options.child();
+
     let (snapshot, position) = server.position(
         &parameters.text_document.uri,
         parameters.range.start,
         PositionQueryKind::Hints,
+        &options,
     )?;
 
     let source_version = position.source;
@@ -531,6 +564,7 @@ pub(crate) async fn hints(
             snapshot,
             Query::Inspect(position),
             parameters.work_done_progress_params.work_done_token,
+            &options,
         )
         .await?;
 
@@ -579,6 +613,7 @@ pub(crate) async fn hints(
 
         if !deferred {
             item = hint_resolve(server, item).await?;
+            item.data = None;
         }
 
         result.push(item);
@@ -588,6 +623,7 @@ pub(crate) async fn hints(
 }
 
 pub(crate) async fn hint_resolve(server: &Server, hint: InlayHint) -> Result<InlayHint> {
+    let options = server.options.child();
     let record = lazy(server, hint.data.as_ref(), "hint")?;
 
     let mut resolved: InlayHint = serde_json::from_value(record.payload["item"].clone())
@@ -598,37 +634,29 @@ pub(crate) async fn hint_resolve(server: &Server, hint: InlayHint) -> Result<Inl
         .unwrap_or_default()
         .to_owned();
 
-    if let Some(symbol) = record.payload["documentation"].as_str() {
-        let report = server
-            .query(
-                record.snapshot.clone(),
-                Query::Documentation {
-                    source: record.source.ok_or_else(Error::content_modified)?,
-                    symbol: symbol.to_owned(),
-                },
-                None,
-            )
-            .await?;
-
-        let QueryOutput::Documentation(documentation) = report.output else {
-            return Err(Error::internal_error());
-        };
-
-        if let Some(documentation) = documentation {
-            for text in [
-                documentation.documentation,
-                documentation.code_sample,
-                documentation.learn_more_link,
-            ]
-            .into_iter()
-            .flatten()
-            {
-                if !description.is_empty() {
-                    description.push_str("\n\n");
-                }
-
-                description.push_str(&text);
+    if let Some(symbol) = record.payload["documentation"].as_str()
+        && let Some(documentation) = documentation(
+            server,
+            record.snapshot.clone(),
+            record.source.ok_or_else(Error::content_modified)?,
+            symbol,
+            &options,
+        )
+        .await?
+    {
+        for text in [
+            documentation.documentation,
+            documentation.code_sample,
+            documentation.learn_more_link,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if !description.is_empty() {
+                description.push_str("\n\n");
             }
+
+            description.push_str(&text);
         }
     }
 
@@ -651,10 +679,13 @@ pub(crate) async fn lenses(
     server: &Server,
     parameters: CodeLensParams,
 ) -> Result<Option<Vec<CodeLens>>> {
+    let options = server.options.child();
+
     let (snapshot, position) = server.position(
         &parameters.text_document.uri,
         Default::default(),
         PositionQueryKind::Lenses,
+        &options,
     )?;
 
     let source_version = position.source;
@@ -664,6 +695,7 @@ pub(crate) async fn lenses(
             snapshot,
             Query::Inspect(position),
             parameters.work_done_progress_params.work_done_token,
+            &options,
         )
         .await?;
 
@@ -722,10 +754,13 @@ pub(crate) async fn inline_values(
     server: &Server,
     parameters: InlineValueParams,
 ) -> Result<Option<Vec<InlineValue>>> {
+    let options = server.options.child();
+
     let (snapshot, position) = server.position(
         &parameters.text_document.uri,
         parameters.range.start,
         PositionQueryKind::InlineValues,
+        &options,
     )?;
 
     let report = server
@@ -733,6 +768,7 @@ pub(crate) async fn inline_values(
             snapshot,
             Query::Inspect(position),
             parameters.work_done_progress_params.work_done_token,
+            &options,
         )
         .await?;
 
@@ -805,6 +841,32 @@ pub(crate) fn lazy(server: &Server, data: Option<&Value>, operation: &str) -> Re
     }
 
     Ok(record)
+}
+
+async fn documentation(
+    server: &Server,
+    snapshot: ProjectSnapshot,
+    source: SourceVersion,
+    symbol: &str,
+    options: &Options,
+) -> Result<Option<DocumentationEntry>> {
+    let report = server
+        .query(
+            snapshot,
+            Query::Documentation {
+                source,
+                symbol: symbol.to_owned(),
+            },
+            None,
+            options,
+        )
+        .await?;
+
+    let QueryOutput::Documentation(entry) = report.output else {
+        return Err(Error::internal_error());
+    };
+
+    Ok(entry)
 }
 
 fn insertion(

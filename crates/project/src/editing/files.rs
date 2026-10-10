@@ -19,7 +19,7 @@ use super::{
 };
 
 use crate::{
-    capture::Capture,
+    capture::{Capture, Listing},
     change::{ChangeBatch, ProjectChange, SourceChange},
     configuration::{CheckOverrides, OperationOverrides},
     execution::Runtime,
@@ -113,6 +113,15 @@ impl Runtime {
         if after.completion != Completion::Complete {
             return Err(after.completion.error());
         }
+
+        capture.admit(
+            &after_capture.snapshot,
+            &super::validation::protected(&original, &proposed),
+        )?;
+
+        let original = capture.snapshot.clone();
+        report.snapshot = original.clone();
+        report.inputs = capture.guards();
 
         validate_movement(&before, &after, &proposed, &proposal)?;
 
@@ -274,7 +283,18 @@ impl Runtime {
                 .map(Path::to_path_buf)
                 .ok_or_else(|| invalid("file importer has no resolution parent"))?;
 
-            let replacement = literal::quote(&relative(&parent, target)?);
+            let target = if matches!(
+                Path::new(requested)
+                    .extension()
+                    .and_then(|extension| extension.to_str()),
+                Some("lua" | "luau")
+            ) {
+                target.to_path_buf()
+            } else {
+                module_path(target)
+            };
+
+            let replacement = literal::quote(&relative(&parent, &target)?);
             let key = (edge.site.argument.source, edge.site.argument.span);
 
             if edits
@@ -401,6 +421,7 @@ fn validate_original(
         if let Some(path) = origin.path() {
             if affected(path, changes)
                 && (!source_path(path)
+                    || snapshot.is_declaration(source.version)
                     || snapshot
                         .input_versions
                         .contains_key(&InputIdentity::Configuration(source.version.identity))
@@ -590,8 +611,41 @@ fn preflight(change: &FileChange, capture: &mut Capture, options: &Options) -> i
             .parent()
             .ok_or_else(|| invalid("file operation has no parent"))?;
 
-        if capture.listing(parent, options)?.is_none() {
-            return Err(invalid("file operation parent directory is absent"));
+        match capture.listing(parent, options)? {
+            Listing::Directory(_) => {}
+
+            Listing::NonDirectory => {
+                return Err(invalid("file operation parent is not a directory"));
+            }
+
+            Listing::Missing => {
+                if Some(path) == old {
+                    return Err(invalid("file operation parent directory is absent"));
+                }
+
+                let mut present = false;
+
+                for ancestor in parent.ancestors().skip(1) {
+                    match capture.listing(ancestor, options)? {
+                        Listing::Directory(_) => {
+                            present = true;
+                            break;
+                        }
+
+                        Listing::NonDirectory => {
+                            return Err(invalid("file destination ancestor is not a directory"));
+                        }
+
+                        Listing::Missing => {}
+                    }
+                }
+
+                if !present {
+                    return Err(invalid(
+                        "file destination has no captured directory ancestor",
+                    ));
+                }
+            }
         }
     }
 
@@ -730,6 +784,19 @@ fn transform_directories(
             continue;
         };
 
+        if input.state == InputState::NonDirectory {
+            if affected(path, changes) {
+                directories.insert(path.clone(), InputState::Missing);
+            }
+
+            if !deleted(path, changes) {
+                let path = destination(path, changes).unwrap_or_else(|| path.clone());
+                directories.insert(path, InputState::NonDirectory);
+            }
+
+            continue;
+        }
+
         let InputState::Directory(entries) = &input.state else {
             continue;
         };
@@ -765,6 +832,55 @@ fn transform_directories(
             entries.sort();
             entries.dedup();
             directories.insert(directory, InputState::Directory(entries));
+        }
+    }
+
+    for change in changes {
+        let new = match change {
+            FileChange::Create(path) | FileChange::Rename { new: path, .. } => path,
+            FileChange::Delete(_) => continue,
+        };
+
+        if matches!(change, FileChange::Create(_))
+            || matches!(change, FileChange::Rename { old, .. }
+                if snapshot.source_at(old).is_some())
+        {
+            directories.insert(new.clone(), InputState::NonDirectory);
+        }
+
+        let mut entry = new.clone();
+
+        while let Some(parent) = entry.parent() {
+            options.check()?;
+            let identity = InputIdentity::Directory(parent.to_path_buf());
+            let captured = snapshot.input_versions.get(&identity);
+
+            let state = directories.entry(parent.to_path_buf()).or_insert_with(|| {
+                captured.map_or(InputState::Directory(Vec::new()), |input| {
+                    if input.state == InputState::NonDirectory {
+                        InputState::NonDirectory
+                    } else {
+                        InputState::Directory(Vec::new())
+                    }
+                })
+            });
+
+            let InputState::Directory(entries) = state else {
+                return Err(unavailable("file destination overlaps a removed directory"));
+            };
+
+            entries.push(entry.clone());
+            entries.sort();
+            entries.dedup();
+
+            if captured.is_some_and(|input| matches!(input.state, InputState::Directory(_)))
+                && !deleted(parent, changes)
+                && destination(parent, changes).is_none()
+            {
+                break;
+            }
+
+            entry = parent.to_path_buf();
         }
     }
 
@@ -902,6 +1018,10 @@ fn ancestors(path: &Path, options: &Options) -> io::Result<()> {
                 return Err(unavailable(
                     "file preflight does not follow symbolic-link ancestors",
                 ));
+            }
+
+            Ok(metadata) if !metadata.is_dir() => {
+                return Err(unavailable("file operation ancestor is not a directory"));
             }
 
             Ok(_) => {}

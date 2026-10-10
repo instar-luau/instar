@@ -5,6 +5,7 @@
 #include "Luau/Ast.h"
 #include "Luau/BuiltinDefinitions.h"
 #include "Luau/Cancellation.h"
+#include "Luau/Common.h"
 #include "Luau/Error.h"
 #include "Luau/Module.h"
 #include "Luau/TypeArena.h"
@@ -13,11 +14,9 @@
 #include <chrono>
 #include <limits>
 #include <stdexcept>
+#include <string_view>
 #include <thread>
 #include <vector>
-
-LUAU_FASTFLAG(DebugLuauForceStrictMode)
-LUAU_FASTFLAG(DebugLuauForceNonStrictMode)
 
 namespace instar::native {
     namespace {
@@ -94,7 +93,7 @@ namespace instar::native {
 
         for (const auto &site : found->second.sites) {
             if (site.argument_start == start && site.argument_end == end) {
-                if (!site.static_request || site.target.empty()) {
+                if (!site.static_resolution || site.target.empty()) {
                     return std::nullopt;
                 }
 
@@ -200,6 +199,17 @@ namespace instar::native {
         }
 
         state.frontend.options.forAutocomplete = false;
+        bool force_strict = false;
+        bool force_nonstrict = false;
+
+        for (const auto *flag = Luau::FValue<bool>::list; flag; flag = flag->next) {
+            if (std::string_view(flag->name) == "DebugLuauForceStrictMode") {
+                force_strict = flag->value;
+            } else if (std::string_view(flag->name) == "DebugLuauForceNonStrictMode") {
+                force_nonstrict = flag->value;
+            }
+        }
+
         parse_modules(state, operation, {names.data(), names.size()});
         bool checking = false;
 
@@ -220,8 +230,7 @@ namespace instar::native {
             state.parsed[name] = true;
 
             if (module.inference &&
-                ((FFlag::DebugLuauForceStrictMode && module.mode != 0) ||
-                    (!FFlag::DebugLuauForceStrictMode && FFlag::DebugLuauForceNonStrictMode && module.mode != 1))) {
+                ((force_strict && module.mode != 0) || (!force_strict && force_nonstrict && module.mode != 1))) {
                 observed.completion = NativeCompletion::Unsupported;
             }
 
@@ -334,15 +343,11 @@ namespace instar::native {
                     }
 
                     for (const auto &error : outcome->errors) {
-                        const auto category = kind(error);
+                        auto finding = diagnostic(operation, error, name);
+                        const auto category = finding.kind;
 
                         if (category == NativeKind::Syntax) {
                             continue;
-                        }
-
-                        if (const auto *cycle = Luau::get<Luau::ModuleHasCyclicDependency>(error);
-                            cycle && !cycle->cycle.empty()) {
-                            observed.completion = NativeCompletion::Unsupported;
                         }
 
                         const std::string message = Luau::toString(error);
@@ -356,7 +361,6 @@ namespace instar::native {
                         }
 
                         if (category != NativeKind::Type || module.reporting) {
-                            auto finding = diagnostic(operation, error, name);
                             operation.finding(finding);
                             observed.diagnostics.push_back(std::move(finding));
                         }
@@ -393,15 +397,15 @@ namespace instar::native {
                 }
 
                 for (const auto &site : module.sites) {
-                    if (state.inferred[name] && site.static_request &&
-                        (site.target.empty() || !state.inferred.at(std::string(site.target)))) {
+                    if (state.inferred[name] && site.static_resolution && !site.target.empty() &&
+                        !state.inferred.at(std::string(site.target))) {
                         state.inferred[name] = false;
                         state.graph_available[name] = false;
                         changed = true;
                         break;
                     }
 
-                    if (state.graph_available[name] && site.static_request &&
+                    if (state.graph_available[name] && site.static_resolution &&
                         (site.target.empty() || !state.graph_available.at(std::string(site.target)))) {
                         state.graph_available[name] = false;
                         changed = true;
@@ -444,8 +448,8 @@ namespace instar::native {
     }
 
     void validate(
-        const AnalysisState &state, const std::string &name, uint64_t logical_revision, uint64_t frontend_revision,
-        uint8_t purpose, bool inference
+        const AnalysisState &state, uint64_t frontend_revision, const std::string &name, uint64_t logical_revision,
+        bool inference, uint8_t purpose
     ) {
         if (frontend_revision != state.revision || purpose != state.purpose) {
             throw std::invalid_argument("stale native analysis reference");

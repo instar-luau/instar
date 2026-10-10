@@ -19,6 +19,7 @@ use notify::{
 };
 
 use crate::{
+    capture::{Listing, read_listing},
     change::{ChangeBatch, ProjectChange, SourceChange},
     execution::{Host, Runtime, failure},
     inputs::{InputIdentity, InputState, InputVersion, ProjectSnapshot, SourceOrigin, absolute},
@@ -552,7 +553,7 @@ enum Observation {
 
     Directory {
         path: PathBuf,
-        paths: Option<Vec<PathBuf>>,
+        listing: Listing,
     },
 }
 
@@ -595,33 +596,9 @@ impl Observation {
     fn directory(path: PathBuf, options: &Options) -> io::Result<Self> {
         options.check()?;
 
-        let paths = match fs::read_dir(&path) {
-            Ok(entries) => {
-                let mut paths = Vec::new();
+        let listing = read_listing(&path, Some(options))?;
 
-                for entry in entries {
-                    options.check()?;
-                    paths.push(entry?.path());
-                }
-
-                paths.sort();
-
-                Some(paths)
-            }
-
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
-                ) =>
-            {
-                None
-            }
-
-            Err(error) => return Err(error),
-        };
-
-        Ok(Self::Directory { path, paths })
+        Ok(Self::Directory { path, listing })
     }
 
     fn apply(
@@ -667,11 +644,11 @@ impl Observation {
                 observe(snapshot, changes, InputIdentity::Path(path), state)
             }
 
-            Self::Directory { path, paths } => observe(
+            Self::Directory { path, listing } => observe(
                 snapshot,
                 changes,
                 InputIdentity::Directory(path),
-                paths.map_or(InputState::Missing, InputState::Directory),
+                listing.state(),
             ),
         }
     }

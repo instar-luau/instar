@@ -79,7 +79,9 @@ namespace instar {
                 if (site.call_start >= site.call_end || site.call_end > module.text.size() ||
                     site.argument_start < site.call_start || site.argument_start > site.argument_end ||
                     site.argument_end > site.call_end || site.request_kind > 2 ||
-                    site.static_request != (site.request_kind != 2) || (!site.static_request && !site.target.empty()) ||
+                    (site.request_kind == 0 && !site.static_resolution) ||
+                    (site.request_kind == 2 && site.static_resolution) ||
+                    (!site.static_resolution && !site.target.empty()) ||
                     !sites.emplace(site.call_start, site.call_end).second) {
                     throw std::invalid_argument("invalid captured import site");
                 }
@@ -159,11 +161,11 @@ namespace instar {
     NativeFactsResult Engine::facts(const NativeFactsInput &input, const NativeOperation &operation) {
         native::validate(
             *state,
+            input.frontend_revision,
             std::string(input.name),
             input.logical_revision,
-            input.frontend_revision,
-            input.purpose,
-            false
+            false,
+            input.purpose
         );
 
         try {
@@ -179,17 +181,17 @@ namespace instar {
     NativeLintResult Engine::lint(const NativeLintInput &input, const NativeOperation &operation) {
         native::validate(
             *state,
+            input.frontend_revision,
             std::string(input.name),
             input.logical_revision,
-            input.frontend_revision,
-            input.purpose,
-            false
+            false,
+            input.purpose
         );
 
         try {
             return native::lint(*state, input, operation);
         } catch (const std::bad_alloc &) {
-            NativeLintResult result{{}, {}, {}, NativeCompletion::Resource};
+            NativeLintResult result{{}, {}, {}, {}, NativeCompletion::Resource};
 
             for (const auto &warning : input.warnings) {
                 result.availability.push_back(NativeWarningAvailability{warning, 2});
@@ -202,11 +204,11 @@ namespace instar {
     NativeInspectionResult Engine::inspect(const NativePositionInput &input, const NativeOperation &operation) {
         native::validate(
             *state,
+            input.frontend_revision,
             std::string(input.name),
             input.logical_revision,
-            input.frontend_revision,
-            input.purpose,
-            true
+            true,
+            input.purpose
         );
 
         try {
@@ -222,11 +224,11 @@ namespace instar {
     NativeCompletions Engine::complete(const NativePositionInput &input, const NativeOperation &operation) {
         native::validate(
             *state,
+            input.frontend_revision,
             std::string(input.name),
             input.logical_revision,
-            input.frontend_revision,
-            input.purpose,
-            true
+            true,
+            input.purpose
         );
 
         if (input.purpose != 1) {

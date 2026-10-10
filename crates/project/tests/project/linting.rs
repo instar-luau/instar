@@ -2,6 +2,7 @@
 
 use std::{
     io,
+    path::Path,
     sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
@@ -10,12 +11,13 @@ use std::{
 use instar_luau::ImportOutcome;
 
 use instar_shared::{
-    Completion, Diagnostic, DiagnosticCategory, EventPayload, FindingIdentity, Location, Options,
-    Reason, Severity, SourceVersion, Span,
+    Availability, Completion, Diagnostic, DiagnosticCategory, DiagnosticTag, EventPayload,
+    FindingIdentity, Location, Options, Reason, Severity, SourceVersion, Span,
 };
 
 use instar_project::{
-    CheckRequest, Input, Invocation, LintReport, LintRequest, SourceOrigin, roblox_cache_directory,
+    CheckRequest, Input, InputIdentity, InputState, Invocation, LintReport, LintRequest,
+    SourceOrigin, roblox_cache_directory,
 };
 
 use instar_lint::RuleIdentity;
@@ -35,7 +37,7 @@ fn native_and_instar_policies_are_independent_and_checker_stays_clean() -> io::R
 
     directory.file(
         "instar.toml",
-        include_str!("../fixtures/linting/native/instar.toml"),
+        r#"linting = { rules = { unused_variable = { enabled = false, severity = "Information", settings = { rule = "unused_variable", parameters = {} } } } }"#,
     )?;
 
     let entry = directory.file(
@@ -137,6 +139,12 @@ fn native_and_instar_policies_are_independent_and_checker_stays_clean() -> io::R
 
     replace(
         &project,
+        &directory.path().join("instar.toml"),
+        include_str!("../fixtures/linting/native/instar.toml"),
+    )?;
+
+    replace(
+        &project,
         &entry,
         include_str!("../fixtures/linting/native/input.luau"),
     )?;
@@ -220,23 +228,61 @@ fn selection_reports_targets_and_attributes_dependency_failures() -> io::Result<
         .sources
     );
 
-    assert!(result.findings.iter().all(|diagnostic| {
-        project
-            .snapshot()
-            .origin(diagnostic.primary.source.identity)
-            .and_then(SourceOrigin::path)
-            .expect("finding origin")
-            == entry
-    }));
+    let findings_at = |path: &Path| {
+        result
+            .findings
+            .iter()
+            .filter(|diagnostic| {
+                result
+                    .snapshot
+                    .origin(diagnostic.primary.source.identity)
+                    .and_then(SourceOrigin::path)
+                    == Some(path)
+            })
+            .count()
+    };
+
+    assert_eq!(findings_at(&entry), 1);
+    assert_eq!(findings_at(&dependency), 2);
+    assert_eq!(result.findings.len(), 3);
 
     assert!(!rule(&result, RuleIdentity::UnusedVariable));
 
-    assert!(
-        !result
+    let native = result
+        .findings
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic.category == DiagnosticCategory::Lint
+                && diagnostic.identity.producer() == "luau"
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(native.len(), 1);
+    assert_eq!(native[0].code, "LocalUnused");
+    assert_eq!(native[0].severity, Severity::Warning);
+
+    assert_eq!(
+        result
+            .snapshot
+            .origin(native[0].primary.source.identity)
+            .and_then(SourceOrigin::path),
+        Some(dependency.as_path()),
+    );
+
+    assert_eq!(
+        result
             .findings
             .iter()
-            .any(|diagnostic| diagnostic.category == DiagnosticCategory::Lint
-                && diagnostic.identity.producer() == "luau")
+            .filter(|diagnostic| {
+                diagnostic.category == DiagnosticCategory::Resolution
+                    && result
+                        .snapshot
+                        .origin(diagnostic.primary.source.identity)
+                        .and_then(SourceOrigin::path)
+                        == Some(dependency.as_path())
+            })
+            .count(),
+        1
     );
 
     assert!(result.findings.iter().any(|diagnostic| {
@@ -508,7 +554,7 @@ fn inferred_any_uses_native_types_and_per_module_selection() -> io::Result<()> {
     let nocheck = complete(project.lint(
         LintRequest {
             invocation: Invocation {
-                inputs: vec![Input::Path(entry)],
+                inputs: vec![Input::Path(entry.clone())],
                 ..Invocation::default()
             },
             ..LintRequest::default()
@@ -519,8 +565,84 @@ fn inferred_any_uses_native_types_and_per_module_selection() -> io::Result<()> {
 
     assert_eq!(
         nocheck.completion,
-        Completion::Incomplete(vec![Reason::UnavailableSemantics])
+        Completion::Incomplete(vec![
+            Reason::UnavailableSemantics,
+            Reason::FailedPrerequisite
+        ])
     );
+
+    assert_eq!(
+        nocheck
+            .availability
+            .iter()
+            .map(|availability| availability.rule)
+            .collect::<Vec<_>>(),
+        vec![
+            RuleIdentity::ImplicitAnyLocal,
+            RuleIdentity::ImplicitAnyParameter
+        ],
+    );
+
+    assert!(nocheck.availability.iter().all(|availability| {
+        availability.status == Availability::Partial(Reason::FailedPrerequisite)
+    }));
+
+    let version = SourceVersion {
+        identity: nonstrict.sources[0].identity,
+        revision: nonstrict.sources[0].revision + 1,
+    };
+
+    assert_eq!(nocheck.sources, vec![version]);
+
+    let primary = Location {
+        source: version,
+        span: Span { start: 0, end: 0 },
+    };
+
+    assert_eq!(
+        nocheck.findings,
+        [
+            RuleIdentity::ImplicitAnyLocal,
+            RuleIdentity::ImplicitAnyParameter
+        ]
+        .into_iter()
+        .map(|identity| {
+            let message = format!("{identity} has incomplete coverage: FailedPrerequisite");
+
+            Diagnostic {
+                identity: FindingIdentity::new(
+                    "lint",
+                    vec![version],
+                    format!("lint.prerequisite:{message}"),
+                    primary,
+                ),
+                code: "lint.prerequisite".to_owned(),
+                category: DiagnosticCategory::Analysis,
+                severity: Severity::Error,
+                message,
+                primary,
+                related: Vec::new(),
+                tags: Vec::new(),
+            }
+        })
+        .collect::<Vec<_>>(),
+    );
+
+    let checked = complete(project.check(
+        CheckRequest {
+            invocation: Invocation {
+                inputs: vec![Input::Path(entry)],
+                ..Invocation::default()
+            },
+            ..CheckRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
+
+    assert_eq!(checked.completion, Completion::Complete);
+    assert_eq!(checked.sources, nocheck.sources);
+    assert!(checked.findings.is_empty());
 
     assert!(
         nocheck
@@ -538,7 +660,8 @@ fn missing_and_invalid_definitions_remain_explicit_with_syntax_findings() -> io:
 
     directory.file(
         "instar.toml",
-        include_str!("../fixtures/linting/missing/instar.toml"),
+        &include_str!("../fixtures/linting/missing/instar.toml")
+            .replace("[\"globals.luau\"]", "[\"globals.luau\", \"second.luau\"]"),
     )?;
 
     let entry = directory.file(
@@ -568,6 +691,16 @@ fn missing_and_invalid_definitions_remain_explicit_with_syntax_findings() -> io:
     assert!(rule(&missing, RuleIdentity::DivideByZero));
 
     let definition = directory.path().join("globals.luau");
+    let second = directory.path().join("second.luau");
+
+    assert_eq!(
+        missing
+            .findings
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "environment.unavailable")
+            .count(),
+        1,
+    );
 
     assert!(missing.findings.iter().any(|diagnostic| {
         missing
@@ -576,14 +709,24 @@ fn missing_and_invalid_definitions_remain_explicit_with_syntax_findings() -> io:
             .and_then(SourceOrigin::path)
             == Some(entry.as_path())
             && diagnostic.category == DiagnosticCategory::Analysis
-            && diagnostic.related.iter().any(|related| {
-                missing
-                    .snapshot
-                    .origin(related.location.source.identity)
-                    .and_then(SourceOrigin::path)
-                    == Some(definition.as_path())
-            })
+            && diagnostic.code == "environment.unavailable"
+            && diagnostic
+                .message
+                .contains(&definition.display().to_string())
+            && diagnostic.message.contains(&second.display().to_string())
+            && diagnostic.related.is_empty()
     }));
+
+    assert!(missing.inputs.iter().any(|input| {
+        input.identity == InputIdentity::Path(definition.clone())
+            && input.state == InputState::Missing
+    }));
+
+    assert!(missing.inputs.iter().any(|input| {
+        input.identity == InputIdentity::Path(second.clone()) && input.state == InputState::Missing
+    }));
+
+    replace(&project, &second, "")?;
 
     replace(
         &project,
@@ -617,6 +760,24 @@ fn missing_and_invalid_definitions_remain_explicit_with_syntax_findings() -> io:
                 .expect("finding origin")
                 == definition
         }) && diagnostic.category == DiagnosticCategory::Analysis
+    }));
+
+    let invalid_definition = invalid
+        .snapshot
+        .source_at(&definition)
+        .expect("invalid declaration");
+
+    assert!(invalid.findings.iter().any(|diagnostic| {
+        diagnostic.code == "environment.unavailable"
+            && diagnostic.related.iter().any(|related| {
+                related.location.source == invalid_definition.version
+                    && related.location.span.start <= related.location.span.end
+                    && related.location.span.end <= invalid_definition.text.len()
+            })
+            && diagnostic
+                .identity
+                .inputs()
+                .contains(&invalid_definition.version)
     }));
 
     replace(
@@ -660,16 +821,45 @@ fn invalid_roblox_metadata_keeps_known_lint_findings() -> io::Result<()> {
 
     let project = project();
 
-    replace(
-        &project,
-        &roblox_cache_directory()?.join("metadata.json"),
-        "{}",
-    )?;
+    let entries = [Input::Path(entry)];
+    let metadata = roblox_cache_directory()?.join("metadata.json");
+
+    let valid_metadata = project
+        .snapshot()
+        .source_at(&metadata)
+        .expect("fixture metadata")
+        .text
+        .clone();
+
+    let valid = complete(project.lint(
+        LintRequest {
+            invocation: Invocation {
+                inputs: entries.to_vec(),
+                ..Invocation::default()
+            },
+            ..LintRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
+
+    assert!(
+        valid.availability.iter().any(|availability| {
+            availability.rule == RuleIdentity::RobloxIncorrectColor3NewBounds
+                && availability.status == Availability::Available
+        }),
+        "{valid:#?}",
+    );
+
+    assert!(rule(&valid, RuleIdentity::RobloxIncorrectColor3NewBounds));
+    assert!(rule(&valid, RuleIdentity::DivideByZero));
+
+    replace(&project, &metadata, "{}")?;
 
     let result = complete(project.lint(
         LintRequest {
             invocation: Invocation {
-                inputs: vec![Input::Path(entry)],
+                inputs: entries.to_vec(),
                 ..Invocation::default()
             },
             ..LintRequest::default()
@@ -683,7 +873,36 @@ fn invalid_roblox_metadata_keeps_known_lint_findings() -> io::Result<()> {
         Completion::Incomplete(vec![Reason::UnavailableEnvironment])
     );
 
-    assert!(rule(&result, RuleIdentity::RobloxIncorrectColor3NewBounds));
+    assert!(rule(&result, RuleIdentity::DivideByZero));
+    assert!(!rule(&result, RuleIdentity::RobloxIncorrectColor3NewBounds));
+
+    assert!(result.availability.iter().any(|availability| {
+        availability.rule == RuleIdentity::RobloxIncorrectColor3NewBounds
+            && availability.status == Availability::Unavailable(Reason::UnavailableEnvironment)
+    }));
+
+    let metadata_source = result
+        .snapshot
+        .source_at(&metadata)
+        .expect("invalid metadata");
+
+    assert!(result.findings.iter().any(|diagnostic| {
+        diagnostic.code == "assets.metadata"
+            && diagnostic.primary.source == metadata_source.version
+            && diagnostic.primary.span == Span { start: 0, end: 2 }
+    }));
+
+    assert!(result.findings.iter().any(|diagnostic| {
+        diagnostic.code == "environment.unavailable"
+            && diagnostic.related.iter().any(|related| {
+                related.location.source == metadata_source.version
+                    && related.location.span == Span { start: 0, end: 2 }
+            })
+            && diagnostic
+                .identity
+                .inputs()
+                .contains(&metadata_source.version)
+    }));
 
     assert!(
         result
@@ -691,6 +910,35 @@ fn invalid_roblox_metadata_keeps_known_lint_findings() -> io::Result<()> {
             .iter()
             .any(|diagnostic| diagnostic.category == DiagnosticCategory::Analysis)
     );
+
+    replace(&project, &metadata, &valid_metadata)?;
+
+    let restored = complete(project.lint(
+        LintRequest {
+            invocation: Invocation {
+                inputs: entries.to_vec(),
+                ..Invocation::default()
+            },
+            ..LintRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
+
+    assert!(
+        restored.availability.iter().any(|availability| {
+            availability.rule == RuleIdentity::RobloxIncorrectColor3NewBounds
+                && availability.status == Availability::Available
+        }),
+        "{restored:#?}",
+    );
+
+    assert!(rule(
+        &restored,
+        RuleIdentity::RobloxIncorrectColor3NewBounds
+    ));
+
+    assert!(rule(&restored, RuleIdentity::DivideByZero));
 
     Ok(())
 }
@@ -953,7 +1201,9 @@ fn syntax_jobs_preserve_order_and_coordinator_progress() -> io::Result<()> {
 fn syntax_jobs_preserve_native_syntax_deduplication() -> io::Result<()> {
     let directory = Directory::new(Some(include_str!("../fixtures/linting/native/strict.json")))?;
 
-    let first = directory.file("first.luau", "local =")?;
+    directory.file("instar.toml", "linting.selected = ['LocalUnused']")?;
+
+    let first = directory.file("first.luau", "local unused=1\nreturn )")?;
 
     let entries = [
         Input::Path(first.clone()),
@@ -1018,19 +1268,51 @@ fn syntax_jobs_preserve_native_syntax_deduplication() -> io::Result<()> {
 
     let primary = Location {
         source: version,
-        span: Span { start: 6, end: 7 },
+        span: Span { start: 6, end: 12 },
     };
 
     let mut expected = vec![Diagnostic {
-        identity: FindingIdentity::new("luau", vec![version], "LocalUnused", primary),
+        identity: FindingIdentity::new("luau", vec![version], "7", primary),
         code: "LocalUnused".to_owned(),
         category: DiagnosticCategory::Lint,
         severity: Severity::Warning,
         primary,
-        message: "Variable '%error-id%' is never used; prefix with '_' to silence".to_owned(),
+        message: "Variable 'unused' is never used; prefix with '_' to silence".to_owned(),
         related: Vec::new(),
-        tags: Vec::new(),
+        tags: vec![DiagnosticTag::Unnecessary],
     }];
+
+    assert_eq!(checked.sources.len(), 2);
+
+    assert_eq!(
+        original.completion,
+        Completion::Incomplete(vec![Reason::UnavailableSemantics]),
+    );
+
+    for source in &checked.sources {
+        let primary = Location {
+            source: *source,
+            span: Span { start: 0, end: 0 },
+        };
+
+        let message = "LocalUnused has incomplete coverage: UnavailableSemantics";
+
+        expected.push(Diagnostic {
+            identity: FindingIdentity::new(
+                "project",
+                vec![*source],
+                format!("lint.prerequisite:{message}"),
+                primary,
+            ),
+            code: "lint.prerequisite".to_owned(),
+            category: DiagnosticCategory::Analysis,
+            severity: Severity::Error,
+            primary,
+            message: message.to_owned(),
+            related: Vec::new(),
+            tags: Vec::new(),
+        });
+    }
 
     expected.extend(checked.findings.into_iter());
 
@@ -1268,6 +1550,8 @@ fn native_analysis_identity_survives_lint_conversion() -> io::Result<()> {
         "../fixtures/linting/conversion/strict.json"
     )))?;
 
+    directory.file("instar.toml", "linting.selected = [\"TableOperations\"]")?;
+
     let entry = directory.file(
         "entry.luau",
         include_str!("../fixtures/linting/conversion/entry.luau"),
@@ -1307,8 +1591,30 @@ fn native_analysis_identity_survives_lint_conversion() -> io::Result<()> {
         ))
         .map_err(io::Error::from)?;
 
-        assert_eq!(linted.completion, checked.completion);
+        assert_eq!(checked.completion, Completion::Complete);
+
+        assert_eq!(
+            linted.completion,
+            Completion::Incomplete(vec![Reason::UnavailableSemantics]),
+        );
+
+        assert_eq!(linted.availability.len(), 1);
+        assert_eq!(linted.availability[0].rule, RuleIdentity::TableOperations);
+
+        assert_eq!(
+            linted.availability[0].status,
+            Availability::Partial(Reason::UnavailableSemantics),
+        );
+
         assert_eq!(linted.sources, checked.sources);
+
+        let version = project
+            .snapshot()
+            .source_at(&entry)
+            .expect("source")
+            .version;
+
+        assert_eq!(checked.sources, vec![version]);
         assert_ne!(checked.findings, Vec::new());
 
         assert!(
@@ -1322,13 +1628,50 @@ fn native_analysis_identity_survives_lint_conversion() -> io::Result<()> {
                         && diagnostic.category == DiagnosticCategory::Resolution))
         );
 
+        let message = "TableOperations has incomplete coverage: UnavailableSemantics";
+
+        let primary = Location {
+            source: version,
+            span: Span { start: 0, end: 0 },
+        };
+
+        let prerequisite = Diagnostic {
+            identity: FindingIdentity::new(
+                "project",
+                vec![version],
+                format!("lint.prerequisite:{message}"),
+                primary,
+            ),
+            code: "lint.prerequisite".to_owned(),
+            category: DiagnosticCategory::Analysis,
+            severity: Severity::Error,
+            message: message.to_owned(),
+            primary,
+            related: Vec::new(),
+            tags: Vec::new(),
+        };
+
         assert_eq!(
-            linted.findings,
+            linted
+                .findings
+                .iter()
+                .filter(|diagnostic| { diagnostic.code == "lint.prerequisite" })
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec![prerequisite],
+        );
+
+        assert_eq!(
+            linted
+                .findings
+                .into_iter()
+                .filter(|diagnostic| { diagnostic.code != "lint.prerequisite" })
+                .collect::<Vec<_>>(),
             checked
                 .findings
                 .into_iter()
-                .filter(|diagnostic| diagnostic.category != DiagnosticCategory::Type)
-                .collect::<Vec<_>>()
+                .filter(|diagnostic| { diagnostic.category != DiagnosticCategory::Type })
+                .collect::<Vec<_>>(),
         );
     }
 
@@ -1382,17 +1725,52 @@ fn native_analysis_identity_survives_lint_conversion() -> io::Result<()> {
         assert_eq!(linted.completion, checked.completion);
         assert_ne!(checked.findings, Vec::new());
 
+        let native = checked
+            .findings
+            .iter()
+            .filter(|diagnostic| diagnostic.identity.producer() == "luau")
+            .collect::<Vec<_>>();
+
+        assert!(!native.is_empty());
+
         assert!(
-            checked
-                .findings
+            native
                 .iter()
-                .all(|diagnostic| diagnostic.identity.producer() == "luau"
-                    && diagnostic.code.parse::<u32>().is_ok())
+                .all(|diagnostic| diagnostic.code.parse::<u32>().is_ok())
         );
 
+        let environment = checked
+            .findings
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.identity.producer() == "project"
+                    && diagnostic.code == "environment.unavailable"
+                    && diagnostic.category == DiagnosticCategory::Analysis
+                    && diagnostic.severity == Severity::Error
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(environment.len(), 1);
+        assert_eq!(checked.findings.len(), native.len() + environment.len());
+
+        let prerequisites = linted
+            .findings
+            .iter()
+            .filter(|diagnostic| diagnostic.identity.producer() == "lint")
+            .collect::<Vec<_>>();
+
+        assert_eq!(prerequisites.len(), 1);
+        assert_eq!(prerequisites[0].code, "lint.prerequisite");
+        assert_eq!(prerequisites[0].category, DiagnosticCategory::Analysis);
+        assert_eq!(prerequisites[0].severity, Severity::Error);
+
         assert_eq!(
-            linted.findings,
-            checked.findings.into_iter().collect::<Vec<_>>()
+            linted
+                .findings
+                .into_iter()
+                .filter(|diagnostic| { diagnostic.identity.producer() != "lint" })
+                .collect::<Vec<_>>(),
+            checked.findings,
         );
     }
 
@@ -1403,7 +1781,10 @@ fn native_analysis_identity_survives_lint_conversion() -> io::Result<()> {
 fn runtime_member_requires_preserve_lint_rules_and_static_failures() -> io::Result<()> {
     let directory = Directory::new(Some(include_str!("../fixtures/linting/shared/.luaurc")))?;
 
-    directory.file("instar.toml", "[environment]\nroblox=true\n")?;
+    directory.file(
+        "instar.toml",
+        "environment.roblox = true\nlinting.selected = ['divide_by_zero']\n",
+    )?;
 
     directory.file(
         "sourcemap.json",
@@ -1501,7 +1882,7 @@ fn runtime_member_requires_preserve_lint_rules_and_static_failures() -> io::Resu
     replace(
         &project,
         &directory.path().join("instar.toml"),
-        "environment = { roblox = true }\nlinting = { rules = { non_const_require = { enabled = true, severity = 'Warning', settings = { rule = 'non_const_require', parameters = {} } } } }\n",
+        "environment.roblox = true\nlinting.selected = ['divide_by_zero', 'non_const_require']\n",
     )?;
 
     let configured = complete(project.lint(
@@ -1565,6 +1946,8 @@ fn source_type_errors_stay_with_check_while_lint_findings_remain() -> io::Result
     let directory = Directory::new(Some(include_str!(
         "../fixtures/linting/conversion/strict.json"
     )))?;
+
+    directory.file("instar.toml", "linting.selected = [\"divide_by_zero\"]")?;
 
     let entry = directory.file(
         "entry.luau",

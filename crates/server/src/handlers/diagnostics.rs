@@ -1,12 +1,14 @@
 use std::{collections::BTreeMap, iter::once, sync::Arc};
 
 use instar_project::{
-    DiagnosticQuery, Input, ProjectSnapshot, Query, QueryOutput, QueryReport, QueryRequest,
+    DiagnosticQuery, Input, InputIdentity, InputState, InputVersion, ProjectSnapshot, Query,
+    QueryOutput, QueryReport, QueryRequest,
 };
 
 use instar_shared::{
-    Completion, Diagnostic as DomainDiagnostic, DiagnosticTag as DomainDiagnosticTag,
-    Location as DomainLocation, Severity, SourceVersion,
+    Completion, Diagnostic as DomainDiagnostic, DiagnosticCategory,
+    DiagnosticTag as DomainDiagnosticTag, Location as DomainLocation, Reason, Severity,
+    SourceVersion,
 };
 
 use serde_json::Value;
@@ -14,20 +16,21 @@ use tokio::task;
 
 use tower_lsp_server::{
     gen_lsp_types::{
-        Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag,
-        DocumentDiagnosticParams, DocumentDiagnosticReport, FullDocumentDiagnosticReport,
-        Location as ProtocolLocation, MessageType, RelatedFullDocumentDiagnosticReport,
-        RelatedUnchangedDocumentDiagnosticReport, UnchangedDocumentDiagnosticReport, Uri,
-        WorkspaceDiagnosticParams, WorkspaceDiagnosticReport,
-        WorkspaceDiagnosticReportPartialResult, WorkspaceDiagnosticRequest,
-        WorkspaceFullDocumentDiagnosticReport, WorkspaceUnchangedDocumentDiagnosticReport,
+        CodeDescription, Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity,
+        DiagnosticTag, DocumentDiagnosticParams, DocumentDiagnosticReport,
+        FullDocumentDiagnosticReport, Location as ProtocolLocation, MessageType,
+        RelatedFullDocumentDiagnosticReport, RelatedUnchangedDocumentDiagnosticReport,
+        UnchangedDocumentDiagnosticReport, Uri, WorkspaceDiagnosticParams,
+        WorkspaceDiagnosticReport, WorkspaceDiagnosticReportPartialResult,
+        WorkspaceDiagnosticRequest, WorkspaceFullDocumentDiagnosticReport,
+        WorkspaceUnchangedDocumentDiagnosticReport,
     },
     jsonrpc::{Error, ErrorCode, Result},
 };
 
 use crate::{
     Server,
-    session::{LazyRecord, failure},
+    session::{LazyRecord, failure, path},
 };
 
 pub(crate) async fn document(
@@ -38,7 +41,8 @@ pub(crate) async fn document(
         return Err(Error::invalid_params("unknown diagnostic provider"));
     }
 
-    let (snapshot, source) = server.capture(&parameters.text_document.uri)?;
+    let options = server.options.child();
+    let (snapshot, source) = server.capture(&parameters.text_document.uri, &options)?;
 
     let report = server
         .query(
@@ -49,6 +53,7 @@ pub(crate) async fn document(
                 checking: true,
             }),
             parameters.work_done_progress_params.work_done_token,
+            &options,
         )
         .await?;
 
@@ -103,6 +108,8 @@ pub(crate) async fn workspace(
     let snapshot = server.project.snapshot();
     let inputs = inputs(server);
 
+    let options = server.options.child();
+
     let report = server
         .query(
             snapshot,
@@ -112,20 +119,40 @@ pub(crate) async fn workspace(
                 checking: true,
             }),
             parameters.work_done_progress_params.work_done_token,
+            &options,
         )
         .await?;
 
     let mut grouped = BTreeMap::<Uri, Vec<Diagnostic>>::new();
 
+    let QueryOutput::Diagnostics { check, lint } = &report.output else {
+        return Err(Error::internal_error());
+    };
+
     if report.completion == Completion::Complete {
-        for source in report.snapshot.sources() {
+        for source in check
+            .iter()
+            .flat_map(|check| &check.sources)
+            .chain(lint.iter().flat_map(|lint| &lint.sources))
+        {
             let uri = server
                 .state
                 .lock()
                 .expect("session state")
-                .uri(&report.snapshot, source.version.identity)?;
+                .uri(&report.snapshot, source.identity)?;
 
             grouped.entry(uri).or_default();
+        }
+
+        for (uri, document) in &server.state.lock().expect("session state").documents {
+            if document.synchronized
+                && report
+                    .snapshot
+                    .source(document.source)
+                    .is_some_and(|source| source.version == document.revision)
+            {
+                grouped.entry(uri.clone()).or_default();
+            }
         }
     }
 
@@ -138,8 +165,20 @@ pub(crate) async fn workspace(
             .push(convert(server, &report.snapshot, &[], finding)?);
     }
 
-    if report.completion == Completion::Complete {
-        for previous in &parameters.previous_result_ids {
+    for previous in &parameters.previous_result_ids {
+        let removed = if previous.uri.scheme() == "file" {
+            let filename = path(&previous.uri)?;
+
+            report.snapshot.source_at(&filename).is_none()
+                && report.inputs.iter().any(|input| {
+                    input.identity == InputIdentity::Path(filename.clone())
+                        && input.state == InputState::Missing
+                })
+        } else {
+            false
+        };
+
+        if report.completion == Completion::Complete || removed {
             grouped.entry(previous.uri.clone()).or_default();
         }
     }
@@ -155,10 +194,12 @@ pub(crate) async fn workspace(
             .get(&uri)
             .map(|document| document.version);
 
-        let source = report
-            .snapshot
-            .source_for_address(uri.as_str())
-            .map(|source| source.version);
+        let source = if uri.scheme() == "file" {
+            report.snapshot.source_at(&path(&uri)?)
+        } else {
+            report.snapshot.source_for_address(uri.as_str())
+        }
+        .map(|source| source.version);
 
         let previous = parameters
             .previous_result_ids
@@ -231,9 +272,10 @@ pub(crate) fn convert(
 
 fn convert_with(
     finding: DomainDiagnostic,
-    location: impl Fn(DomainLocation) -> Result<ProtocolLocation>,
+    mut location: impl FnMut(DomainLocation) -> Result<ProtocolLocation>,
 ) -> Result<Diagnostic> {
     let range = location(finding.primary)?.range;
+    let native = finding.identity.producer() == "luau";
 
     let related = finding
         .related
@@ -254,8 +296,23 @@ fn convert_with(
             Severity::Information => DiagnosticSeverity::Information,
             Severity::Hint => DiagnosticSeverity::Hint,
         }),
-        code: Some(finding.code.into()),
-        source: Some("Instar".to_owned()),
+        code: Some(
+            if native && let Ok(code) = finding.identity.code().parse::<i32>() {
+                code.into()
+            } else {
+                finding.code.into()
+            },
+        ),
+        code_description: if native && finding.category == DiagnosticCategory::Lint {
+            Some(CodeDescription {
+                href: "https://luau.org/lint/"
+                    .parse()
+                    .map_err(|_| Error::internal_error())?,
+            })
+        } else {
+            None
+        },
+        source: Some(if native { "Luau" } else { "Instar" }.to_owned()),
         message: finding.message.into(),
         related_information: (!related.is_empty()).then_some(related),
         tags: (!finding.tags.is_empty()).then(|| {
@@ -338,38 +395,97 @@ fn identifier(
         return Err(Error::content_modified());
     }
 
+    let mut unchanged = false;
+
     if let Some(identity) = previous
         && let Some(record) = serde_json::from_str::<Value>(identity)
             .ok()
             .and_then(|data| state.identities.get(Some(&data), "diagnostics").ok())
         && record.source == source
-        && record.inputs == report.inputs
         && record.payload == payload
     {
-        return Ok((identity.to_owned(), true));
+        if record.inputs == report.inputs {
+            return Ok((identity.to_owned(), true));
+        }
+
+        unchanged = true;
     }
 
-    let identity = state.identities.insert(LazyRecord {
+    let record = LazyRecord {
         operation: "diagnostics",
         source,
         inputs: report.inputs.clone(),
         snapshot: report.snapshot.clone(),
         payload,
         edit: None,
-    })?;
+    };
 
-    Ok((identity.to_string(), false))
+    let identity = match state.identities.find(&record) {
+        Some(identity) => identity,
+        None => state.identities.insert(record)?,
+    };
+
+    Ok((identity.to_string(), unchanged))
+}
+
+fn failure_inputs(
+    original: &ProjectSnapshot,
+    snapshot: &ProjectSnapshot,
+    findings: &[DomainDiagnostic],
+) -> Result<Vec<InputVersion>> {
+    let mut inputs = original
+        .input_versions
+        .values()
+        .filter(|input| {
+            !matches!(input.state, InputState::Stale)
+                && matches!(
+                    input.identity,
+                    InputIdentity::Source(_) | InputIdentity::Context(_)
+                )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    for finding in findings {
+        for source in finding.identity.inputs().iter().copied().chain(
+            finding
+                .related
+                .iter()
+                .map(|related| related.location.source),
+        ) {
+            let captured = [snapshot, original]
+                .into_iter()
+                .find(|snapshot| {
+                    snapshot
+                        .source(source.identity)
+                        .is_some_and(|captured| captured.version == source)
+                })
+                .ok_or_else(Error::content_modified)?;
+
+            let input = captured
+                .input_versions
+                .get(&InputIdentity::Source(source.identity))
+                .filter(|input| {
+                    matches!(&input.state, InputState::Source(captured) if captured.version == source)
+                })
+                .ok_or_else(Error::content_modified)?;
+
+            if !inputs.contains(input) {
+                inputs.push(input.clone());
+            }
+        }
+    }
+
+    Ok(inputs)
 }
 
 impl Server {
     pub(crate) fn schedule_diagnostics(&self) {
-        if let Some(publication) = self
-            .publication
-            .lock()
-            .expect("diagnostic publication")
-            .take()
-        {
-            publication.abort();
+        let mut publication = self.publication.lock().expect("diagnostic publication");
+
+        if let Some((operation, cancellation)) = publication.take() {
+            cancellation.cancel();
+            operation.abort();
         }
 
         let pull = self
@@ -387,22 +503,27 @@ impl Server {
         let state = Arc::clone(&self.state);
         let client = self.client.clone();
         let snapshot = project.snapshot();
+        let options = self.options.child();
+        let cancellation = options.cancellation.clone();
+        let progress = self.prepare_progress(None, &options.cancellation);
 
         let task = project.query(
             QueryRequest {
-                snapshot,
+                snapshot: snapshot.clone(),
                 operation: Query::Diagnostics(DiagnosticQuery {
                     inputs: inputs(self),
                     lint: true,
                     checking: true,
                 }),
             },
-            self.options.child(),
+            options.clone(),
         );
 
-        *self.publication.lock().expect("diagnostic publication") = Some(task::spawn(async move {
-            let report = match task.await {
-                Ok(report) => report,
+        let operation = task::spawn(async move {
+            let mut operation = Box::pin(task);
+
+            let progress = match progress {
+                Ok(progress) => progress,
 
                 Err(error) => {
                     client
@@ -413,57 +534,115 @@ impl Server {
                 }
             };
 
-            if report.completion != Completion::Complete {
-                client
-                    .log_message(MessageType::Warning, report.completion.error().to_string())
-                    .await;
-            }
+            let (result, _progress) = tokio::select! {
+                result = &mut operation => (result, None),
+                progress = async {
+                    match progress {
+                        Some(progress) => progress.begin("Analyzing Luau workspace", &options).await.map(Some),
+                        None => Ok(None),
+                    }
+                } => match progress {
+                    Ok(progress) => (operation.await, progress),
+                    Err(error) => {
+                        client.log_message(MessageType::Error, error.to_string()).await;
+                        return;
+                    }
+                },
+            };
 
-            let findings = match findings(&report) {
-                Ok(findings) => findings,
+            let (snapshot, publication_inputs, findings, complete) = match result {
+                Ok(report) => {
+                    if report.completion != Completion::Complete {
+                        client
+                            .log_message(
+                                MessageType::Warning,
+                                report.completion.error().to_string(),
+                            )
+                            .await;
+                    }
+
+                    let findings = match findings(&report) {
+                        Ok(findings) => findings,
+
+                        Err(error) => {
+                            client
+                                .log_message(MessageType::Error, error.to_string())
+                                .await;
+
+                            return;
+                        }
+                    };
+
+                    (
+                        report.snapshot,
+                        report.inputs,
+                        findings,
+                        report.completion == Completion::Complete,
+                    )
+                }
 
                 Err(error) => {
                     client
                         .log_message(MessageType::Error, error.to_string())
                         .await;
 
-                    return;
+                    if error.diagnostics.is_empty()
+                        || matches!(
+                            error.completion,
+                            Completion::Cancelled | Completion::TimedOut
+                        )
+                        || matches!(
+                            &error.completion,
+                            Completion::Incomplete(reasons) if reasons.contains(&Reason::StaleQuery)
+                        )
+                    {
+                        return;
+                    }
+
+                    let current = project.snapshot();
+
+                    let Ok(inputs) = failure_inputs(&snapshot, &current, &error.diagnostics) else {
+                        return;
+                    };
+
+                    (current, inputs, error.diagnostics, false)
                 }
             };
 
             let mut grouped = BTreeMap::<Uri, Vec<Diagnostic>>::new();
 
             let conversion = (|| {
-                let state = state.lock().expect("session state");
+                let mut state = state.lock().expect("session state");
 
-                if !state.current(&project, &report.inputs) {
+                if !state.current(&project, &publication_inputs) {
                     return Err(Error::content_modified());
                 }
 
-                if report.completion == Completion::Complete {
-                    for document in state
+                if complete {
+                    let sources = state
                         .documents
                         .values()
                         .filter(|document| document.synchronized)
-                    {
-                        grouped
-                            .entry(state.uri(&report.snapshot, document.source)?)
-                            .or_default();
+                        .map(|document| document.source)
+                        .collect::<Vec<_>>();
+
+                    for source in sources {
+                        grouped.entry(state.uri(&snapshot, source)?).or_default();
                     }
                 }
 
                 for finding in findings {
-                    let uri = state.uri(&report.snapshot, finding.primary.source.identity)?;
+                    let uri = state.uri(&snapshot, finding.primary.source.identity)?;
 
                     grouped
                         .entry(uri)
                         .or_default()
                         .push(convert_with(finding, |location| {
-                            state.location(&report.snapshot, location)
+                            state.location(&snapshot, location)
                         })?);
                 }
 
-                if report.completion == Completion::Complete {
+                if complete {
                     for uri in &state.published {
                         grouped.entry(uri.clone()).or_default();
                     }
@@ -486,7 +665,7 @@ impl Server {
                 let version = {
                     let mut state = state.lock().expect("session state");
 
-                    if !state.current(&project, &report.inputs) {
+                    if !state.current(&project, &publication_inputs) {
                         return;
                     }
 
@@ -501,6 +680,8 @@ impl Server {
 
                 client.publish_diagnostics(uri, items, version).await;
             }
-        }));
+        });
+
+        *publication = Some((operation, cancellation));
     }
 }

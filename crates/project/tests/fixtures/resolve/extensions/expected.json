@@ -18,6 +18,6 @@
     }
   },
   {
-    "error": "$ROOT/caller.luau: require \"@self/../dual\": ambiguous module $ROOT/dual: $ROOT/dual.luau, $ROOT/dual.lua"
+    "error": "$ROOT/caller.luau: require \"@self/../dual\": navigation directory not found: $ROOT/caller"
   }
 ]

@@ -47,7 +47,7 @@ pub(crate) fn assistance(
                 hints.push(ProjectHint {
                     location: declaration,
                     label: format!(": {}", information.display),
-                    description: Some(information.display.clone()),
+                    description: Some(format!("{}: {}", binding.name, information.display)),
                     documentation: binding.documentation.clone(),
                 });
             }

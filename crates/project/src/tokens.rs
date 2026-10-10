@@ -2,7 +2,8 @@
 
 use std::{collections::BTreeMap, io};
 
-use instar_shared::{Options, error::invalid};
+use instar_luau::LanguageIdentity;
+use instar_shared::{Knowledge, Options, error::invalid};
 
 use instar_syntax::{
     token::{Span, Symbol, TokenKind as SyntaxTokenKind},
@@ -110,7 +111,19 @@ pub(crate) fn tokens(
                 instar_luau::OccurrenceRole::Type => TokenKind::Type,
             };
 
-            let builtin = matches!(&occurrence.targets, instar_shared::Knowledge::Known(targets) if targets.iter().any(|target| matches!(target, instar_luau::SemanticIdentity::Environment { .. })));
+            let builtin = if let Knowledge::Known(targets) = &occurrence.targets {
+                targets.iter().any(|target| {
+                    facts.facts.bindings.iter().any(|binding| {
+                        binding.identity == *target
+                            && matches!(
+                                &binding.language_identity,
+                                Some(LanguageIdentity::Builtin(_) | LanguageIdentity::Roblox(_))
+                            )
+                    })
+                })
+            } else {
+                false
+            };
 
             let modifiers = [
                 (TokenModifier::Declaration, occurrence.declaration),

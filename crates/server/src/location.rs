@@ -31,7 +31,7 @@ impl Server {
 
 impl State {
     pub(crate) fn location(
-        &self,
+        &mut self,
         snapshot: &ProjectSnapshot,
         location: Location,
     ) -> Result<ProtocolLocation> {

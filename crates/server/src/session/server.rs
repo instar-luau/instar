@@ -10,14 +10,16 @@ use std::{
 use instar_luau::ModuleIdentity;
 
 use instar_project::{
-    PositionQuery, PositionQueryKind, Project, ProjectSnapshot, Query, QueryReport, QueryRequest,
-    Task,
+    InputIdentity, InputState, PositionQuery, PositionQueryKind, Project, ProjectSnapshot, Query,
+    QueryReport, QueryRequest, Task,
 };
 
 use instar_shared::{
-    Availability, Completion, Knowledge, OperationFailure, Options, Reason, SourceSnapshot,
+    Availability, Cancellation, Completion, DiagnosticCategory, Knowledge, OperationFailure,
+    Options, Reason, SourceSnapshot,
 };
 
+use serde_json::to_value;
 use tokio::task::JoinHandle;
 
 use tower_lsp_server::{
@@ -41,7 +43,7 @@ pub struct Server {
     pub(crate) project: Arc<Project>,
     pub(crate) options: Options,
     pub(crate) state: Arc<Mutex<State>>,
-    pub(crate) publication: Mutex<Option<JoinHandle<()>>>,
+    pub(crate) publication: Mutex<Option<(JoinHandle<()>, Cancellation)>>,
     pub(crate) progress: Arc<Mutex<HashMap<ProgressToken, ProgressRecord>>>,
     pub(crate) refreshing: tokio::sync::Mutex<()>,
 }
@@ -63,11 +65,15 @@ impl Server {
         }
     }
 
-    pub(crate) fn capture(&self, uri: &Uri) -> Result<(ProjectSnapshot, SourceSnapshot)> {
+    pub(crate) fn capture(
+        &self,
+        uri: &Uri,
+        options: &Options,
+    ) -> Result<(ProjectSnapshot, SourceSnapshot)> {
         self.state
             .lock()
             .expect("session state")
-            .capture(&self.project, uri)
+            .capture(&self.project, uri, options)
     }
 
     pub(crate) fn position(
@@ -75,9 +81,10 @@ impl Server {
         uri: &Uri,
         position: Position,
         kind: PositionQueryKind,
+        options: &Options,
     ) -> Result<(ProjectSnapshot, PositionQuery)> {
         let state = self.state.lock().expect("session state");
-        let (snapshot, source) = state.capture(&self.project, uri)?;
+        let (snapshot, source) = state.capture(&self.project, uri, options)?;
         let offset = position::offset(&source.text, position, &state.encoding)?;
 
         let module = ModuleIdentity {
@@ -101,9 +108,9 @@ impl Server {
         snapshot: ProjectSnapshot,
         operation: Query,
         token: Option<ProgressToken>,
+        options: &Options,
     ) -> Result<QueryReport> {
         let partial = matches!(operation, Query::Diagnostics(_) | Query::Complete(_));
-        let options = self.options.child();
 
         let task = self.project.query(
             QueryRequest {
@@ -114,7 +121,7 @@ impl Server {
         );
 
         let result = self
-            .task(task, &options, token, "Processing Luau request")
+            .task(task, options, token, "Processing Luau request")
             .await;
 
         let report = match result {
@@ -127,6 +134,13 @@ impl Server {
                         &snapshot
                             .input_versions
                             .values()
+                            .filter(|input| {
+                                !matches!(input.state, InputState::Stale)
+                                    && matches!(
+                                        input.identity,
+                                        InputIdentity::Source(_) | InputIdentity::Context(_)
+                                    )
+                            })
                             .cloned()
                             .collect::<Vec<_>>(),
                     ) =>
@@ -185,10 +199,16 @@ impl Server {
         };
 
         let mut task = Box::pin(task);
+        let progress = self.prepare_progress(token, &options.cancellation)?;
 
         let progress = tokio::select! {
             result = &mut task => return result.map_err(convert),
-            progress = self.begin_progress(token, title, &options.cancellation) => progress?,
+            progress = async {
+                match progress {
+                    Some(progress) => progress.begin(title, options).await.map(Some),
+                    None => Ok(None),
+                }
+            } => progress?,
         };
 
         let result = task.await.map_err(convert);
@@ -198,12 +218,13 @@ impl Server {
     }
 
     pub(crate) fn stop(&self, lifecycle: Lifecycle) {
-        if let Some(publication) = self
+        if let Some((publication, cancellation)) = self
             .publication
             .lock()
             .expect("diagnostic publication")
             .take()
         {
+            cancellation.cancel();
             publication.abort();
         }
 
@@ -229,12 +250,13 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        if let Some(publication) = self
+        if let Some((publication, cancellation)) = self
             .publication
             .lock()
             .expect("diagnostic publication")
             .take()
         {
+            cancellation.cancel();
             publication.abort();
         }
 
@@ -256,6 +278,21 @@ pub(crate) fn failure(error: &io::Error) -> Error {
     let code = match error.kind() {
         io::ErrorKind::Interrupted => ErrorCode::RequestCancelled,
         io::ErrorKind::WouldBlock => ErrorCode::ServerError(-32802),
+
+        io::ErrorKind::InvalidInput
+            if error
+                .get_ref()
+                .and_then(|failure| failure.downcast_ref::<OperationFailure>())
+                .is_some_and(|failure| {
+                    failure
+                        .diagnostics
+                        .iter()
+                        .any(|diagnostic| diagnostic.category == DiagnosticCategory::Configuration)
+                }) =>
+        {
+            ErrorCode::ServerError(-32803)
+        }
+
         io::ErrorKind::InvalidInput => ErrorCode::InvalidParams,
         _ => ErrorCode::ServerError(-32803),
     };
@@ -263,6 +300,9 @@ pub(crate) fn failure(error: &io::Error) -> Error {
     Error {
         code,
         message: error.to_string().into(),
-        data: None,
+        data: error
+            .get_ref()
+            .and_then(|failure| failure.downcast_ref::<OperationFailure>())
+            .and_then(|failure| to_value(failure).ok()),
     }
 }

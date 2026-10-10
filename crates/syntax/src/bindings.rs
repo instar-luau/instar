@@ -388,6 +388,26 @@ impl BindingResult {
             self.execution.insert(name.get(), self.execution_scope);
         }
 
+        if let NodeKind::Parameters { parameters, .. } = &tree.node(*parameters).kind {
+            for parameter in tree.list(parameters) {
+                if let NodeKind::Binding {
+                    annotation: Some(annotation),
+                    ..
+                }
+                | NodeKind::Variadic {
+                    annotation: Some(annotation),
+                    ..
+                } = &tree.node(parameter.node).kind
+                {
+                    self.visit(tree, *annotation);
+                }
+            }
+        }
+
+        if let Some(returns) = returns {
+            self.visit(tree, *returns);
+        }
+
         let local = prefix.is_some_and(|prefix| {
             tree.token(prefix).kind == TokenKind::Keyword(Keyword::Local)
                 || tree.token(prefix).bytes(tree.source) == b"const"
@@ -461,12 +481,10 @@ impl BindingResult {
 
         if let NodeKind::Parameters { parameters, .. } = &tree.node(*parameters).kind {
             for parameter in tree.list(parameters) {
-                self.bind(tree, parameter.node, Category::Parameter, None);
+                if let NodeKind::Binding { name, .. } = &tree.node(parameter.node).kind {
+                    self.bind_name(tree, *name, Category::Parameter, None);
+                }
             }
-        }
-
-        if let Some(returns) = returns {
-            self.visit(tree, *returns);
         }
 
         if let Some(body) = body {

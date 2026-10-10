@@ -11,7 +11,7 @@ use instar_shared::{Completion, Event, EventPayload, Options, SourceIdentity};
 use serde::Serialize;
 
 use crate::{
-    capture::Capture,
+    capture::{Capture, Listing},
     change::{ChangeBatch, ProjectChange, SourceChange},
     configuration::{EffectiveSettings, OperationOverrides},
     execution::Runtime,
@@ -41,9 +41,9 @@ impl Matcher {
                 return Err(invalid("invalid selection pattern"));
             }
 
-            let anchored = pattern.contains('/');
             let directory = pattern.ends_with('/');
             let pattern = pattern.trim_end_matches('/');
+            let anchored = pattern.contains('/');
 
             let pattern = if anchored {
                 pattern.to_owned()
@@ -57,7 +57,7 @@ impl Matcher {
                         .literal_separator(true)
                         .backslash_escape(false)
                         .build()
-                        .map_err(invalid)?,
+                        .map_err(|error| invalid(format!("invalid glob: {error}")))?,
                 );
             }
 
@@ -66,12 +66,14 @@ impl Matcher {
                     .literal_separator(true)
                     .backslash_escape(false)
                     .build()
-                    .map_err(invalid)?,
+                    .map_err(|error| invalid(format!("invalid glob: {error}")))?,
             );
         }
 
         Ok(Self {
-            compiled: builder.build().map_err(invalid)?,
+            compiled: builder
+                .build()
+                .map_err(|error| invalid(format!("invalid glob: {error}")))?,
             empty: patterns.is_none_or(<[String]>::is_empty),
         })
     }
@@ -270,7 +272,8 @@ impl Runtime {
 
             match input {
                 Input::Path(path) => {
-                    let path = absolute(&path)?;
+                    let path = absolute(&path)
+                        .map_err(|error| io::Error::new(error.kind(), format!("input {error}")))?;
 
                     if capture.snapshot.source_at(&path).is_some_and(|source| {
                         matches!(
@@ -350,7 +353,7 @@ pub(crate) fn anchor(base: &Path, pattern: &str) -> io::Result<String> {
     Matcher::new(Some(&[pattern.to_owned()]))?;
     let pattern = pattern.replace('\\', "/");
 
-    let pattern = if pattern.contains('/') {
+    let pattern = if pattern.trim_end_matches('/').contains('/') {
         pattern.trim_start_matches('/').to_owned()
     } else {
         format!("**/{pattern}")
@@ -376,6 +379,10 @@ fn capture_candidates(
 
     for (path, root) in candidates {
         options.check()?;
+
+        if path.file_name().is_some_and(|name| name == "instar.luau") {
+            return Err(invalid("instar.luau is not an importable module"));
+        }
 
         if !source_path(&path) {
             return Err(invalid(format!(
@@ -462,30 +469,50 @@ fn discover(root: &Path, capture: &mut Capture, options: &Options) -> io::Result
         }
     }
 
-    for source in capture.snapshot.sources() {
-        if let Some(path) = capture
-            .snapshot
-            .origin(source.version.identity)
-            .and_then(SourceOrigin::path)
-            && path.starts_with(root)
-            && source_path(path)
-            && !matches!(
-                capture.snapshot.origin(source.version.identity),
-                Some(SourceOrigin::Stdin { .. })
-            )
-            && (capture.frozen()
-                || !matches!(
-                    capture.snapshot.origin(source.version.identity),
-                    Some(SourceOrigin::Disk(_))
-                ))
-            && !capture
-                .snapshot
-                .input_versions
-                .get(&InputIdentity::Path(path.to_path_buf()))
-                .is_some_and(|input| input.state == InputState::Missing)
-        {
-            paths.insert(path.to_path_buf());
+    let registered = capture
+        .snapshot
+        .sources()
+        .filter_map(|source| {
+            let origin = capture.snapshot.origin(source.version.identity)?;
+            let path = origin.path()?;
+
+            if !path.starts_with(root)
+                || !source_path(path)
+                || matches!(origin, SourceOrigin::Stdin { .. })
+                || !capture.frozen() && matches!(origin, SourceOrigin::Disk(_))
+                || capture
+                    .snapshot
+                    .input_versions
+                    .get(&InputIdentity::Path(path.to_path_buf()))
+                    .is_some_and(|input| input.state == InputState::Missing)
+            {
+                return None;
+            }
+
+            let refreshing = matches!(origin, SourceOrigin::Disk(_))
+                && [
+                    InputIdentity::Path(path.to_path_buf()),
+                    InputIdentity::Source(source.version.identity),
+                ]
+                .iter()
+                .any(|identity| {
+                    capture
+                        .snapshot
+                        .input_versions
+                        .get(identity)
+                        .is_some_and(|input| input.state == InputState::Stale)
+                });
+
+            Some((path.to_path_buf(), refreshing))
+        })
+        .collect::<Vec<_>>();
+
+    for (path, refreshing) in registered {
+        if refreshing && capture.read(&path, options)?.is_none() {
+            continue;
         }
+
+        paths.insert(path);
     }
 
     Ok(paths.into_iter().collect())
@@ -507,7 +534,7 @@ fn discover_frozen(
             continue;
         }
 
-        let Some(entries) = capture.listing(&directory, options)? else {
+        let Listing::Directory(entries) = capture.listing(&directory, options)? else {
             continue;
         };
 
@@ -551,7 +578,7 @@ fn discover_frozen(
                 }
             }
 
-            if capture.listing(&path, options)?.is_some() {
+            if matches!(capture.listing(&path, options)?, Listing::Directory(_)) {
                 pending.push(path);
             } else if source_path(&path) {
                 paths.insert(path);

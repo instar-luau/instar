@@ -46,6 +46,19 @@ fn definitions_preserve_lexical_identity_and_type_locations() -> io::Result<()> 
             .occurrence
             .expect("navigation occurrence");
 
+        if case.query == ".value" {
+            assert_eq!(
+                occurrence.location,
+                Location::new(
+                    &input.modules[0].source.source,
+                    Span {
+                        start: offset,
+                        end: offset + case.length
+                    }
+                )?
+            );
+        }
+
         let locations = if case.type_definition {
             occurrence.type_definitions
         } else {

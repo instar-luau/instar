@@ -3,6 +3,7 @@
 #include "semantics.hpp"
 
 #include "Luau/AstQuery.h"
+#include "Luau/GlobalTypes.h"
 #include "Luau/Lexer.h"
 #include "Luau/Module.h"
 #include "Luau/Scope.h"
@@ -28,8 +29,52 @@
 
 namespace instar::native {
     namespace {
-        std::optional<Luau::TypeId>
-        inferred_type(const Luau::Module &module, const Luau::SourceModule &source, const Luau::Position &position);
+        Luau::TypeId
+        expression_type(const AnalysisState &state, const Luau::Module &module, const Luau::AstExpr *expression) {
+            while (expression) {
+                if (const auto *type = module.astTypes.find(expression)) {
+                    return *type;
+                }
+
+                if (const auto *pack = module.astTypePacks.find(expression)) {
+                    if (const auto type = Luau::first(*pack)) {
+                        return *type;
+                    }
+
+                    auto iterator = Luau::begin(*pack);
+
+                    if (iterator == Luau::end(*pack) && !iterator.tail()) {
+                        return state.frontend.builtinTypes->nilType;
+                    }
+                }
+
+                if (const auto *group = expression->as<Luau::AstExprGroup>()) {
+                    expression = group->expr;
+                    continue;
+                }
+
+                const auto scope = Luau::findScopeAtPosition(module, expression->location.begin);
+
+                if (scope) {
+                    if (const auto *local = expression->as<Luau::AstExprLocal>()) {
+                        return scope->lookup(Luau::Symbol(local->local)).value_or(nullptr);
+                    }
+
+                    if (const auto *global = expression->as<Luau::AstExprGlobal>()) {
+                        return scope->lookup(Luau::Symbol(global->name)).value_or(nullptr);
+                    }
+                }
+
+                return nullptr;
+            }
+
+            return nullptr;
+        }
+
+        std::optional<Luau::TypeId> inferred_type(
+            const AnalysisState &state, const Luau::Module &module, const Luau::SourceModule &source,
+            const Luau::Position &position
+        );
 
         void property(
             const NativeOperation &host, Luau::TypeId initial, const std::string &name,
@@ -54,7 +99,7 @@ namespace instar::native {
             }
 
             void declared(
-                const AnalysisState &state, const std::string &module, const std::string &key,
+                const std::string &module, const AnalysisState &state, const std::string &key,
                 rust::Vec<NativeLocation> &result
             ) {
                 const auto environment = state.resolver.environments.find(module);
@@ -149,14 +194,14 @@ namespace instar::native {
                         if (source_scope(module, scope.get())) {
                             append(host, name, found->second, result);
                         } else {
-                            declared(state, name, std::string("type/") + reference.name.value, result);
+                            declared(name, state, std::string("type/") + reference.name.value, result);
                         }
 
                         return;
                     }
                 }
 
-                declared(state, name, std::string("type/") + reference.name.value, result);
+                declared(name, state, std::string("type/") + reference.name.value, result);
             }
         }
 
@@ -222,7 +267,7 @@ namespace instar::native {
                         if (binding && source_scope(*checked, binding->second)) {
                             append(host, name, binding->first->location, result);
                         } else {
-                            declared(state, name, std::string("global/") + global->name.value, result);
+                            declared(name, state, std::string("global/") + global->name.value, result);
                         }
 
                         if (!result.empty()) {
@@ -242,15 +287,17 @@ namespace instar::native {
                 }
             }
 
-            if (const auto type = inferred_type(*checked, *source, position)) {
+            if (const auto type = inferred_type(state, *checked, *source, position)) {
                 types(host, *type, result);
             }
 
             return result;
         }
 
-        std::optional<Luau::TypeId>
-        inferred_type(const Luau::Module &module, const Luau::SourceModule &source, const Luau::Position &position) {
+        std::optional<Luau::TypeId> inferred_type(
+            const AnalysisState &state, const Luau::Module &module, const Luau::SourceModule &source,
+            const Luau::Position &position
+        ) {
             auto expression = Luau::findExprOrLocalAtPosition(source, position);
 
             if (auto *local = expression.getLocal()) {
@@ -265,7 +312,24 @@ namespace instar::native {
                 return std::nullopt;
             }
 
-            return Luau::findTypeAtPosition(module, source, position);
+            if (const auto type = expression_type(state, module, expression.getExpr())) {
+                return type;
+            }
+
+            return std::nullopt;
+        }
+
+        std::optional<Luau::DocumentationSymbol> documentation_symbol(
+            const Luau::Module &module, const Luau::SourceModule &source, Luau::Position position, Luau::TypeId type
+        ) {
+            auto expression = Luau::findExprOrLocalAtPosition(source, position);
+            const auto *value = expression.getExpr();
+
+            if (expression.getLocal() || (value && value->is<Luau::AstExprLocal>())) {
+                return type ? Luau::follow(type)->documentationSymbol : std::nullopt;
+            }
+
+            return Luau::getDocumentationSymbolAtPosition(source, module, position);
         }
 
         void property(
@@ -330,9 +394,16 @@ namespace instar::native {
             }
 
             const Luau::Position position(line, column);
-            const auto type = inferred_type(*checked, *source, position);
+            const auto type = inferred_type(state, *checked, *source, position);
             auto expression = Luau::findExprOrLocalAtPosition(*source, position);
-            const auto range = expression.getLocation();
+            auto range = expression.getLocation();
+
+            if (const auto *value = expression.getExpr()) {
+                if (const auto *member = value->as<Luau::AstExprIndexName>();
+                    member && member->indexLocation.contains(position)) {
+                    range = member->indexLocation;
+                }
+            }
 
             if (!type || !range) {
                 return {};
@@ -342,9 +413,7 @@ namespace instar::native {
             options.functionTypeArguments = true;
             options.scope = Luau::findScopeAtPosition(*checked, position);
 
-            const auto documentation = expression.getLocal()
-                                           ? Luau::follow(*type)->documentationSymbol
-                                           : Luau::getDocumentationSymbolAtPosition(*source, *checked, position);
+            const auto documentation = documentation_symbol(*checked, *source, position, *type);
 
             const auto binding = Luau::findBindingAtPosition(*checked, *source, position);
             const auto *function = Luau::get<Luau::FunctionType>(Luau::follow(*type));
@@ -402,7 +471,7 @@ namespace instar::native {
                 }
 
                 bool visit(Luau::AstStatLocalFunction *node) override {
-                    local(*node->name);
+                    local(*node->name, true);
 
                     return true;
                 }
@@ -437,7 +506,8 @@ namespace instar::native {
                 }
 
                 bool visit(Luau::AstStatTypeAlias *node) override {
-                    declared(node->name.value, node->nameLocation, Category::Type);
+                    const auto *type = checked.astResolvedTypes.find(node->type);
+                    declared(node->name.value, node->nameLocation, Category::Type, type ? *type : nullptr);
 
                     return true;
                 }
@@ -458,7 +528,7 @@ namespace instar::native {
                         false,
                         writes.find(node) != writes.end(),
                         false,
-                        expression_type(node),
+                        expression_type(state, checked, node),
                         parameters.find(node->local) != parameters.end()
                     );
 
@@ -478,7 +548,7 @@ namespace instar::native {
                         false,
                         writes.find(node) != writes.end(),
                         false,
-                        expression_type(node),
+                        expression_type(state, checked, node),
                         false,
                         binding && binding->first->deprecated
                     );
@@ -495,7 +565,7 @@ namespace instar::native {
                             false,
                             writes.find(node) != writes.end(),
                             false,
-                            expression_type(node),
+                            expression_type(state, checked, node),
                             node->op == ':'
                         );
                     }
@@ -515,7 +585,7 @@ namespace instar::native {
                             false,
                             writes.find(node) != writes.end(),
                             true,
-                            expression_type(node)
+                            expression_type(state, checked, node)
                         );
                     }
 
@@ -538,7 +608,7 @@ namespace instar::native {
                                 true,
                                 true,
                                 item.kind == Luau::AstExprTable::Item::Kind::General,
-                                expression_type(item.value)
+                                expression_type(state, checked, item.value)
                             );
                         }
                     }
@@ -567,7 +637,18 @@ namespace instar::native {
 
                     const auto position = node->nameLocation.begin;
                     auto targets = definition(state, host, name, position.line, position.column, false);
-                    append(node->name.value, node->nameLocation, Category::Type, std::move(targets), false, false);
+                    const auto *type = checked.astResolvedTypes.find(node);
+
+                    append(
+                        node->name.value,
+                        node->nameLocation,
+                        Category::Type,
+                        std::move(targets),
+                        false,
+                        false,
+                        false,
+                        type ? *type : nullptr
+                    );
 
                     return true;
                 }
@@ -616,7 +697,7 @@ namespace instar::native {
                 }
 
               private:
-                void local(const Luau::AstLocal &binding) {
+                void local(const Luau::AstLocal &binding, bool function_declaration = false) {
                     const auto type = bindings.find(&binding);
                     const size_t previous = result.size();
 
@@ -634,7 +715,7 @@ namespace instar::native {
 
                         reference.binding_kind = reference.parameter     ? 1
                                                  : loops.count(&binding) ? 2
-                                                 : reference.function    ? 3
+                                                 : function_declaration  ? 3
                                                                          : 0;
 
                         reference.has_shadow = binding.shadow != nullptr;
@@ -685,7 +766,7 @@ namespace instar::native {
                     const auto reference = location(host, name, range);
 
                     const auto documentation =
-                        Luau::getDocumentationSymbolAtPosition(source, checked, range.begin)
+                        documentation_symbol(checked, source, range.begin, type)
                             .value_or(type ? Luau::follow(type)->documentationSymbol.value_or("") : "");
 
                     declaration = declaration || std::any_of(targets.begin(), targets.end(), [&](const auto &target) {
@@ -738,16 +819,6 @@ namespace instar::native {
                     if (type) {
                         types(host, type, result[result.size() - 1].type_declarations);
                     }
-                }
-
-                Luau::TypeId expression_type(const Luau::AstExpr *expression) const {
-                    if (!expression) {
-                        return nullptr;
-                    }
-
-                    const auto *type = checked.astTypes.find(expression);
-
-                    return type ? *type : nullptr;
                 }
             };
         }
@@ -876,15 +947,22 @@ namespace instar::native {
             ) {
                 auto [head, tail] = Luau::flatten(function.argTypes);
                 const auto skip = std::min(receivers, head.size());
-                head.erase(head.begin(), head.begin() + skip);
-                Luau::TypePackVar arguments{Luau::TypePack{std::move(head), tail}};
                 auto display = function;
-                display.argTypes = &arguments;
+                auto argument_start = head.begin();
+                auto name_start = display.argNames.begin();
 
-                display.argNames.erase(
-                    display.argNames.begin(),
-                    display.argNames.begin() + std::min(skip, display.argNames.size())
-                );
+                for (size_t index = 0; index < skip; ++index) {
+                    ++argument_start;
+
+                    if (name_start != display.argNames.end()) {
+                        ++name_start;
+                    }
+                }
+
+                head.erase(head.begin(), argument_start);
+                display.argNames.erase(display.argNames.begin(), name_start);
+                Luau::TypePackVar arguments{Luau::TypePack{std::move(head), tail}};
+                display.argTypes = &arguments;
 
                 const auto label = Luau::toStringNamedFunction(name, display, options);
                 const auto *variadic = tail ? Luau::get<Luau::VariadicTypePack>(Luau::follow(*tail)) : nullptr;
@@ -898,16 +976,17 @@ namespace instar::native {
                     result.has_minimum_arguments = true;
                 }
 
-                if (function.definition && function.definition->definitionModuleName &&
-                    host.read_document(*function.definition->definitionModuleName).found) {
+                const auto definition_module =
+                    function.definition.has_value() ? function.definition.value().definitionModuleName : std::nullopt;
+
+                if (definition_module.has_value() && host.read_document(definition_module.value()).found) {
                     for (size_t index = 0; index < result.parameters.size() && index < display.argNames.size();
                         ++index) {
-                        if (display.argNames[index]) {
-                            result.parameters[index].declaration = location(
-                                host,
-                                *function.definition->definitionModuleName,
-                                display.argNames[index]->location
-                            );
+                        const auto &parameter = display.argNames[index];
+
+                        if (parameter.has_value()) {
+                            result.parameters[index].declaration =
+                                location(host, definition_module.value(), parameter.value().location);
 
                             result.parameters[index].has_declaration = true;
                         }
@@ -1048,6 +1127,7 @@ namespace instar::native {
 
             struct Graph {
                 const NativeOperation &host;
+                const Luau::BuiltinTypes &builtin_types;
                 NativeHierarchy result;
                 std::map<Identity, size_t> identities;
                 std::map<std::string, NativeDocument> documents;
@@ -1056,7 +1136,11 @@ namespace instar::native {
                 std::set<const Luau::Scope *> scopes;
                 std::vector<Pending> pending;
 
-                explicit Graph(const NativeOperation &host) : host(host) {}
+                Graph(const NativeOperation &host, const Luau::GlobalTypes &global_types)
+                    : host(host), builtin_types(*global_types.builtinTypes) {
+                    result.inheritance_complete = true;
+                    scopes.insert(global_types.globalScope.get());
+                }
 
                 size_t module(const std::string &name) {
                     const auto &source = document(name);
@@ -1269,9 +1353,15 @@ namespace instar::native {
                 std::optional<size_t> nominal(Luau::TypeId initial) {
                     std::optional<size_t> first;
                     std::optional<size_t> previous;
-                    auto type = initial;
+                    auto type = Luau::follow(initial);
 
-                    while (const auto *external = Luau::get<Luau::ExternType>(Luau::follow(type))) {
+                    while (const auto *external = Luau::get<Luau::ExternType>(type)) {
+                        if ((type == builtin_types.externType || type == builtin_types.objectType ||
+                                type == builtin_types.classType) &&
+                            !external->definitionLocation && !external->parent) {
+                            break;
+                        }
+
                         if (const auto found = classes.find(external); found != classes.end()) {
                             if (previous && found->second && *previous != *found->second) {
                                 inheritance.emplace(*previous, *found->second);
@@ -1285,6 +1375,7 @@ namespace instar::native {
                         if (!external->definitionLocation ||
                             external->definitionLocation->begin == external->definitionLocation->end ||
                             module.empty() || !document(module).found) {
+                            result.inheritance_complete = false;
                             classes.emplace(external, std::nullopt);
                             break;
                         }
@@ -1326,7 +1417,7 @@ namespace instar::native {
                             break;
                         }
 
-                        type = *external->parent;
+                        type = Luau::follow(*external->parent);
                     }
 
                     return first;
@@ -1384,7 +1475,7 @@ namespace instar::native {
                 throw std::runtime_error("invalid hierarchy position");
             }
 
-            Graph graph(host);
+            Graph graph(host, state.frontend.globals);
 
             for (const auto &module : modules) {
                 const std::string name(module.data(), module.size());
@@ -1412,7 +1503,8 @@ namespace instar::native {
                     throw std::runtime_error("hierarchy entry is unavailable");
                 }
 
-                if (const auto type = inferred_type(*checked, *source, Luau::Position(position[0], position[1]))) {
+                if (const auto type =
+                        inferred_type(state, *checked, *source, Luau::Position(position[0], position[1]))) {
                     graph.select(*type);
                 }
             }
@@ -1587,11 +1679,11 @@ namespace instar::native {
                 observed.location = location(operation, name, expression->location);
 
                 if (checked) {
-                    if (const auto *type = checked->astTypes.find(expression)) {
+                    if (const auto type = expression_type(state, *checked, expression)) {
                         observed.has_type = true;
-                        observed.type_text = rust::String(Luau::toString(*type));
-                        observed.is_any = Luau::get<Luau::AnyType>(Luau::follow(*type)) != nullptr;
-                        types(operation, *type, observed.type_declarations);
+                        observed.type_text = rust::String(Luau::toString(type));
+                        observed.is_any = Luau::get<Luau::AnyType>(Luau::follow(type)) != nullptr;
+                        types(operation, type, observed.type_declarations);
                     }
                 }
 
@@ -1633,11 +1725,8 @@ namespace instar::native {
                     if (builtin_math(state, *checked, expression)) {
                         observed.builtin_dependency = "math";
                         observed.known_effects = true;
-                    } else if (builtin_abs(state, *checked, expression)) {
-                        observed.builtin_dependency = "math.abs";
-                        observed.known_effects = true;
                     } else if (const auto *call = expression->as<Luau::AstExprCall>();
-                        call && literal_abs(state, *checked, call)) {
+                        builtin_abs(state, *checked, expression) || (call && literal_abs(state, *checked, call))) {
                         observed.builtin_dependency = "math.abs";
                         observed.known_effects = true;
                     }
@@ -1771,7 +1860,7 @@ namespace instar::native {
 
                     record.deprecated = binding.deprecated;
                     rust::Vec<NativeLocation> declarations;
-                    declared(state, name, "global/" + binding_name, declarations);
+                    declared(name, state, "global/" + binding_name, declarations);
 
                     if (!declarations.empty()) {
                         record.declaration = declarations[0];
@@ -1793,7 +1882,7 @@ namespace instar::native {
                     record.is_any = Luau::get<Luau::AnyType>(Luau::follow(binding.type)) != nullptr;
                     record.documentation = rust::String(Luau::follow(binding.type)->documentationSymbol.value_or(""));
                     rust::Vec<NativeLocation> declarations;
-                    declared(state, name, "type/" + binding_name, declarations);
+                    declared(name, state, "type/" + binding_name, declarations);
 
                     if (!declarations.empty()) {
                         record.declaration = declarations[0];

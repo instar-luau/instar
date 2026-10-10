@@ -5,10 +5,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use instar_shared::{Completion, DiagnosticCategory, Options, Reason};
+use instar_shared::{Completion, DiagnosticCategory, Options, Reason, Severity};
 
 use instar_project::{
-    CheckReport, CheckRequest, Input, Invocation, LintRequest, SourceOrigin, roblox_cache_directory,
+    CheckReport, CheckRequest, Input, InputIdentity, InputState, Invocation, LintRequest,
+    SourceOrigin, roblox_cache_directory,
 };
 
 use crate::support::{Directory, complete, options, project, replace};
@@ -88,7 +89,7 @@ fn imported_types_and_source_updates() -> io::Result<()> {
 }
 
 #[test]
-fn dependency_type_findings_are_filtered_without_dropping_analysis() -> io::Result<()> {
+fn dependency_type_findings_are_reported_without_dropping_analysis() -> io::Result<()> {
     let directory = Directory::new(Some(include_str!(
         "../fixtures/checking/imported/strict.json"
     )))?;
@@ -154,8 +155,24 @@ fn dependency_type_findings_are_filtered_without_dropping_analysis() -> io::Resu
             .count()
     };
 
-    assert_eq!(dependency_errors(&single), 0);
-    assert_eq!(dependency_errors(&multiple), 0);
+    assert_eq!(dependency_errors(&single), 1);
+    assert_eq!(dependency_errors(&multiple), 1);
+    assert_eq!(single.findings.len(), 1);
+    assert_eq!(multiple.findings.len(), 1);
+    assert_eq!(single.findings[0].identity.inputs(), single.sources);
+    assert_eq!(multiple.findings[0].identity.inputs(), multiple.sources);
+
+    assert_eq!(
+        multiple.findings[0].identity.producer(),
+        single.findings[0].identity.producer()
+    );
+
+    let mut captured = multiple.findings[0].clone();
+    captured.identity = single.findings[0].identity.clone();
+    assert_eq!(captured, single.findings[0]);
+    assert_eq!(single.findings[0].category, DiagnosticCategory::Type);
+    assert_eq!(single.findings[0].severity, Severity::Error);
+    assert_eq!(single.findings[0].identity.producer(), "luau");
     assert_eq!(single.sources.len(), 2);
     assert_eq!(multiple.sources.len(), 3);
     assert_eq!(single.completion, Completion::Complete);
@@ -632,9 +649,44 @@ fn incomplete_environments_keep_known_source_diagnostics() -> io::Result<()> {
     assert_eq!(linted.completion, result.completion);
     assert_eq!(linted.sources, result.sources);
 
+    assert_eq!(result.findings.len(), 2);
+    assert_eq!(linted.findings.len(), 3);
+
+    let prerequisites = linted
+        .findings
+        .iter()
+        .filter(|diagnostic| diagnostic.identity.producer() == "lint")
+        .collect::<Vec<_>>();
+
+    assert_eq!(prerequisites.len(), 1);
+    assert_eq!(prerequisites[0].code, "lint.prerequisite");
+    assert_eq!(prerequisites[0].category, DiagnosticCategory::Analysis);
+    assert_eq!(prerequisites[0].severity, Severity::Error);
+
     assert_eq!(
-        linted.findings,
-        result.findings.into_iter().collect::<Vec<_>>()
+        prerequisites[0].primary.source,
+        project
+            .snapshot()
+            .source_at(&entry)
+            .expect("source")
+            .version,
+    );
+
+    assert_eq!(
+        prerequisites[0].identity.inputs(),
+        &[prerequisites[0].primary.source]
+    );
+
+    assert!(prerequisites[0].message.contains("unscoped_variables"));
+    assert!(prerequisites[0].message.contains("UnavailableEnvironment"));
+
+    assert_eq!(
+        linted
+            .findings
+            .into_iter()
+            .filter(|diagnostic| { diagnostic.identity.producer() != "lint" })
+            .collect::<Vec<_>>(),
+        result.findings,
     );
 
     Ok(())
@@ -1166,7 +1218,7 @@ fn excluded_dependency_environment_failures_are_attributed_and_recover() -> io::
         include_str!("../fixtures/checking/dependency/first.luau"),
     )?;
 
-    let definition = directory.path().join("dependency/missing.luau");
+    let definition = directory.path().join("dependency").join("missing.luau");
     let entries = [Input::Path(entry.clone())];
     let project = project();
 
@@ -1196,54 +1248,104 @@ fn excluded_dependency_environment_failures_are_attributed_and_recover() -> io::
 
     assert_eq!(
         checked.completion,
-        Completion::Incomplete(vec![Reason::UnavailableEnvironment])
+        Completion::Incomplete(vec![
+            Reason::UnavailableEnvironment,
+            Reason::UnavailableSemantics
+        ])
     );
 
     assert_eq!(linted.completion, checked.completion);
     assert_eq!(checked.sources.len(), 2);
     assert_eq!(linted.sources, checked.sources);
 
-    for diagnostic in &checked.findings {
+    let dependency = directory.path().join("dependency/init.luau");
+    let snapshot = project.snapshot();
+
+    for (inputs, findings, count) in [
+        (&checked.inputs, &checked.findings, 2),
+        (&linted.inputs, &linted.findings, 6),
+    ] {
+        assert_eq!(findings.len(), count);
+
+        assert!(inputs.iter().any(|input| {
+            input.identity == InputIdentity::Path(definition.clone())
+                && input.state == InputState::Missing
+        }));
+
+        assert!(findings.iter().all(|diagnostic| {
+            diagnostic.category == DiagnosticCategory::Analysis
+                && diagnostic.severity == Severity::Error
+                && matches!(
+                    snapshot.origin(diagnostic.primary.source.identity).and_then(SourceOrigin::path),
+                    Some(path) if path == entry || path == dependency
+                )
+        }));
+
+        let prerequisites = findings
+            .iter()
+            .filter(|diagnostic| diagnostic.identity.producer() == "project")
+            .collect::<Vec<_>>();
+
+        assert_eq!(prerequisites.len(), 2);
+
+        let unavailable = prerequisites
+            .iter()
+            .find(|diagnostic| diagnostic.code == "environment.unavailable")
+            .expect("dependency environment finding");
+
         assert_eq!(
-            project
-                .snapshot()
-                .origin(diagnostic.primary.source.identity)
-                .and_then(SourceOrigin::path)
-                .expect("finding origin"),
-            entry
+            snapshot
+                .origin(unavailable.primary.source.identity)
+                .and_then(SourceOrigin::path),
+            Some(dependency.as_path()),
         );
 
-        assert!(diagnostic.related.iter().any(|related| {
-            project
-                .snapshot()
-                .origin(related.location.source.identity)
-                .and_then(SourceOrigin::path)
-                .expect("finding origin")
-                == definition
-        }));
-    }
-
-    assert_ne!(checked.findings, Vec::new());
-    assert_ne!(linted.findings, Vec::new());
-
-    for diagnostic in &linted.findings {
-        assert_eq!(
-            project
-                .snapshot()
-                .origin(diagnostic.primary.source.identity)
-                .and_then(SourceOrigin::path)
-                .expect("finding origin"),
-            entry
+        assert!(
+            unavailable
+                .message
+                .contains(&definition.display().to_string()),
+            "{unavailable:?}"
         );
 
-        assert!(diagnostic.related.iter().any(|related| {
-            project
-                .snapshot()
-                .origin(related.location.source.identity)
-                .and_then(SourceOrigin::path)
-                .expect("finding origin")
-                == definition
-        }));
+        assert!(unavailable.related.is_empty());
+
+        let importer = prerequisites
+            .iter()
+            .find(|diagnostic| diagnostic.code == "analysis.dependency")
+            .expect("importer prerequisite finding");
+
+        assert_eq!(
+            snapshot
+                .origin(importer.primary.source.identity)
+                .and_then(SourceOrigin::path),
+            Some(entry.as_path()),
+        );
+
+        let mut expected = vec![unavailable.message.as_str()];
+
+        if count == 6 {
+            expected.extend([
+                "implicit_any_local has incomplete coverage: UnavailableEnvironment",
+                "unscoped_variables has incomplete coverage: UnavailableEnvironment",
+            ]);
+        }
+
+        let mut messages = importer
+            .related
+            .iter()
+            .map(|related| related.message.as_str())
+            .collect::<Vec<_>>();
+
+        expected.sort_unstable();
+        messages.sort_unstable();
+        assert_eq!(messages, expected, "{importer:?}");
+
+        assert!(
+            importer
+                .related
+                .iter()
+                .all(|related| related.location == unavailable.primary)
+        );
     }
 
     replace(
@@ -1283,6 +1385,104 @@ fn excluded_dependency_environment_failures_are_attributed_and_recover() -> io::
         .completion,
         Completion::Complete
     );
+
+    Ok(())
+}
+
+#[test]
+fn dependency_failures_are_isolated_to_the_target_module_context() -> io::Result<()> {
+    let directory = Directory::new(Some(include_str!(
+        "../fixtures/checking/imported/strict.json"
+    )))?;
+
+    directory.file("instar.toml", "linting.selected = ['divide_by_zero']")?;
+
+    directory.file(
+        "sourcemap.json",
+        r#"{
+            "name": "Game", "className": "DataModel", "children": [
+                {"name": "First", "className": "Folder", "children": [
+                    {"name": "Caller", "className": "ModuleScript", "filePaths": ["first.luau"]},
+                    {"name": "Shared", "className": "ModuleScript", "filePaths": ["shared.luau"]}
+                ]},
+                {"name": "Second", "className": "Folder", "children": [
+                    {"name": "Caller", "className": "ModuleScript", "filePaths": ["second.luau"]},
+                    {"name": "Shared", "className": "ModuleScript", "filePaths": ["shared.luau"]},
+                    {"name": "Target", "className": "ModuleScript", "filePaths": ["target.luau"]}
+                ]}
+            ]
+        }"#,
+    )?;
+
+    let first = directory.file("first.luau", "return require(script.Parent.Shared)")?;
+    let second = directory.file("second.luau", "return require(script.Parent.Shared)")?;
+    let shared = directory.file("shared.luau", "return require(script.Parent.Target)")?;
+    directory.file("target.luau", "return 1")?;
+    let project = project();
+    let entries = [Input::Path(first.clone()), Input::Path(second.clone())];
+
+    let checked = complete(project.check(
+        CheckRequest {
+            invocation: Invocation {
+                inputs: entries.to_vec(),
+                ..Invocation::default()
+            },
+            ..CheckRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
+
+    let linted = complete(project.lint(
+        LintRequest {
+            invocation: Invocation {
+                inputs: entries.to_vec(),
+                ..Invocation::default()
+            },
+            ..LintRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
+
+    for (snapshot, findings) in [
+        (&checked.snapshot, &checked.module_findings),
+        (&linted.snapshot, &linted.module_findings),
+    ] {
+        let first_source = snapshot.source_at(&first).expect("first importer").version;
+
+        let second_source = snapshot
+            .source_at(&second)
+            .expect("second importer")
+            .version;
+
+        let shared_source = snapshot
+            .source_at(&shared)
+            .expect("shared dependency")
+            .version;
+
+        let prerequisites = findings
+            .iter()
+            .filter(|finding| finding.diagnostic.code == "analysis.dependency")
+            .collect::<Vec<_>>();
+
+        assert_eq!(prerequisites.len(), 1, "{prerequisites:?}");
+        assert_eq!(prerequisites[0].module.source, first_source.identity);
+        assert_eq!(prerequisites[0].diagnostic.primary.source, first_source);
+
+        assert!(
+            prerequisites[0]
+                .diagnostic
+                .related
+                .iter()
+                .all(|related| related.location.source == shared_source)
+        );
+
+        assert!(!findings.iter().any(|finding| {
+            finding.module.source == second_source.identity
+                && finding.diagnostic.category == DiagnosticCategory::Analysis
+        }));
+    }
 
     Ok(())
 }

@@ -5,7 +5,7 @@ use std::{collections::BTreeMap, io, time::Duration};
 use instar_luau::{
     BindingKind, ConfigurationEvaluator, ConfigurationKey, ConfigurationValue, FactsInput,
     ImportIdentity, ImportOutcome, ImportRequest, ImportSite, LanguageMode, LintInput, Native,
-    ResolvedImport, SemanticCategory, SemanticIdentity, UpstreamWarningIdentity,
+    ResolvedImport, SemanticCategory, SemanticIdentity, SemanticKind, UpstreamWarningIdentity,
     UpstreamWarningSettings,
 };
 
@@ -166,6 +166,21 @@ fn executable_layers_directives_and_reconfiguration_control_warnings() -> io::Re
         )?;
 
         assert_eq!(linted.findings.len(), count);
+
+        assert_eq!(
+            linted.suppression_findings.len(),
+            usize::from(!selected.is_empty())
+        );
+
+        assert!(linted.suppression_findings.iter().all(|diagnostic| {
+            diagnostic.code == "LocalUnused"
+                && diagnostic.severity == Severity::Warning
+                && diagnostic.primary.source.revision == revision
+        }));
+
+        for finding in &linted.findings {
+            assert!(linted.suppression_findings.contains(&finding.diagnostic));
+        }
 
         assert!(
             linted
@@ -438,6 +453,24 @@ fn inferred_any_facts_exclude_annotations_and_inferred_numbers() -> io::Result<(
         assert_eq!(location.source.revision, 6);
     }
 
+    let callback = facts
+        .facts
+        .bindings
+        .iter()
+        .find(|binding| binding.name == "callback")
+        .expect("annotated callable local");
+
+    assert_eq!(callback.kind, BindingKind::Local);
+    assert!(callback.annotation);
+
+    assert!(matches!(
+        callback.identity,
+        SemanticIdentity::Source {
+            kind: SemanticKind::Function,
+            ..
+        }
+    ));
+
     assert_eq!(
         native.analyze(&input, &options(Duration::from_secs(5)))?,
         checked
@@ -532,25 +565,26 @@ fn nocheck_and_interruption_have_explicit_completion_without_stale_warnings() ->
         Completion::Complete
     );
 
-    let semantic = native.facts(
-        &FactsInput {
-            analysis: reference.clone(),
-            categories: vec![SemanticCategory::Bindings],
-        },
-        &options(Duration::from_secs(5)),
-    )?;
-
-    assert_eq!(
-        semantic.completion,
-        Completion::Incomplete(vec![Reason::UnavailableSemantics])
+    assert!(
+        native
+            .facts(
+                &FactsInput {
+                    analysis: reference.clone(),
+                    categories: vec![SemanticCategory::Bindings],
+                },
+                &options(Duration::from_secs(5)),
+            )
+            .expect_err("unretained semantic category")
+            .to_string()
+            .contains("semantic category was not retained")
     );
 
-    assert_eq!(semantic.facts.bindings.as_slice(), []);
+    let established = native.analyze(&input, &options(Duration::from_secs(5)))?;
 
-    assert_eq!(
-        semantic.availability.categories[&SemanticCategory::Bindings],
-        Availability::Unavailable(Reason::UnavailableSemantics)
-    );
+    let reference = established.modules[0]
+        .reference
+        .clone()
+        .expect("replayed parsed reference");
 
     let cancelled = options(Duration::from_secs(5));
     cancelled.cancellation.cancel();
@@ -566,6 +600,56 @@ fn nocheck_and_interruption_have_explicit_completion_without_stale_warnings() ->
             )?
             .completion,
         Completion::Cancelled
+    );
+
+    let mut semantic_entry = module(1, include_str!("fixtures/warnings/nocheck/input.luau"), 1)?;
+    semantic_entry.analysis.revision = 2;
+    semantic_entry.inference.retained = vec![SemanticCategory::Bindings];
+    semantic_entry.reporting.ordinary_type_diagnostics = false;
+
+    semantic_entry
+        .environment
+        .as_mut()
+        .expect("captured environment")
+        .declarations[0]
+        .definitions = vec![definition(
+        2,
+        include_str!("fixtures/warnings/invalid/invalid.luau"),
+        1,
+        "@custom",
+    )?];
+
+    let unavailable = native.analyze(
+        &request(vec![semantic_entry])?,
+        &options(Duration::from_secs(5)),
+    )?;
+
+    assert_eq!(
+        unavailable.completion,
+        Completion::Incomplete(vec![Reason::UnavailableEnvironment])
+    );
+
+    let semantic = native.facts(
+        &FactsInput {
+            analysis: unavailable.modules[0]
+                .reference
+                .clone()
+                .expect("parsed semantic reference"),
+            categories: vec![SemanticCategory::Bindings],
+        },
+        &options(Duration::from_secs(5)),
+    )?;
+
+    assert_eq!(
+        semantic.completion,
+        Completion::Incomplete(vec![Reason::UnavailableEnvironment])
+    );
+
+    assert_eq!(semantic.facts.bindings.as_slice(), []);
+
+    assert_eq!(
+        semantic.availability.categories[&SemanticCategory::Bindings],
+        Availability::Unavailable(Reason::UnavailableEnvironment)
     );
 
     assert_eq!(

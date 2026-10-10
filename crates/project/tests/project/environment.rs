@@ -1,12 +1,20 @@
 use std::{io, path::Path};
 
+use instar_luau::ModuleIdentity;
+
 use instar_project::{
     ChangeBatch, CheckOverrides, CheckRequest, Input, InputIdentity, InputState, Invocation,
-    OperationOverrides, Project, ProjectChange, Query, QueryOutput, QueryReport, QueryRequest,
-    SettingsRequest, roblox_cache_directory,
+    OperationOverrides, PositionQuery, PositionQueryKind, Project, ProjectChange, Query,
+    QueryOutput, QueryReport, QueryRequest, SettingsRequest, SourceChange,
+    documentation_cache_directory, roblox_cache_directory,
 };
 
-use instar_shared::{Completion, OperationFailure, SourceVersion};
+use instar_shared::{
+    Availability, Completion, FailureKind, Knowledge, OperationFailure, SourceVersion,
+};
+
+use serde_json::json;
+use sha2::{Digest, Sha256};
 
 use crate::support::{Directory, complete, options, project, replace};
 
@@ -341,6 +349,199 @@ fn builtin_documentation_loads_without_roblox_assets() -> io::Result<()> {
             .output,
         QueryOutput::Documentation(None)
     ));
+
+    Ok(())
+}
+
+#[test]
+fn builtin_semantics_work_without_optional_documentation() -> io::Result<()> {
+    let directory = Directory::new(None)?;
+
+    directory.file(
+        "instar.toml",
+        include_str!("../fixtures/environment/builtin/instar.toml"),
+    )?;
+
+    let entry = directory.file(
+        "entry.luau",
+        include_str!("../fixtures/environment/builtin/entry.luau"),
+    )?;
+
+    let project = project();
+
+    replace(
+        &project,
+        &entry,
+        include_str!("../fixtures/environment/builtin/entry.luau"),
+    )?;
+
+    let metadata_path = documentation_cache_directory()?.join("metadata.json");
+
+    let metadata = project
+        .snapshot()
+        .source_at(&metadata_path)
+        .expect("builtin metadata")
+        .version;
+
+    project.change(ChangeBatch {
+        changes: vec![ProjectChange::Source(SourceChange::Remove {
+            expected: metadata,
+        })],
+    })?;
+
+    for kind in [PositionQueryKind::Hover, PositionQueryKind::Signatures] {
+        let snapshot = project.snapshot();
+        let source = snapshot.source_at(&entry).expect("query source").version;
+
+        let report = complete(project.query(
+            QueryRequest {
+                operation: Query::Inspect(PositionQuery {
+                    module: ModuleIdentity {
+                        context: snapshot.context(source.identity),
+                        source: source.identity,
+                    },
+                    source,
+                    offset: if matches!(kind, PositionQueryKind::Hover) {
+                        1
+                    } else {
+                        7
+                    },
+                    kind,
+                }),
+                snapshot,
+            },
+            options(),
+        ))
+        .map_err(io::Error::from)?;
+
+        assert_eq!(report.completion, Completion::Complete);
+        assert_eq!(report.availability, Availability::Available);
+
+        let QueryOutput::Inspection(inspection) = report.output else {
+            panic!("builtin inspection");
+        };
+
+        let occurrence = inspection.occurrence.expect("builtin occurrence");
+
+        if matches!(kind, PositionQueryKind::Hover) {
+            assert!(matches!(occurrence.type_information, Knowledge::Known(_)));
+        } else {
+            assert!(
+                matches!(occurrence.signatures, Knowledge::Known(signatures) if !signatures.is_empty())
+            );
+        }
+
+        let documentation = complete(project.query(
+            QueryRequest {
+                snapshot: report.snapshot,
+                operation: Query::Documentation {
+                    source,
+                    symbol: "@luau/global/print".to_owned(),
+                },
+            },
+            options(),
+        ))
+        .map_err(io::Error::from)?;
+
+        assert_eq!(documentation.completion, Completion::Complete);
+
+        assert!(matches!(
+            documentation.output,
+            QueryOutput::Documentation(None)
+        ));
+
+        let missing = documentation
+            .inputs
+            .iter()
+            .find(|input| input.identity == InputIdentity::Path(metadata_path.clone()))
+            .expect("missing metadata guard");
+
+        assert_eq!(missing.state, InputState::Missing);
+
+        assert_eq!(
+            documentation.snapshot.input_versions.get(&missing.identity),
+            Some(missing)
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn installed_builtin_documentation_rejects_corrupt_bundles() -> io::Result<()> {
+    let directory = Directory::new(None)?;
+
+    directory.file(
+        "instar.toml",
+        include_str!("../fixtures/environment/builtin/instar.toml"),
+    )?;
+
+    let entry = directory.file("entry.luau", "print('hello')")?;
+    let project = project();
+    replace(&project, &entry, "print('hello')")?;
+    let cache = documentation_cache_directory()?;
+    let metadata_path = cache.join("metadata.json");
+    let documentation_path = cache.join("documentation.json");
+
+    replace(&project, &metadata_path, "{")?;
+    let malformed = lookup(&project, &entry, "@luau/global/print").expect_err("invalid metadata");
+
+    assert!(
+        malformed
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "documentation.metadata")
+    );
+
+    replace(
+        &project,
+        &metadata_path,
+        include_str!("../fixtures/assets/documentation/metadata.json"),
+    )?;
+
+    replace(&project, &documentation_path, "{}")?;
+    let mismatch = lookup(&project, &entry, "@luau/global/print").expect_err("digest mismatch");
+
+    assert!(
+        mismatch
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "documentation.digest")
+    );
+
+    let invalid_namespace = r#"{"@custom/global/print":{"documentation":"invalid namespace"}}"#;
+
+    let metadata = json!({
+        "revision": "0123456789012345678901234567890123456789",
+        "documentation": format!("{:x}", Sha256::digest(invalid_namespace.as_bytes())),
+    });
+
+    replace(&project, &metadata_path, &metadata.to_string())?;
+    replace(&project, &documentation_path, invalid_namespace)?;
+    let invalid = lookup(&project, &entry, "@luau/global/print").expect_err("invalid namespace");
+
+    assert!(
+        invalid
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "documentation.invalid")
+    );
+
+    let payload = project
+        .snapshot()
+        .source_at(&documentation_path)
+        .expect("builtin payload")
+        .version;
+
+    project.change(ChangeBatch {
+        changes: vec![ProjectChange::Source(SourceChange::Remove {
+            expected: payload,
+        })],
+    })?;
+
+    let missing = lookup(&project, &entry, "@luau/global/print").expect_err("missing payload");
+    assert_eq!(missing.kind, FailureKind::InvalidInvocation);
+    assert!(missing.message.contains("documentation.json"));
 
     Ok(())
 }

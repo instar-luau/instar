@@ -116,7 +116,7 @@ range = [7, 19]
 
 [invariance]
 rule = "loop_invariant_call"
-range = [37, 48]
+range = [38, 49]
 
 [cloning]
 rule = "manual_table_clone"

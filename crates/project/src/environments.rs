@@ -6,13 +6,14 @@ use instar_luau::{
 
 use instar_shared::{
     Completion, Diagnostic, DiagnosticCategory, FailureKind, FindingIdentity, Location,
-    OperationFailure, Options, Reason, Severity, SourceSnapshot, Span,
+    OperationFailure, Options, Reason, RelatedLocation, Severity, SourceSnapshot, Span,
 };
 
 use crate::{
     assets::{self, Assets},
     capture::Capture,
     configuration::EffectiveSettings,
+    documentation::Index,
     execution::Runtime,
     inputs::InputVersion,
     sourcemap::Map,
@@ -29,7 +30,7 @@ pub(crate) struct EnvironmentRecipe {
 }
 
 impl EnvironmentRecipe {
-    fn failure(&mut self, error: io::Error) -> io::Result<()> {
+    fn failure(&mut self, error: io::Error, source: &SourceSnapshot) -> io::Result<()> {
         if matches!(
             error.kind(),
             io::ErrorKind::Interrupted | io::ErrorKind::TimedOut
@@ -37,7 +38,7 @@ impl EnvironmentRecipe {
             return Err(error);
         }
 
-        if let Some(failure) = error
+        let finding = if let Some(failure) = error
             .get_ref()
             .and_then(|error| error.downcast_ref::<OperationFailure>())
         {
@@ -49,23 +50,63 @@ impl EnvironmentRecipe {
             }
 
             self.diagnostics.extend(failure.diagnostics.clone());
+
             self.completion = self.completion.clone().combine(failure.completion.clone());
 
             if failure.kind == FailureKind::Operational || failure.diagnostics.is_empty() {
                 self.failures.push(failure.clone());
             }
+
+            unavailable(source, &failure.diagnostics, error.to_string())
         } else {
             let completion = Completion::Incomplete(vec![Reason::UnavailableEnvironment]);
+
             self.completion = self.completion.clone().combine(completion.clone());
 
-            self.failures.push(OperationFailure {
-                kind: FailureKind::Operational,
-                message: error.to_string(),
-                completion,
-                diagnostics: Vec::new(),
-                completed_sources: Vec::new(),
-                completed_edits: Vec::new(),
+            if error.kind() != io::ErrorKind::NotFound {
+                self.failures.push(OperationFailure {
+                    kind: FailureKind::Operational,
+                    message: error.to_string(),
+                    completion,
+                    diagnostics: Vec::new(),
+                    completed_sources: Vec::new(),
+                    completed_edits: Vec::new(),
+                });
+            }
+
+            unavailable(source, &[], error.to_string())
+        };
+
+        if let Some(previous) = self.diagnostics.iter_mut().find(|diagnostic| {
+            diagnostic.code == "environment.unavailable"
+                && diagnostic.primary.source == source.version
+        }) {
+            previous.message.push_str("; ");
+            previous.message.push_str(&finding.message);
+            previous.related.extend(finding.related);
+
+            previous.related.sort_by(|left, right| {
+                left.location
+                    .cmp(&right.location)
+                    .then_with(|| left.message.cmp(&right.message))
             });
+
+            previous.related.dedup();
+
+            previous.identity = FindingIdentity::new(
+                "project",
+                previous
+                    .identity
+                    .inputs()
+                    .iter()
+                    .chain(finding.identity.inputs())
+                    .copied()
+                    .collect(),
+                &previous.code,
+                previous.primary,
+            );
+        } else {
+            self.diagnostics.push(finding);
         }
 
         Ok(())
@@ -84,6 +125,12 @@ impl Runtime {
     ) -> io::Result<EnvironmentRecipe> {
         let settings = &effective.settings;
 
+        let source = capture
+            .snapshot
+            .source(effective.source)
+            .cloned()
+            .ok_or_else(|| io::Error::other("environment source is absent from its capture"))?;
+
         let mut recipe = EnvironmentRecipe {
             input: EnvironmentInput {
                 identity: EnvironmentIdentity::new(self.identity()),
@@ -101,7 +148,7 @@ impl Runtime {
             failures: Vec::new(),
         };
 
-        if (requested || members) && settings.environment.roblox {
+        if members || requested && settings.environment.roblox {
             capture.begin_consultation();
 
             let loaded = settings
@@ -117,7 +164,7 @@ impl Runtime {
 
             match loaded {
                 Ok(assets) => {
-                    if requested {
+                    if requested && settings.environment.roblox {
                         recipe.input.declarations.push(DeclarationGroup {
                             definitions: assets
                                 .definitions
@@ -135,7 +182,7 @@ impl Runtime {
                     recipe.assets = Some(assets);
                 }
 
-                Err(error) => recipe.failure(error)?,
+                Err(error) => recipe.failure(error, &source)?,
             }
         }
 
@@ -145,18 +192,20 @@ impl Runtime {
 
         if let Some(path) = &settings.environment.capabilities {
             match capture.source(path, options) {
-                Ok(source) => match serde_json::from_str(&source.text)
+                Ok(input) => match serde_json::from_str(&input.text)
                     .map_err(io::Error::other)
                     .map_err(|error| {
-                        assets::attributed(&source, &[], "environment.capabilities", error)
+                        assets::attributed(&input, &[], "environment.capabilities", error)
                     }) {
                     Ok(capabilities) => recipe.input.capabilities = capabilities,
-                    Err(error) => recipe.failure(error)?,
+                    Err(error) => recipe.failure(error, &source)?,
                 },
 
-                Err(error) => recipe.failure(error)?,
+                Err(error) => recipe.failure(error, &source)?,
             }
         }
+
+        let mut documentation = Index::default();
 
         for group in &settings.environment.groups {
             options.check()?;
@@ -169,7 +218,25 @@ impl Runtime {
                         namespace: group.namespace.clone(),
                     }),
 
-                    Err(error) => recipe.failure(error)?,
+                    Err(error) => recipe.failure(error, &source)?,
+                }
+            }
+
+            for path in &group.documentation {
+                match capture.source(path, options) {
+                    Ok(input) => {
+                        let parsed = Index::parse(&input.text, &[&group.namespace])
+                            .and_then(|index| documentation.merge(index))
+                            .map_err(|error| {
+                                assets::attributed(&input, &[], "environment.documentation", error)
+                            });
+
+                        if let Err(error) = parsed {
+                            recipe.failure(error, &source)?;
+                        }
+                    }
+
+                    Err(error) => recipe.failure(error, &source)?,
                 }
             }
 
@@ -177,6 +244,15 @@ impl Runtime {
                 .input
                 .declarations
                 .push(DeclarationGroup { definitions });
+        }
+
+        for definition in recipe
+            .input
+            .declarations
+            .iter()
+            .flat_map(|group| &group.definitions)
+        {
+            capture.declaration(&definition.source)?;
         }
 
         Ok(recipe)
@@ -203,5 +279,199 @@ pub(crate) fn diagnostic(
         primary,
         related: Vec::new(),
         tags: Vec::new(),
+    }
+}
+
+pub(crate) fn unavailable(
+    source: &SourceSnapshot,
+    prerequisites: &[Diagnostic],
+    message: String,
+) -> Diagnostic {
+    let mut finding = diagnostic(
+        source,
+        "environment.unavailable",
+        DiagnosticCategory::Analysis,
+        message,
+    );
+
+    finding.related = prerequisites
+        .iter()
+        .flat_map(|diagnostic| {
+            let primary = RelatedLocation {
+                location: diagnostic.primary,
+                message: diagnostic.message.clone(),
+            };
+
+            [primary]
+                .into_iter()
+                .chain(diagnostic.related.iter().cloned())
+        })
+        .collect();
+
+    finding.related.sort_by(|left, right| {
+        left.location
+            .cmp(&right.location)
+            .then_with(|| left.message.cmp(&right.message))
+    });
+
+    finding.related.dedup();
+
+    finding.identity = FindingIdentity::new(
+        "project",
+        prerequisites
+            .iter()
+            .flat_map(|diagnostic| {
+                diagnostic
+                    .identity
+                    .inputs()
+                    .iter()
+                    .copied()
+                    .chain([diagnostic.primary.source])
+                    .chain(
+                        diagnostic
+                            .related
+                            .iter()
+                            .map(|related| related.location.source),
+                    )
+            })
+            .chain([source.version])
+            .collect(),
+        &finding.code,
+        finding.primary,
+    );
+
+    finding
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+
+    use instar_luau::{Capabilities, EnvironmentIdentity, EnvironmentInput, LanguageFeatures};
+
+    use instar_shared::{
+        Completion, DiagnosticCategory, FailureKind, FindingIdentity, Location, OperationFailure,
+        Reason, RelatedLocation, SourceIdentity, SourceSnapshot, SourceVersion, Span,
+    };
+
+    use super::{EnvironmentRecipe, diagnostic};
+
+    #[test]
+    fn unavailable_summary_retains_every_failure_and_exact_prerequisite_revision() -> io::Result<()>
+    {
+        let source = SourceSnapshot::new(
+            SourceVersion {
+                identity: SourceIdentity::new(1),
+                revision: 1,
+            },
+            "return 1",
+        )?;
+
+        let input = SourceSnapshot::new(
+            SourceVersion {
+                identity: SourceIdentity::new(2),
+                revision: 3,
+            },
+            "{}",
+        )?;
+
+        let prerequisite = SourceVersion {
+            identity: SourceIdentity::new(3),
+            revision: 4,
+        };
+
+        let related = RelatedLocation {
+            location: Location {
+                source: prerequisite,
+                span: Span { start: 0, end: 1 },
+            },
+            message: "invalid prerequisite".to_owned(),
+        };
+
+        let mut finding = diagnostic(
+            &input,
+            "environment.documentation",
+            DiagnosticCategory::Configuration,
+            "invalid documentation".to_owned(),
+        );
+
+        finding.related = vec![related.clone(), related.clone()];
+
+        finding.identity = FindingIdentity::new(
+            "project",
+            vec![input.version, prerequisite],
+            &finding.code,
+            finding.primary,
+        );
+
+        let mut recipe = EnvironmentRecipe {
+            input: EnvironmentInput {
+                identity: EnvironmentIdentity::new(1),
+                language: LanguageFeatures::default(),
+                globals: Vec::new(),
+                declarations: Vec::new(),
+                capabilities: Capabilities::default(),
+                instances: None,
+            },
+            diagnostics: Vec::new(),
+            completion: Completion::Complete,
+            assets: None,
+            requested: true,
+            member_inputs: Vec::new(),
+            failures: Vec::new(),
+        };
+
+        for message in ["first.luau is missing", "second.luau is missing"] {
+            recipe.failure(io::Error::new(io::ErrorKind::NotFound, message), &source)?;
+        }
+
+        recipe.failure(
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                OperationFailure {
+                    kind: FailureKind::InvalidInvocation,
+                    message: finding.message.clone(),
+                    completion: Completion::Incomplete(vec![Reason::UnavailableEnvironment]),
+                    diagnostics: vec![finding.clone()],
+                    completed_sources: Vec::new(),
+                    completed_edits: Vec::new(),
+                },
+            ),
+            &source,
+        )?;
+
+        assert!(recipe.diagnostics.contains(&finding));
+
+        let summaries = recipe
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "environment.unavailable")
+            .collect::<Vec<_>>();
+
+        assert_eq!(summaries.len(), 1);
+        let summary = summaries[0];
+
+        assert_eq!(
+            summary.message,
+            "first.luau is missing; second.luau is missing; invalid documentation",
+        );
+
+        assert_eq!(
+            summary.related,
+            vec![
+                RelatedLocation {
+                    location: finding.primary,
+                    message: finding.message,
+                },
+                related,
+            ],
+        );
+
+        assert_eq!(
+            summary.identity.inputs(),
+            &[source.version, input.version, prerequisite],
+        );
+
+        Ok(())
     }
 }

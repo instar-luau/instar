@@ -88,7 +88,7 @@ fn stdout_flag_is_rejected_by_worker_before_initialization() -> io::Result<()> {
         "generation":1,
         "invocation":1,
         "payload":{
-            "request":1,
+            "identity":1,
             "generation":1,
             "remaining_budget":{"secs":5,"nanos":0},
             "operation":{"Analyze":{

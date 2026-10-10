@@ -137,7 +137,8 @@ impl Capabilities {
     }
 
     pub(crate) fn advertised(&self) -> Result<ServerCapabilities> {
-        let files = json!({"filters":[{"scheme":"file","pattern":{"glob":"**/*"}}]});
+        let files =
+            json!({"filters":[{"scheme":"file","pattern":{"glob":"**/*","matches":"file"}}]});
 
         let mut capabilities = json!({
             "positionEncoding": self.encoding(),
@@ -149,11 +150,11 @@ impl Capabilities {
             "signatureHelpProvider":{"triggerCharacters":["(",","]},
             "declarationProvider":true,"definitionProvider":true,"typeDefinitionProvider":true,"implementationProvider":true,
             "referencesProvider":true,"documentHighlightProvider":true,"documentSymbolProvider":true,
-            "workspaceSymbolProvider":{"resolveProvider":true},
+            "workspaceSymbolProvider":if self.has("/workspace/symbol/resolveSupport") { json!({"resolveProvider":true}) } else { json!(true) },
             "renameProvider":if self.supports("/textDocument/rename/prepareSupport") { json!({"prepareProvider":true}) } else { json!(true) },
             "codeActionProvider":if self.has("/textDocument/codeAction/codeActionLiteralSupport") { json!({"resolveProvider":true,"codeActionKinds":["quickfix","source.fixAll.instar","source.organizeImports","refactor.extract"]}) } else { json!(true) },
             "codeLensProvider":{"resolveProvider":true},"documentLinkProvider":{"resolveProvider":true},
-            "inlayHintProvider":{"resolveProvider":true},"inlineValueProvider":true,
+            "inlayHintProvider":if self.resolves("inlayHint", "tooltip") { json!({"resolveProvider":true}) } else { json!({}) },"inlineValueProvider":true,
             "callHierarchyProvider":true,"typeHierarchyProvider":true,"linkedEditingRangeProvider":true,
             "colorProvider":true,"foldingRangeProvider":true,"selectionRangeProvider":true,
             "executeCommandProvider":{"commands":COMMANDS},

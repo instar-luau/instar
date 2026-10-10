@@ -26,11 +26,17 @@ pub(crate) async fn navigate(
     kind: PositionQueryKind,
     token: Option<ProgressToken>,
 ) -> Result<Vec<ProtocolLocation>> {
-    let (snapshot, position) =
-        server.position(&parameters.text_document.uri, parameters.position, kind)?;
+    let options = server.options.child();
+
+    let (snapshot, position) = server.position(
+        &parameters.text_document.uri,
+        parameters.position,
+        kind,
+        &options,
+    )?;
 
     let report = server
-        .query(snapshot, Query::Inspect(position), token)
+        .query(snapshot, Query::Inspect(position), token, &options)
         .await?;
 
     let QueryOutput::Locations(locations) = report.output else {
@@ -49,10 +55,13 @@ pub(crate) async fn references(
 ) -> Result<Option<Vec<ProtocolLocation>>> {
     let parameters_position = parameters.text_document_position_params;
 
+    let options = server.options.child();
+
     let (snapshot, position) = server.position(
         &parameters_position.text_document.uri,
         parameters_position.position,
         PositionQueryKind::Definition,
+        &options,
     )?;
 
     let report = server
@@ -65,6 +74,7 @@ pub(crate) async fn references(
                 highlights: false,
             }),
             parameters.work_done_progress_params.work_done_token,
+            &options,
         )
         .await?;
 
@@ -72,11 +82,28 @@ pub(crate) async fn references(
         return Err(Error::internal_error());
     };
 
-    let locations = occurrences
+    let mut locations = occurrences
         .into_iter()
         .filter(|occurrence| parameters.context.include_declaration || !occurrence.declaration)
         .map(|occurrence| server.location(&report.snapshot, occurrence.location))
         .collect::<Result<Vec<_>>>()?;
+
+    locations.sort_by(|left, right| {
+        (
+            left.uri.as_str(),
+            left.range.start.line,
+            left.range.start.character,
+            left.range.end.line,
+            left.range.end.character,
+        )
+            .cmp(&(
+                right.uri.as_str(),
+                right.range.start.line,
+                right.range.start.character,
+                right.range.end.line,
+                right.range.end.character,
+            ))
+    });
 
     if let Some(token) = parameters.partial_result_params.partial_result_token {
         server
@@ -96,10 +123,13 @@ pub(crate) async fn highlights(
 ) -> Result<Option<Vec<DocumentHighlight>>> {
     let parameters_position = parameters.text_document_position_params;
 
+    let options = server.options.child();
+
     let (snapshot, position) = server.position(
         &parameters_position.text_document.uri,
         parameters_position.position,
         PositionQueryKind::Definition,
+        &options,
     )?;
 
     let source = position.source;
@@ -114,6 +144,7 @@ pub(crate) async fn highlights(
                 highlights: true,
             }),
             parameters.work_done_progress_params.work_done_token,
+            &options,
         )
         .await?;
 
@@ -142,7 +173,8 @@ pub(crate) async fn symbols(
     server: &Server,
     parameters: DocumentSymbolParams,
 ) -> Result<Option<DocumentSymbolResponse>> {
-    let (snapshot, source) = server.capture(&parameters.text_document.uri)?;
+    let options = server.options.child();
+    let (snapshot, source) = server.capture(&parameters.text_document.uri, &options)?;
 
     let report = server
         .query(
@@ -152,6 +184,7 @@ pub(crate) async fn symbols(
                 search: String::new(),
             }),
             parameters.work_done_progress_params.work_done_token,
+            &options,
         )
         .await?;
 
@@ -206,6 +239,8 @@ pub(crate) async fn search(
     server: &Server,
     parameters: WorkspaceSymbolParams,
 ) -> Result<Option<WorkspaceSymbolResponse>> {
+    let options = server.options.child();
+
     let report = server
         .query(
             server.project.snapshot(),
@@ -214,6 +249,7 @@ pub(crate) async fn search(
                 search: parameters.query,
             }),
             parameters.work_done_progress_params.work_done_token,
+            &options,
         )
         .await?;
 
@@ -296,7 +332,8 @@ pub(crate) async fn links(
     server: &Server,
     parameters: DocumentLinkParams,
 ) -> Result<Option<Vec<DocumentLink>>> {
-    let (snapshot, source) = server.capture(&parameters.text_document.uri)?;
+    let options = server.options.child();
+    let (snapshot, source) = server.capture(&parameters.text_document.uri, &options)?;
 
     let report = server
         .query(
@@ -305,6 +342,7 @@ pub(crate) async fn links(
                 source: source.version,
             }),
             parameters.work_done_progress_params.work_done_token,
+            &options,
         )
         .await?;
 
@@ -323,11 +361,13 @@ pub(crate) async fn links(
 
     for link in links {
         let target = if let Some(identity) = link.target {
-            server
-                .state
-                .lock()
-                .expect("session state")
-                .uri(&report.snapshot, identity)?
+            Some(
+                server
+                    .state
+                    .lock()
+                    .expect("session state")
+                    .uri(&report.snapshot, identity)?,
+            )
         } else if let Some(address) = &link.address {
             let address = address
                 .parse::<Uri>()
@@ -339,15 +379,18 @@ pub(crate) async fn links(
                 ));
             }
 
-            address
+            Some(address)
         } else {
-            return Err(Error::invalid_params("unresolved document link"));
+            None
         };
 
         let mut item = DocumentLink {
             range: server.range(&report.snapshot, link.location)?,
-            target: None,
-            tooltip: tooltips.then(|| target.as_str().to_owned()),
+            target: target.clone(),
+            tooltip: target
+                .as_ref()
+                .filter(|_| tooltips)
+                .map(|target| target.as_str().to_owned()),
             data: None,
         };
 
@@ -371,10 +414,8 @@ pub(crate) async fn link_resolve(server: &Server, link: DocumentLink) -> Result<
     let mut result: DocumentLink = serde_json::from_value(record.payload["item"].clone())
         .map_err(|_| Error::internal_error())?;
 
-    result.target = Some(
-        serde_json::from_value(record.payload["target"].clone())
-            .map_err(|_| Error::internal_error())?,
-    );
+    result.target = serde_json::from_value(record.payload["target"].clone())
+        .map_err(|_| Error::internal_error())?;
 
     result.data = link.data;
 

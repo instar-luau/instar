@@ -5,7 +5,7 @@ use instar_project::{
     SourceChange, SourceOrigin,
 };
 
-use instar_shared::{SourceIdentity, SourceSnapshot, SourceVersion};
+use instar_shared::{Options, SourceIdentity, SourceSnapshot, SourceVersion};
 
 use tower_lsp_server::{
     gen_lsp_types::{
@@ -17,6 +17,14 @@ use tower_lsp_server::{
 
 use super::state::State;
 use crate::{position, session::failure};
+
+const RETAINED_DECLARATIONS: usize = 256;
+
+pub(crate) struct Declaration {
+    pub(crate) source: SourceSnapshot,
+    pub(crate) origin: SourceOrigin,
+    pub(crate) open: bool,
+}
 
 #[derive(Clone)]
 pub(crate) struct Document {
@@ -37,6 +45,25 @@ impl State {
 
         if self.documents.contains_key(&document.uri) {
             return Err(Error::invalid_params("document is already open"));
+        }
+
+        if let Some(declaration) = self.declarations.get_mut(&document.uri) {
+            if declaration.open {
+                return Err(Error::invalid_params("document is already open"));
+            }
+
+            if declaration.source.text.as_ref() != document.text {
+                return Err(Error::invalid_params("definition content does not match"));
+            }
+
+            declaration.open = true;
+            self.declaration_order.retain(|uri| uri != &document.uri);
+
+            return Ok(());
+        }
+
+        if definition(&document.uri) {
+            return Err(Error::invalid_params("definition URI has expired"));
         }
 
         let source = project.source_identity();
@@ -100,6 +127,10 @@ impl State {
         parameters: DidChangeTextDocumentParams,
     ) -> Result<()> {
         let uri = &parameters.text_document.text_document_identifier.uri;
+
+        if definition(uri) {
+            return Err(Error::invalid_params("document is read-only"));
+        }
 
         let document = self
             .documents
@@ -195,6 +226,22 @@ impl State {
     ) -> Result<()> {
         let uri = parameters.text_document.uri;
 
+        if let Some(declaration) = self.declarations.get_mut(&uri) {
+            if !declaration.open {
+                return Err(Error::invalid_params("document is not open"));
+            }
+
+            declaration.open = false;
+            self.declaration_order.push_back(uri);
+            self.trim_declarations();
+
+            return Ok(());
+        }
+
+        if definition(&uri) {
+            return Err(Error::invalid_params("definition URI has expired"));
+        }
+
         let document = self
             .documents
             .get(&uri)
@@ -213,6 +260,10 @@ impl State {
         self.documents.remove(&uri);
         self.identities.forget(revision);
 
+        if !self.capabilities.has("/textDocument/diagnostic") {
+            self.published.insert(uri);
+        }
+
         Ok(())
     }
 
@@ -220,6 +271,7 @@ impl State {
         &mut self,
         project: &Project,
         parameters: DidSaveTextDocumentParams,
+        options: &Options,
     ) -> Result<()> {
         let uri = parameters.text_document.uri;
 
@@ -232,7 +284,7 @@ impl State {
             return Err(Error::invalid_params("document cannot be saved"));
         }
 
-        let (_, source) = self.capture(project, &uri)?;
+        let (_, source) = self.capture(project, &uri, options)?;
 
         if parameters
             .text
@@ -338,7 +390,29 @@ impl State {
         &self,
         project: &Project,
         uri: &Uri,
+        options: &Options,
     ) -> Result<(ProjectSnapshot, SourceSnapshot)> {
+        options.check().map_err(|error| failure(&error))?;
+
+        if let Some(declaration) = self.declarations.get(uri) {
+            let source = declaration.source.clone();
+
+            let snapshot = ProjectSnapshot::declaration(source.clone(), declaration.origin.clone())
+                .map_err(|error| failure(&error))?;
+
+            return Ok((snapshot, source));
+        }
+
+        if definition(uri) {
+            return Err(Error::invalid_params("definition URI has expired"));
+        }
+
+        if !self.documents.contains_key(uri) && uri.scheme() == "file" {
+            return project
+                .capture(&path(uri)?, options)
+                .map_err(|error| failure(&error));
+        }
+
         let snapshot = project.snapshot();
 
         let source = if let Some(document) = self.documents.get(uri) {
@@ -357,10 +431,6 @@ impl State {
             }
 
             source
-        } else if uri.scheme() == "file" {
-            snapshot.source_at(&path(uri)?).ok_or_else(|| {
-                Error::invalid_params("source has not been captured by the project")
-            })?
         } else {
             snapshot
                 .source_for_address(uri.as_str())
@@ -389,12 +459,55 @@ impl State {
         project.current(inputs) && self.documents.values().all(|document| document.synchronized || !inputs.iter().any(|input| matches!(input.identity, InputIdentity::Source(source) | InputIdentity::Configuration(source) | InputIdentity::Sourcemap(source) if source == document.source)))
     }
 
-    pub(crate) fn uri(&self, snapshot: &ProjectSnapshot, source: SourceIdentity) -> Result<Uri> {
-        if let Some((uri, _)) = self
-            .documents
-            .iter()
-            .find(|(_, document)| document.source == source)
-        {
+    pub(crate) fn uri(
+        &mut self,
+        snapshot: &ProjectSnapshot,
+        source: SourceIdentity,
+    ) -> Result<Uri> {
+        let captured = snapshot
+            .source(source)
+            .ok_or_else(Error::content_modified)?;
+
+        if snapshot.is_declaration(captured.version) {
+            let uri: Uri = format!(
+                "instar://definition/{}/{}",
+                source.get(),
+                captured.version.revision
+            )
+            .parse()
+            .map_err(|error| Error::invalid_params(format!("invalid declaration URI: {error}")))?;
+
+            if self.declarations.get(&uri).is_some_and(|published| {
+                published.source != *captured || snapshot.origin(source) != Some(&published.origin)
+            }) {
+                return Err(Error::content_modified());
+            }
+
+            if !self.declarations.contains_key(&uri) {
+                let origin = snapshot
+                    .origin(source)
+                    .cloned()
+                    .ok_or_else(Error::content_modified)?;
+
+                self.declarations.insert(
+                    uri.clone(),
+                    Declaration {
+                        source: captured.clone(),
+                        origin,
+                        open: false,
+                    },
+                );
+
+                self.declaration_order.push_back(uri.clone());
+                self.trim_declarations();
+            }
+
+            return Ok(uri);
+        }
+
+        if let Some((uri, _)) = self.documents.iter().find(|(_, document)| {
+            document.source == source && document.revision == captured.version
+        }) {
             return Ok(uri.clone());
         }
 
@@ -413,6 +526,18 @@ impl State {
             SourceOrigin::Stdin { .. } => Err(Error::invalid_params("stdin has no editor URI")),
         }
     }
+
+    fn trim_declarations(&mut self) {
+        while self.declaration_order.len() > RETAINED_DECLARATIONS {
+            if let Some(uri) = self.declaration_order.pop_front() {
+                self.declarations.remove(&uri);
+            }
+        }
+    }
+}
+
+fn definition(uri: &Uri) -> bool {
+    uri.scheme() == "instar" && uri.host_str() == Some("definition")
 }
 
 pub(crate) fn path(uri: &Uri) -> Result<PathBuf> {

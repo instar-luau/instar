@@ -226,7 +226,9 @@ pub(crate) fn load(
     capture: &mut Capture,
     options: &Options,
 ) -> io::Result<Index> {
-    let metadata_source = capture.source(&directory.join("metadata.json"), options)?;
+    let Some(metadata_source) = capture.read(&directory.join("metadata.json"), options)? else {
+        return Ok(Index::default());
+    };
 
     let metadata = Metadata::parse(&metadata_source.text).map_err(|error| {
         assets::attributed(&metadata_source, &[], "documentation.metadata", error)

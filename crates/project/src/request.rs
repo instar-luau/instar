@@ -87,11 +87,14 @@ pub struct FormatRequest {
     /// Whole-source or range-based formatting scope.
     pub scope: FormatScope,
 
-    /// Overrides applied after discovered configuration.
+    /// Formatting defaults and overrides around discovered configuration.
     pub overrides: FormatOverrides,
 
     /// Requested formatting output or write behavior.
     pub mode: FormatMode,
+
+    /// Historical snapshot to format from; absent uses live project state.
+    pub snapshot: Option<ProjectSnapshot>,
 }
 
 /// Linting and optional fix processing for selected inputs.

@@ -75,6 +75,9 @@ pub struct LintResult {
     /// Owned upstream warning findings.
     pub findings: Vec<UpstreamFinding>,
 
+    /// Unsuppressed upstream diagnostics for auditing source directives.
+    pub suppression_findings: Vec<Diagnostic>,
+
     /// Findings from actual prerequisite inputs.
     pub prerequisite_diagnostics: Vec<Diagnostic>,
 

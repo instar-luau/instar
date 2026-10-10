@@ -1,5 +1,5 @@
-use instar_luau::SemanticIdentity;
-use instar_shared::{Knowledge, Reason};
+use instar_luau::{InspectionResult, SemanticCategory, SemanticIdentity};
+use instar_shared::{Availability, Completion, Knowledge, Reason};
 
 use super::{
     index::Index,
@@ -10,20 +10,51 @@ use super::{
 pub(crate) fn hierarchy(
     request: &HierarchyQuery,
     index: &Index,
+    inspection: Option<&InspectionResult>,
 ) -> Result<HierarchyOutput, Reason> {
     let selected = if let Some(identity) = &request.identity {
         vec![identity.clone()]
     } else if let Some(position) = &request.position {
-        index
-            .targets(position.source, position.offset)
-            .ok_or(Reason::UnavailableSemantics)?
-            .to_vec()
+        if matches!(request.kind, HierarchyQueryKind::PrepareTypes) {
+            let inspection = inspection.ok_or(Reason::FailedPrerequisite)?;
+
+            match &inspection.occurrence {
+                Some(occurrence) => match &occurrence.hierarchy {
+                    Knowledge::Known(identities) => identities.clone(),
+                    Knowledge::Unavailable(reason) => return Err(*reason),
+                },
+
+                None if inspection.completion == Completion::Complete
+                    && inspection
+                        .availability
+                        .categories
+                        .get(&SemanticCategory::Nominals)
+                        == Some(&Availability::Available) =>
+                {
+                    Vec::new()
+                }
+
+                None => return Err(Reason::UnavailableSemantics),
+            }
+        } else {
+            index
+                .targets(position.source, position.offset)
+                .ok_or(Reason::UnavailableSemantics)?
+                .to_vec()
+        }
     } else {
         return Err(Reason::FailedPrerequisite);
     };
 
     let mut output = HierarchyOutput {
-        selected: selected.clone(),
+        selected: if matches!(
+            request.kind,
+            HierarchyQueryKind::Supertypes | HierarchyQueryKind::Subtypes
+        ) {
+            Vec::new()
+        } else {
+            selected.clone()
+        },
         ..HierarchyOutput::default()
     };
 
@@ -35,7 +66,7 @@ pub(crate) fn hierarchy(
         }
 
         for nominal in &facts.facts.nominals {
-            if selected.contains(&nominal.identity) {
+            if output.selected.contains(&nominal.identity) {
                 output.types.push(nominal.clone());
             }
         }
@@ -56,7 +87,7 @@ pub(crate) fn hierarchy(
                             output.calls.push(HierarchyCall {
                                 from: call.caller.clone(),
                                 to: target.clone(),
-                                location: call.location,
+                                location: call.callee,
                             });
 
                             for function in index
@@ -101,6 +132,10 @@ pub(crate) fn hierarchy(
                 {
                     if related.contains(&&nominal.identity) {
                         output.types.push(nominal.clone());
+
+                        if !output.selected.contains(&nominal.identity) {
+                            output.selected.push(nominal.identity.clone());
+                        }
                     }
                 }
             }

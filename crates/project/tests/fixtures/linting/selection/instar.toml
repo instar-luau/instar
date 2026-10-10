@@ -1,1 +1,2 @@
 selection = { "include" = ["entry.luau"] }
+linting = { "selected" = ["LocalUnused"] }

@@ -5,13 +5,30 @@ use std::{
     sync::{Arc, PoisonError},
 };
 
-use instar_shared::{Event, EventPayload, Options, SourceIdentity, SourceSnapshot, SourceVersion};
+use instar_shared::{Event, EventPayload, Options, SourceSnapshot, SourceVersion};
 
 use crate::{
     change::{ChangeBatch, ProjectChange, SourceChange},
     execution::Host,
     inputs::{InputIdentity, InputState, InputVersion, ProjectSnapshot, SourceOrigin, absolute},
 };
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Listing {
+    Missing,
+    NonDirectory,
+    Directory(Vec<PathBuf>),
+}
+
+impl Listing {
+    pub(crate) fn state(&self) -> InputState {
+        match self {
+            Self::Missing => InputState::Missing,
+            Self::NonDirectory => InputState::NonDirectory,
+            Self::Directory(paths) => InputState::Directory(paths.clone()),
+        }
+    }
+}
 
 pub(crate) struct Capture {
     pub(crate) host: Arc<Host>,
@@ -76,7 +93,17 @@ impl Capture {
             .snapshot
             .input_versions
             .get(&identity)
-            .is_some_and(|input| input.state == InputState::Stale);
+            .is_some_and(|input| input.state == InputState::Stale)
+            || self.snapshot.source_at(&path).is_some_and(|source| {
+                matches!(
+                    self.snapshot.origin(source.version.identity),
+                    Some(SourceOrigin::Disk(_))
+                ) && self
+                    .snapshot
+                    .input_versions
+                    .get(&InputIdentity::Source(source.version.identity))
+                    .is_some_and(|input| input.state == InputState::Stale)
+            });
 
         let captured = if self.frozen {
             self.snapshot.input_versions.get(&identity)
@@ -89,7 +116,7 @@ impl Capture {
 
         if let Some(input) = captured {
             match &input.state {
-                InputState::Source(source) => {
+                InputState::Source(source) if !refreshing => {
                     let source = source.clone();
                     self.consult_input(input);
                     self.consult_source(&source);
@@ -97,7 +124,7 @@ impl Capture {
                     return Ok(Some(source));
                 }
 
-                InputState::Missing => {
+                InputState::Missing if !refreshing => {
                     self.consult_input(input);
                     self.consult_closed(&path);
 
@@ -145,6 +172,29 @@ impl Capture {
             }),
         )?;
 
+        let directories = self
+            .inputs
+            .iter()
+            .filter_map(|(identity, input)| {
+                if let InputIdentity::Directory(directory) = identity
+                    && input.state != InputState::Stale
+                    && self
+                        .snapshot
+                        .input_versions
+                        .get(identity)
+                        .is_some_and(|current| current.state == InputState::Stale)
+                {
+                    Some(directory.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+
+        for directory in directories {
+            self.listing(&directory, options)?;
+        }
+
         if let Some(source) = &source {
             self.consult_source(source);
         } else {
@@ -156,11 +206,7 @@ impl Capture {
         Ok(source)
     }
 
-    pub(crate) fn listing(
-        &mut self,
-        path: &Path,
-        options: &Options,
-    ) -> io::Result<Option<Vec<PathBuf>>> {
+    pub(crate) fn listing(&mut self, path: &Path, options: &Options) -> io::Result<Listing> {
         options.check()?;
         let path = absolute(path)?;
 
@@ -185,10 +231,11 @@ impl Capture {
         }
         .cloned();
 
-        if let Some(input) = captured {
+        if !refreshing && let Some(input) = captured {
             let paths = match &input.state {
-                InputState::Directory(paths) => Some(Some(paths.clone())),
-                InputState::Missing => Some(None),
+                InputState::Directory(paths) => Some(Listing::Directory(paths.clone())),
+                InputState::Missing => Some(Listing::Missing),
+                InputState::NonDirectory => Some(Listing::NonDirectory),
                 _ => None,
             };
 
@@ -210,21 +257,31 @@ impl Capture {
                 })
                 || self.absent(&path))
         {
-            let baseline = matches!(read_listing(&path, Some(options)), Ok(None));
-            options.check()?;
-            self.record(identity, InputState::Missing, baseline)?;
+            let state = if self
+                .snapshot
+                .input_versions
+                .get(&InputIdentity::Path(path.clone()))
+                .is_some_and(|input| matches!(input.state, InputState::Source(_)))
+                || path.ancestors().skip(1).any(|ancestor| {
+                    self.snapshot
+                        .input_versions
+                        .get(&InputIdentity::Directory(ancestor.to_path_buf()))
+                        .is_some_and(|input| input.state == InputState::NonDirectory)
+                }) {
+                Listing::NonDirectory
+            } else {
+                Listing::Missing
+            };
 
-            return Ok(None);
+            let baseline = read_listing(&path, Some(options))? == state;
+            options.check()?;
+            self.record(identity, state.state(), baseline)?;
+
+            return Ok(state);
         }
 
         let paths = read_listing(&path, Some(options))?;
-
-        self.observation(
-            identity,
-            paths.as_ref().map_or(InputState::Missing, |paths| {
-                InputState::Directory(paths.clone())
-            }),
-        )?;
+        self.observation(identity, paths.state())?;
 
         Ok(paths)
     }
@@ -266,13 +323,12 @@ impl Capture {
             let unchanged = match (identity, &input.state) {
                 (InputIdentity::Path(path), InputState::Missing) => read_bytes(path)?.is_none(),
 
-                (InputIdentity::Directory(path), InputState::Missing) => {
-                    read_listing(path, None)?.is_none()
-                }
-
-                (InputIdentity::Directory(path), InputState::Directory(paths)) => {
-                    read_listing(path, None)?.as_ref() == Some(paths)
-                }
+                (
+                    InputIdentity::Directory(path),
+                    state @ (InputState::Missing
+                    | InputState::NonDirectory
+                    | InputState::Directory(_)),
+                ) => read_listing(path, None)?.state() == *state,
 
                 _ => true,
             };
@@ -353,6 +409,43 @@ impl Capture {
         Ok(())
     }
 
+    pub(crate) fn admit_inventory(&mut self, options: &Options) -> io::Result<()> {
+        let observed = self.host.snapshot();
+        let mut allowed = BTreeSet::new();
+
+        for (identity, record) in &observed.sources.records {
+            options.check()?;
+
+            let SourceOrigin::Disk(path) = &record.origin else {
+                continue;
+            };
+
+            if self.snapshot.sources.records.contains_key(identity)
+                || self
+                    .snapshot
+                    .input_versions
+                    .contains_key(&InputIdentity::Source(*identity))
+                || self
+                    .snapshot
+                    .input_versions
+                    .contains_key(&InputIdentity::Path(path.clone()))
+                || observed.source_at(path) != record.snapshot.as_ref()
+                || self.absent(path)
+            {
+                continue;
+            }
+
+            allowed.insert(InputIdentity::Source(*identity));
+            allowed.insert(InputIdentity::Path(path.clone()));
+        }
+
+        if !allowed.is_empty() {
+            self.admit(&observed, &except(&observed, &allowed))?;
+        }
+
+        Ok(())
+    }
+
     pub(crate) fn begin_consultation(&mut self) {
         self.consultation.push(Vec::new());
     }
@@ -363,7 +456,12 @@ impl Capture {
 
     pub(crate) fn consult_input(&mut self, input: InputVersion) {
         for consultation in &mut self.consultation {
-            if !consultation.contains(&input) {
+            if let Some(previous) = consultation
+                .iter_mut()
+                .find(|previous| previous.identity == input.identity)
+            {
+                *previous = input.clone();
+            } else {
                 consultation.push(input.clone());
             }
         }
@@ -391,6 +489,20 @@ impl Capture {
         if let Some(input) = self.snapshot.input_versions.get(&context).cloned() {
             self.consult_input(input);
         }
+    }
+
+    pub(crate) fn declaration(&mut self, source: &SourceSnapshot) -> io::Result<()> {
+        if self.snapshot.source(source.version.identity) != Some(source) {
+            return Err(invalid("declaration differs from its captured source"));
+        }
+
+        self.consult_source(source);
+
+        Arc::make_mut(&mut self.snapshot.sources)
+            .declarations
+            .insert(source.version);
+
+        Ok(())
     }
 
     pub(crate) fn consult_inventory(&mut self) {
@@ -443,7 +555,16 @@ impl Capture {
     }
 
     pub(crate) fn guards(&self) -> Vec<InputVersion> {
-        self.inputs.values().cloned().collect()
+        self.inputs
+            .values()
+            .map(|input| match input.identity {
+                InputIdentity::Sources => {
+                    self.snapshot.input_versions[&InputIdentity::Sources].clone()
+                }
+
+                _ => input.clone(),
+            })
+            .collect()
     }
 
     pub(crate) fn frozen(&self) -> bool {
@@ -456,80 +577,27 @@ impl Capture {
         bytes: Option<Vec<u8>>,
         refreshing: bool,
     ) -> io::Result<Option<SourceSnapshot>> {
-        let previous = self.snapshot.source_at(path).cloned();
+        let host = Arc::clone(&self.host);
 
-        if let Some(bytes) = bytes {
-            if self.frozen
-                && !refreshing
-                && previous.is_none()
-                && let Some(registered) = self.adopt_disk(path, &bytes)?
-            {
-                return Ok(Some(registered));
-            }
+        let mut current = host
+            .snapshot
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
 
-            let identity = previous.as_ref().map_or_else(
-                || self.host.source_identity(),
-                |source| source.version.identity,
-            );
+        let path_identity = InputIdentity::Path(path.to_path_buf());
 
-            let revision = previous
-                .as_ref()
-                .map_or(1, |source| source.version.revision);
+        if !self.frozen
+            && let Some(source) = current.source_at(path)
+            && matches!(
+                current.origin(source.version.identity),
+                Some(SourceOrigin::Document { .. })
+            )
+        {
+            let source = source.clone();
+            self.snapshot = current.clone();
 
-            let mut source =
-                SourceSnapshot::from_bytes(SourceVersion { identity, revision }, &bytes)?;
-
-            if previous
-                .as_ref()
-                .is_some_and(|previous| previous.text != source.text)
-            {
-                source.version.revision = revision
-                    .checked_add(1)
-                    .ok_or_else(|| io::Error::other("source revision overflow"))?;
-            }
-
-            if previous.as_ref() != Some(&source) {
-                let change = if let Some(previous) = &previous {
-                    SourceChange::Replace {
-                        expected: previous.version,
-                        text: Arc::clone(&source.text),
-                    }
-                } else {
-                    SourceChange::Open {
-                        identity,
-                        origin: SourceOrigin::Disk(path.to_path_buf()),
-                        text: Arc::clone(&source.text),
-                    }
-                };
-
-                self.observe_disk(change, path, identity, refreshing)?;
-            }
-
-            Ok(Some(source))
-        } else {
-            if let Some(previous) = previous {
-                self.observe_disk(
-                    SourceChange::Remove {
-                        expected: previous.version,
-                    },
-                    path,
-                    previous.version.identity,
-                    refreshing,
-                )?;
-
-                let identity = InputIdentity::Source(previous.version.identity);
-
-                if let Some(input) = self.snapshot.input_versions.get(&identity).cloned() {
-                    self.consult_input(input);
-                }
-            }
-
-            Ok(None)
+            return Ok(Some(source));
         }
-    }
-
-    fn adopt_disk(&mut self, path: &Path, bytes: &[u8]) -> io::Result<Option<SourceSnapshot>> {
-        let mut current = self.host.snapshot();
 
         let registered = current
             .sources
@@ -538,108 +606,192 @@ impl Capture {
             .and_then(|identity| current.source(*identity))
             .cloned();
 
-        let Some(registered) = registered else {
-            return Ok(None);
-        };
-
-        if registered.text.as_bytes() != bytes
-            || self
+        if self.snapshot.source_at(path).is_none()
+            && let (Some(registered), Some(bytes)) = (&registered, &bytes)
+            && registered.text.as_bytes() == bytes.as_slice()
+            && !self
                 .snapshot
                 .input_versions
                 .contains_key(&InputIdentity::Source(registered.version.identity))
         {
-            return Ok(None);
-        }
+            let allowed = BTreeSet::from([
+                InputIdentity::Source(registered.version.identity),
+                path_identity.clone(),
+            ]);
 
-        let identity = InputIdentity::Path(path.to_path_buf());
-        let mut allowed = BTreeSet::from([InputIdentity::Source(registered.version.identity)]);
+            let mut observed = current.clone();
 
-        if current.source_at(path) == Some(&registered)
-            && current.input_versions.get(&identity).is_some_and(|input| {
-                input.state == InputState::Source(registered.clone())
-                    || input.state == InputState::Stale
-            })
-        {
-            allowed.insert(identity.clone());
-        } else {
-            Arc::make_mut(&mut current.input_versions).remove(&identity);
-        }
-
-        self.snapshot = self.snapshot.admit(&current, &except(&current, &allowed))?;
-        self.record(identity, InputState::Source(registered.clone()), true)?;
-
-        Ok(Some(registered))
-    }
-
-    fn observe_disk(
-        &mut self,
-        change: SourceChange,
-        path: &Path,
-        source: SourceIdentity,
-        refreshing: bool,
-    ) -> io::Result<()> {
-        let opening = matches!(change, SourceChange::Open { .. });
-        let identity = InputIdentity::Path(path.to_path_buf());
-
-        let batch = ChangeBatch {
-            changes: vec![ProjectChange::Source(change)],
-        };
-
-        if self.frozen && refreshing {
-            self.refresh(batch, &identity, source)?;
-        } else if self.frozen && opening {
-            let proposed = self.snapshot.transition(batch.clone())?;
-
-            let mut current = self
-                .host
+            if self
                 .snapshot
-                .write()
-                .unwrap_or_else(PoisonError::into_inner);
-
-            if !current.input_versions.contains_key(&identity)
-                && !current.sources.disk.contains_key(path)
-                && current.source_at(path).is_none()
+                .input_versions
+                .get(&path_identity)
+                .is_some_and(|input| input.state != InputState::Stale)
+                || current.source_at(path) != Some(registered)
             {
-                *current = current.transition(batch)?;
+                Arc::make_mut(&mut observed.input_versions).remove(&path_identity);
             }
 
-            self.snapshot = proposed;
-        } else {
-            self.observe(batch)?;
+            self.snapshot = self
+                .snapshot
+                .admit(&observed, &except(&current, &allowed))?;
         }
 
-        Ok(())
-    }
+        let previous = self.snapshot.source_at(path).cloned();
+        let source_identity = previous.as_ref().map(|source| source.version.identity);
+        let (proposed, batch) = self.disk_observation(path, bytes)?;
+        let source = proposed.source_at(path).cloned();
 
-    fn refresh(
-        &mut self,
-        batch: ChangeBatch,
-        path: &InputIdentity,
-        source: SourceIdentity,
-    ) -> io::Result<()> {
-        let proposed = self.snapshot.transition(batch.clone())?;
+        let identity = source
+            .as_ref()
+            .map(|source| source.version.identity)
+            .or(source_identity);
 
-        let mut current = self
-            .host
-            .snapshot
-            .write()
-            .unwrap_or_else(PoisonError::into_inner);
+        let compatible = current.input_versions.get(&path_identity)
+            == self.snapshot.input_versions.get(&path_identity)
+            && identity.is_none_or(|identity| {
+                current.input_versions.get(&InputIdentity::Source(identity))
+                    == self
+                        .snapshot
+                        .input_versions
+                        .get(&InputIdentity::Source(identity))
+                    && current.origin(identity) == self.snapshot.origin(identity)
+            })
+            && (previous.is_some() || registered.is_none());
 
-        if current.input_versions.get(path) == self.snapshot.input_versions.get(path) {
-            let identity = InputIdentity::Source(source);
+        let published = current.input_versions.get(&path_identity)
+            == proposed.input_versions.get(&path_identity)
+            && identity.is_none_or(|identity| {
+                current.input_versions.get(&InputIdentity::Source(identity))
+                    == proposed
+                        .input_versions
+                        .get(&InputIdentity::Source(identity))
+                    && current.sources.records.get(&identity)
+                        == proposed.sources.records.get(&identity)
+            });
 
-            if current.input_versions.get(&identity) != self.snapshot.input_versions.get(&identity)
-                || current.origin(source) != self.snapshot.origin(source)
-            {
-                return Err(invalid("stale source conflicts with live history"));
-            }
-
+        if !batch.changes.is_empty() && compatible {
             *current = current.transition(batch)?;
+        } else if (refreshing || !self.frozen) && !published && !compatible {
+            return Err(invalid("stale source conflicts with live history"));
         }
 
         self.snapshot = proposed;
+        drop(current);
 
-        Ok(())
+        if source.is_none()
+            && let Some(identity) = identity
+            && let Some(input) = self
+                .snapshot
+                .input_versions
+                .get(&InputIdentity::Source(identity))
+                .cloned()
+        {
+            self.consult_input(input);
+        }
+
+        Ok(source)
+    }
+
+    fn disk_observation(
+        &self,
+        path: &Path,
+        bytes: Option<Vec<u8>>,
+    ) -> io::Result<(ProjectSnapshot, ChangeBatch)> {
+        let previous = self.snapshot.source_at(path);
+        let mut batch = ChangeBatch::default();
+
+        match (previous, bytes) {
+            (previous, Some(bytes)) => {
+                let identity = previous.map_or_else(
+                    || self.host.source_identity(),
+                    |source| source.version.identity,
+                );
+
+                let revision = previous.map_or(1, |source| source.version.revision);
+
+                let source =
+                    SourceSnapshot::from_bytes(SourceVersion { identity, revision }, &bytes)?;
+
+                let change = match previous {
+                    Some(previous) if previous.text != source.text => Some(SourceChange::Replace {
+                        expected: previous.version,
+                        text: Arc::clone(&source.text),
+                    }),
+
+                    None => Some(SourceChange::Open {
+                        identity,
+                        origin: SourceOrigin::Disk(path.to_path_buf()),
+                        text: Arc::clone(&source.text),
+                    }),
+
+                    Some(_) => None,
+                };
+
+                if let Some(change) = change {
+                    batch.changes.push(ProjectChange::Source(change));
+                } else if let Some(expected) = self
+                    .snapshot
+                    .input_versions
+                    .get(&InputIdentity::Source(identity))
+                    .cloned()
+                    && expected.state == InputState::Stale
+                {
+                    batch.changes.push(ProjectChange::Input {
+                        current: InputVersion {
+                            identity: expected.identity.clone(),
+                            revision: expected
+                                .revision
+                                .checked_add(1)
+                                .ok_or_else(|| invalid("input revision overflow"))?,
+                            state: InputState::Source(source),
+                        },
+                        expected: Some(expected),
+                    });
+                }
+            }
+
+            (Some(previous), None) => {
+                batch
+                    .changes
+                    .push(ProjectChange::Source(SourceChange::Remove {
+                        expected: previous.version,
+                    }))
+            }
+
+            (None, None) => {}
+        }
+
+        let mut proposed = if batch.changes.is_empty() {
+            self.snapshot.clone()
+        } else {
+            self.snapshot.transition(batch.clone())?
+        };
+
+        let state = proposed
+            .source_at(path)
+            .cloned()
+            .map_or(InputState::Missing, InputState::Source);
+
+        let identity = InputIdentity::Path(path.to_path_buf());
+        let expected = proposed.input_versions.get(&identity).cloned();
+
+        if expected.as_ref().is_none_or(|input| input.state != state) {
+            batch.changes.push(ProjectChange::Input {
+                current: InputVersion {
+                    identity,
+                    revision: expected
+                        .as_ref()
+                        .map_or(Some(1), |input| input.revision.checked_add(1))
+                        .ok_or_else(|| invalid("input revision overflow"))?,
+                    state,
+                },
+                expected,
+            });
+
+            proposed = self.snapshot.transition(batch.clone())?;
+        }
+
+        Ok((proposed, batch))
     }
 
     fn record(
@@ -650,122 +802,101 @@ impl Capture {
     ) -> io::Result<()> {
         let expected = self.snapshot.input_versions.get(&identity).cloned();
 
-        if self.frozen
-            && let Some(input) = &expected
-        {
+        if let Some(input) = &expected {
             if input.state == state {
                 self.consult_input(input.clone());
 
                 return Ok(());
             }
 
-            if input.state != InputState::Stale || !baseline {
+            if self.frozen && (input.state != InputState::Stale || !baseline) {
                 return Err(invalid("observation conflicts with frozen input"));
             }
         }
 
-        if self.frozen && baseline {
-            let mut current = self
-                .host
-                .snapshot
-                .write()
-                .unwrap_or_else(PoisonError::into_inner);
+        let host = Arc::clone(&self.host);
 
-            if let Some(input) = current.input_versions.get(&identity)
-                && input.state == state
-                && expected.is_none()
-            {
-                let protected = except(&current, &BTreeSet::from([identity.clone()]));
-                self.snapshot = self.snapshot.admit(&current, &protected)?;
-                let input = input.clone();
-                drop(current);
-                self.consult_input(input);
+        let mut current = host
+            .snapshot
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
 
-                return Ok(());
-            }
-
-            let publish = match (&identity, &state) {
-                (InputIdentity::Path(path), InputState::Missing) => {
-                    current.source_at(path).is_none() && matches!(read_bytes(path), Ok(None))
-                }
-
-                (InputIdentity::Directory(path), InputState::Missing) => {
-                    matches!(read_listing(path, None), Ok(None))
-                }
-
-                (InputIdentity::Directory(path), InputState::Directory(paths)) => {
-                    read_listing(path, None)?.as_ref() == Some(paths)
-                }
-
-                (InputIdentity::Path(path), InputState::Source(source)) => {
-                    current.source_at(path) == Some(source)
-                }
-
-                (_, InputState::Source(source)) => {
-                    current.source(source.version.identity) == Some(source)
-                }
-
-                _ => false,
-            };
-
-            let revision = expected
+        if baseline
+            && expected
                 .as_ref()
-                .map_or(Some(1), |input| input.revision.checked_add(1))
-                .ok_or_else(|| invalid("input revision overflow"))?;
-
-            let input = InputVersion {
-                identity: identity.clone(),
-                revision,
-                state,
-            };
-
-            let batch = ChangeBatch {
-                changes: vec![ProjectChange::Input {
-                    expected: expected.clone(),
-                    current: input.clone(),
-                }],
-            };
-
-            let proposed = self.snapshot.transition(batch.clone())?;
-
-            if publish && current.input_versions.get(&identity) == expected.as_ref() {
-                *current = current.transition(batch)?;
-            }
-
-            self.snapshot = proposed;
+                .is_none_or(|input| input.state == InputState::Stale)
+            && let Some(input) = current.input_versions.get(&identity)
+            && input.state == state
+            && expected
+                .as_ref()
+                .is_none_or(|previous| input.revision > previous.revision)
+        {
+            let protected = except(&current, &BTreeSet::from([identity.clone()]));
+            self.snapshot = self.snapshot.admit(&current, &protected)?;
+            let input = input.clone();
             drop(current);
             self.consult_input(input);
 
             return Ok(());
         }
 
-        let revision = match &expected {
-            Some(previous) if previous.state == state => previous.revision,
-
-            Some(previous) => previous
-                .revision
-                .checked_add(1)
+        let input = InputVersion {
+            identity: identity.clone(),
+            revision: expected
+                .as_ref()
+                .map_or(Some(1), |input| input.revision.checked_add(1))
                 .ok_or_else(|| invalid("input revision overflow"))?,
-
-            None => 1,
-        };
-
-        let current = InputVersion {
-            identity,
-            revision,
             state,
         };
 
-        if expected.as_ref() != Some(&current) {
-            self.observe(ChangeBatch {
-                changes: vec![ProjectChange::Input {
-                    expected,
-                    current: current.clone(),
-                }],
-            })?;
+        let batch = ChangeBatch {
+            changes: vec![ProjectChange::Input {
+                expected: expected.clone(),
+                current: input.clone(),
+            }],
+        };
+
+        let proposed = self.snapshot.transition(batch.clone())?;
+
+        let publish = baseline
+            && (!self.frozen
+                || match (&identity, &input.state) {
+                    (InputIdentity::Path(path), InputState::Missing) => {
+                        current.source_at(path).is_none() && read_bytes(path)?.is_none()
+                    }
+
+                    (
+                        InputIdentity::Directory(path),
+                        state @ (InputState::Missing
+                        | InputState::NonDirectory
+                        | InputState::Directory(_)),
+                    ) => read_listing(path, None)?.state() == *state,
+
+                    (InputIdentity::Path(path), InputState::Source(source)) => {
+                        current.source_at(path) == Some(source)
+                    }
+
+                    (_, InputState::Source(source)) => {
+                        current.source(source.version.identity) == Some(source)
+                    }
+
+                    _ => false,
+                });
+
+        if publish && current.input_versions.get(&identity) == expected.as_ref() {
+            *current = current.transition(batch)?;
+        } else if publish
+            && current.input_versions.get(&identity) != Some(&input)
+            && expected
+                .as_ref()
+                .is_some_and(|input| input.state == InputState::Stale)
+        {
+            return Err(invalid("stale input conflicts with live history"));
         }
 
-        self.consult_input(current);
+        self.snapshot = proposed;
+        drop(current);
+        self.consult_input(input);
 
         Ok(())
     }
@@ -799,7 +930,7 @@ impl Capture {
             };
 
             let absent = match &input.state {
-                InputState::Missing => true,
+                InputState::Missing | InputState::NonDirectory => true,
 
                 InputState::Directory(entries) => path
                     .strip_prefix(ancestor)
@@ -820,6 +951,31 @@ impl Capture {
         }
 
         false
+    }
+}
+
+pub(crate) fn read_listing(path: &Path, options: Option<&Options>) -> io::Result<Listing> {
+    match fs::read_dir(path) {
+        Ok(entries) => {
+            let mut paths = Vec::new();
+
+            for entry in entries {
+                if let Some(options) = options {
+                    options.check()?;
+                }
+
+                paths.push(entry?.path());
+            }
+
+            paths.sort();
+
+            Ok(Listing::Directory(paths))
+        }
+
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Listing::Missing),
+        Err(error) if error.kind() == io::ErrorKind::NotADirectory => Ok(Listing::NonDirectory),
+
+        Err(error) => Err(error),
     }
 }
 
@@ -855,37 +1011,206 @@ fn read_bytes(path: &Path) -> io::Result<Option<Vec<u8>>> {
     }
 }
 
-fn read_listing(path: &Path, options: Option<&Options>) -> io::Result<Option<Vec<PathBuf>>> {
-    match fs::read_dir(path) {
-        Ok(entries) => {
-            let mut paths = Vec::new();
-
-            for entry in entries {
-                if let Some(options) = options {
-                    options.check()?;
-                }
-
-                paths.push(entry?.path());
-            }
-
-            paths.sort();
-
-            Ok(Some(paths))
-        }
-
-        Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
-            ) =>
-        {
-            Ok(None)
-        }
-
-        Err(error) => Err(error),
-    }
-}
-
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, io, sync::Arc};
+
+    use instar_shared::Options;
+
+    use super::{Capture, Listing};
+
+    use crate::{
+        change::{ChangeBatch, ProjectChange, SourceChange},
+        inputs::{InputIdentity, InputState, InputVersion, SourceOrigin},
+        project::Project,
+    };
+
+    #[test]
+    fn overlapping_captures_reuse_disk_identity() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("entry.luau");
+        fs::write(&path, "\u{feff}return 1\r\n")?;
+        let project = Project::new(Vec::new());
+        let mut first = Capture::live(Arc::clone(&project.host));
+        let mut second = Capture::live(Arc::clone(&project.host));
+        let options = Options::default();
+        let original = first.source(&path, &options)?;
+        let captured = second.source(&path, &options)?;
+
+        assert_eq!(original, captured);
+        assert_eq!(project.snapshot().sources().count(), 1);
+        assert!(project.current(&first.guards()));
+        assert!(project.current(&second.guards()));
+
+        fs::write(&path, "return 2")?;
+        let (refreshed, source) = project.capture(&path, &options)?;
+        assert_eq!(source.version.identity, original.version.identity);
+        assert_eq!(source.text.as_ref(), "return 2");
+        assert_eq!(first.snapshot.source_at(&path), Some(&original));
+        assert_eq!(refreshed.source_at(&path), Some(&source));
+
+        let identity = project.source_identity();
+
+        project.change(ChangeBatch {
+            changes: vec![ProjectChange::Source(SourceChange::Open {
+                identity,
+                origin: SourceOrigin::Document {
+                    address: path.to_string_lossy().into_owned(),
+                    context: Some(path.clone()),
+                },
+                text: "return 3".into(),
+            })],
+        })?;
+
+        let (_, overlay) = project.capture(&path, &options)?;
+        assert_eq!(overlay.version.identity, identity);
+        assert_eq!(overlay.text.as_ref(), "return 3");
+        assert_eq!(fs::read_to_string(&path)?, "return 2");
+        assert_eq!(first.snapshot.source_at(&path), Some(&original));
+
+        Ok(())
+    }
+
+    #[test]
+    fn source_observations_refresh_consulted_directories() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("entry.luau");
+        let project = Project::new(Vec::new());
+        let options = Options::default();
+        let mut capture = Capture::live(Arc::clone(&project.host));
+        capture.begin_consultation();
+        capture.begin_consultation();
+
+        assert_eq!(
+            capture.listing(directory.path(), &options)?,
+            Listing::Directory(Vec::new())
+        );
+
+        let original = capture.snapshot.clone();
+
+        fs::write(&path, "return 1")?;
+        capture.source(&path, &options)?;
+
+        assert_eq!(
+            capture.listing(directory.path(), &options)?,
+            Listing::Directory(vec![path.clone()])
+        );
+
+        assert!(project.current(&capture.guards()));
+
+        fs::remove_file(&path)?;
+        let identity = InputIdentity::Path(path.clone());
+
+        let expected = capture
+            .snapshot
+            .input_versions
+            .get(&identity)
+            .expect("path observation")
+            .clone();
+
+        capture.observe(ChangeBatch {
+            changes: vec![ProjectChange::Input {
+                current: InputVersion {
+                    identity,
+                    revision: expected.revision + 1,
+                    state: InputState::Stale,
+                },
+                expected: Some(expected),
+            }],
+        })?;
+
+        assert!(capture.read(&path, &options)?.is_none());
+
+        assert_eq!(
+            capture.listing(directory.path(), &options)?,
+            Listing::Directory(Vec::new())
+        );
+
+        assert!(project.current(&capture.guards()));
+        assert!(project.current(&capture.end_consultation()));
+        assert!(project.current(&capture.end_consultation()));
+
+        assert_eq!(
+            original.input_versions[&InputIdentity::Directory(directory.path().to_path_buf())]
+                .state,
+            InputState::Directory(Vec::new())
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn stale_frozen_listings_reuse_only_compatible_observations() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("entry.luau");
+        let project = Project::new(Vec::new());
+        let options = Options::default();
+        let mut capture = Capture::live(Arc::clone(&project.host));
+        capture.listing(directory.path(), &options)?;
+        let original = capture.snapshot.clone();
+        let identity = InputIdentity::Directory(directory.path().to_path_buf());
+        let expected = capture.snapshot.input_versions[&identity].clone();
+
+        capture.observe(ChangeBatch {
+            changes: vec![ProjectChange::Input {
+                current: InputVersion {
+                    identity: identity.clone(),
+                    revision: expected.revision + 1,
+                    state: InputState::Stale,
+                },
+                expected: Some(expected),
+            }],
+        })?;
+
+        let stale = capture.snapshot.clone();
+        fs::write(&path, "return 1")?;
+        let mut other = Capture::live(Arc::clone(&project.host));
+        other.listing(directory.path(), &options)?;
+        let expected = other.snapshot.input_versions[&identity].clone();
+
+        other.observe(ChangeBatch {
+            changes: vec![ProjectChange::Input {
+                current: InputVersion {
+                    identity: identity.clone(),
+                    revision: expected.revision + 1,
+                    state: InputState::Stale,
+                },
+                expected: Some(expected),
+            }],
+        })?;
+
+        other.listing(directory.path(), &options)?;
+        assert!(project.current(&other.guards()));
+
+        assert_eq!(
+            other.snapshot.input_versions[&identity].revision,
+            stale.input_versions[&identity].revision + 3
+        );
+
+        project.capture(&path, &options)?;
+        let mut frozen = Capture::new(Arc::clone(&project.host), stale);
+        frozen.begin_consultation();
+        frozen.listing(directory.path(), &options)?;
+        assert!(project.current(&frozen.end_consultation()));
+        assert!(frozen.snapshot.source_at(&path).is_none());
+
+        assert_eq!(
+            capture.listing(directory.path(), &options)?,
+            Listing::Directory(vec![path])
+        );
+
+        assert!(project.current(&capture.guards()));
+        let mut historical = Capture::new(Arc::clone(&project.host), original);
+
+        assert_eq!(
+            historical.listing(directory.path(), &options)?,
+            Listing::Directory(Vec::new())
+        );
+
+        Ok(())
+    }
 }

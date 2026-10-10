@@ -50,8 +50,8 @@ namespace instar::native {
     analyze(AnalysisState &state, const NativeAnalysisRequest &input, const NativeOperation &operation);
 
     void validate(
-        const AnalysisState &state, const std::string &name, uint64_t logical_revision, uint64_t frontend_revision,
-        uint8_t purpose, bool inference
+        const AnalysisState &state, uint64_t frontend_revision, const std::string &name, uint64_t logical_revision,
+        bool inference, uint8_t purpose
     );
 }
 

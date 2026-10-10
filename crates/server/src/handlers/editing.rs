@@ -3,7 +3,7 @@ use instar_project::{
     LinkedRequest, PositionQueryKind, Query, QueryOutput, RenameRequest,
 };
 
-use instar_shared::{Completion, SourceVersion, Span};
+use instar_shared::{Completion, Options, SourceVersion, Span};
 use serde_json::json;
 
 use tower_lsp_server::{
@@ -32,14 +32,17 @@ pub(crate) async fn prepare(
         .expect("session state")
         .editable(&parameters.text_document.uri)?;
 
+    let options = server.options.child();
+
     let (snapshot, position) = server.position(
         &parameters.text_document.uri,
         parameters.position,
         PositionQueryKind::PrepareRename,
+        &options,
     )?;
 
     let report = server
-        .query(snapshot, Query::Inspect(position), None)
+        .query(snapshot, Query::Inspect(position), None, &options)
         .await?;
 
     let QueryOutput::Locations(locations) = report.output else {
@@ -73,10 +76,13 @@ pub(crate) async fn rename(
         .expect("session state")
         .editable(&parameters_position.text_document.uri)?;
 
+    let options = server.options.child();
+
     let (snapshot, position) = server.position(
         &parameters_position.text_document.uri,
         parameters_position.position,
         PositionQueryKind::PrepareRename,
+        &options,
     )?;
 
     let report = edit(
@@ -88,6 +94,7 @@ pub(crate) async fn rename(
             workspace: true,
         }),
         parameters.work_done_progress_params.work_done_token,
+        &options,
     )
     .await?;
 
@@ -111,7 +118,8 @@ pub(crate) async fn actions(
         .expect("session state")
         .editable(&parameters.text_document.uri)?;
 
-    let (snapshot, source) = server.capture(&parameters.text_document.uri)?;
+    let options = server.options.child();
+    let (snapshot, source) = server.capture(&parameters.text_document.uri, &options)?;
     let encoding = server.state.lock().expect("session state").encoding.clone();
 
     let range = Span::new(
@@ -148,6 +156,7 @@ pub(crate) async fn actions(
                     checking: false,
                 }),
                 parameters.work_done_progress_params.work_done_token,
+                &options,
             )
             .await?;
 
@@ -188,10 +197,11 @@ pub(crate) async fn actions(
                 let report = edit(
                     server,
                     EditRequest::Fixes(FixRequest {
-                        snapshot: snapshot.clone(),
+                        snapshot: lint.snapshot.clone(),
                         fixes: vec![fix.clone()],
                     }),
                     None,
+                    &options,
                 )
                 .await?;
 
@@ -211,10 +221,11 @@ pub(crate) async fn actions(
             let report = edit(
                 server,
                 EditRequest::Fixes(FixRequest {
-                    snapshot: snapshot.clone(),
+                    snapshot: lint.snapshot,
                     fixes: lint.fixes,
                 }),
                 None,
+                &options,
             )
             .await?;
 
@@ -238,6 +249,7 @@ pub(crate) async fn actions(
                 source: source.version,
             }),
             None,
+            &options,
         )
         .await?;
 
@@ -261,18 +273,21 @@ pub(crate) async fn actions(
                 range,
             }),
             None,
+            &options,
         )
         .await?;
 
-        result.push(action(
-            server,
-            source.version,
-            "Extract literal".to_owned(),
-            "refactor.extract",
-            report,
-            Vec::new(),
-            deferred,
-        )?);
+        if report.validated.is_some() {
+            result.push(action(
+                server,
+                source.version,
+                "Extract literal".to_owned(),
+                "refactor.extract",
+                report,
+                Vec::new(),
+                deferred,
+            )?);
+        }
     }
 
     Ok(Some(result))
@@ -295,10 +310,13 @@ pub(crate) async fn linked(
 ) -> Result<Option<LinkedEditingRanges>> {
     let parameters_position = parameters.text_document_position_params;
 
+    let options = server.options.child();
+
     let (snapshot, position) = server.position(
         &parameters_position.text_document.uri,
         parameters_position.position,
         PositionQueryKind::PrepareRename,
+        &options,
     )?;
 
     let source = position.source;
@@ -307,6 +325,7 @@ pub(crate) async fn linked(
         server,
         EditRequest::Linked(LinkedRequest { snapshot, position }),
         parameters.work_done_progress_params.work_done_token,
+        &options,
     )
     .await?;
 
@@ -338,12 +357,12 @@ pub(crate) async fn edit(
     server: &Server,
     request: EditRequest,
     token: Option<ProgressToken>,
+    options: &Options,
 ) -> Result<EditReport> {
-    let options = server.options.child();
     let task = server.project.edit(request, options.clone());
 
     let report = server
-        .task(task, &options, token, "Preparing Luau edits")
+        .task(task, options, token, "Preparing Luau edits")
         .await?;
 
     if !server
@@ -372,7 +391,7 @@ pub(crate) async fn edit(
         };
 
         error.data = Some(
-            json!({"diagnostics":report.diagnostics,"rendered":rendered,"completion":report.completion}),
+            json!({"diagnostics":report.diagnostics,"rendered":rendered,"completion":report.completion,"guarantees":report.unavailable_guarantees}),
         );
 
         return Err(error);

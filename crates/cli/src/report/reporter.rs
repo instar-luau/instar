@@ -110,7 +110,7 @@ impl CommandReport {
             }
 
             Self::Format(report, mode) => {
-                if report.counts.unsuccessful != 0 || report.failed {
+                if report.counts.unsuccessful != 0 {
                     CommandStatus::UnsuccessfulFormatting
                 } else if matches!(mode, FormatMode::Check) && report.counts.changed != 0 {
                     CommandStatus::Findings

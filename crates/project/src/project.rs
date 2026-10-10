@@ -1,6 +1,6 @@
 use std::{
     io,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex, PoisonError, RwLock,
         atomic::{AtomicU64, Ordering},
@@ -8,11 +8,12 @@ use std::{
 };
 
 use instar_lint::{self as lint, FixSupport};
-use instar_shared::{Options, SourceIdentity};
+use instar_shared::{Options, SourceIdentity, SourceSnapshot};
 use serde_json::Value;
 
 use crate::{
     assets::{AssetRequest, AssetSnapshot},
+    capture::Capture,
     change::{ChangeBatch, ProjectChange},
     configuration::{
         CheckOverrides, FormatOverrides, LintOverrides, Operation, ProjectSettingsPatch,
@@ -65,9 +66,26 @@ impl Project {
         self.host.snapshot()
     }
 
+    /// Captures current source contents and their immutable project snapshot.
+    ///
+    /// # Errors
+    /// Returns interruption, filesystem, encoding, or conflicting-observation errors.
+    pub fn capture(
+        &self,
+        path: &Path,
+        options: &Options,
+    ) -> io::Result<(ProjectSnapshot, SourceSnapshot)> {
+        let mut capture = Capture::live(Arc::clone(&self.host));
+        let source = capture.source(path, options)?;
+
+        Ok((capture.snapshot, source))
+    }
+
     /// Reports whether all consulted input guards still match current state.
     pub fn current(&self, inputs: &[InputVersion]) -> bool {
-        self.snapshot().current(inputs)
+        let snapshot = self.snapshot();
+
+        snapshot.current(inputs)
     }
 
     /// Applies a change batch atomically and returns the resulting snapshot.
@@ -135,7 +153,7 @@ impl Project {
     /// Operation failures are returned when the task is awaited.
     pub fn edit(&self, request: EditRequest, options: Options) -> Task<EditReport> {
         self.execution.submit(options, move |runtime, options| {
-            Ok(runtime.edit(request, options))
+            runtime.edit(request, options)
         })
     }
 

@@ -17,7 +17,7 @@ use instar_luau::{
 
 use instar_shared::{
     Completion, ContextIdentity, Diagnostic, DiagnosticCategory, Event, EventPayload, FailureKind,
-    Location, OperationFailure, Options, Reason, Severity, SourceIdentity, SourceOutcome,
+    Location, OperationFailure, Options, Progress, Reason, Severity, SourceIdentity, SourceOutcome,
     SourceSnapshot, Span,
 };
 
@@ -129,7 +129,6 @@ struct ConfigurationLoading {
 
 struct ConfigurationLocation {
     context: ContextIdentity,
-    root: Option<PathBuf>,
     directory: PathBuf,
     base: PathBuf,
 }
@@ -354,6 +353,11 @@ impl Runtime {
             precedence: 1,
         };
 
+        if let OperationOverrides::Format(overrides) = overrides {
+            overrides.defaults.apply(&mut assembly.settings.formatting);
+            assembly.settings.formatting.validate()?;
+        }
+
         assembly.settings.language.flags.clone_from(&baseline);
 
         defaults(
@@ -437,9 +441,10 @@ impl Runtime {
                 ));
             }
 
-            return Err(invalid(
-                "instar.toml and instar.luau are competing definitions",
-            ));
+            return Err(invalid(format!(
+                "{}: instar.toml and instar.luau are competing definitions",
+                directory.display()
+            )));
         }
 
         if let Some(source) = capture.read(&language, options)? {
@@ -569,7 +574,20 @@ impl Runtime {
                     ));
                 }
 
-                return Err(error);
+                if let Some(failure) = error
+                    .get_ref()
+                    .and_then(|error| error.downcast_ref::<OperationFailure>())
+                {
+                    let mut failure = failure.clone();
+                    failure.message = format!("{}: {}", filename.display(), failure.message);
+
+                    return Err(io::Error::new(error.kind(), failure));
+                }
+
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!("{}: {error}", filename.display()),
+                ));
             }
         };
 
@@ -696,6 +714,17 @@ impl Runtime {
                 callback(event);
             }
         }));
+
+        evaluation.report(Event {
+            invocation: self.invocation,
+            operation: self.invocation,
+            payload: EventPayload::Progress(Progress {
+                phase: "configuration".to_owned(),
+                source: Some(input.source.version),
+                completed: 0,
+                total: None,
+            }),
+        });
 
         let outcome = self
             .workers
@@ -843,7 +872,6 @@ fn configuration_location(
 
     Ok(ConfigurationLocation {
         context,
-        root,
         directory,
         base,
     })
@@ -864,12 +892,6 @@ fn configuration_directories(
         let mut directories = location
             .directory
             .ancestors()
-            .take_while(|ancestor| {
-                location
-                    .root
-                    .as_ref()
-                    .is_none_or(|root| ancestor.starts_with(root))
-            })
             .map(Path::to_path_buf)
             .collect::<Vec<_>>();
 
@@ -951,12 +973,7 @@ fn discover_defaults(
     if !assembly.settings.resolution.sourcemaps_explicit
         && (!assembly.settings.environment.roblox_explicit || assembly.settings.environment.roblox)
     {
-        for ancestor in location.directory.ancestors().take_while(|ancestor| {
-            location
-                .root
-                .as_ref()
-                .is_none_or(|root| ancestor.starts_with(root))
-        }) {
+        for ancestor in location.directory.ancestors() {
             options.check()?;
             let map = ancestor.join("sourcemap.json");
 

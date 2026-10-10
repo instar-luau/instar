@@ -7,7 +7,7 @@ use std::{
     },
 };
 
-use instar_shared::{Cancellation, Completion};
+use instar_shared::{Cancellation, Completion, Options};
 use serde_json::json;
 use tokio::runtime::Handle;
 
@@ -34,6 +34,37 @@ pub(crate) struct ProgressGuard {
     token: ProgressToken,
     records: Arc<Mutex<HashMap<ProgressToken, ProgressRecord>>>,
     started: bool,
+    created: bool,
+}
+
+impl ProgressGuard {
+    pub(crate) async fn begin(mut self, title: &str, options: &Options) -> Result<Self> {
+        options.check().map_err(|error| failure(&error))?;
+
+        if self.created {
+            let request = self.client.create_work_done_progress(self.token.clone());
+
+            match options.deadline {
+                Some(deadline) => tokio::time::timeout_at(deadline.into(), request)
+                    .await
+                    .map_err(|_| failure(&Completion::TimedOut.error()))??,
+
+                None => request.await?,
+            }
+        }
+
+        drop(
+            self.client
+                .progress(self.token.clone(), title)
+                .with_cancel_button()
+                .begin()
+                .await,
+        );
+
+        self.started = true;
+
+        Ok(self)
+    }
 }
 
 impl Drop for ProgressGuard {
@@ -81,10 +112,9 @@ impl Server {
         }
     }
 
-    pub(crate) async fn begin_progress(
+    pub(crate) fn prepare_progress(
         &self,
         supplied: Option<ProgressToken>,
-        title: &str,
         cancellation: &Cancellation,
     ) -> Result<Option<ProgressGuard>> {
         let supported = self
@@ -123,29 +153,13 @@ impl Server {
             );
         }
 
-        let mut guard = ProgressGuard {
+        Ok(Some(ProgressGuard {
             client: self.client.clone(),
-            token: token.clone(),
+            token,
             records: Arc::clone(&self.progress),
             started: false,
-        };
-
-        if created {
-            self.client_request(self.client.create_work_done_progress(token.clone()))
-                .await?;
-        }
-
-        drop(
-            self.client
-                .progress(token, title)
-                .with_cancel_button()
-                .begin()
-                .await,
-        );
-
-        guard.started = true;
-
-        Ok(Some(guard))
+            created,
+        }))
     }
 
     pub(crate) async fn register(&self, registration: Registration) -> Result<()> {

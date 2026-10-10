@@ -1,1 +1,2 @@
 environment = { "groups" = [{ "namespace" = "@custom", "definitions" = ["missing.luau"] }] }
+linting = { "selected" = ["unscoped_variables"] }

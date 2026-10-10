@@ -242,6 +242,7 @@ async fn execute(
                 scope,
                 overrides,
                 mode,
+                snapshot: None,
             })
         }
 

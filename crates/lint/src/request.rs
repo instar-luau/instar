@@ -27,7 +27,7 @@ pub struct ResolvedDependency {
     /// Argument expression location.
     pub argument: Location,
 
-    /// Whether the supplied typed request is a constant path or instance.
+    /// Whether captured resolution establishes a constant path or instance.
     pub constant: bool,
 
     /// Decoded string path, established absence, or unavailable extraction.

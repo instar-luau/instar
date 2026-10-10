@@ -20,7 +20,7 @@ impl Server {
         validated: &ValidatedEdit,
         require_synchronized: bool,
     ) -> Result<WorkspaceEdit> {
-        let state = self.state.lock().expect("session state");
+        let mut state = self.state.lock().expect("session state");
 
         if !state.current(&self.project, validated.inputs()) {
             return Err(Error::content_modified());

@@ -235,7 +235,7 @@ fn informational_lint_retains_severity_and_success() -> io::Result<()> {
     let diagnostics = String::from_utf8_lossy(&output.stderr);
 
     assert!(
-        diagnostics.contains("note: binding is never read"),
+        diagnostics.contains("note[unused_variable]: binding is never read"),
         "{diagnostics}"
     );
 

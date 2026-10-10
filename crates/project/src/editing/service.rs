@@ -4,6 +4,8 @@ use instar_shared::{
     Completion, EditIdentity, EditIntent, EditProposal, Options, Reason, SourceVersion,
 };
 
+use instar_syntax::identifier;
+
 use super::request::{EditGuarantee, EditRequest, ValidatedEdit};
 
 use crate::{
@@ -12,7 +14,20 @@ use crate::{
 };
 
 impl Runtime {
-    pub(crate) fn edit(&mut self, request: EditRequest, options: &Options) -> EditReport {
+    pub(crate) fn edit(
+        &mut self,
+        request: EditRequest,
+        options: &Options,
+    ) -> io::Result<EditReport> {
+        if let EditRequest::Rename(request) = &request
+            && !identifier(&request.name)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "rename requires one non-keyword Luau identifier",
+            ));
+        }
+
         let snapshot = match &request {
             EditRequest::Rename(request) => &request.snapshot,
             EditRequest::Fixes(request) => &request.snapshot,
@@ -44,11 +59,22 @@ impl Runtime {
                 let snapshot = request.snapshot.clone();
                 let source = request.source;
 
-                self.organize(request, &mut report, options).and_then(|validated| match validated { Some(validated) => Ok(Some(validated)), None => self.unchanged(snapshot, source, EditIntent::Imports, options).map(Some) })
+                self.organize(request, &mut report, options)
+                    .and_then(|validated| match validated {
+                        Some(validated) => Ok(Some(validated)),
+
+                        None => self
+                            .unchanged(snapshot, source, EditIntent::Imports, options)
+                            .map(Some),
+                    })
             }
 
-            EditRequest::Extract(request) => self.extract(request, &mut report, options).and_then(|validated| validated.map(Some).ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "literal extraction cannot establish syntax and effect preservation for this selection"))),
-            EditRequest::Linked(request) => self.linked(request, &mut report, options).map(|()| None),
+            EditRequest::Extract(request) => self.extract(request, &mut report, options),
+
+            EditRequest::Linked(request) => {
+                self.linked(request, &mut report, options).map(|()| None)
+            }
+
             EditRequest::Save(request) => self.save(request, &mut report, options),
             EditRequest::Files(request) => self.files(request, &mut report, options).map(Some),
         });
@@ -112,7 +138,7 @@ impl Runtime {
         report.diagnostics.dedup();
         report.snapshots.push(report.snapshot.clone());
 
-        report
+        Ok(report)
     }
 
     fn unchanged(

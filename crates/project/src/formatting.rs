@@ -21,7 +21,10 @@ impl Runtime {
         request: &FormatRequest,
         options: &Options,
     ) -> io::Result<FormatReport> {
-        let mut capture = Capture::live(Arc::clone(&self.host));
+        let mut capture = request.snapshot.as_ref().map_or_else(
+            || Capture::live(Arc::clone(&self.host)),
+            |snapshot| Capture::new(Arc::clone(&self.host), snapshot.clone()),
+        );
 
         let selection = self.select(
             &request.invocation,

@@ -25,10 +25,13 @@ pub(crate) async fn prepare_calls(
 ) -> Result<Option<Vec<CallHierarchyItem>>> {
     let parameters_position = parameters.text_document_position_params;
 
+    let options = server.options.child();
+
     let (snapshot, position) = server.position(
         &parameters_position.text_document.uri,
         parameters_position.position,
         PositionQueryKind::Definition,
+        &options,
     )?;
 
     let report = server
@@ -40,6 +43,7 @@ pub(crate) async fn prepare_calls(
                 kind: HierarchyQueryKind::PrepareCalls,
             }),
             parameters.work_done_progress_params.work_done_token,
+            &options,
         )
         .await?;
 
@@ -62,8 +66,21 @@ pub(crate) async fn incoming(
 ) -> Result<Option<Vec<CallHierarchyIncomingCall>>> {
     let record = lazy(server, parameters.item.data.as_ref(), "calls")?;
 
+    let mut retained: CallHierarchyItem = serde_json::from_value(record.payload["item"].clone())
+        .map_err(|_| Error::internal_error())?;
+
+    retained.data.clone_from(&parameters.item.data);
+
+    if retained != parameters.item {
+        return Err(Error::invalid_params(
+            "hierarchy item does not match its result identity",
+        ));
+    }
+
     let identity: SemanticIdentity = serde_json::from_value(record.payload["identity"].clone())
         .map_err(|_| Error::internal_error())?;
+
+    let options = server.options.child();
 
     let report = server
         .query(
@@ -74,6 +91,7 @@ pub(crate) async fn incoming(
                 kind: HierarchyQueryKind::IncomingCalls,
             }),
             parameters.work_done_progress_params.work_done_token,
+            &options,
         )
         .await?;
 
@@ -114,8 +132,21 @@ pub(crate) async fn outgoing(
 ) -> Result<Option<Vec<CallHierarchyOutgoingCall>>> {
     let record = lazy(server, parameters.item.data.as_ref(), "calls")?;
 
+    let mut retained: CallHierarchyItem = serde_json::from_value(record.payload["item"].clone())
+        .map_err(|_| Error::internal_error())?;
+
+    retained.data.clone_from(&parameters.item.data);
+
+    if retained != parameters.item {
+        return Err(Error::invalid_params(
+            "hierarchy item does not match its result identity",
+        ));
+    }
+
     let identity: SemanticIdentity = serde_json::from_value(record.payload["identity"].clone())
         .map_err(|_| Error::internal_error())?;
+
+    let options = server.options.child();
 
     let report = server
         .query(
@@ -126,6 +157,7 @@ pub(crate) async fn outgoing(
                 kind: HierarchyQueryKind::OutgoingCalls,
             }),
             parameters.work_done_progress_params.work_done_token,
+            &options,
         )
         .await?;
 
@@ -166,10 +198,13 @@ pub(crate) async fn prepare_types(
 ) -> Result<Option<Vec<TypeHierarchyItem>>> {
     let parameters_position = parameters.text_document_position_params;
 
+    let options = server.options.child();
+
     let (snapshot, position) = server.position(
         &parameters_position.text_document.uri,
         parameters_position.position,
         PositionQueryKind::TypeDefinition,
+        &options,
     )?;
 
     let report = server
@@ -181,6 +216,7 @@ pub(crate) async fn prepare_types(
                 kind: HierarchyQueryKind::PrepareTypes,
             }),
             parameters.work_done_progress_params.work_done_token,
+            &options,
         )
         .await?;
 
@@ -221,8 +257,21 @@ async fn relatives(
 ) -> Result<Option<Vec<TypeHierarchyItem>>> {
     let record = lazy(server, item.data.as_ref(), "types")?;
 
+    let mut retained: TypeHierarchyItem = serde_json::from_value(record.payload["item"].clone())
+        .map_err(|_| Error::internal_error())?;
+
+    retained.data.clone_from(&item.data);
+
+    if retained != item {
+        return Err(Error::invalid_params(
+            "hierarchy item does not match its result identity",
+        ));
+    }
+
     let identity = serde_json::from_value(record.payload["identity"].clone())
         .map_err(|_| Error::internal_error())?;
+
+    let options = server.options.child();
 
     let report = server
         .query(
@@ -233,6 +282,7 @@ async fn relatives(
                 kind,
             }),
             token,
+            &options,
         )
         .await?;
 

@@ -31,6 +31,22 @@ namespace instar::native {
                 return true;
             }
 
+            bool visit(Luau::AstExprIfElse *expression) override {
+                if (expression->conditionLocal) {
+                    initializers.emplace(expression->conditionLocal, expression->condition);
+                }
+
+                return true;
+            }
+
+            bool visit(Luau::AstStatIf *statement) override {
+                if (statement->conditionLocal) {
+                    initializers.emplace(statement->conditionLocal, statement->condition);
+                }
+
+                return true;
+            }
+
             bool visit(Luau::AstStatLocal *statement) override {
                 for (size_t index = 0; index < statement->vars.size && index < statement->values.size; ++index) {
                     initializers.emplace(statement->vars.data[index], statement->values.data[index]);
@@ -169,7 +185,7 @@ namespace instar::native {
             }
 
             if (const auto *global = expression->as<Luau::AstExprGlobal>()) {
-                const std::string root(global->name.value);
+                std::string root(global->name.value);
 
                 if (!calls.global_writes.count(root) && (root == "script" || root == "game" || root == "workspace")) {
                     return root;
@@ -307,7 +323,13 @@ namespace instar::native {
                     offset(host, name, call->args.size ? call->args.data[0]->location.end : call->argLocation.end);
 
                 if (argument_start != site.argument_start || argument_end != site.argument_end) {
-                    throw std::invalid_argument("host/native require argument disagreement: " + name);
+                    throw std::invalid_argument(
+                        std::string(
+                            site.request_kind != 2 ? "host/native static require argument disagreement: "
+                                                   : "host/native require argument disagreement: "
+                        ) +
+                        name
+                    );
                 }
 
                 const bool stable = !calls.global_writes.count("require") && call->args.size == 1;
@@ -315,21 +337,20 @@ namespace instar::native {
                 const auto path = stable && !string ? instance_path(call->args.data[0], calls) : std::nullopt;
                 const auto request_kind = static_cast<uint8_t>(string ? 0 : path ? 1 : 2);
 
-                if (site.request_kind != request_kind || site.static_request != (request_kind != 2) ||
-                    std::string(site.request_text) != (string    ? *string
-                                                          : path ? *path
-                                                                 : "")) {
+                if (site.request_kind != request_kind || std::string(site.request_text) != (string    ? *string
+                                                                                               : path ? *path
+                                                                                                      : "")) {
                     throw std::invalid_argument("captured import request disagrees with native source: " + name);
                 }
 
-                if (!site.static_request && !site.target.empty()) {
+                if (!site.static_resolution && !site.target.empty()) {
                     throw std::invalid_argument("nonconstant import has a captured target");
                 }
 
                 const std::string target(site.target);
 
                 if (target.empty()) {
-                    if (site.static_request) {
+                    if (site.static_resolution) {
                         trace.exprs[call->args.data[0]] = Luau::ModuleInfo{};
                         trace.exprs[call] = Luau::ModuleInfo{};
                     }
@@ -381,7 +402,7 @@ namespace instar::native {
         }
 
         if (Luau::get<Luau::CodeTooComplex>(error) || Luau::get<Luau::UnificationTooComplex>(error) ||
-            Luau::get<Luau::NormalizationTooComplex>(error) || Luau::get<Luau::ModuleHasCyclicDependency>(error) ||
+            Luau::get<Luau::NormalizationTooComplex>(error) ||
             Luau::get<Luau::ConstraintSolvingIncompleteError>(error) || Luau::get<Luau::InternalError>(error)) {
             return NativeKind::Analysis;
         }

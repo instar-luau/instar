@@ -202,13 +202,11 @@ pub fn expand(tree: &Tree<'_>, requested: Span, options: &Options) -> SyntaxSele
         selected.indentation = indentation;
         selected.nested = nested;
 
-        let malformed = syntax.nodes.iter().any(|node| {
-            matches!(node.kind, NodeKind::Error | NodeKind::Missing { .. })
-                && node.span.start < range.end
-                && range.start <= node.span.end
-        });
+        let malformed = malformed(tree, &selected.statements, options);
 
-        if malformed
+        if options.interrupted().is_some() {
+            selected.unavailable = Some(Reason::FailedPrerequisite);
+        } else if malformed
             || syntax.diagnostics.iter().any(|diagnostic| {
                 diagnostic.span.start < range.end && range.start <= diagnostic.span.end
             })
@@ -218,6 +216,80 @@ pub fn expand(tree: &Tree<'_>, requested: Span, options: &Options) -> SyntaxSele
 
         return selected;
     }
+}
+
+fn malformed(tree: &Tree<'_>, statements: &[ListEntry], options: &Options) -> bool {
+    let syntax = tree.syntax();
+
+    let mut pending = statements
+        .iter()
+        .map(|entry| entry.node)
+        .collect::<Vec<_>>();
+
+    while let Some(index) = pending.pop() {
+        if options.interrupted().is_some() {
+            break;
+        }
+
+        if matches!(
+            syntax.node(index).kind,
+            NodeKind::Error
+                | NodeKind::Missing { .. }
+                | NodeKind::Function {
+                    body: Some(_),
+                    end: None,
+                    ..
+                }
+                | NodeKind::If { end: None, .. }
+                | NodeKind::While { end: None, .. }
+                | NodeKind::GenericFor { end: None, .. }
+                | NodeKind::NumericFor {
+                    end_keyword: None,
+                    ..
+                }
+                | NodeKind::Do { end: None, .. }
+                | NodeKind::Class { end: None, .. }
+                | NodeKind::Repeat { until: None, .. }
+                | NodeKind::Parameters { closing: None, .. }
+                | NodeKind::Arguments {
+                    opening: Some(_),
+                    closing: None,
+                    ..
+                }
+                | NodeKind::AttributeGroup { closing: None, .. }
+                | NodeKind::Generics { closing: None, .. }
+                | NodeKind::Group { closing: None, .. }
+                | NodeKind::Index { closing: None, .. }
+                | NodeKind::InstantiationArguments { closing: None, .. }
+                | NodeKind::Table { closing: None, .. }
+                | NodeKind::TableField {
+                    opening: Some(_),
+                    closing: None,
+                    ..
+                }
+                | NodeKind::TypeTable { closing: None, .. }
+                | NodeKind::TypeField {
+                    opening: Some(_),
+                    closing: None,
+                    ..
+                }
+                | NodeKind::TypeIndexer { closing: None, .. }
+                | NodeKind::TypeGroup { closing: None, .. }
+                | NodeKind::TypePack {
+                    opening: Some(_),
+                    closing: None,
+                    ..
+                }
+                | NodeKind::TypeArguments { closing: None, .. }
+                | NodeKind::TypeOf { closing: None, .. }
+        ) {
+            return true;
+        }
+
+        pending.extend(syntax.children(index));
+    }
+
+    false
 }
 
 fn trivia(tree: &Tree<'_>, range: Range<usize>) -> bool {

@@ -4,11 +4,11 @@ use std::{
     sync::{Arc, atomic::Ordering},
 };
 
-use instar_luau::{AnalysisPurpose, AnalysisResult};
+use instar_luau::{AnalysisPurpose, AnalysisResult, ModuleIdentity};
 
 use instar_shared::{
-    Completion, Diagnostic, DiagnosticCategory, Event, EventPayload, Options, Severity,
-    SourceOutcome, SourceVersion,
+    Availability, Completion, Diagnostic, DiagnosticCategory, Event, EventPayload, FindingIdentity,
+    Options, RelatedLocation, Severity, SourceOutcome, SourceVersion,
 };
 
 use instar_syntax::{DirectiveKind, directives, parse};
@@ -17,6 +17,7 @@ use crate::{
     cache::AnalysisEntry,
     capture::Capture,
     configuration::{DiagnosticPolicy, OperationOverrides, worker_options},
+    environments,
     execution::{Runtime, Work, WorkOutput, failure},
     graph::{ClosureRecipe, DependencyGraph},
     inputs::ProjectSnapshot,
@@ -64,25 +65,16 @@ impl Runtime {
             options,
         )?;
 
-        let (recipes, completion, mut findings) =
+        let (recipes, completion, closure_findings) =
             self.closures(&graph, AnalysisPurpose::Source, &[], &capture, options)?;
 
         let mut module_findings = graph.module_findings.clone();
+        module_findings.extend(closure_findings);
 
-        for diagnostic in &findings {
-            module_findings.extend(
-                graph
-                    .modules
-                    .keys()
-                    .filter(|module| module.source == diagnostic.primary.source.identity)
-                    .map(|module| ModuleDiagnostic {
-                        module: *module,
-                        diagnostic: diagnostic.clone(),
-                    }),
-            );
-        }
-
-        findings.extend(graph.diagnostics.clone());
+        let findings = module_findings
+            .iter()
+            .map(|finding| finding.diagnostic.clone())
+            .collect();
 
         let deferred = graph
             .modules
@@ -102,6 +94,15 @@ impl Runtime {
 
         let results = self.analyze(&recipes, options);
         collect_analysis(results, &graph, &mut state, options);
+        let prerequisites = dependency_findings(&graph, &state.module_findings);
+
+        state.findings.extend(
+            prerequisites
+                .iter()
+                .map(|finding| finding.diagnostic.clone()),
+        );
+
+        state.module_findings.extend(prerequisites);
 
         self.check_report(request, selected, graph, capture, state, options)
     }
@@ -212,9 +213,11 @@ impl Runtime {
             ..Counts::default()
         };
 
+        let inputs = capture.guards();
+
         Ok(CheckReport {
             snapshot: capture.snapshot,
-            inputs: capture.inputs.into_values().collect(),
+            inputs,
             sources,
             modules,
             module_findings,
@@ -311,6 +314,154 @@ impl Runtime {
     }
 }
 
+pub(crate) fn duplicate_resolution(
+    diagnostic: &Diagnostic,
+    graph: &DependencyGraph,
+    module: ModuleIdentity,
+) -> bool {
+    diagnostic.category == DiagnosticCategory::Resolution
+        && diagnostic.identity.producer() == "luau"
+        && diagnostic.code == "1012"
+        && graph.imports.iter().any(|import| {
+            import.importer == module
+                && import.failure.is_some()
+                && import.site.call.source == diagnostic.primary.source
+                && import.site.call.span.start < diagnostic.primary.span.end
+                && diagnostic.primary.span.start < import.site.call.span.end
+                && graph.module_findings.iter().any(|finding| {
+                    finding.module == module
+                        && finding.diagnostic.identity.producer() == "project"
+                        && finding.diagnostic.code == "resolution.unresolved"
+                        && finding.diagnostic.category == DiagnosticCategory::Resolution
+                        && finding.diagnostic.primary == import.site.argument
+                })
+        })
+}
+
+pub(crate) fn prerequisite_resolution(
+    diagnostic: &Diagnostic,
+    graph: &DependencyGraph,
+    module: ModuleIdentity,
+) -> Diagnostic {
+    let mut diagnostic = diagnostic.clone();
+
+    if diagnostic.category != DiagnosticCategory::Resolution {
+        return diagnostic;
+    }
+
+    for edge in &graph.edges {
+        if edge.importer != module
+            || edge.site.call.source != diagnostic.primary.source
+            || edge.site.call.span.start >= diagnostic.primary.span.end
+            || diagnostic.primary.span.start >= edge.site.call.span.end
+        {
+            continue;
+        }
+
+        let prerequisites = graph
+            .module_findings
+            .iter()
+            .filter(|finding| finding.module == edge.target)
+            .map(|finding| &finding.diagnostic)
+            .filter(|finding| {
+                finding.severity == Severity::Error
+                    && matches!(
+                        finding.category,
+                        DiagnosticCategory::Syntax
+                            | DiagnosticCategory::Analysis
+                            | DiagnosticCategory::Resolution
+                    )
+            })
+            .collect::<Vec<_>>();
+
+        if prerequisites.is_empty() {
+            continue;
+        }
+
+        diagnostic.category = DiagnosticCategory::Analysis;
+
+        diagnostic.message = format!(
+            "required module analysis is unavailable: {}",
+            diagnostic.message
+        );
+
+        for finding in prerequisites {
+            let related = RelatedLocation {
+                location: finding.primary,
+                message: finding.message.clone(),
+            };
+
+            if !diagnostic.related.contains(&related) {
+                diagnostic.related.push(related);
+            }
+        }
+
+        break;
+    }
+
+    diagnostic
+}
+
+pub(crate) fn dependency_findings(
+    graph: &DependencyGraph,
+    findings: &[ModuleDiagnostic],
+) -> Vec<ModuleDiagnostic> {
+    let mut result = Vec::new();
+
+    for edge in &graph.edges {
+        let source = &graph.modules[&edge.target].source;
+
+        let prerequisites = findings
+            .iter()
+            .filter(|finding| finding.module == edge.target)
+            .map(|finding| &finding.diagnostic)
+            .filter(|finding| {
+                finding.severity == Severity::Error
+                    && matches!(
+                        finding.category,
+                        DiagnosticCategory::Syntax
+                            | DiagnosticCategory::Analysis
+                            | DiagnosticCategory::Resolution
+                    )
+            })
+            .collect::<Vec<_>>();
+
+        if prerequisites.is_empty() {
+            continue;
+        }
+
+        let primary = edge.site.argument;
+        let code = "analysis.dependency";
+
+        result.push(ModuleDiagnostic {
+            module: edge.importer,
+            diagnostic: Diagnostic {
+                identity: FindingIdentity::new(
+                    "project",
+                    vec![primary.source, source.version],
+                    code,
+                    primary,
+                ),
+                code: code.to_owned(),
+                category: DiagnosticCategory::Analysis,
+                severity: Severity::Error,
+                message: "required module has unavailable analysis".to_owned(),
+                primary,
+                related: prerequisites
+                    .into_iter()
+                    .map(|finding| RelatedLocation {
+                        location: finding.primary,
+                        message: finding.message.clone(),
+                    })
+                    .collect(),
+                tags: Vec::new(),
+            },
+        });
+    }
+
+    result
+}
+
 fn collect_analysis(
     results: Vec<io::Result<Arc<AnalysisResult>>>,
     graph: &DependencyGraph,
@@ -324,6 +475,21 @@ fn collect_analysis(
 
                 for module in &result.modules {
                     let identity = module.analysis.module;
+
+                    if module.parsed.completion == Completion::Complete {
+                        state.findings.retain(|finding| {
+                            !(finding.category == DiagnosticCategory::Syntax
+                                && finding.identity.producer() == "syntax"
+                                && finding.primary.source == module.parsed.input.source.version)
+                        });
+
+                        state.module_findings.retain(|finding| {
+                            !(finding.diagnostic.category == DiagnosticCategory::Syntax
+                                && finding.diagnostic.identity.producer() == "syntax"
+                                && finding.diagnostic.primary.source
+                                    == module.parsed.input.source.version)
+                        });
+                    }
 
                     let covered = module
                         .completion
@@ -344,20 +510,36 @@ fn collect_analysis(
                                 .flat_map(|environment| &environment.diagnostics),
                         )
                     {
-                        if diagnostic.category == DiagnosticCategory::Syntax
-                            && graph.diagnostics.iter().any(|finding| {
-                                finding.category == DiagnosticCategory::Syntax
-                                    && finding.primary == diagnostic.primary
-                            })
-                        {
+                        if duplicate_resolution(diagnostic, graph, identity) {
                             continue;
                         }
+
+                        let diagnostic = prerequisite_resolution(diagnostic, graph, identity);
 
                         state.findings.push(diagnostic.clone());
 
                         state.module_findings.push(ModuleDiagnostic {
                             module: identity,
                             diagnostic: diagnostic.clone(),
+                        });
+                    }
+
+                    if let Some(environment) = &module.environment
+                        && graph.modules[&identity].environment.completion == Completion::Complete
+                        && (environment.completion != Completion::Complete
+                            || environment.availability != Availability::Available)
+                    {
+                        let diagnostic = environments::unavailable(
+                            &module.parsed.input.source,
+                            &environment.diagnostics,
+                            "requested declaration environment is unavailable".to_owned(),
+                        );
+
+                        state.findings.push(diagnostic.clone());
+
+                        state.module_findings.push(ModuleDiagnostic {
+                            module: identity,
+                            diagnostic,
                         });
                     }
 

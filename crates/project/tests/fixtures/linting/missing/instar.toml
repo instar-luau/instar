@@ -1,1 +1,2 @@
 environment = { "groups" = [{ "namespace" = "@custom", "definitions" = ["globals.luau"] }] }
+linting = { "selected" = ["divide_by_zero", "unscoped_variables", "LocalUnused"] }

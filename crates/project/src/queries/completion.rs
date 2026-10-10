@@ -2,6 +2,7 @@ use std::{
     collections::BTreeSet,
     io,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use instar_luau::{
@@ -18,7 +19,7 @@ use super::{
 };
 
 use crate::{
-    capture::Capture,
+    capture::{Capture, Listing},
     configuration::{BindingStyle, CheckOverrides, OperationOverrides, RequireStyle},
     execution::Runtime,
     graph::{DependencyGraph, ModuleNode, syntax_settings},
@@ -118,12 +119,19 @@ impl Runtime {
                 .map(String::as_str)
                 .chain(["self"])
             {
-                let name = format!("@{alias}");
+                let name = format!("@{alias}/");
 
                 if name.starts_with(&prefix) {
                     names.insert(name);
                 }
             }
+        }
+
+        if node.effective.settings.environment.roblox
+            && (node.map.is_some() || node.effective.settings.resolution.sourcemaps.len() == 1)
+            && "@game/".starts_with(&prefix)
+        {
+            names.insert("@game/".to_owned());
         }
 
         let base = if prefix.is_empty() {
@@ -134,7 +142,7 @@ impl Runtime {
 
         if let Some(base) = base {
             if let Some(path) = base.strip_prefix("@game/") {
-                mapped_import_names(node, path, base, &prefix, &mut names)?;
+                mapped_import_names(node, path, base, &prefix, capture, &mut names, options)?;
             } else {
                 Self::filesystem_import_names(node, base, &prefix, capture, &mut names, options)?;
             }
@@ -179,7 +187,7 @@ impl Runtime {
             )
         };
 
-        if let Some(entries) = capture.listing(&directory, options)? {
+        if let Listing::Directory(entries) = capture.listing(&directory, options)? {
             for path in entries {
                 options.check()?;
 
@@ -219,7 +227,7 @@ impl Runtime {
                     }
 
                     Err(error) if unavailable(&error) => {
-                        if capture.listing(&path, options)?.is_some() {
+                        if matches!(capture.listing(&path, options)?, Listing::Directory(_)) {
                             names.insert(format!("{name}/"));
                         }
                     }
@@ -242,7 +250,26 @@ impl Runtime {
         failures: &mut Vec<OperationFailure>,
         options: &Options,
     ) -> io::Result<()> {
-        for target in self.editor_targets(None, true, capture, None, options)? {
+        let selected = self.editor_targets(None, true, capture, None, options)?;
+
+        for target in &selected {
+            for group in &target.effective.settings.environment.groups {
+                for path in &group.definitions {
+                    if let Some(source) = capture.read(path, options)? {
+                        capture.declaration(&source)?;
+                    }
+                }
+
+                for path in &group.documentation {
+                    capture.read(path, options)?;
+                }
+            }
+        }
+
+        capture.admit_inventory(options)?;
+        capture.consult_inventory();
+
+        for target in selected {
             options.check()?;
 
             if target.identity == node.source.version.identity {
@@ -433,12 +460,14 @@ fn automatic_import_candidate(
     imports: &AutomaticImports,
     capture: &Capture,
 ) -> io::Result<Option<ImportCandidate>> {
-    let path = capture
+    let Some(path) = capture
         .snapshot
         .origin(target.identity)
         .and_then(SourceOrigin::path)
-        .ok_or_else(|| invalid("import candidate has no context"))?
-        .to_path_buf();
+        .map(Path::to_path_buf)
+    else {
+        return Ok(None);
+    };
 
     let policy = &target.effective.settings.selection.imports;
 
@@ -528,29 +557,51 @@ fn mapped_import_names(
     path: &str,
     base: &str,
     prefix: &str,
+    capture: &mut Capture,
     names: &mut BTreeSet<String>,
+    options: &Options,
 ) -> io::Result<()> {
-    if let Some((map, _)) = &node.map {
-        let mut current = map.root()?;
+    let map = if let Some((map, _)) = &node.map {
+        Arc::clone(map)
+    } else if let [path] = node.effective.settings.resolution.sourcemaps.as_slice() {
+        let source = capture.source(path, options)?;
 
-        for step in path
-            .trim_end_matches('/')
-            .split('/')
-            .filter(|step| !step.is_empty())
-        {
-            current = if step == ".." {
-                map.parent(current)?
-            } else {
-                map.child(current, step, false)?
-            };
-        }
+        Map::parse(path, &source)?
+    } else {
+        return Ok(());
+    };
 
-        for name in map.children(current) {
-            let candidate = format!("{base}{name}");
+    let mut current = map.root()?;
 
-            if candidate.starts_with(prefix) {
-                names.insert(candidate);
-            }
+    for step in path
+        .trim_end_matches('/')
+        .split('/')
+        .filter(|step| !step.is_empty())
+    {
+        current = if step == ".." {
+            map.parent(current)?
+        } else {
+            map.child(current, step, false)?
+        };
+    }
+
+    for name in map.children(current) {
+        let Ok(child) = map.child(current, name, false) else {
+            continue;
+        };
+
+        let suffix = if map.class(child) == "ModuleScript" {
+            ""
+        } else if map.children(child).next().is_some() {
+            "/"
+        } else {
+            continue;
+        };
+
+        let candidate = format!("{base}{name}{suffix}");
+
+        if candidate.starts_with(prefix) {
+            names.insert(candidate);
         }
     }
 

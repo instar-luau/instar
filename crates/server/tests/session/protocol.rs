@@ -8,7 +8,7 @@ use std::{
 use instar_project::Project;
 use instar_shared::{EventPayload, Options};
 use serde_json::{Value, json};
-use tokio::{sync::mpsc as asynchronous_channel, time};
+use tokio::{spawn, sync::mpsc as asynchronous_channel, time};
 
 use tower_lsp_server::{
     ClientSocket, LspService,
@@ -52,11 +52,10 @@ fn fixture(
 
     let project = Arc::new(Project::new(Vec::new()));
 
-    let (service, socket) = LspService::build_with_lifecycle_methods(|client| {
-        Server::new(client, Arc::clone(&project), options)
-    })
-    .custom_method("window/workDoneProgress/cancel", Server::cancel_progress)
-    .finish();
+    let (service, socket) =
+        LspService::build(|client| Server::new(client, Arc::clone(&project), options))
+            .custom_method("window/workDoneProgress/cancel", Server::cancel_progress)
+            .finish();
 
     (Dispatch { service }, receiver, socket, project)
 }
@@ -302,6 +301,8 @@ async fn dispatch_captures_in_receipt_order_and_rejects_obsolete_results() {
         json!({"textDocument":{"uri":uri},"options":{"tabSize":4,"insertSpaces":false}}),
     ));
 
+    let response = spawn(response);
+
     let next = job(&mut jobs).await;
 
     assert_eq!(
@@ -319,10 +320,13 @@ async fn dispatch_captures_in_receipt_order_and_rejects_obsolete_results() {
     assert!(
         response
             .await
+            .expect("formatting task")
             .expect("transport")
             .expect("response")
             .is_ok()
     );
+
+    assert!(jobs.try_recv().is_err());
 }
 
 #[tokio::test]
@@ -485,6 +489,8 @@ async fn semantic_work_does_not_block_edits_syntax_queries_or_shutdown() {
         json!({"textDocument":{"uri":uri},"options":{"tabSize":4,"insertSpaces":false}}),
     ));
 
+    let formatting = spawn(formatting);
+
     let formatting_job = job(&mut jobs).await;
 
     assert_eq!(
@@ -502,10 +508,13 @@ async fn semantic_work_does_not_block_edits_syntax_queries_or_shutdown() {
     assert!(
         formatting
             .await
+            .expect("formatting task")
             .expect("format transport")
             .expect("format response")
             .is_ok()
     );
+
+    assert!(jobs.try_recv().is_err());
 
     let symbols = dispatch.call(request(
         "textDocument/documentSymbol",
@@ -607,4 +616,47 @@ async fn workspace_queries_reject_changes_outside_previous_inputs() {
             .expect("shutdown response")
             .is_ok()
     );
+}
+
+#[tokio::test]
+async fn formatting_defaults_lose_to_configuration_in_one_task() {
+    let directory = tempfile::tempdir().expect("workspace directory");
+
+    fs::write(
+        directory.path().join("instar.toml"),
+        "formatting = { indent_style = \"spaces\", indent_width = 2, final_newline = true }\n",
+    )
+    .expect("formatting configuration");
+
+    let uri = Uri::from_file_path(directory.path().join("entry.luau")).expect("source URI");
+    let (mut dispatch, mut jobs, _socket, _project) = fixture(options());
+    initialize(&mut dispatch).await;
+
+    dispatch.call(notification(
+        "textDocument/didOpen",
+        json!({"textDocument":{"uri":uri,"languageId":"luau","version":1,"text":"local function run()\nreturn 1\nend"}}),
+    )).await.expect("open transport");
+
+    let pending = dispatch.call(request(
+        "textDocument/formatting",
+        1,
+        json!({"textDocument":{"uri":uri},"options":{"tabSize":8,"insertSpaces":false,"insertFinalNewline":false}}),
+    ));
+
+    execute(job(&mut jobs).await);
+
+    let response = pending
+        .await
+        .expect("format transport")
+        .expect("format response");
+
+    assert_eq!(
+        response.result(),
+        Some(&json!([{
+            "range":{"start":{"line":0,"character":0},"end":{"line":2,"character":3}},
+            "newText":"local function run()\n  return 1\nend\n"
+        }]))
+    );
+
+    assert!(jobs.try_recv().is_err());
 }

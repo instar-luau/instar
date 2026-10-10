@@ -50,7 +50,11 @@ pub(crate) fn module(identity: u64, text: &str, revision: u64) -> io::Result<Mod
         }),
         inference: InferenceSettings {
             required: true,
-            mode: InferenceMode::Nonstrict,
+            mode: if text.lines().next() == Some("--!strict") {
+                InferenceMode::Strict
+            } else {
+                InferenceMode::Nonstrict
+            },
             retained: vec![
                 SemanticCategory::Bindings,
                 SemanticCategory::Occurrences,

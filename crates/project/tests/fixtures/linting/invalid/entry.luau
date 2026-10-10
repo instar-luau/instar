@@ -1,1 +1,1 @@
-return Color3.new(255,0,0)
+return Color3.new(255,0,0), 1/0

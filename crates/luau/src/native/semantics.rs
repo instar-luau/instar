@@ -405,6 +405,9 @@ pub struct CallFact {
     /// The exact captured source range.
     pub location: Location,
 
+    /// The exact callee expression range within this call.
+    pub callee: Location,
+
     /// The enclosing function or module identity.
     pub caller: SemanticIdentity,
 

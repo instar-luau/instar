@@ -6,13 +6,13 @@ use instar_project::{
     FormatMode, FormatOverrides, FormatRequest, FormattingPatch, Input, Invocation,
 };
 
-use instar_shared::{Completion, Span};
+use instar_shared::{Completion, Reason, SourceSnapshot, Span};
 
 use tower_lsp_server::{
     gen_lsp_types::{
         DocumentFormattingParams, DocumentOnTypeFormattingParams, DocumentRangeFormattingParams,
-        DocumentRangesFormattingParams, FormattingOptions, ProgressToken, Range,
-        TextEdit as ProtocolTextEdit, Uri,
+        DocumentRangesFormattingParams, FormattingOptions, PositionEncodingKind, ProgressToken,
+        Range, TextEdit as ProtocolTextEdit, Uri,
     },
     jsonrpc::{Error, Result},
 };
@@ -26,7 +26,7 @@ pub(crate) async fn whole(
     formatted(
         server,
         parameters.text_document.uri,
-        FormatScope::Whole,
+        |_, _| Ok(FormatScope::Whole),
         parameters.options,
         parameters.work_done_progress_params.work_done_token,
     )
@@ -37,16 +37,10 @@ pub(crate) async fn range(
     server: &Server,
     parameters: DocumentRangeFormattingParams,
 ) -> Result<Option<Vec<ProtocolTextEdit>>> {
-    let scope = ranges(
-        server,
-        &parameters.text_document.uri,
-        vec![parameters.range],
-    )?;
-
     formatted(
         server,
         parameters.text_document.uri,
-        scope,
+        |source, encoding| ranges(source, encoding, vec![parameters.range]),
         parameters.options,
         parameters.work_done_progress_params.work_done_token,
     )
@@ -69,12 +63,10 @@ pub(crate) async fn multiple(
         ));
     }
 
-    let scope = ranges(server, &parameters.text_document.uri, parameters.ranges)?;
-
     formatted(
         server,
         parameters.text_document.uri,
-        scope,
+        |source, encoding| ranges(source, encoding, parameters.ranges),
         parameters.options,
         parameters.work_done_progress_params.work_done_token,
     )
@@ -98,31 +90,32 @@ pub(crate) async fn character(
         ));
     }
 
-    let (_, source) = server.capture(&parameters.text_document.uri)?;
-    let encoding = server.state.lock().expect("session state").encoding.clone();
-    let offset = position::offset(&source.text, parameters.position, &encoding)?;
-
     formatted(
         server,
         parameters.text_document.uri,
-        FormatScope::OnType { offset, trigger },
+        |source, encoding| {
+            let offset = position::offset(&source.text, parameters.position, encoding)?;
+
+            Ok(FormatScope::OnType { offset, trigger })
+        },
         parameters.options,
         None,
     )
     .await
 }
 
-fn ranges(server: &Server, uri: &Uri, ranges: Vec<Range>) -> Result<FormatScope> {
-    let (_, source) = server.capture(uri)?;
-    let encoding = server.state.lock().expect("session state").encoding.clone();
-
+fn ranges(
+    source: &SourceSnapshot,
+    encoding: &PositionEncodingKind,
+    ranges: Vec<Range>,
+) -> Result<FormatScope> {
     let ranges = ranges
         .into_iter()
         .map(|range| {
             Span::new(
-                position::offset(&source.text, range.start, &encoding)?,
-                position::offset(&source.text, range.end, &encoding)?,
-                &source,
+                position::offset(&source.text, range.start, encoding)?,
+                position::offset(&source.text, range.end, encoding)?,
+                source,
             )
             .map_err(|error| failure(&error))
         })
@@ -134,12 +127,21 @@ fn ranges(server: &Server, uri: &Uri, ranges: Vec<Range>) -> Result<FormatScope>
 async fn formatted(
     server: &Server,
     uri: Uri,
-    scope: FormatScope,
+    scope: impl FnOnce(&SourceSnapshot, &PositionEncodingKind) -> Result<FormatScope>,
     formatting: FormattingOptions,
     token: Option<ProgressToken>,
 ) -> Result<Option<Vec<ProtocolTextEdit>>> {
-    let (_, source) = server.capture(&uri)?;
-    server.state.lock().expect("session state").editable(&uri)?;
+    let options = server.options.child();
+    let (snapshot, source) = server.capture(&uri, &options)?;
+
+    let encoding = {
+        let state = server.state.lock().expect("session state");
+        state.editable(&uri)?;
+
+        state.encoding.clone()
+    };
+
+    let scope = scope(&source, &encoding)?;
 
     let width = NonZeroUsize::new(
         usize::try_from(formatting.tab_size)
@@ -147,14 +149,18 @@ async fn formatted(
     )
     .ok_or_else(|| Error::invalid_params("tab size must be positive"))?;
 
+    let whole = matches!(scope, FormatScope::Whole);
+
+    let invocation = Invocation {
+        inputs: vec![Input::Source(source.version.identity)],
+        ..Invocation::default()
+    };
+
     let request = FormatRequest {
-        invocation: Invocation {
-            inputs: vec![Input::Source(source.version.identity)],
-            ..Invocation::default()
-        },
+        invocation,
         scope,
         overrides: FormatOverrides {
-            formatting: FormattingPatch {
+            defaults: FormattingPatch {
                 indent_style: Some(if formatting.insert_spaces {
                     IndentStyle::Spaces
                 } else {
@@ -167,9 +173,9 @@ async fn formatted(
             ..FormatOverrides::default()
         },
         mode: FormatMode::Preview,
+        snapshot: Some(snapshot),
     };
 
-    let options = server.options.child();
     let task = server.project.format(request, options.clone());
 
     let report = server
@@ -190,6 +196,27 @@ async fn formatted(
     }
 
     if report.failed {
+        if !whole
+            && report
+                .diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.code == "syntax.parse")
+            && let [formatted] = report.results.as_slice()
+            && formatted.result.source == source.version
+            && formatted.result.completion == Completion::Complete
+            && formatted.proposal.is_none()
+            && matches!(
+                &formatted.result.outcome,
+                FormatOutcome::Unavailable {
+                    reason: Reason::UnsupportedSyntax,
+                    preservation: None,
+                    ..
+                }
+            )
+        {
+            return Ok(None);
+        }
+
         return Err(Error::invalid_params(
             report
                 .diagnostics
@@ -240,5 +267,5 @@ async fn formatted(
         }
     }
 
-    Ok(Some(edits))
+    Ok((!edits.is_empty()).then_some(edits))
 }
