@@ -81,7 +81,7 @@ impl Project {
         Ok((capture.snapshot, source))
     }
 
-    /// Reports whether all consulted input guards still match current state.
+    /// Reports whether all consulted inputs are fresh and match current state.
     pub fn current(&self, inputs: &[InputVersion]) -> bool {
         let snapshot = self.snapshot();
 

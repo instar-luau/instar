@@ -320,12 +320,13 @@ impl ProjectSnapshot {
             .unwrap_or_else(|| ContextIdentity::new(0))
     }
 
-    /// Checks complete input values and revisions against this snapshot.
+    /// Checks that input values are fresh and their revisions match this snapshot.
     #[must_use]
     pub fn current(&self, inputs: &[InputVersion]) -> bool {
-        inputs
-            .iter()
-            .all(|input| self.input_versions.get(&input.identity) == Some(input))
+        inputs.iter().all(|input| {
+            input.state != InputState::Stale
+                && self.input_versions.get(&input.identity) == Some(input)
+        })
     }
 
     pub(crate) fn transition(&self, batch: ChangeBatch) -> io::Result<Self> {

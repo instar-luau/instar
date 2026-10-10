@@ -177,10 +177,25 @@ impl Runtime {
         let mut selected = self.editor_targets(None, true, capture, None, options)?;
 
         for source in capture.snapshot.sources().cloned().collect::<Vec<_>>() {
+            if !module(&capture.snapshot, source.version.identity) {
+                continue;
+            }
+
+            let source = if let Some(SourceOrigin::Disk(path)) =
+                capture.snapshot.origin(source.version.identity).cloned()
+            {
+                let Some(source) = capture.read(&path, options)? else {
+                    continue;
+                };
+
+                source
+            } else {
+                source
+            };
+
             if !selected
                 .iter()
                 .any(|target| target.identity == source.version.identity)
-                && module(&capture.snapshot, source.version.identity)
             {
                 selected.extend(self.editor_targets(
                     Some(source.version.identity),

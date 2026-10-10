@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, PoisonError},
 };
 
-use instar_shared::{Event, EventPayload, Options, SourceSnapshot, SourceVersion};
+use instar_shared::{Event, EventPayload, Options, Reason, SourceSnapshot, SourceVersion};
 
 use crate::{
     change::{ChangeBatch, ProjectChange, SourceChange},
@@ -638,7 +638,7 @@ impl Capture {
 
         let previous = self.snapshot.source_at(path).cloned();
         let source_identity = previous.as_ref().map(|source| source.version.identity);
-        let (proposed, batch) = self.disk_observation(path, bytes)?;
+        let (mut proposed, batch) = self.disk_observation(path, bytes)?;
         let source = proposed.source_at(path).cloned();
 
         let identity = source
@@ -673,6 +673,23 @@ impl Capture {
             *current = current.transition(batch)?;
         } else if (refreshing || !self.frozen) && !published && !compatible {
             return Err(invalid("stale source conflicts with live history"));
+        }
+
+        if published {
+            for (identity, input) in self.snapshot.input_versions.iter() {
+                if let InputIdentity::Directory(directory) = identity
+                    && input.state != InputState::Stale
+                    && current.input_versions.get(identity) == Some(input)
+                    && proposed
+                        .input_versions
+                        .get(identity)
+                        .is_some_and(|observed| observed.state == InputState::Stale)
+                    && read_listing(directory, None)?.state() == input.state
+                {
+                    Arc::make_mut(&mut proposed.input_versions)
+                        .insert(identity.clone(), input.clone());
+                }
+            }
         }
 
         self.snapshot = proposed;
@@ -891,11 +908,65 @@ impl Capture {
                 .as_ref()
                 .is_some_and(|input| input.state == InputState::Stale)
         {
-            return Err(invalid("stale input conflicts with live history"));
+            return self.refresh_observation(identity, input.state, &mut current);
         }
 
         self.snapshot = proposed;
         drop(current);
+        self.consult_input(input);
+
+        Ok(())
+    }
+
+    fn refresh_observation(
+        &mut self,
+        identity: InputIdentity,
+        state: InputState,
+        current: &mut ProjectSnapshot,
+    ) -> io::Result<()> {
+        let expected = current
+            .input_versions
+            .get(&identity)
+            .cloned()
+            .ok_or_else(|| Reason::StaleQuery.error())?;
+
+        if expected.state != InputState::Stale
+            && !match &identity {
+                InputIdentity::Directory(path) => read_listing(path, None)?.state() == state,
+                _ => false,
+            }
+        {
+            return Err(Reason::StaleQuery.error());
+        }
+
+        if expected.state == state {
+            let protected = except(current, &BTreeSet::from([identity]));
+            self.snapshot = self.snapshot.admit(current, &protected)?;
+            self.consult_input(expected);
+
+            return Ok(());
+        }
+
+        let input = InputVersion {
+            identity: identity.clone(),
+            revision: expected
+                .revision
+                .checked_add(1)
+                .ok_or_else(|| invalid("input revision overflow"))?,
+            state,
+        };
+
+        let proposed = current.transition(ChangeBatch {
+            changes: vec![ProjectChange::Input {
+                expected: Some(expected),
+                current: input.clone(),
+            }],
+        })?;
+
+        let protected = except(&proposed, &BTreeSet::from([identity]));
+        let snapshot = self.snapshot.admit(&proposed, &protected)?;
+        *current = proposed;
+        self.snapshot = snapshot;
         self.consult_input(input);
 
         Ok(())
@@ -1019,7 +1090,7 @@ fn invalid(message: &str) -> io::Error {
 mod tests {
     use std::{fs, io, sync::Arc};
 
-    use instar_shared::Options;
+    use instar_shared::{Options, Reason};
 
     use super::{Capture, Listing};
 
@@ -1144,6 +1215,44 @@ mod tests {
     }
 
     #[test]
+    fn overlapping_deletions_retain_resolved_directory_observations() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("entry.luau");
+        fs::write(&path, "return 1")?;
+        let project = Project::new(Vec::new());
+        let options = Options::default();
+        let mut capture = Capture::live(Arc::clone(&project.host));
+        capture.source(&path, &options)?;
+        capture.listing(directory.path(), &options)?;
+        fs::remove_file(&path)?;
+
+        project.change(ChangeBatch {
+            changes: vec![ProjectChange::Invalidate {
+                paths: vec![path.clone()],
+            }],
+        })?;
+
+        let mut frozen = Capture::new(Arc::clone(&project.host), project.snapshot());
+        let mut live = Capture::live(Arc::clone(&project.host));
+        assert!(live.read(&path, &options)?.is_none());
+
+        assert_eq!(
+            live.listing(directory.path(), &options)?,
+            Listing::Directory(Vec::new())
+        );
+
+        assert_eq!(
+            frozen.listing(directory.path(), &options)?,
+            Listing::Directory(Vec::new())
+        );
+
+        assert!(frozen.read(&path, &options)?.is_none());
+        assert!(project.current(&frozen.guards()));
+
+        Ok(())
+    }
+
+    #[test]
     fn stale_frozen_listings_reuse_only_compatible_observations() -> io::Result<()> {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("entry.luau");
@@ -1167,6 +1276,7 @@ mod tests {
         })?;
 
         let stale = capture.snapshot.clone();
+        assert!(!stale.current(&[stale.input_versions[&identity].clone()]));
         fs::write(&path, "return 1")?;
         let mut other = Capture::live(Arc::clone(&project.host));
         other.listing(directory.path(), &options)?;
@@ -1183,6 +1293,16 @@ mod tests {
             }],
         })?;
 
+        let mut refreshing = Capture::new(Arc::clone(&project.host), stale.clone());
+        refreshing.begin_consultation();
+
+        assert_eq!(
+            refreshing.listing(directory.path(), &options)?,
+            Listing::Directory(vec![path.clone()])
+        );
+
+        assert!(project.current(&refreshing.end_consultation()));
+
         other.listing(directory.path(), &options)?;
         assert!(project.current(&other.guards()));
 
@@ -1192,7 +1312,7 @@ mod tests {
         );
 
         project.capture(&path, &options)?;
-        let mut frozen = Capture::new(Arc::clone(&project.host), stale);
+        let mut frozen = Capture::new(Arc::clone(&project.host), stale.clone());
         frozen.begin_consultation();
         frozen.listing(directory.path(), &options)?;
         assert!(project.current(&frozen.end_consultation()));
@@ -1200,7 +1320,7 @@ mod tests {
 
         assert_eq!(
             capture.listing(directory.path(), &options)?,
-            Listing::Directory(vec![path])
+            Listing::Directory(vec![path.clone()])
         );
 
         assert!(project.current(&capture.guards()));
@@ -1210,6 +1330,56 @@ mod tests {
             historical.listing(directory.path(), &options)?,
             Listing::Directory(Vec::new())
         );
+
+        let mut conflicting = Capture::new(Arc::clone(&project.host), stale);
+        let mut current = project.snapshot();
+        let previous = current.input_versions[&identity].clone();
+
+        let error = conflicting
+            .refresh_observation(
+                identity.clone(),
+                InputState::Directory(Vec::new()),
+                &mut current,
+            )
+            .expect_err("a stale observation must not replace resolved live history");
+
+        assert_eq!(
+            error
+                .get_ref()
+                .and_then(|error| error.downcast_ref::<Reason>()),
+            Some(&Reason::StaleQuery)
+        );
+
+        assert_eq!(current.input_versions[&identity], previous);
+        assert!(project.current(&[previous.clone()]));
+
+        fs::remove_file(&path)?;
+
+        conflicting.refresh_observation(
+            identity.clone(),
+            InputState::Directory(Vec::new()),
+            &mut current,
+        )?;
+
+        assert_eq!(
+            current.input_versions[&identity].state,
+            InputState::Directory(Vec::new())
+        );
+
+        assert_eq!(
+            current.input_versions[&identity].revision,
+            previous.revision + 1
+        );
+
+        let observed = current.input_versions[&identity].clone();
+
+        conflicting.refresh_observation(
+            identity.clone(),
+            InputState::Directory(Vec::new()),
+            &mut current,
+        )?;
+
+        assert_eq!(current.input_versions[&identity], observed);
 
         Ok(())
     }
