@@ -9,17 +9,15 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-instar-analysis.workspace = true
+instar-shared.workspace = true
 instar-syntax.workspace = true
 
 schemars.workspace = true
+globset.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 unicode-width = "0.2"
-vermis.workspace = true
 
 [dev-dependencies]
-glob.workspace = true
 toml.workspace = true
 
 [lints]

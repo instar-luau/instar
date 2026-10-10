@@ -1,32 +1,28 @@
-use std::time::Instant;
-
-use instar_analysis::{Completion, Options, Reason};
+use instar_shared::{Completion, Options, Reason, SourceSnapshot};
 use unicode_width::UnicodeWidthStr;
 
-use vermis::{
+use instar_syntax::{
+    Tree as SnapshotTree,
     emitter::{Emitter, LineEnding as EmittedLineEnding},
+    parse,
     token::{Keyword, Symbol, TokenKind},
     tree::{TokenIndex, Tree},
 };
 
 use super::{
-    builder::Plan,
     document::{Document, Layout},
+    planning::Plan,
 };
 
-use crate::{
-    Result as Output,
-    configuration::{Configuration, IndentStyle, LineEnding},
-};
+use crate::settings::{FormatSettings, IndentStyle, LineEnding};
 
 struct Renderer<'tree, 'source> {
     tree: &'tree Tree<'source>,
-    configuration: &'tree Configuration,
+    configuration: &'tree FormatSettings,
     options: &'tree Options,
-    started: Instant,
-    interruption: Option<Reason>,
+    interruption: Option<Completion>,
     emitter: Option<Emitter<'source>>,
-    replacements: &'tree [Option<Box<(Tree<'source>, TokenIndex)>>],
+    replacements: &'tree [Option<Box<(SnapshotTree<'source>, TokenIndex)>>],
     indentation: usize,
     column: usize,
     lines: usize,
@@ -41,7 +37,8 @@ impl Renderer<'_, '_> {
         for item in document {
             self.interruption = self
                 .interruption
-                .or_else(|| self.options.interrupted(self.started));
+                .clone()
+                .or_else(|| self.options.interrupted());
 
             if self.interruption.is_some() || self.exceeded {
                 return;
@@ -136,7 +133,6 @@ impl Renderer<'_, '_> {
             tree: self.tree,
             configuration: self.configuration,
             options: self.options,
-            started: self.started,
             interruption: None,
             emitter: None,
             replacements: self.replacements,
@@ -159,7 +155,7 @@ impl Renderer<'_, '_> {
 
         let (tree, token) = self.replacements[index.get()]
             .as_deref()
-            .map_or((self.tree, index), |(tree, token)| (tree, *token));
+            .map_or((self.tree, index), |(tree, token)| (tree.syntax(), *token));
 
         if let Some(emitter) = &mut self.emitter {
             emitter.token(tree, token);
@@ -235,13 +231,14 @@ fn columns(bytes: &[u8], mut column: usize, tab_width: usize) -> (usize, usize) 
     (column, maximum)
 }
 
-pub(super) fn emit(
-    tree: &Tree<'_>,
-    configuration: &Configuration,
+pub(crate) fn emit(
+    snapshot: &SnapshotTree<'_>,
+    configuration: &FormatSettings,
     plan: &Plan,
     options: &Options,
-    started: Instant,
-) -> Output {
+) -> Result<Vec<u8>, Completion> {
+    let tree = snapshot.syntax();
+
     let line_ending = match configuration.line_ending {
         LineEnding::Lf => EmittedLineEnding::LineFeed,
         LineEnding::Crlf => EmittedLineEnding::CarriageReturnLineFeed,
@@ -250,26 +247,32 @@ pub(super) fn emit(
     let mut sources = Vec::new();
 
     for quote in &plan.quotes {
-        if let Some(reason) = options.interrupted(started) {
-            return Output::interrupted(reason);
+        if let Some(reason) = options.interrupted() {
+            return Err(reason);
         }
 
-        sources.push(quote.as_ref().map(|quote| {
-            let mut emitter = Emitter::new(line_ending);
-            emitter.keyword(Keyword::Return);
-            emitter.spaces(1);
-            let mut source = emitter.finish().into_owned();
-            source.extend_from_slice(quote);
+        sources.push(
+            quote
+                .as_ref()
+                .map(|quote| {
+                    let mut emitter = Emitter::new(line_ending);
+                    emitter.keyword(Keyword::Return);
+                    emitter.spaces(1);
+                    let mut source = emitter.finish().into_owned();
+                    source.extend_from_slice(quote);
 
-            source
-        }));
+                    SourceSnapshot::from_bytes(snapshot.snapshot().version, &source)
+                        .map_err(|_| Completion::Incomplete(vec![Reason::UnsupportedSyntax]))
+                })
+                .transpose()?,
+        );
     }
 
     let mut replacements = Vec::new();
 
     for source in &sources {
-        if let Some(reason) = options.interrupted(started) {
-            return Output::interrupted(reason);
+        if let Some(reason) = options.interrupted() {
+            return Err(reason);
         }
 
         let Some(source) = source else {
@@ -277,28 +280,33 @@ pub(super) fn emit(
             continue;
         };
 
-        let replacement = vermis::parse(source);
+        let replacement = parse(source, snapshot.settings(), options);
+
+        if replacement.completion != Completion::Complete {
+            return Err(replacement.completion);
+        }
 
         if !replacement.diagnostics.is_empty() {
-            return Output::failed("quoted-string transformation produced invalid syntax");
+            return Err(Completion::Incomplete(vec![Reason::UnsupportedSyntax]));
         }
 
         let Some(token) = replacement
+            .tree
+            .syntax()
             .tokens
             .iter()
             .position(|token| token.kind == TokenKind::QuotedString)
         else {
-            return Output::failed("quoted-string transformation did not produce a string token");
+            return Err(Completion::Incomplete(vec![Reason::UnsupportedSyntax]));
         };
 
-        replacements.push(Some(Box::new((replacement, TokenIndex::new(token)))));
+        replacements.push(Some(Box::new((replacement.tree, TokenIndex::new(token)))));
     }
 
     let mut renderer = Renderer {
         tree,
         configuration,
         options,
-        started,
         interruption: None,
         emitter: Some(Emitter::from_tree(tree, line_ending)),
         replacements: &replacements,
@@ -313,11 +321,8 @@ pub(super) fn emit(
 
     renderer.render(&plan.document, false);
 
-    if let Some(reason) = renderer
-        .interruption
-        .or_else(|| options.interrupted(started))
-    {
-        return Output::interrupted(reason);
+    if let Some(reason) = renderer.interruption.or_else(|| options.interrupted()) {
+        return Err(reason);
     }
 
     if renderer.emitted {
@@ -328,15 +333,9 @@ pub(super) fn emit(
             .newline();
     }
 
-    Output {
-        output: Some(
-            renderer
-                .emitter
-                .expect("output renderer")
-                .finish()
-                .into_owned(),
-        ),
-        diagnostics: Vec::new(),
-        completion: Completion::Complete,
-    }
+    Ok(renderer
+        .emitter
+        .expect("output renderer")
+        .finish()
+        .into_owned())
 }

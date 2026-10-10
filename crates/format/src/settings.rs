@@ -1,24 +1,14 @@
 //! Formatter configuration and require grouping policies.
 use std::{collections::BTreeSet, io, num::NonZeroUsize, slice};
 
-use instar_analysis::{error::invalid, selection};
+use instar_shared::error::invalid;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Effective formatter settings after configuration inheritance.
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
-pub struct Configuration {
-    /// Included file patterns, inheriting global selection when omitted.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "Vec<String>")]
-    pub include: Option<Vec<String>>,
-
-    /// Excluded file patterns, inheriting global selection when omitted.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "Vec<String>")]
-    pub exclude: Option<Vec<String>>,
-
+pub struct FormatSettings {
     /// Target line width.
     pub width: NonZeroUsize,
 
@@ -36,32 +26,31 @@ pub struct Configuration {
 
     /// Require ordering and grouping settings.
     pub requires: Requires,
+
+    /// Emit a final line ending for whole-source formatting.
+    pub final_newline: bool,
 }
 
-impl Default for Configuration {
+impl Default for FormatSettings {
     fn default() -> Self {
         Self {
-            include: None,
-            exclude: None,
             width: NonZeroUsize::new(120).expect("120 is nonzero"),
             indent_style: IndentStyle::default(),
             indent_width: NonZeroUsize::new(4).expect("4 is nonzero"),
             line_ending: LineEnding::default(),
             quote_style: QuoteStyle::default(),
             requires: Requires::default(),
+            final_newline: true,
         }
     }
 }
 
-impl Configuration {
-    /// Validates file patterns and require groups.
+impl FormatSettings {
+    /// Validates require ordering and grouping settings.
     ///
     /// # Errors
     /// Returns an error for invalid globs or invalid require group names or patterns.
     pub fn validate(&self) -> io::Result<()> {
-        selection::validate(self.include.as_deref(), "format.include")?;
-        selection::validate(self.exclude.as_deref(), "format.exclude")?;
-
         self.requires.validate()
     }
 }
@@ -112,7 +101,7 @@ pub enum QuoteStyle {
 }
 
 /// Require ordering and grouping settings.
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Requires {
     /// Ordering policy for requires.
@@ -183,7 +172,7 @@ impl Requires {
                             )));
                         }
 
-                        selection::validate(
+                        validate_patterns(
                             Some(slice::from_ref(pattern)),
                             "format.requires.groups",
                         )?;
@@ -232,7 +221,7 @@ pub enum BlankLines {
 }
 
 /// A built-in group name or a custom named pattern group.
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(untagged)]
 pub enum Group {
     /// A built-in require classification.
@@ -257,7 +246,7 @@ pub enum BuiltinGroup {
 }
 
 /// A named group matching require paths against glob patterns.
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CustomGroup {
     /// Unique nonempty name, distinct from built-in names.
@@ -267,4 +256,81 @@ pub struct CustomGroup {
     /// Nonempty list of nonempty glob patterns.
     #[schemars(length(min = 1))]
     pub patterns: Vec<String>,
+}
+
+/// Typed command or layer overrides.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct FormatOverrides {
+    /// Target width override.
+    pub width: Option<NonZeroUsize>,
+
+    /// Indentation style override.
+    pub indent_style: Option<IndentStyle>,
+
+    /// Indentation width override.
+    pub indent_width: Option<NonZeroUsize>,
+
+    /// Line ending override.
+    pub line_ending: Option<LineEnding>,
+
+    /// Quote policy override.
+    pub quote_style: Option<QuoteStyle>,
+
+    /// Require ordering override.
+    pub requires: Option<Requires>,
+
+    /// Final newline override.
+    pub final_newline: Option<bool>,
+}
+
+impl FormatOverrides {
+    /// Applies overrides only after validating the complete effective settings.
+    ///
+    /// # Errors
+    /// Returns invalid require groups without changing the input.
+    pub fn apply(&self, settings: &mut FormatSettings) -> io::Result<()> {
+        let mut proposed = settings.clone();
+
+        if let Some(value) = self.width {
+            proposed.width = value;
+        }
+
+        if let Some(value) = self.indent_style {
+            proposed.indent_style = value;
+        }
+
+        if let Some(value) = self.indent_width {
+            proposed.indent_width = value;
+        }
+
+        if let Some(value) = self.line_ending {
+            proposed.line_ending = value;
+        }
+
+        if let Some(value) = self.quote_style {
+            proposed.quote_style = value;
+        }
+
+        if let Some(value) = &self.requires {
+            proposed.requires = value.clone();
+        }
+
+        if let Some(value) = self.final_newline {
+            proposed.final_newline = value;
+        }
+
+        proposed.validate()?;
+        *settings = proposed;
+
+        Ok(())
+    }
+}
+
+fn validate_patterns(patterns: Option<&[String]>, setting: &str) -> io::Result<()> {
+    for pattern in patterns.into_iter().flatten() {
+        globset::Glob::new(pattern).map_err(|error| invalid(format!("{setting}: {error}")))?;
+    }
+
+    Ok(())
 }

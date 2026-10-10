@@ -1,13 +1,14 @@
-//! Luau source formatting.
+//! Isolated, validated syntax-only Luau formatting.
 
-pub mod configuration;
-mod diagnostic;
-mod formatter;
-mod formatting;
+mod client;
+mod layout;
+mod request;
 mod result;
-pub mod worker;
+pub mod settings;
+mod worker;
 
-pub use configuration::Configuration;
-pub use diagnostic::Diagnostic;
-pub use formatting::Formatter;
-pub use result::Result;
+pub use client::Formatter;
+pub use request::{FormatInput, FormatScope};
+pub use result::{FormatOutcome, FormatResult, FormatSelection, SelectionOutcome, ValidatedFormat};
+pub use settings::{FormatOverrides, FormatSettings};
+pub use worker::run_worker;

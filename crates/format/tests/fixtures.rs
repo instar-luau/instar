@@ -1,28 +1,69 @@
 //! Formatter fixture syntax and lossless emission contracts.
-use std::{error::Error, fs, io, path::Path, str, time::Duration};
 
-use instar_analysis::{Completion, Options, Reason};
-use instar_format::{Configuration, Diagnostic, Formatter, configuration::LineEnding};
+use std::{
+    error::Error,
+    fs, io,
+    path::Path,
+    str,
+    time::{Duration, Instant},
+};
 
-use vermis::{
+use instar_format::{
+    FormatInput, FormatOutcome, FormatScope, FormatSettings, Formatter, settings::LineEnding,
+};
+
+use instar_shared::{Completion, Options, SourceIdentity, SourceSnapshot, SourceVersion};
+use instar_syntax::SyntaxSettings;
+
+use instar_syntax::{
     emitter::{Emitter, LineEnding as EmittedLineEnding},
     token::TokenKind,
     tree::Tree,
 };
 
+fn request(source: &[u8], settings: &FormatSettings) -> io::Result<FormatInput> {
+    Ok(FormatInput {
+        source: SourceSnapshot::from_bytes(
+            SourceVersion {
+                identity: SourceIdentity::new(1),
+                revision: 1,
+            },
+            source,
+        )?,
+        settings: settings.clone(),
+        syntax: SyntaxSettings::default(),
+        scope: FormatScope::Whole,
+    })
+}
+
+fn budget(duration: Duration) -> Options {
+    Options::new(Some(Instant::now() + duration))
+}
+
 #[test]
 fn fixtures() -> Result<(), Box<dyn Error>> {
-    let cases = glob::glob(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/*/*"))?
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut cases = Vec::new();
+
+    for category in fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures"))? {
+        for case in fs::read_dir(category?.path())? {
+            let case = case?;
+
+            if case.file_type()?.is_dir() {
+                cases.push(case.path());
+            }
+        }
+    }
+
+    cases.sort();
 
     assert_eq!(cases.len(), 60, "all formatter fixtures must be discovered");
 
     for case in cases {
         let configuration = match fs::read_to_string(case.join("configuration.toml")) {
-            Ok(source) => toml::from_str::<Configuration>(&source)
+            Ok(source) => toml::from_str::<FormatSettings>(&source)
                 .map_err(|error| format!("{}: {error}", case.display()))?,
 
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Configuration::default(),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => FormatSettings::default(),
             Err(error) => return Err(error.into()),
         };
 
@@ -42,15 +83,20 @@ fn fixtures() -> Result<(), Box<dyn Error>> {
 
         let actual = formatter
             .format(
-                &input,
-                &configuration,
-                &Options::new(Duration::from_secs(5)),
+                &request(&input, &configuration)?,
+                &budget(Duration::from_secs(5)),
             )
             .map_err(|error| format!("{}: {error}", case.display()))?;
 
         assert_eq!(actual.completion, Completion::Complete);
         assert_eq!(actual.diagnostics, Vec::new());
-        let actual = actual.output.expect("complete formatted output");
+
+        let FormatOutcome::Validated(actual) = actual.outcome else {
+            panic!("complete formatted output");
+        };
+
+        assert!(actual.preservation().preserved());
+        let actual = actual.output().as_bytes().to_vec();
 
         assert_eq!(
             actual,
@@ -61,9 +107,8 @@ fn fixtures() -> Result<(), Box<dyn Error>> {
 
         let repeated = formatter
             .format(
-                &expected,
-                &configuration,
-                &Options::new(Duration::from_secs(5)),
+                &request(&expected, &configuration)?,
+                &budget(Duration::from_secs(5)),
             )
             .map_err(|error| format!("{}: {error}", case.display()))?;
 
@@ -71,7 +116,10 @@ fn fixtures() -> Result<(), Box<dyn Error>> {
         assert_eq!(repeated.diagnostics, Vec::new());
 
         assert_eq!(
-            repeated.output.expect("idempotent output"),
+            match repeated.outcome {
+                FormatOutcome::Validated(output) => output.output().as_bytes().to_vec(),
+                FormatOutcome::Unavailable { .. } => panic!("idempotent output"),
+            },
             expected,
             "{}: expected output must be idempotent",
             case.display()
@@ -103,9 +151,40 @@ fn verify(
     line_ending: EmittedLineEnding,
     case: &Path,
 ) {
-    let input = vermis::parse(input);
-    let expected = vermis::parse(expected);
-    let actual = vermis::parse(actual);
+    let version = SourceVersion {
+        identity: SourceIdentity::new(1),
+        revision: 1,
+    };
+
+    let input_source = SourceSnapshot::from_bytes(version, input).expect("UTF-8 fixture input");
+
+    let expected_source =
+        SourceSnapshot::from_bytes(version, expected).expect("UTF-8 fixture output");
+
+    let actual_source =
+        SourceSnapshot::from_bytes(version, actual).expect("UTF-8 formatted fixture");
+
+    let input_parse = instar_syntax::parse(
+        &input_source,
+        &SyntaxSettings::default(),
+        &Options::default(),
+    );
+
+    let expected_parse = instar_syntax::parse(
+        &expected_source,
+        &SyntaxSettings::default(),
+        &Options::default(),
+    );
+
+    let actual_parse = instar_syntax::parse(
+        &actual_source,
+        &SyntaxSettings::default(),
+        &Options::default(),
+    );
+
+    let input = input_parse.tree.syntax();
+    let expected = expected_parse.tree.syntax();
+    let actual = actual_parse.tree.syntax();
 
     for (name, tree) in [
         ("input.luau", &input),
@@ -131,15 +210,15 @@ fn verify(
     }
 
     assert_eq!(
-        preserved(&input),
-        preserved(&expected),
+        preserved(input),
+        preserved(expected),
         "{}: comments and literal spelling must survive formatting",
         case.display()
     );
 
     assert_eq!(
-        preserved(&input),
-        preserved(&actual),
+        preserved(input),
+        preserved(actual),
         "{}: formatting must preserve comments and literal spelling",
         case.display()
     );
@@ -172,44 +251,29 @@ fn preserved<'source>(tree: &Tree<'source>) -> Vec<&'source [u8]> {
 
 #[test]
 fn failures_and_limits_never_return_partial_output() -> Result<(), Box<dyn Error>> {
-    let configuration = Configuration::default();
+    let configuration = FormatSettings::default();
     let source = b"local =";
 
     let mut formatter = Formatter::default();
 
-    let failed = formatter.format(
-        source,
-        &configuration,
-        &Options::new(Duration::from_secs(5)),
-    )?;
-
-    let parsed = vermis::parse(source);
+    let input = request(source, &configuration)?;
+    let failed = formatter.format(&input, &budget(Duration::from_secs(5)))?;
+    let parsed = instar_syntax::parse(&input.source, &input.syntax, &Options::default());
     assert_eq!(failed.completion, Completion::Complete);
-    assert_eq!(failed.output, None);
-
-    assert_eq!(
-        failed.diagnostics,
-        parsed
-            .diagnostics
-            .iter()
-            .map(|diagnostic| Diagnostic {
-                range: [diagnostic.span.start, diagnostic.span.end],
-                message: diagnostic.message.to_owned(),
-            })
-            .collect::<Vec<_>>()
-    );
+    assert!(matches!(failed.outcome, FormatOutcome::Unavailable { .. }));
+    assert_eq!(failed.diagnostics, parsed.diagnostics);
 
     assert_ne!(failed.diagnostics, Vec::new());
-    let cancelled = Options::new(Duration::from_secs(5));
+    let cancelled = budget(Duration::from_secs(5));
     cancelled.cancellation.cancel();
 
     for (options, reason) in [
-        (cancelled, Reason::Cancelled),
-        (Options::new(Duration::ZERO), Reason::Timeout),
+        (cancelled, Completion::Cancelled),
+        (budget(Duration::ZERO), Completion::TimedOut),
     ] {
-        let result = formatter.format(b"return 1", &configuration, &options)?;
-        assert_eq!(result.completion, Completion::Incomplete(reason));
-        assert_eq!(result.output, None);
+        let result = formatter.format(&request(b"return 1", &configuration)?, &options)?;
+        assert_eq!(result.completion, reason);
+        assert!(matches!(result.outcome, FormatOutcome::Unavailable { .. }));
         assert_eq!(result.diagnostics, Vec::new());
     }
 
