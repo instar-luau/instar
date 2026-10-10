@@ -1,10 +1,8 @@
-use instar_luau::{FunctionFact, NominalFact, SemanticIdentity};
+use instar_luau::{FunctionFact, NominalFact};
 
 use instar_project::{
     HierarchyQuery, HierarchyQueryKind, PositionQueryKind, Query, QueryOutput, QueryReport,
 };
-
-use serde_json::json;
 
 use tower_lsp_server::{
     gen_lsp_types::{
@@ -17,7 +15,11 @@ use tower_lsp_server::{
 };
 
 use super::assistance::{lazy, retain};
-use crate::{Server, session::failure};
+
+use crate::{
+    Server,
+    session::{RetainedResult, failure},
+};
 
 pub(crate) async fn prepare_calls(
     server: &Server,
@@ -66,8 +68,13 @@ pub(crate) async fn incoming(
 ) -> Result<Option<Vec<CallHierarchyIncomingCall>>> {
     let record = lazy(server, parameters.item.data.as_ref(), "calls")?;
 
-    let mut retained: CallHierarchyItem = serde_json::from_value(record.payload["item"].clone())
-        .map_err(|_| Error::internal_error())?;
+    let RetainedResult::CallHierarchy {
+        item: mut retained,
+        identity,
+    } = record.result
+    else {
+        return Err(Error::internal_error());
+    };
 
     retained.data.clone_from(&parameters.item.data);
 
@@ -76,9 +83,6 @@ pub(crate) async fn incoming(
             "hierarchy item does not match its result identity",
         ));
     }
-
-    let identity: SemanticIdentity = serde_json::from_value(record.payload["identity"].clone())
-        .map_err(|_| Error::internal_error())?;
 
     let options = server.options.child();
 
@@ -132,8 +136,13 @@ pub(crate) async fn outgoing(
 ) -> Result<Option<Vec<CallHierarchyOutgoingCall>>> {
     let record = lazy(server, parameters.item.data.as_ref(), "calls")?;
 
-    let mut retained: CallHierarchyItem = serde_json::from_value(record.payload["item"].clone())
-        .map_err(|_| Error::internal_error())?;
+    let RetainedResult::CallHierarchy {
+        item: mut retained,
+        identity,
+    } = record.result
+    else {
+        return Err(Error::internal_error());
+    };
 
     retained.data.clone_from(&parameters.item.data);
 
@@ -142,9 +151,6 @@ pub(crate) async fn outgoing(
             "hierarchy item does not match its result identity",
         ));
     }
-
-    let identity: SemanticIdentity = serde_json::from_value(record.payload["identity"].clone())
-        .map_err(|_| Error::internal_error())?;
 
     let options = server.options.child();
 
@@ -257,8 +263,13 @@ async fn relatives(
 ) -> Result<Option<Vec<TypeHierarchyItem>>> {
     let record = lazy(server, item.data.as_ref(), "types")?;
 
-    let mut retained: TypeHierarchyItem = serde_json::from_value(record.payload["item"].clone())
-        .map_err(|_| Error::internal_error())?;
+    let RetainedResult::TypeHierarchy {
+        item: mut retained,
+        identity,
+    } = record.result
+    else {
+        return Err(Error::internal_error());
+    };
 
     retained.data.clone_from(&item.data);
 
@@ -267,9 +278,6 @@ async fn relatives(
             "hierarchy item does not match its result identity",
         ));
     }
-
-    let identity = serde_json::from_value(record.payload["identity"].clone())
-        .map_err(|_| Error::internal_error())?;
 
     let options = server.options.child();
 
@@ -336,8 +344,10 @@ fn call_item(
         server,
         report,
         Some(function.location.source),
-        "calls",
-        json!({"identity":function.identity,"item":item}),
+        RetainedResult::CallHierarchy {
+            item: item.clone(),
+            identity: function.identity.clone(),
+        },
     )?);
 
     Ok(item)
@@ -365,8 +375,10 @@ fn type_item(
         server,
         report,
         Some(nominal.declaration.source),
-        "types",
-        json!({"identity":nominal.identity,"item":item}),
+        RetainedResult::TypeHierarchy {
+            item: item.clone(),
+            identity: nominal.identity.clone(),
+        },
     )?);
 
     Ok(item)

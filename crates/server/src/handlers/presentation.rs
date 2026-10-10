@@ -41,10 +41,7 @@ pub(crate) async fn tokens(
         return Err(Error::content_modified());
     }
 
-    let result_id = if state
-        .capabilities
-        .supports("/textDocument/semanticTokens/requests/full/delta")
-    {
+    let result_id = if state.capabilities.token_deltas() {
         Some(state.identities.store_tokens(TokenRecord {
             source,
             legend,
@@ -75,10 +72,7 @@ pub(crate) async fn delta(
         return Err(Error::content_modified());
     }
 
-    if !state
-        .capabilities
-        .supports("/textDocument/semanticTokens/requests/full/delta")
-    {
+    if !state.capabilities.token_deltas() {
         return Err(Error::invalid_params(
             "semantic token deltas were not negotiated",
         ));
@@ -111,10 +105,7 @@ pub(crate) async fn token_range(
     let supported = {
         let state = server.state.lock().expect("session state");
 
-        state.capabilities.tokens.is_some()
-            && state
-                .capabilities
-                .has("/textDocument/semanticTokens/requests/range")
+        state.capabilities.range_tokens()
     };
 
     if !supported {
@@ -419,11 +410,7 @@ async fn prepared(
     let (provider, encoding) = {
         let state = server.state.lock().expect("session state");
 
-        if range.is_none()
-            && !state
-                .capabilities
-                .has("/textDocument/semanticTokens/requests/full")
-        {
+        if range.is_none() && !state.capabilities.full_tokens() {
             return Err(Error::invalid_params(
                 "full semantic tokens were not negotiated",
             ));

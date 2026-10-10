@@ -27,8 +27,8 @@ impl Server {
             _ => self.project.snapshot().roots().cloned().collect(),
         };
 
-        let capabilities = Capabilities::new(parameters.capabilities)?;
-        let advertised = capabilities.advertised()?;
+        let capabilities = Capabilities::new(parameters.capabilities);
+        let advertised = capabilities.advertised();
         let mut state = self.state.lock().expect("session state");
 
         if state.lifecycle != Lifecycle::Uninitialized {
@@ -70,9 +70,17 @@ impl Server {
             (
                 state
                     .capabilities
-                    .supports("/workspace/didChangeWatchedFiles/dynamicRegistration"),
-                state.capabilities.supports("/workspace/configuration"),
-                state.capabilities.supports("/workspace/workspaceFolders"),
+                    .workspace()
+                    .and_then(|workspace| workspace.did_change_watched_files.as_ref())
+                    .is_some_and(|files| files.dynamic_registration == Some(true)),
+                state
+                    .capabilities
+                    .workspace()
+                    .is_some_and(|workspace| workspace.configuration == Some(true)),
+                state
+                    .capabilities
+                    .workspace()
+                    .is_some_and(|workspace| workspace.workspace_folders == Some(true)),
             )
         };
 

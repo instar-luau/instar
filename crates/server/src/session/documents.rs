@@ -260,7 +260,7 @@ impl State {
         self.documents.remove(&uri);
         self.identities.forget(revision);
 
-        if !self.capabilities.has("/textDocument/diagnostic") {
+        if !self.capabilities.pull_diagnostics() {
             self.published.insert(uri);
         }
 

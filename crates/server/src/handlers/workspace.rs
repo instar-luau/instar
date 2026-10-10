@@ -26,7 +26,7 @@ use super::{assistance::lazy, editing::edit};
 
 use crate::{
     Server,
-    session::{failure, path},
+    session::{RetainedResult, failure, path},
 };
 
 pub(crate) async fn folders(server: &Server, parameters: DidChangeWorkspaceFoldersParams) {
@@ -317,11 +317,15 @@ pub(crate) async fn execute(
     if arguments.get("identity").is_some() {
         let record = lazy(server, Some(arguments), "command")?;
 
-        if record.payload["command"].as_str() != Some(parameters.command.as_str()) {
+        let RetainedResult::Command { command, edit } = record.result else {
+            return Err(Error::internal_error());
+        };
+
+        if command != parameters.command {
             return Err(Error::invalid_params("identity belongs to another command"));
         }
 
-        if let Some(proposal) = record.edit {
+        if let Some(proposal) = edit {
             let edit = server.workspace_edit(&record.snapshot, &proposal, true)?;
 
             return serde_json::to_value(server.apply_edit(parameters.command, edit).await?)
@@ -665,7 +669,15 @@ fn command_source(
     if arguments.get("identity").is_some() {
         let record = lazy(server, Some(arguments), "command")?;
 
-        if record.payload["command"].as_str() != Some(command) {
+        let RetainedResult::Command {
+            command: retained_command,
+            ..
+        } = record.result
+        else {
+            return Err(Error::internal_error());
+        };
+
+        if retained_command != command {
             return Err(Error::invalid_params("identity belongs to another command"));
         }
 
@@ -674,7 +686,7 @@ fn command_source(
             record
                 .source
                 .ok_or_else(|| Error::invalid_params("command requires a source"))?,
-            record.payload,
+            Value::Null,
         ));
     }
 
@@ -749,7 +761,11 @@ async fn reveal_findings(
             .lock()
             .expect("session state")
             .capabilities
-            .supports("/window/showDocument/support")
+            .client
+            .window
+            .as_ref()
+            .and_then(|window| window.show_document.as_ref())
+            .is_some_and(|document| document.support)
     {
         if server
             .project

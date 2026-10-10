@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 
 use tower_lsp_server::{
     gen_lsp_types::{
-        ActiveParameter, CodeLens, CodeLensParams, CompletionItem, CompletionItemKind,
+        ActiveParameter, CodeLens, CodeLensParams, Command, CompletionItem, CompletionItemKind,
         CompletionItemTag, CompletionList, CompletionParams, CompletionResponse, Documentation,
         Hover, HoverParams, InlayHint, InlayHintKind, InlayHintParams, InlineCompletionParams,
         InlineCompletionResponse, InlineValue, InlineValueParams, InsertTextFormat, MarkupContent,
@@ -23,7 +23,7 @@ use tower_lsp_server::{
 
 use crate::{
     Server, markup, position,
-    session::{LazyRecord, failure, known},
+    session::{LazyRecord, RetainedResult, failure, known},
 };
 
 pub(crate) async fn hover(server: &Server, parameters: HoverParams) -> Result<Option<Hover>> {
@@ -65,7 +65,7 @@ pub(crate) async fn hover(server: &Server, parameters: HoverParams) -> Result<Op
         .lock()
         .expect("session state")
         .capabilities
-        .markup("hover");
+        .hover_markup();
 
     let mut value = markup::code(&information.display, &format);
 
@@ -145,24 +145,20 @@ pub(crate) async fn completion(
     let (snippets, deprecated, commits, capabilities) = {
         let state = server.state.lock().expect("session state");
 
+        let capabilities = state
+            .capabilities
+            .text_document()
+            .and_then(|document| document.completion.as_ref())
+            .cloned()
+            .unwrap_or_default();
+
+        let item = capabilities.completion_item.as_ref();
+
         (
-            state
-                .capabilities
-                .supports("/textDocument/completion/completionItem/snippetSupport"),
-            state
-                .capabilities
-                .has("/textDocument/completion/completionItem/tagSupport"),
-            state
-                .capabilities
-                .supports("/textDocument/completion/completionItem/commitCharactersSupport"),
-            state
-                .capabilities
-                .client
-                .text_document
-                .as_ref()
-                .and_then(|document| document.completion.as_ref())
-                .cloned()
-                .unwrap_or_default(),
+            item.is_some_and(|item| item.snippet_support == Some(true)),
+            item.is_some_and(|item| item.tag_support.is_some()),
+            item.is_some_and(|item| item.commit_characters_support == Some(true)),
+            capabilities,
         )
     };
 
@@ -266,8 +262,11 @@ pub(crate) async fn completion(
             server,
             &report,
             Some(source_version),
-            "completion",
-            json!({"item":item,"documentation":candidate.documentation,"edits":edits}),
+            RetainedResult::Completion {
+                item: item.clone(),
+                documentation: candidate.documentation.clone(),
+                edits,
+            },
         )?);
 
         items.push(item);
@@ -292,20 +291,23 @@ pub(crate) async fn completion_resolve(
     let record = lazy(server, item.data.as_ref(), "completion")?;
     let options = server.options.child();
 
-    let mut resolved: CompletionItem = serde_json::from_value(record.payload["item"].clone())
-        .map_err(|_| Error::internal_error())?;
-
-    let edits: Vec<ProtocolTextEdit> = serde_json::from_value(record.payload["edits"].clone())
-        .map_err(|_| Error::internal_error())?;
+    let RetainedResult::Completion {
+        item: mut resolved,
+        documentation: symbol,
+        edits,
+    } = record.result
+    else {
+        return Err(Error::internal_error());
+    };
 
     resolved.additional_text_edits = (!edits.is_empty()).then_some(edits);
 
-    if let Some(symbol) = record.payload["documentation"].as_str() {
+    if let Some(symbol) = symbol {
         let entry = documentation(
             server,
             record.snapshot.clone(),
             record.source.ok_or_else(Error::content_modified)?,
-            symbol,
+            &symbol,
             &options,
         )
         .await?;
@@ -315,7 +317,7 @@ pub(crate) async fn completion_resolve(
             .lock()
             .expect("session state")
             .capabilities
-            .markup("completion");
+            .completion_markup();
 
         resolved.documentation = entry.map(|entry| markup::documentation(entry, format));
     }
@@ -343,7 +345,8 @@ pub(crate) async fn inline_completion(
         .lock()
         .expect("session state")
         .capabilities
-        .has("/textDocument/inlineCompletion")
+        .text_document()
+        .is_some_and(|document| document.inline_completion.is_some())
     {
         return Err(Error::invalid_params(
             "inline completion was not negotiated",
@@ -452,7 +455,22 @@ pub(crate) async fn signatures(
     let (offsets, active_support, no_active, format) = {
         let state = server.state.lock().expect("session state");
 
-        (state.capabilities.supports("/textDocument/signatureHelp/signatureInformation/parameterInformation/labelOffsetSupport"), state.capabilities.supports("/textDocument/signatureHelp/signatureInformation/activeParameterSupport"), state.capabilities.supports("/textDocument/signatureHelp/signatureInformation/noActiveParameterSupport"), state.capabilities.markup("signatures"))
+        let information = state
+            .capabilities
+            .text_document()
+            .and_then(|document| document.signature_help.as_ref())
+            .and_then(|signature| signature.signature_information.as_ref());
+
+        (
+            information
+                .and_then(|information| information.parameter_information.as_ref())
+                .is_some_and(|parameter| parameter.label_offset_support == Some(true)),
+            information
+                .is_some_and(|information| information.active_parameter_support == Some(true)),
+            information
+                .is_some_and(|information| information.no_active_parameter_support == Some(true)),
+            state.capabilities.signature_markup(),
+        )
     };
 
     let mut signatures = Vec::new();
@@ -578,7 +596,7 @@ pub(crate) async fn hints(
         .lock()
         .expect("session state")
         .capabilities
-        .resolves("inlayHint", "tooltip");
+        .hint_tooltips();
 
     let mut result = Vec::new();
 
@@ -608,8 +626,11 @@ pub(crate) async fn hints(
             server,
             &report,
             Some(source_version),
-            "hint",
-            json!({"item":item,"description":hint.description,"documentation":hint.documentation}),
+            RetainedResult::Hint {
+                item: item.clone(),
+                description: hint.description.clone(),
+                documentation: hint.documentation.clone(),
+            },
         )?);
 
         if !deferred {
@@ -627,20 +648,23 @@ pub(crate) async fn hint_resolve(server: &Server, hint: InlayHint) -> Result<Inl
     let options = server.options.child();
     let record = lazy(server, hint.data.as_ref(), "hint")?;
 
-    let mut resolved: InlayHint = serde_json::from_value(record.payload["item"].clone())
-        .map_err(|_| Error::internal_error())?;
+    let RetainedResult::Hint {
+        item: mut resolved,
+        description,
+        documentation: symbol,
+    } = record.result
+    else {
+        return Err(Error::internal_error());
+    };
 
-    let mut description = record.payload["description"]
-        .as_str()
-        .unwrap_or_default()
-        .to_owned();
+    let mut description = description.unwrap_or_default();
 
-    if let Some(symbol) = record.payload["documentation"].as_str()
+    if let Some(symbol) = symbol
         && let Some(documentation) = documentation(
             server,
             record.snapshot.clone(),
             record.source.ok_or_else(Error::content_modified)?,
-            symbol,
+            &symbol,
             &options,
         )
         .await?
@@ -711,8 +735,10 @@ pub(crate) async fn lenses(
             server,
             &report,
             Some(source_version),
-            "command",
-            json!({"command":"instar.check"}),
+            RetainedResult::Command {
+                command: "instar.check".to_owned(),
+                edit: None,
+            },
         )?;
 
         let mut item = CodeLens {
@@ -725,8 +751,15 @@ pub(crate) async fn lenses(
             server,
             &report,
             Some(source_version),
-            "lens",
-            json!({"item":item,"command":{"title":lens.title,"command":"instar.check","arguments":[argument]}}),
+            RetainedResult::Lens {
+                item: item.clone(),
+                command: Command {
+                    title: lens.title.clone(),
+                    tooltip: None,
+                    command: "instar.check".to_owned(),
+                    arguments: Some(vec![argument]),
+                },
+            },
         )?);
 
         result.push(item);
@@ -738,13 +771,15 @@ pub(crate) async fn lenses(
 pub(crate) async fn lens_resolve(server: &Server, lens: CodeLens) -> Result<CodeLens> {
     let record = lazy(server, lens.data.as_ref(), "lens")?;
 
-    let mut result: CodeLens = serde_json::from_value(record.payload["item"].clone())
-        .map_err(|_| Error::internal_error())?;
+    let RetainedResult::Lens {
+        item: mut result,
+        command,
+    } = record.result
+    else {
+        return Err(Error::internal_error());
+    };
 
-    result.command = Some(
-        serde_json::from_value(record.payload["command"].clone())
-            .map_err(|_| Error::internal_error())?,
-    );
+    result.command = Some(command);
 
     result.data = lens.data;
 
@@ -804,8 +839,7 @@ pub(crate) fn retain(
     server: &Server,
     report: &QueryReport,
     source: Option<SourceVersion>,
-    operation: &'static str,
-    payload: Value,
+    result: RetainedResult,
 ) -> Result<Value> {
     let mut state = server.state.lock().expect("session state");
 
@@ -814,12 +848,10 @@ pub(crate) fn retain(
     }
 
     state.identities.insert(LazyRecord {
-        operation,
         source,
         inputs: report.inputs.clone(),
         snapshot: report.snapshot.clone(),
-        payload,
-        edit: None,
+        result,
     })
 }
 

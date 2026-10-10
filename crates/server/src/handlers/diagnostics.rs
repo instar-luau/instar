@@ -30,7 +30,7 @@ use tower_lsp_server::{
 
 use crate::{
     Server,
-    session::{LazyRecord, failure, path},
+    session::{LazyRecord, RetainedResult, failure, path},
 };
 
 pub(crate) async fn document(
@@ -388,7 +388,6 @@ fn identifier(
     items: &[Diagnostic],
     previous: Option<&str>,
 ) -> Result<(String, bool)> {
-    let payload = serde_json::to_value(items).map_err(|_| Error::internal_error())?;
     let mut state = server.state.lock().expect("session state");
 
     if !state.current(&server.project, &report.inputs) {
@@ -402,7 +401,7 @@ fn identifier(
             .ok()
             .and_then(|data| state.identities.get(Some(&data), "diagnostics").ok())
         && record.source == source
-        && record.payload == payload
+        && matches!(&record.result, RetainedResult::Diagnostics(existing) if existing == items)
     {
         if record.inputs == report.inputs {
             return Ok((identity.to_owned(), true));
@@ -412,12 +411,10 @@ fn identifier(
     }
 
     let record = LazyRecord {
-        operation: "diagnostics",
         source,
         inputs: report.inputs.clone(),
         snapshot: report.snapshot.clone(),
-        payload,
-        edit: None,
+        result: RetainedResult::Diagnostics(items.to_vec()),
     };
 
     let identity = match state.identities.find(&record) {
@@ -493,7 +490,7 @@ impl Server {
             .lock()
             .expect("session state")
             .capabilities
-            .has("/textDocument/diagnostic");
+            .pull_diagnostics();
 
         if pull {
             return;

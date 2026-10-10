@@ -3,22 +3,24 @@ use instar_project::{
     SymbolKind as DomainSymbolKind, SymbolQuery,
 };
 
-use serde_json::{Value, json};
-
 use tower_lsp_server::{
     gen_lsp_types::{
         BaseSymbolInformation, DocumentHighlight, DocumentHighlightKind, DocumentHighlightParams,
         DocumentLink, DocumentLinkParams, DocumentSymbol, DocumentSymbolParams,
-        DocumentSymbolResponse, Location as ProtocolLocation, PositionEncodingKind, ProgressToken,
-        ReferenceParams, ReferencesRequest, SymbolInformation, SymbolKind,
-        TextDocumentPositionParams, Uri, WorkspaceSymbol, WorkspaceSymbolParams,
-        WorkspaceSymbolResponse,
+        DocumentSymbolResponse, Location as ProtocolLocation, LocationUriOnly,
+        PositionEncodingKind, ProgressToken, ReferenceParams, ReferencesRequest, SymbolInformation,
+        SymbolKind, TextDocumentPositionParams, Uri, WorkspaceSymbol, WorkspaceSymbolLocation,
+        WorkspaceSymbolParams, WorkspaceSymbolResponse,
     },
     jsonrpc::{Error, Result},
 };
 
 use super::assistance::{lazy, retain};
-use crate::{Server, position, session::failure};
+
+use crate::{
+    Server, position,
+    session::{RetainedResult, failure},
+};
 
 pub(crate) async fn navigate(
     server: &Server,
@@ -281,14 +283,28 @@ pub(crate) async fn search(
 
         for symbol in symbols {
             let location = server.location(&report.snapshot, symbol.location)?;
-            let mut item: WorkspaceSymbol = serde_json::from_value(json!({"name":symbol.symbol.name,"kind":kind(symbol.symbol.kind,kinds),"location":{"uri":location.uri},"containerName":symbol.container})).map_err(|_| Error::internal_error())?;
+
+            let mut item = WorkspaceSymbol {
+                location: WorkspaceSymbolLocation::LocationUriOnly(LocationUriOnly {
+                    uri: location.uri.clone(),
+                }),
+                data: None,
+                base_symbol_information: BaseSymbolInformation::new(
+                    symbol.symbol.name.clone(),
+                    kind(symbol.symbol.kind, kinds),
+                    None,
+                    symbol.container.clone(),
+                ),
+            };
 
             item.data = Some(retain(
                 server,
                 &report,
                 Some(symbol.location.source),
-                "symbol",
-                json!({"item":item,"location":location}),
+                RetainedResult::Symbol {
+                    item: item.clone(),
+                    location,
+                },
             )?);
 
             result.push(item);
@@ -321,11 +337,15 @@ pub(crate) async fn symbol_resolve(
     symbol: WorkspaceSymbol,
 ) -> Result<WorkspaceSymbol> {
     let record = lazy(server, symbol.data.as_ref(), "symbol")?;
-    let mut item = record.payload["item"].clone();
-    item["location"] = record.payload["location"].clone();
-    item["data"] = symbol.data.map_or(Value::Null, |data| data);
 
-    serde_json::from_value(item).map_err(|_| Error::internal_error())
+    let RetainedResult::Symbol { mut item, location } = record.result else {
+        return Err(Error::internal_error());
+    };
+
+    item.location = WorkspaceSymbolLocation::Location(location);
+    item.data = symbol.data;
+
+    Ok(item)
 }
 
 pub(crate) async fn links(
@@ -355,7 +375,9 @@ pub(crate) async fn links(
         .lock()
         .expect("session state")
         .capabilities
-        .supports("/textDocument/documentLink/tooltipSupport");
+        .text_document()
+        .and_then(|document| document.document_link.as_ref())
+        .is_some_and(|link| link.tooltip_support == Some(true));
 
     let mut result = Vec::new();
 
@@ -398,8 +420,7 @@ pub(crate) async fn links(
             server,
             &report,
             Some(source.version),
-            "link",
-            json!({"item":item,"target":target}),
+            RetainedResult::Link(item.clone()),
         )?);
 
         result.push(item);
@@ -411,11 +432,9 @@ pub(crate) async fn links(
 pub(crate) async fn link_resolve(server: &Server, link: DocumentLink) -> Result<DocumentLink> {
     let record = lazy(server, link.data.as_ref(), "link")?;
 
-    let mut result: DocumentLink = serde_json::from_value(record.payload["item"].clone())
-        .map_err(|_| Error::internal_error())?;
-
-    result.target = serde_json::from_value(record.payload["target"].clone())
-        .map_err(|_| Error::internal_error())?;
+    let RetainedResult::Link(mut result) = record.result else {
+        return Err(Error::internal_error());
+    };
 
     result.data = link.data;
 

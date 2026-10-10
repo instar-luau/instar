@@ -82,7 +82,9 @@ impl Server {
 
         if state
             .capabilities
-            .supports("/workspace/workspaceEdit/documentChanges")
+            .workspace()
+            .and_then(|workspace| workspace.workspace_edit.as_ref())
+            .is_some_and(|edit| edit.document_changes == Some(true))
         {
             Ok(WorkspaceEdit {
                 document_changes: Some(

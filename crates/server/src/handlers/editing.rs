@@ -19,7 +19,7 @@ use super::{assistance::lazy, diagnostics};
 
 use crate::{
     Server, position,
-    session::{LazyRecord, failure},
+    session::{LazyRecord, RetainedResult, failure},
 };
 
 pub(crate) async fn prepare(
@@ -142,7 +142,7 @@ pub(crate) async fn actions(
         .lock()
         .expect("session state")
         .capabilities
-        .resolves("codeAction", "edit");
+        .code_action_edits();
 
     let mut result = Vec::new();
 
@@ -296,8 +296,9 @@ pub(crate) async fn actions(
 pub(crate) async fn resolve(server: &Server, action: CodeAction) -> Result<CodeAction> {
     let record = lazy(server, action.data.as_ref(), "action")?;
 
-    let mut result: CodeAction = serde_json::from_value(record.payload["item"].clone())
-        .map_err(|_| Error::internal_error())?;
+    let RetainedResult::Action(mut result) = record.result else {
+        return Err(Error::internal_error());
+    };
 
     result.data = action.data;
 
@@ -419,7 +420,7 @@ fn action(
         .lock()
         .expect("session state")
         .capabilities
-        .has("/textDocument/codeAction/codeActionLiteralSupport");
+        .code_action_literals();
 
     if !literal {
         let command = match kind {
@@ -437,12 +438,13 @@ fn action(
         }
 
         let argument = state.identities.insert(LazyRecord {
-            operation: "command",
             source: Some(source),
             inputs: report.inputs,
             snapshot: report.snapshot,
-            payload: json!({"command":command}),
-            edit: Some(validated.clone()),
+            result: RetainedResult::Command {
+                command: command.to_owned(),
+                edit: Some(validated.clone()),
+            },
         })?;
 
         return Ok(Command {
@@ -469,12 +471,10 @@ fn action(
     }
 
     let identity = state.identities.insert(LazyRecord {
-        operation: "action",
         source: Some(source),
         inputs: report.inputs,
         snapshot: report.snapshot,
-        payload: json!({"item":item}),
-        edit: Some(validated.clone()),
+        result: RetainedResult::Action(item.clone()),
     })?;
 
     item.data = Some(identity);

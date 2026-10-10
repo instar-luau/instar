@@ -56,7 +56,7 @@ pub(crate) async fn multiple(
         .lock()
         .expect("session state")
         .capabilities
-        .supports("/experimental/rangesFormatting")
+        .ranges_formatting()
     {
         return Err(Error::invalid_params(
             "multiple-range formatting was not negotiated",

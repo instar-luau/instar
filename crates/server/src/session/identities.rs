@@ -1,11 +1,16 @@
 use std::collections::{BTreeMap, VecDeque};
 
+use instar_luau::SemanticIdentity;
 use instar_project::{InputVersion, ProjectSnapshot, ValidatedEdit};
 use instar_shared::SourceVersion;
 use serde_json::{Value, json};
 
 use tower_lsp_server::{
-    gen_lsp_types::{SemanticToken, SemanticTokensLegend},
+    gen_lsp_types::{
+        CallHierarchyItem, CodeAction, CodeLens, Command, CompletionItem, Diagnostic, DocumentLink,
+        InlayHint, Location, SemanticToken, SemanticTokensLegend, TextEdit, TypeHierarchyItem,
+        WorkspaceSymbol,
+    },
     jsonrpc::{Error, Result},
 };
 
@@ -14,12 +19,72 @@ const RETAINED_TOKENS: usize = 32;
 
 #[derive(Clone)]
 pub(crate) struct LazyRecord {
-    pub(crate) operation: &'static str,
     pub(crate) source: Option<SourceVersion>,
     pub(crate) inputs: Vec<InputVersion>,
     pub(crate) snapshot: ProjectSnapshot,
-    pub(crate) payload: Value,
-    pub(crate) edit: Option<ValidatedEdit>,
+    pub(crate) result: RetainedResult,
+}
+
+#[derive(Clone)]
+pub(crate) enum RetainedResult {
+    Completion {
+        item: CompletionItem,
+        documentation: Option<String>,
+        edits: Vec<TextEdit>,
+    },
+
+    Hint {
+        item: InlayHint,
+        description: Option<String>,
+        documentation: Option<String>,
+    },
+
+    Lens {
+        item: CodeLens,
+        command: Command,
+    },
+
+    Symbol {
+        item: WorkspaceSymbol,
+        location: Location,
+    },
+
+    Link(DocumentLink),
+    Action(CodeAction),
+
+    CallHierarchy {
+        item: CallHierarchyItem,
+        identity: SemanticIdentity,
+    },
+
+    TypeHierarchy {
+        item: TypeHierarchyItem,
+        identity: SemanticIdentity,
+    },
+
+    Command {
+        command: String,
+        edit: Option<ValidatedEdit>,
+    },
+
+    Diagnostics(Vec<Diagnostic>),
+}
+
+impl RetainedResult {
+    fn operation(&self) -> &'static str {
+        match self {
+            Self::Completion { .. } => "completion",
+            Self::Hint { .. } => "hint",
+            Self::Lens { .. } => "lens",
+            Self::Symbol { .. } => "symbol",
+            Self::Link(_) => "link",
+            Self::Action(_) => "action",
+            Self::CallHierarchy { .. } => "calls",
+            Self::TypeHierarchy { .. } => "types",
+            Self::Command { .. } => "command",
+            Self::Diagnostics(_) => "diagnostics",
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -88,7 +153,7 @@ impl Identities {
             .get(&identity)
             .ok_or_else(Error::content_modified)?;
 
-        if record.operation != operation {
+        if record.result.operation() != operation {
             return Err(Error::invalid_params(
                 "result identity has a different operation",
             ));
@@ -101,12 +166,13 @@ impl Identities {
         self.records
             .iter()
             .find(|(_, existing)| {
-                existing.operation == record.operation
-                    && existing.source == record.source
+                existing.source == record.source
                     && existing.inputs == record.inputs
-                    && existing.payload == record.payload
-                    && existing.edit.is_none()
-                    && record.edit.is_none()
+                    && matches!(
+                        (&existing.result, &record.result),
+                        (RetainedResult::Diagnostics(existing), RetainedResult::Diagnostics(current))
+                            if existing == current
+                    )
             })
             .map(|(identity, _)| json!({"session": self.session, "identity": identity}))
     }

@@ -122,7 +122,10 @@ impl Server {
             .lock()
             .expect("session state")
             .capabilities
-            .supports("/window/workDoneProgress");
+            .client
+            .window
+            .as_ref()
+            .is_some_and(|window| window.work_done_progress == Some(true));
 
         let created = supplied.is_none();
 
@@ -214,7 +217,8 @@ impl Server {
             .lock()
             .expect("session state")
             .capabilities
-            .supports("/workspace/applyEdit")
+            .workspace()
+            .is_some_and(|workspace| workspace.apply_edit == Some(true))
         {
             return Err(Error::invalid_params(
                 "client does not support workspace edits",
@@ -261,19 +265,28 @@ impl Server {
         let supported = {
             let state = self.state.lock().expect("session state");
 
+            let workspace = state.capabilities.workspace();
+
             [
-                "diagnostics",
-                "semanticTokens",
-                "inlayHint",
-                "codeLens",
-                "inlineValue",
-                "foldingRange",
+                workspace
+                    .and_then(|workspace| workspace.diagnostics.as_ref())
+                    .is_some_and(|diagnostics| diagnostics.refresh_support == Some(true)),
+                workspace
+                    .and_then(|workspace| workspace.semantic_tokens.as_ref())
+                    .is_some_and(|tokens| tokens.refresh_support == Some(true)),
+                workspace
+                    .and_then(|workspace| workspace.inlay_hint.as_ref())
+                    .is_some_and(|hints| hints.refresh_support == Some(true)),
+                workspace
+                    .and_then(|workspace| workspace.code_lens.as_ref())
+                    .is_some_and(|lenses| lenses.refresh_support == Some(true)),
+                workspace
+                    .and_then(|workspace| workspace.inline_value.as_ref())
+                    .is_some_and(|values| values.refresh_support == Some(true)),
+                workspace
+                    .and_then(|workspace| workspace.folding_range.as_ref())
+                    .is_some_and(|ranges| ranges.refresh_support == Some(true)),
             ]
-            .map(|feature| {
-                state
-                    .capabilities
-                    .supports(&format!("/workspace/{feature}/refreshSupport"))
-            })
         };
 
         if supported[0] {
@@ -323,7 +336,8 @@ impl Server {
 
             if state
                 .capabilities
-                .supports("/workspace/textDocumentContent/refreshSupport")
+                .workspace()
+                .is_some_and(|workspace| workspace.text_document_content.is_some())
             {
                 state
                     .documents
