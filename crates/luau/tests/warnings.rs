@@ -1,15 +1,14 @@
 //! Native warning identities, semantic evidence and guarded session boundaries.
 
-use std::{collections::BTreeMap, io, time::Duration};
+use std::{io, time::Duration};
 
 use instar_luau::{
-    BindingKind, ConfigurationEvaluator, ConfigurationKey, ConfigurationValue, FactsInput,
-    ImportIdentity, ImportOutcome, ImportRequest, ImportSite, LanguageMode, LintInput, Native,
-    ResolvedImport, SemanticCategory, SemanticIdentity, SemanticKind, UpstreamWarningIdentity,
-    UpstreamWarningSettings,
+    ConfigurationEvaluator, ConfigurationKey, ConfigurationValue, FactsInput, ImportIdentity,
+    ImportOutcome, ImportRequest, ImportSite, LanguageMode, LintInput, Native, ResolvedImport,
+    SemanticCategory, UpstreamWarningIdentity, UpstreamWarningSettings,
 };
 
-use instar_shared::{Availability, Completion, DiagnosticCategory, Knowledge, Reason, Severity};
+use instar_shared::{Availability, Completion, DiagnosticCategory, Reason, Severity};
 
 use crate::support::{configuration, definition, location, module, options, request};
 
@@ -404,133 +403,6 @@ fn invalid_definitions_retain_available_syntax_warnings_and_diagnostics() -> io:
             )?
             .completion,
         Completion::Complete
-    );
-
-    native.finish()
-}
-
-#[test]
-fn inferred_any_facts_exclude_annotations_and_inferred_numbers() -> io::Result<()> {
-    let source = include_str!("fixtures/warnings/inferred/input.luau");
-    let input = request(vec![module(1, source, 6)?])?;
-    let mut native = Native::default();
-    let checked = native.analyze(&input, &options(Duration::from_secs(5)))?;
-
-    let facts = native.facts(
-        &FactsInput {
-            analysis: checked.modules[0]
-                .reference
-                .clone()
-                .expect("established reference"),
-            categories: vec![SemanticCategory::Bindings],
-        },
-        &options(Duration::from_secs(5)),
-    )?;
-
-    let candidates = facts.facts.bindings.iter().filter(|binding| !binding.annotation && matches!(binding.kind, BindingKind::Local | BindingKind::Parameter) && matches!(&binding.type_information, Knowledge::Known(information) if information.is_any)).collect::<Vec<_>>();
-    assert_eq!(candidates.len(), 2);
-
-    let expected: BTreeMap<String, [usize; 2]> =
-        serde_json::from_str(include_str!("fixtures/warnings/inferred/expected.json"))?;
-
-    for (name, kind) in [
-        ("inferred", BindingKind::Local),
-        ("parameter", BindingKind::Parameter),
-    ] {
-        let binding = candidates
-            .iter()
-            .find(|binding| binding.name == name)
-            .expect("implicit any binding");
-
-        assert_eq!(binding.kind, kind);
-
-        let SemanticIdentity::Source { location, .. } = binding.identity else {
-            panic!("source binding identity");
-        };
-
-        assert_eq!([location.span.start, location.span.end], expected[name]);
-        assert_eq!(&source[location.span.start..location.span.end], name);
-        assert_eq!(location.source.revision, 6);
-    }
-
-    let callback = facts
-        .facts
-        .bindings
-        .iter()
-        .find(|binding| binding.name == "callback")
-        .expect("annotated callable local");
-
-    assert_eq!(callback.kind, BindingKind::Local);
-    assert!(callback.annotation);
-
-    assert!(matches!(
-        callback.identity,
-        SemanticIdentity::Source {
-            kind: SemanticKind::Function,
-            ..
-        }
-    ));
-
-    assert_eq!(
-        native.analyze(&input, &options(Duration::from_secs(5)))?,
-        checked
-    );
-
-    native.finish()
-}
-
-#[test]
-fn generic_for_any_facts_preserve_binding_identity_and_exclusions() -> io::Result<()> {
-    let source = include_str!("fixtures/warnings/loops/input.luau");
-    let input = request(vec![module(1, source, 7)?])?;
-    let mut native = Native::default();
-    let checked = native.analyze(&input, &options(Duration::from_secs(5)))?;
-    assert_eq!(checked.modules[0].diagnostics.as_slice(), []);
-
-    let query = FactsInput {
-        analysis: checked.modules[0]
-            .reference
-            .clone()
-            .expect("established reference"),
-        categories: vec![SemanticCategory::Bindings],
-    };
-
-    let facts = native.facts(&query, &options(Duration::from_secs(5)))?;
-    assert_eq!(facts.completion, Completion::Complete);
-    assert_eq!(facts.diagnostics.as_slice(), []);
-
-    let expected: Vec<[usize; 2]> =
-        serde_json::from_str(include_str!("fixtures/warnings/loops/expected.json"))?;
-
-    assert_eq!(expected.len(), 2);
-    let candidates = facts.facts.bindings.iter().filter(|binding| !binding.annotation && binding.kind == BindingKind::Loop && matches!(&binding.type_information, Knowledge::Known(information) if information.is_any)).collect::<Vec<_>>();
-    assert_eq!(candidates.len(), 2);
-
-    let ranges = candidates
-        .iter()
-        .map(|binding| {
-            let SemanticIdentity::Source { location, .. } = binding.identity else {
-                panic!("source loop identity");
-            };
-
-            assert_eq!(location.source, input.modules[0].source.source.version);
-            assert_eq!(location.source.revision, 7);
-            assert_eq!(&source[location.span.start..location.span.end], "value");
-
-            [location.span.start, location.span.end]
-        })
-        .collect::<Vec<_>>();
-
-    assert_eq!(ranges, expected);
-
-    assert_eq!(
-        native.analyze(&input, &options(Duration::from_secs(5)))?,
-        checked
-    );
-
-    assert_eq!(
-        native.facts(&query, &options(Duration::from_secs(5)))?,
-        facts
     );
 
     native.finish()

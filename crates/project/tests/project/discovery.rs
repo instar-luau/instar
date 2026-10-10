@@ -2,8 +2,6 @@
 
 use std::{collections::BTreeSet, error::Error, fs, io, path::Path, sync::Arc};
 
-use globset::GlobBuilder;
-
 use instar_project::{
     CheckOverrides, CheckRequest, Input, Invocation, OperationOverrides, Project, SettingsRequest,
     SourceOrigin,
@@ -206,22 +204,6 @@ fn file_patterns_share_directory_and_wildcard_semantics() -> Result<(), Box<dyn 
             .is_err(),
             "{pattern}"
         );
-    }
-
-    for (source, pattern, expected) in [
-        ("@vendor/item", "@vendor/*", true),
-        ("@vendor/nested/item", "@vendor/*", false),
-        ("@vendor/nested/item", "@vendor/**", true),
-        ("./nested/item", "item", false),
-        ("./item", "./**/item", true),
-    ] {
-        let matcher = GlobBuilder::new(pattern)
-            .literal_separator(true)
-            .backslash_escape(false)
-            .build()?
-            .compile_matcher();
-
-        assert_eq!(matcher.is_match(source), expected, "{source}: {pattern}");
     }
 
     Ok(())

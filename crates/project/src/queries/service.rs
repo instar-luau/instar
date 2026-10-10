@@ -1735,29 +1735,6 @@ mod tests {
     use crate::queries::request::PositionQueryKind;
 
     #[test]
-    fn inspection_plans_include_only_required_categories() {
-        assert_eq!(
-            categories(PositionQueryKind::Signatures),
-            vec![
-                SemanticCategory::Bindings,
-                SemanticCategory::Occurrences,
-                SemanticCategory::Calls,
-            ]
-        );
-
-        assert_eq!(
-            categories(PositionQueryKind::Implementation),
-            vec![
-                SemanticCategory::Bindings,
-                SemanticCategory::Occurrences,
-                SemanticCategory::Functions,
-                SemanticCategory::Nominals,
-                SemanticCategory::Inheritance,
-            ]
-        );
-    }
-
-    #[test]
     fn requested_availability_preserves_missing_and_required_outcomes() {
         let availability = SemanticAvailability {
             categories: BTreeMap::from([

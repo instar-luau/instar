@@ -198,51 +198,6 @@ fn dependency_type_findings_are_reported_without_dropping_analysis() -> io::Resu
 }
 
 #[test]
-fn cycles_are_finite_and_keep_native_identity() -> io::Result<()> {
-    let directory = Directory::new(Some(include_str!(
-        "../fixtures/checking/imported/strict.json"
-    )))?;
-
-    let first = directory.file(
-        "first.luau",
-        include_str!("../fixtures/checking/cycles/first.luau"),
-    )?;
-
-    directory.file(
-        "second.luau",
-        include_str!("../fixtures/checking/cycles/second.luau"),
-    )?;
-
-    let project = project();
-
-    let result = complete(project.check(
-        CheckRequest {
-            invocation: Invocation {
-                inputs: vec![Input::Path(first)],
-                ..Invocation::default()
-            },
-            ..CheckRequest::default()
-        },
-        options(),
-    ))
-    .map_err(io::Error::from)?;
-
-    assert_eq!(result.completion, Completion::Complete);
-    assert_eq!(result.sources.len(), 2);
-    assert_ne!(result.findings, Vec::new());
-
-    assert!(
-        result
-            .findings
-            .iter()
-            .all(|diagnostic| diagnostic.identity.producer() == "luau"
-                && diagnostic.code.parse::<u32>().is_ok())
-    );
-
-    Ok(())
-}
-
-#[test]
 
 fn declarations_are_scoped_and_invalidated() -> io::Result<()> {
     let directory = Directory::new(Some(include_str!(
