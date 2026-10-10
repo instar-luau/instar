@@ -1,5 +1,2 @@
-[[environment]]
-namespace = "@custom"
-definitions = ["types.luau"]
-[roblox]
-sourcemaps = ["maps.json"]
+resolution = { "sourcemaps" = ["maps.json"] }
+environment = { "groups" = [{ "namespace" = "@custom", "definitions" = ["types.luau"] }] }

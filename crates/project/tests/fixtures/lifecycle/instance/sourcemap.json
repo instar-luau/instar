@@ -13,7 +13,7 @@
       "name": "Configuration",
       "className": "ModuleScript",
       "filePaths": [
-        ".config.luau"
+        "instar.luau"
       ]
     }
   ]

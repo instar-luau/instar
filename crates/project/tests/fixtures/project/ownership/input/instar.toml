@@ -1,2 +1,1 @@
-[luau]
-language_mode = "strict"
+language = { "language_mode" = "strict" }

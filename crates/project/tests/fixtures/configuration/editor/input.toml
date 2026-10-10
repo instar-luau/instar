@@ -1,2 +1,1 @@
-[editor.hints]
-enabled = true
+editing = { "hints" = { "enabled" = true } }

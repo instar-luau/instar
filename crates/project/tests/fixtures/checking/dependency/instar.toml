@@ -1,2 +1,1 @@
-[check]
-exclude = ['dependency.luau']
+selection = { "checking" = { "exclude" = ["dependency.luau"] } }

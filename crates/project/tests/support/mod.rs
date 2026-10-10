@@ -1,3 +1,3 @@
 mod fixture;
 
-pub(crate) use fixture::{Directory, copy, normalize, options, project};
+pub(crate) use fixture::{Directory, complete, copy, normalize, options, project, replace};

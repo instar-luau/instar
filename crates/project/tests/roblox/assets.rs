@@ -1,23 +1,25 @@
 use std::{
     collections::BTreeMap,
-    fs,
-    io::{self, BufRead, BufReader, Write},
-    net::TcpListener,
+    fs, io,
     path::Path,
-    rc::Rc,
-    sync::mpsc,
+    sync::{Arc, mpsc},
     thread,
     time::{Duration, Instant},
 };
 
-use instar_analysis::Options;
+use instar_shared::{Options, SourceIdentity, SourceSnapshot, SourceVersion};
 
 use crate::{
-    assets::{fetch, install},
-    configuration::Security,
-    project::{Change, Project},
-    roblox::assets::download,
+    ChangeBatch, InputIdentity, InputState, Project, ProjectChange, Security, SourceChange,
+    SourceOrigin, acquisition,
+    assets::{load, publish, verify_bundle},
+    capture::Capture,
+    roblox::members::Members,
 };
+
+fn options() -> Options {
+    Options::new(Some(Instant::now() + Duration::from_secs(5)))
+}
 
 fn files(name: &str) -> io::Result<BTreeMap<String, String>> {
     fs::read_dir(
@@ -36,145 +38,142 @@ fn files(name: &str) -> io::Result<BTreeMap<String, String>> {
     .collect()
 }
 
-fn server(
-    files: BTreeMap<String, String>,
-    requests: usize,
-    delay: Duration,
-) -> io::Result<(String, thread::JoinHandle<io::Result<()>>)> {
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let url = format!("http://{}", listener.local_addr()?);
+#[test]
+fn member_precedence_requires_known_inheritance() -> io::Result<()> {
+    let source = SourceSnapshot::new(
+        SourceVersion {
+            identity: SourceIdentity::new(1),
+            revision: 1,
+        },
+        "declare extern type Base with Name: string end\n\
+        declare extern type Child extends Base with end\n\
+        declare extern type Orphan extends Missing with Own: string end",
+    )?;
 
-    let worker = thread::spawn(move || {
-        for _ in 0..requests {
-            let (mut stream, _) = listener.accept()?;
-            stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-            let mut reader = BufReader::new(&stream);
-            let mut line = String::new();
-            reader.read_line(&mut line)?;
+    let members = Members::parse(&source, &options())?;
+    assert!(members.contains("Base", "Name")?);
+    assert!(!members.contains("Base", "Absent")?);
+    assert!(members.contains("Child", "Name")?);
+    assert!(!members.contains("Child", "Absent")?);
+    assert!(members.contains("Orphan", "Own")?);
 
-            let name = line
-                .split_whitespace()
-                .nth(1)
-                .unwrap_or("")
-                .trim_start_matches('/')
-                .to_owned();
+    for class in ["Missing", "Orphan"] {
+        let error = members
+            .contains(class, "Absent")
+            .expect_err("unknown precedence");
 
-            loop {
-                line.clear();
-                reader.read_line(&mut line)?;
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert!(error.to_string().contains("Missing"));
+    }
 
-                if line == "\r\n" || line.is_empty() {
-                    break;
-                }
-            }
-
-            thread::sleep(delay);
-
-            let (status, body) = files
-                .get(&name)
-                .map_or(("404 Not Found", ""), |body| ("200 OK", body.as_str()));
-
-            write!(
-                stream,
-                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            )?;
-        }
-
-        Ok(())
-    });
-
-    Ok((url, worker))
+    Ok(())
 }
 
 #[test]
-fn downloads_verified_profiles_and_loads_cache_without_server() -> io::Result<()> {
+fn verifies_profiles_and_loads_cache() -> io::Result<()> {
     let expected = files("original")?;
-    let (url, server) = server(expected.clone(), expected.len(), Duration::ZERO)?;
-    let downloaded = fetch(url, download, &Options::new(Duration::from_secs(5)))?;
-    server.join().expect("asset server")?;
-    assert_eq!(downloaded, expected);
-
+    let verified = verify_bundle("roblox", expected.clone(), &options())?;
+    assert_eq!(verified.files(), &expected);
     let directory = tempfile::tempdir()?;
     let cache = directory.path().join("bundle");
+    publish(&cache, verified, &options())?;
+    let project = Project::new(Vec::new());
 
-    install(
-        &cache,
-        downloaded,
-        &Options::new(Duration::from_secs(5)),
-        Instant::now(),
-    )?;
+    for (profile, security) in [
+        ("none", Security::None),
+        ("local", Security::Local),
+        ("plugin", Security::Plugin),
+        ("roblox", Security::Roblox),
+    ] {
+        let mut original = Capture::live(Arc::clone(&project.host));
+        let assets = load(&cache, security, &mut original, &options())?;
+        let guarded = original.guards();
 
-    let result = (|| -> io::Result<()> {
-        let mut project = Project::new(Duration::from_secs(1));
+        project.change(ChangeBatch {
+            changes: vec![ProjectChange::Source(SourceChange::Open {
+                identity: project.source_identity(),
+                origin: SourceOrigin::Disk(directory.path().join("unrelated.luau")),
+                text: Arc::from("return 1"),
+            })],
+        })?;
 
-        for (profile, security) in [
-            ("none", Security::None),
-            ("local", Security::Local),
-            ("plugin", Security::Plugin),
-            ("roblox", Security::Roblox),
-        ] {
-            let assets = project.load_assets(&cache, security)?;
+        assert!(project.current(&guarded));
+        let mut repeated = Capture::live(Arc::clone(&project.host));
+        let reloaded = load(&cache, security, &mut repeated, &options())?;
 
-            project.change(Change::Overlay {
-                path: directory.path().join("unrelated.luau"),
-                text: Some("return 1".to_owned()),
-            })?;
+        assert_eq!(
+            assets.definitions[0].version,
+            reloaded.definitions[0].version
+        );
 
-            assert!(Rc::ptr_eq(&assets, &project.load_assets(&cache, security)?));
-            project.change(Change::Disk(cache.join("metadata.json")))?;
+        assert_eq!(guarded, repeated.guards());
 
-            assert!(!Rc::ptr_eq(
-                &assets,
-                &project.load_assets(&cache, security)?
-            ));
+        let metadata = project
+            .snapshot()
+            .input_versions
+            .get(&InputIdentity::Path(cache.join("metadata.json")))
+            .expect("metadata guard")
+            .clone();
 
-            assert_eq!(
-                assets.definitions[0].1.text.as_ref(),
-                expected[&format!("{profile}.d.luau")]
-            );
-        }
+        let mut invalidated = metadata.clone();
+        invalidated.revision += 1;
+        invalidated.state = InputState::Stale;
 
-        Ok(())
-    })();
+        project.change(ChangeBatch {
+            changes: vec![ProjectChange::Input {
+                expected: Some(metadata),
+                current: invalidated,
+            }],
+        })?;
 
-    directory.close()?;
+        assert!(!project.current(&guarded));
+        let mut refreshed = Capture::live(Arc::clone(&project.host));
+        let reloaded = load(&cache, security, &mut refreshed, &options())?;
+        assert!(project.current(&refreshed.guards()));
 
-    result
+        assert_eq!(
+            reloaded.definitions[0].text.as_ref(),
+            expected[&format!("{profile}.d.luau")]
+        );
+
+        let declarations = SourceSnapshot::new(
+            SourceVersion {
+                identity: project.source_identity(),
+                revision: 1,
+            },
+            expected[&format!("{profile}.d.luau")].clone(),
+        )?;
+
+        Members::parse(&declarations, &options())?;
+    }
+
+    directory.close()
 }
 
 #[test]
 fn cold_publishers_preserve_the_first_bundle_and_reader_snapshot() -> io::Result<()> {
     let expected = files("original")?;
-    let replacement = files("replacement")?;
-
-    let options = Options::new(Duration::from_secs(5));
-    let mut downloaded = Vec::new();
-
-    for bundle in [expected.clone(), replacement] {
-        let (url, server) = server(bundle.clone(), bundle.len(), Duration::ZERO)?;
-        downloaded.push(fetch(url, download, &options)?);
-        server.join().expect("asset server")?;
-    }
-
-    let replacement = downloaded.pop().expect("replacement bundle");
-    let original = downloaded.pop().expect("original bundle");
+    let replacement = verify_bundle("roblox", files("replacement")?, &options())?;
+    let original = verify_bundle("roblox", expected.clone(), &options())?;
     let directory = tempfile::tempdir()?;
     let cache = directory.path().join("bundle");
     let metadata = cache.join("metadata.json");
     let (ready, prepared) = mpsc::sync_channel(1);
-    let (publish, release) = mpsc::sync_channel(1);
+    let (publishable, release) = mpsc::sync_channel(1);
 
     thread::scope(|scope| -> io::Result<()> {
         let target = cache.clone();
         let manifest = metadata.clone();
-        let limits = options.clone();
 
         let publisher = scope.spawn(move || -> io::Result<()> {
-            let mut project = Project::new(Duration::from_secs(1));
+            let project = Project::new(Vec::new());
+            let mut capture = Capture::live(Arc::clone(&project.host));
 
             assert_eq!(
-                project.source(&manifest).expect_err("cold cache").kind(),
+                capture
+                    .source(&manifest, &options())
+                    .expect_err("cold cache")
+                    .kind(),
                 io::ErrorKind::NotFound
             );
 
@@ -184,17 +183,21 @@ fn cold_publishers_preserve_the_first_bundle_and_reader_snapshot() -> io::Result
                 .recv_timeout(Duration::from_secs(5))
                 .expect("release publisher");
 
-            install(&target, replacement, &limits, Instant::now())?;
-            project.view.invalidate(&target);
-            project.load_assets(&target, Security::None)?;
+            publish(&target, replacement, &options())?;
+            let mut capture = Capture::live(Arc::clone(&project.host));
+            load(&target, Security::None, &mut capture, &options())?;
 
             Ok(())
         });
 
-        let mut project = Project::new(Duration::from_secs(1));
+        let project = Project::new(Vec::new());
+        let mut capture = Capture::live(Arc::clone(&project.host));
 
         assert_eq!(
-            project.source(&metadata).expect_err("cold cache").kind(),
+            capture
+                .source(&metadata, &options())
+                .expect_err("cold cache")
+                .kind(),
             io::ErrorKind::NotFound
         );
 
@@ -202,11 +205,19 @@ fn cold_publishers_preserve_the_first_bundle_and_reader_snapshot() -> io::Result
             .recv_timeout(Duration::from_secs(5))
             .expect("both publishers cold");
 
-        install(&cache, original, &options, Instant::now())?;
-        project.view.invalidate(&cache);
-        project.source(&metadata)?;
-        publish.send(()).expect("release publisher");
+        publish(&cache, original, &options())?;
+        let mut capture = Capture::live(Arc::clone(&project.host));
+        let retained = capture.source(&metadata, &options())?;
+        let snapshot = capture.snapshot.clone();
+        publishable.send(()).expect("release publisher");
         publisher.join().expect("asset publisher")?;
+
+        assert_eq!(
+            snapshot
+                .source(retained.version.identity)
+                .expect("reader snapshot"),
+            &retained
+        );
 
         for (profile, security) in [
             ("none", Security::None),
@@ -214,10 +225,11 @@ fn cold_publishers_preserve_the_first_bundle_and_reader_snapshot() -> io::Result
             ("plugin", Security::Plugin),
             ("roblox", Security::Roblox),
         ] {
-            let assets = project.load_assets(&cache, security)?;
+            let mut capture = Capture::live(Arc::clone(&project.host));
+            let assets = load(&cache, security, &mut capture, &options())?;
 
             assert_eq!(
-                assets.definitions[0].1.text.as_ref(),
+                assets.definitions[0].text.as_ref(),
                 expected[&format!("{profile}.d.luau")]
             );
         }
@@ -239,17 +251,8 @@ fn failed_publication_leaves_no_partial_bundle() -> io::Result<()> {
     let directory = tempfile::tempdir()?;
     let cache = directory.path().join("bundle");
     fs::create_dir_all(cache.join("plugin.d.luau"))?;
-
-    assert!(
-        install(
-            &cache,
-            files("original")?,
-            &Options::new(Duration::from_secs(5)),
-            Instant::now(),
-        )
-        .is_err()
-    );
-
+    let bundle = verify_bundle("roblox", files("original")?, &options())?;
+    assert!(publish(&cache, bundle, &options()).is_err());
     assert_eq!(fs::read_dir(&cache)?.count(), 1);
     assert_eq!(fs::read_dir(directory.path())?.count(), 1);
 
@@ -257,45 +260,41 @@ fn failed_publication_leaves_no_partial_bundle() -> io::Result<()> {
 }
 
 #[test]
-fn rejects_corrupt_downloads_and_http_failures() -> io::Result<()> {
+fn rejects_corrupt_bundles_and_insecure_selection() -> io::Result<()> {
     let mut corrupted = files("original")?;
     corrupted.insert("none.d.luau".to_owned(), "declare forged: any".to_owned());
-    let (url, server) = server(corrupted, 2, Duration::ZERO)?;
 
     assert_eq!(
-        fetch(url, download, &Options::new(Duration::from_secs(5)))
+        verify_bundle("roblox", corrupted, &options())
             .expect_err("hash mismatch")
             .kind(),
         io::ErrorKind::InvalidData
     );
 
-    server.join().expect("asset server")?;
-    let (url, server) = self::server(BTreeMap::new(), 1, Duration::ZERO)?;
-    assert!(fetch(url, download, &Options::new(Duration::from_secs(5))).is_err());
-    server.join().expect("asset server")?;
+    assert!(verify_bundle("roblox", BTreeMap::new(), &options()).is_err());
+    assert!(acquisition::validate("http://127.0.0.1:1/metadata.json", &"0".repeat(64)).is_err());
 
     Ok(())
 }
 
 #[test]
-fn download_obeys_deadline_and_cancellation() -> io::Result<()> {
-    let (url, server) = server(files("original")?, 1, Duration::from_millis(300))?;
+fn bundle_verification_obeys_deadline_and_cancellation() -> io::Result<()> {
     let started = Instant::now();
+    let expired = Options::new(Some(started));
 
     assert_eq!(
-        fetch(url, download, &Options::new(Duration::from_millis(50)))
+        verify_bundle("roblox", files("original")?, &expired)
             .expect_err("deadline")
             .kind(),
         io::ErrorKind::TimedOut
     );
 
     assert!(started.elapsed() < Duration::from_millis(250));
-    drop(server.join().expect("asset server"));
-    let options = Options::new(Duration::from_secs(5));
+    let options = options();
     options.cancellation.cancel();
 
     assert_eq!(
-        fetch("http://127.0.0.1:1".to_owned(), download, &options)
+        verify_bundle("roblox", files("original")?, &options)
             .expect_err("cancellation")
             .kind(),
         io::ErrorKind::Interrupted

@@ -3,29 +3,22 @@
 use std::{
     collections::{BTreeMap, btree_map::Entry as MapEntry},
     fmt, io,
-    path::{Path, PathBuf},
-    time::Instant,
+    path::Path,
 };
 
-use instar_analysis::{Options, error::invalid};
-use instar_bridge::frontend;
+use instar_shared::{Options, error::invalid};
 
 use serde::{
     Deserialize, Deserializer,
     de::{self, MapAccess, Visitor},
 };
 
-use ureq::Agent;
-
-use crate::{
-    assets,
-    project::{Project, absolute},
-};
+use crate::{assets, capture::Capture, configuration::validate_namespace};
 
 /// Documentation attached to one native symbol.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Entry {
+pub struct DocumentationEntry {
     /// Markdown or HTML documentation text.
     pub documentation: Option<String>,
 
@@ -41,7 +34,7 @@ pub struct Entry {
 
     /// Documented function parameters.
     #[serde(default)]
-    pub params: Vec<Parameter>,
+    pub params: Vec<DocumentationParameter>,
 
     /// Return-value documentation identifiers.
     #[serde(default)]
@@ -55,7 +48,7 @@ pub struct Entry {
 /// A named parameter and its documentation reference.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Parameter {
+pub struct DocumentationParameter {
     /// Parameter name.
     pub name: String,
 
@@ -63,9 +56,26 @@ pub struct Parameter {
     pub documentation: String,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Metadata {
+    pub(crate) documentation: String,
+    revision: String,
+}
+
+impl Metadata {
+    pub(crate) fn parse(source: &str) -> io::Result<Self> {
+        let metadata: Self = assets::parse(source)?;
+        assets::revision(&metadata.revision)?;
+        assets::digest(&metadata.documentation)?;
+
+        Ok(metadata)
+    }
+}
+
 /// A validated symbol-to-documentation index for an effective environment.
 #[derive(Clone, Debug, Default)]
-pub struct Index(BTreeMap<String, Entry>);
+pub(crate) struct Index(BTreeMap<String, DocumentationEntry>);
 
 impl Index {
     pub(crate) fn parse(source: &str, namespaces: &[&str]) -> io::Result<Self> {
@@ -87,7 +97,7 @@ impl Index {
 
     /// Looks up an exact native documentation identifier.
     #[must_use]
-    pub fn get(&self, symbol: &str) -> Option<&Entry> {
+    pub(crate) fn get(&self, symbol: &str) -> Option<&DocumentationEntry> {
         self.0.get(symbol)
     }
 
@@ -97,7 +107,7 @@ impl Index {
                 .split_once('/')
                 .ok_or_else(|| invalid("documentation key requires a namespace and symbol path"))?;
 
-            frontend::validate_namespace(namespace)?;
+            validate_namespace(namespace)?;
 
             if path.is_empty() || symbol.contains('\0') {
                 return Err(invalid(format!(
@@ -127,7 +137,7 @@ impl Index {
                     .split_once('/')
                     .ok_or_else(|| invalid("invalid documentation reference"))?;
 
-                frontend::validate_namespace(namespace)?;
+                validate_namespace(namespace)?;
 
                 if path.is_empty() || reference.contains('\0') {
                     return Err(invalid("invalid documentation reference"));
@@ -146,7 +156,7 @@ impl Index {
         Ok(())
     }
 
-    fn merge(&mut self, other: Self) -> io::Result<()> {
+    pub(crate) fn merge(&mut self, other: Self) -> io::Result<()> {
         for (symbol, entry) in other.0 {
             match self.0.entry(symbol) {
                 MapEntry::Vacant(slot) => {
@@ -185,7 +195,7 @@ impl<'source> Deserialize<'source> for Index {
             ) -> Result<Index, Access::Error> {
                 let mut entries = BTreeMap::new();
 
-                while let Some((symbol, entry)) = map.next_entry::<String, Entry>()? {
+                while let Some((symbol, entry)) = map.next_entry::<String, DocumentationEntry>()? {
                     match entries.entry(symbol) {
                         MapEntry::Vacant(slot) => {
                             slot.insert(entry);
@@ -211,174 +221,33 @@ impl<'source> Deserialize<'source> for Index {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Metadata {
-    revision: String,
-    documentation: String,
-}
+pub(crate) fn load(
+    directory: &Path,
+    capture: &mut Capture,
+    options: &Options,
+) -> io::Result<Index> {
+    let metadata_source = capture.source(&directory.join("metadata.json"), options)?;
 
-impl Project {
-    /// Loads documentation for a source file's effective environment.
-    ///
-    /// # Errors
-    /// Returns configuration, download, malformed-documentation, duplicate-symbol or interruption errors.
-    pub fn documentation(&mut self, source: &Path, options: &Options) -> io::Result<Index> {
-        self.during(
-            |project| project.documentation_index(source, None, options),
-            options,
+    let metadata = Metadata::parse(&metadata_source.text).map_err(|error| {
+        assets::attributed(&metadata_source, &[], "documentation.metadata", error)
+    })?;
+
+    let documentation = capture.source(&directory.join("documentation.json"), options)?;
+    options.check()?;
+
+    assets::verify(&documentation.text, &metadata.documentation).map_err(|error| {
+        assets::attributed(
+            &documentation,
+            &[metadata_source.version],
+            "documentation.digest",
+            error,
         )
-    }
+    })?;
 
-    /// Loads the documentation entry for an exact native symbol without unrelated namespaces.
-    ///
-    /// # Errors
-    /// Returns invalid symbols, configuration, download, documentation, or interruption failures.
-    pub fn documentation_for(
-        &mut self,
-        source: &Path,
-        symbol: &str,
-        options: &Options,
-    ) -> io::Result<Option<Entry>> {
-        let (namespace, path) = symbol
-            .split_once('/')
-            .ok_or_else(|| invalid("documentation symbol requires a namespace"))?;
+    let index = Index::parse(&documentation.text, &["@luau"])
+        .map_err(|error| assets::attributed(&documentation, &[], "documentation.invalid", error))?;
 
-        frontend::validate_namespace(namespace)?;
+    options.check()?;
 
-        if path.is_empty() || symbol.contains('\0') {
-            return Err(invalid("invalid documentation symbol"));
-        }
-
-        self.during(
-            |project| {
-                let index = project.documentation_index(source, Some(namespace), options)?;
-
-                Ok(index.get(symbol).cloned())
-            },
-            options,
-        )
-    }
-
-    fn documentation_index(
-        &mut self,
-        source: &Path,
-        namespace: Option<&str>,
-        options: &Options,
-    ) -> io::Result<Index> {
-        let started = Instant::now();
-        let source = absolute(source)?;
-
-        let directory = source
-            .parent()
-            .ok_or_else(|| invalid("source has no parent directory"))?;
-
-        let settings = self.configuration(directory)?;
-
-        let mut index = if namespace.is_none_or(|namespace| namespace == "@luau") {
-            self.builtin_documentation(options, started)?
-        } else {
-            Index::default()
-        };
-
-        if namespace.is_none_or(|namespace| namespace == "@roblox")
-            && settings.configuration.roblox.enabled == Some(true)
-        {
-            index.merge(
-                self.roblox_assets(settings.configuration.roblox.security, options, started)?
-                    .documentation
-                    .clone(),
-            )?;
-        }
-
-        for environment in settings
-            .configuration
-            .environment
-            .iter()
-            .filter(|environment| {
-                namespace.is_none_or(|namespace| namespace == environment.namespace)
-            })
-        {
-            for path in &environment.documentation {
-                options.check(started)?;
-
-                let document = self.source(path)?;
-
-                let loaded = Index::parse(&document.text, &[&environment.namespace])
-                    .map_err(|error| invalid(format!("{}: {error}", path.display())))?;
-
-                index.merge(loaded)?;
-            }
-        }
-
-        options.check(started)?;
-
-        Ok(index)
-    }
-
-    fn builtin_documentation(&mut self, options: &Options, started: Instant) -> io::Result<Index> {
-        let directory = cache_directory()?;
-
-        match self.source(&directory.join("metadata.json")) {
-            Ok(_) => tracing::debug!(path = %directory.display(), "Using cached documentation"),
-
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                let files = assets::fetch(
-                    format!("{}/luau", assets::HOST),
-                    download,
-                    &options.remaining(started),
-                )?;
-
-                assets::install(&directory, files, options, started)?;
-
-                self.view.invalidate(&directory);
-            }
-
-            Err(error) => return Err(error),
-        }
-
-        let metadata = self.source(&directory.join("metadata.json"))?;
-        let metadata: Metadata = assets::parse(&metadata.text)?;
-        assets::revision(&metadata.revision)?;
-        let document = self.source(&directory.join("documentation.json"))?;
-        assets::verify(&document.text, &metadata.documentation)?;
-
-        Index::parse(&document.text, &["@luau"])
-    }
-}
-
-/// Returns the versioned cache for standalone Luau documentation.
-///
-/// # Errors
-/// Returns an error when the operating system's user cache directory is unavailable.
-pub fn cache_directory() -> io::Result<PathBuf> {
-    assets::directory("luau")
-}
-
-fn download(url: &str, options: &Options) -> io::Result<BTreeMap<String, String>> {
-    let started = Instant::now();
-
-    let agent = Agent::config_builder()
-        .https_only(url.starts_with("https://"))
-        .build()
-        .new_agent();
-
-    let metadata = assets::get(&agent, &format!("{url}/metadata.json"), options, started)?;
-    let parsed: Metadata = assets::parse(&metadata)?;
-    assets::revision(&parsed.revision)?;
-
-    let documentation = assets::get(
-        &agent,
-        &format!("{url}/documentation.json"),
-        options,
-        started,
-    )?;
-
-    assets::verify(&documentation, &parsed.documentation)?;
-    Index::parse(&documentation, &["@luau"])?;
-
-    Ok(BTreeMap::from([
-        ("metadata.json".to_owned(), metadata),
-        ("documentation.json".to_owned(), documentation),
-    ]))
+    Ok(index)
 }

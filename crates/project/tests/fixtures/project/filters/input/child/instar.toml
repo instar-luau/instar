@@ -1,5 +1,1 @@
-include = ["child/**"]
-[check]
-exclude = []
-[editor.index]
-include = []
+selection = { "include" = ["child/**"], "checking" = { "exclude" = [] }, "index" = { "include" = [] } }

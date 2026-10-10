@@ -1,1 +1,1 @@
-include=['entry.luau']
+selection = { "include" = ["entry.luau"] }

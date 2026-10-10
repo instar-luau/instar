@@ -1,2 +1,1 @@
-[roblox]
-enabled = true
+environment = { "roblox" = true }

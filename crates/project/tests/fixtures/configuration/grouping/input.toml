@@ -1,2 +1,1 @@
-[format.requires]
-groups = ["alias", "alias"]
+formatting = { "requires" = { "groups" = ["alias", "alias"] } }

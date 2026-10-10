@@ -4,26 +4,29 @@ use std::{
     io,
     sync::{Arc, Mutex},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
-use instar_analysis::{self as analysis, Completion, Options, Reason};
+use instar_luau::ImportOutcome;
 
-use instar_core::{
-    analysis::{Entry, Origin},
-    project::Change,
-    roblox,
+use instar_shared::{
+    Completion, Diagnostic, DiagnosticCategory, EventPayload, FindingIdentity, Location, Options,
+    Reason, Severity, SourceVersion, Span,
 };
 
-use instar_lint::{self as lint, Diagnostic, Kind, Level, Rule};
+use instar_project::{
+    CheckRequest, Input, Invocation, LintReport, LintRequest, SourceOrigin, roblox_cache_directory,
+};
 
-use crate::support::{Directory, options, project};
+use instar_lint::RuleIdentity;
 
-fn rule(result: &lint::Result<Origin>, name: Rule) -> bool {
+use crate::support::{Directory, complete, options, project, replace};
+
+fn rule(result: &LintReport, name: RuleIdentity) -> bool {
     result
-        .diagnostics
+        .findings
         .iter()
-        .any(|diagnostic| diagnostic.kind == Kind::Rule(name))
+        .any(|diagnostic| diagnostic.code == name.name())
 }
 
 #[test]
@@ -40,54 +43,127 @@ fn native_and_instar_policies_are_independent_and_checker_stays_clean() -> io::R
         include_str!("../fixtures/linting/native/entry.luau"),
     )?;
 
-    let mut project = project();
-    let entries = [Entry::new(entry.clone())];
-    let before = project.check(&entries, &options())?;
-    assert_eq!(before.diagnostics, Vec::new());
-    let linted = project.lint(&entries, &options())?;
+    let project = project();
+    let entries = [Input::Path(entry.clone())];
+
+    let before = complete(project.check(
+        CheckRequest {
+            invocation: Invocation {
+                inputs: entries.to_vec(),
+                ..Invocation::default()
+            },
+            ..CheckRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
+
+    assert_eq!(before.findings, Vec::new());
+
+    let linted = complete(project.lint(
+        LintRequest {
+            invocation: Invocation {
+                inputs: entries.to_vec(),
+                ..Invocation::default()
+            },
+            ..LintRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
+
     assert_eq!(linted.completion, Completion::Complete);
 
-    assert!(linted.diagnostics.iter().any(
-        |diagnostic| matches!(&diagnostic.kind, Kind::Native { name, .. } if name == "LocalUnused")
-            && diagnostic.level == Level::Warn
-    ));
+    assert!(
+        linted
+            .findings
+            .iter()
+            .any(|diagnostic| diagnostic.identity.producer() == "luau"
+                && diagnostic.code == "LocalUnused"
+                && diagnostic.severity == Severity::Warning)
+    );
 
-    assert!(linted.diagnostics.iter().any(|diagnostic| diagnostic.kind
-        == Kind::Rule(Rule::UnusedVariable)
-        && diagnostic.level == Level::Info));
+    assert_eq!(linted.findings.len(), 1);
+    assert!(!rule(&linted, RuleIdentity::UnusedVariable));
 
-    assert_eq!(project.check(&entries, &options())?, before);
+    assert_eq!(
+        {
+            let report = complete(project.check(
+                CheckRequest {
+                    invocation: Invocation {
+                        inputs: entries.to_vec(),
+                        ..Invocation::default()
+                    },
+                    ..CheckRequest::default()
+                },
+                options(),
+            ))
+            .map_err(io::Error::from)?;
+            (report.findings, report.sources, report.completion)
+        },
+        (
+            before.findings.clone(),
+            before.sources.clone(),
+            before.completion.clone()
+        )
+    );
 
-    project.change(Change::Overlay {
-        path: directory.path().join(".luaurc"),
-        text: Some(include_str!("../fixtures/linting/native/fatal.json").to_owned()),
-    })?;
+    replace(
+        &project,
+        &directory.path().join(".luaurc"),
+        include_str!("../fixtures/linting/native/fatal.json"),
+    )?;
 
-    let fatal = project.lint(&entries, &options())?;
+    let fatal = complete(project.lint(
+        LintRequest {
+            invocation: Invocation {
+                inputs: entries.to_vec(),
+                ..Invocation::default()
+            },
+            ..LintRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
 
     assert!(
         fatal
-            .diagnostics
+            .findings
             .iter()
-            .any(|diagnostic| matches!(diagnostic.kind, Kind::Native { .. })
-                && diagnostic.level == Level::Deny)
+            .any(|diagnostic| diagnostic.category == DiagnosticCategory::Lint
+                && diagnostic.identity.producer() == "luau"
+                && diagnostic.severity == Severity::Error)
     );
 
-    project.change(Change::Overlay {
-        path: entry,
-        text: Some(include_str!("../fixtures/linting/native/input.luau").to_owned()),
-    })?;
+    replace(
+        &project,
+        &entry,
+        include_str!("../fixtures/linting/native/input.luau"),
+    )?;
 
-    let directive = project.lint(&entries, &options())?;
+    let directive = complete(project.lint(
+        LintRequest {
+            invocation: Invocation {
+                inputs: entries.to_vec(),
+                ..Invocation::default()
+            },
+            ..LintRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
 
     assert!(
         !directive
-            .diagnostics
+            .findings
             .iter()
-            .any(|diagnostic| matches!(diagnostic.kind, Kind::Native { .. }))
+            .any(|diagnostic| diagnostic.category == DiagnosticCategory::Lint
+                && diagnostic.identity.producer() == "luau")
     );
 
-    assert!(rule(&directive, Rule::UnusedVariable));
+    assert!(rule(&directive, RuleIdentity::UnusedVariable));
+    assert_eq!(directive.findings.len(), 1);
+    assert_eq!(directive.findings[0].severity, Severity::Information);
 
     Ok(())
 }
@@ -111,42 +187,83 @@ fn selection_reports_targets_and_attributes_dependency_failures() -> io::Result<
         include_str!("../fixtures/linting/selection/dependency.luau"),
     )?;
 
-    let mut project = project();
-    let entries = [Entry::new(entry.clone())];
-    let result = project.lint(&entries, &options())?;
-    assert_eq!(result.modules.len(), 2);
-    assert_eq!(result.modules, project.check(&entries, &options())?.modules);
+    let project = project();
+    let entries = [Input::Path(entry.clone())];
 
-    assert!(
-        result
-            .diagnostics
-            .iter()
-            .all(|diagnostic| diagnostic.location.module.source() == entry)
+    let result = complete(project.lint(
+        LintRequest {
+            invocation: Invocation {
+                inputs: entries.to_vec(),
+                ..Invocation::default()
+            },
+            ..LintRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
+
+    assert_eq!(result.sources.len(), 2);
+
+    assert_eq!(
+        result.sources,
+        complete(project.check(
+            CheckRequest {
+                invocation: Invocation {
+                    inputs: entries.to_vec(),
+                    ..Invocation::default()
+                },
+                ..CheckRequest::default()
+            },
+            options()
+        ))
+        .map_err(io::Error::from)?
+        .sources
     );
 
-    assert!(!rule(&result, Rule::UnusedVariable));
+    assert!(result.findings.iter().all(|diagnostic| {
+        project
+            .snapshot()
+            .origin(diagnostic.primary.source.identity)
+            .and_then(SourceOrigin::path)
+            .expect("finding origin")
+            == entry
+    }));
+
+    assert!(!rule(&result, RuleIdentity::UnusedVariable));
 
     assert!(
         !result
-            .diagnostics
+            .findings
             .iter()
-            .any(|diagnostic| matches!(diagnostic.kind, Kind::Native { .. }))
+            .any(|diagnostic| diagnostic.category == DiagnosticCategory::Lint
+                && diagnostic.identity.producer() == "luau")
     );
 
-    assert!(result.diagnostics.iter().any(|diagnostic| {
-        matches!(
-            diagnostic.kind,
-            Kind::Analysis(analysis::Kind::Analysis { .. })
-        ) && diagnostic
-            .related
-            .iter()
-            .any(|related| related.location.module.source() == dependency)
+    assert!(result.findings.iter().any(|diagnostic| {
+        diagnostic.category == DiagnosticCategory::Analysis
+            && diagnostic.related.iter().any(|related| {
+                project
+                    .snapshot()
+                    .origin(related.location.source.identity)
+                    .and_then(SourceOrigin::path)
+                    .expect("finding origin")
+                    == dependency
+            })
     }));
 
     assert_eq!(
-        project
-            .lint(&[Entry::new(dependency)], &options())?
-            .diagnostics,
+        complete(project.lint(
+            LintRequest {
+                invocation: Invocation {
+                    inputs: vec![Input::Path(dependency)],
+                    ..Invocation::default()
+                },
+                ..LintRequest::default()
+            },
+            options()
+        ))
+        .map_err(io::Error::from)?
+        .findings,
         Vec::new()
     );
 
@@ -174,26 +291,50 @@ fn shared_typed_require_aliases_drive_restrictions() -> io::Result<()> {
         include_str!("../fixtures/linting/shared/entry.luau"),
     )?;
 
-    let mut project = project();
-    let result = project.lint(&[Entry::new(entry.clone())], &options())?;
-    assert_eq!(result.completion, Completion::Complete);
-    assert!(rule(&result, Rule::RestrictedModulePaths));
-    assert!(!rule(&result, Rule::NonConstRequire));
+    let project = project();
 
-    assert!(result.diagnostics.iter().any(|diagnostic| diagnostic.kind
-        == Kind::Rule(Rule::RestrictedModulePaths)
-        && &project.source(&entry).expect("source").text
-            [diagnostic.location.range[0]..diagnostic.location.range[1]]
+    let result = complete(project.lint(
+        LintRequest {
+            invocation: Invocation {
+                inputs: vec![Input::Path(entry.clone())],
+                ..Invocation::default()
+            },
+            ..LintRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
+
+    assert_eq!(result.completion, Completion::Complete);
+    assert!(rule(&result, RuleIdentity::RestrictedModulePaths));
+    assert!(!rule(&result, RuleIdentity::NonConstRequire));
+
+    assert!(result.findings.iter().any(|diagnostic| diagnostic.code
+        == RuleIdentity::RestrictedModulePaths.name()
+        && &project.snapshot().source_at(&entry).expect("source").text
+            [diagnostic.primary.span.start..diagnostic.primary.span.end]
             == "path"));
 
-    project.change(Change::Overlay {
-        path: entry.clone(),
-        text: Some(include_str!("../fixtures/linting/shared/input.luau").to_owned()),
-    })?;
+    replace(
+        &project,
+        &entry,
+        include_str!("../fixtures/linting/shared/input.luau"),
+    )?;
 
-    let shadowed = project.lint(&[Entry::new(entry)], &options())?;
-    assert!(!rule(&shadowed, Rule::RestrictedModulePaths));
-    assert!(!rule(&shadowed, Rule::NonConstRequire));
+    let shadowed = complete(project.lint(
+        LintRequest {
+            invocation: Invocation {
+                inputs: vec![Input::Path(entry)],
+                ..Invocation::default()
+            },
+            ..LintRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
+
+    assert!(!rule(&shadowed, RuleIdentity::RestrictedModulePaths));
+    assert!(!rule(&shadowed, RuleIdentity::NonConstRequire));
 
     Ok(())
 }
@@ -217,14 +358,27 @@ fn syntax_only_rules_do_not_load_declaration_environments() -> io::Result<()> {
         include_str!("../fixtures/linting/syntax/entry.luau"),
     )?;
 
-    let result = project().lint(&[Entry::new(entry)], &options())?;
-    assert_eq!(result.completion, Completion::Complete);
-    assert!(rule(&result, Rule::DivideByZero));
+    let result = complete(project().lint(
+        LintRequest {
+            invocation: Invocation {
+                inputs: vec![Input::Path(entry)],
+                ..Invocation::default()
+            },
+            ..LintRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
 
-    assert!(!result.diagnostics.iter().any(|diagnostic| matches!(
-        diagnostic.kind,
-        Kind::Analysis(analysis::Kind::Analysis { .. })
-    )));
+    assert_eq!(result.completion, Completion::Complete);
+    assert!(rule(&result, RuleIdentity::DivideByZero));
+
+    assert!(
+        !result
+            .findings
+            .iter()
+            .any(|diagnostic| diagnostic.category == DiagnosticCategory::Analysis)
+    );
 
     Ok(())
 }
@@ -255,54 +409,125 @@ fn inferred_any_uses_native_types_and_per_module_selection() -> io::Result<()> {
         include_str!("../fixtures/linting/inferred/entry.luau"),
     )?;
 
-    let mut project = project();
-    let strict = project.lint(&[Entry::new(entry.clone())], &options())?;
+    let project = project();
+
+    let strict = complete(project.lint(
+        LintRequest {
+            invocation: Invocation {
+                inputs: vec![Input::Path(entry.clone())],
+                ..Invocation::default()
+            },
+            ..LintRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
+
     assert_eq!(strict.completion, Completion::Complete);
-    assert!(!rule(&strict, Rule::ImplicitAnyLocal));
-    assert!(!rule(&strict, Rule::ImplicitAnyParameter));
+    assert!(!rule(&strict, RuleIdentity::ImplicitAnyLocal));
+    assert!(!rule(&strict, RuleIdentity::ImplicitAnyParameter));
 
-    project.change(Change::Overlay {
-        path: directory.path().join(".luaurc"),
-        text: Some(include_str!("../fixtures/linting/inferred/nonstrict.json").to_owned()),
-    })?;
+    replace(
+        &project,
+        &directory.path().join(".luaurc"),
+        include_str!("../fixtures/linting/inferred/nonstrict.json"),
+    )?;
 
-    project.change(Change::Overlay {
-        path: entry.clone(),
-        text: Some(include_str!("../fixtures/linting/inferred/input.luau").to_owned()),
-    })?;
+    replace(
+        &project,
+        &entry,
+        include_str!("../fixtures/linting/inferred/input.luau"),
+    )?;
 
-    let inferred = project.lint(&[Entry::new(entry.clone())], &options())?;
+    let inferred = complete(project.lint(
+        LintRequest {
+            invocation: Invocation {
+                inputs: vec![Input::Path(entry.clone())],
+                ..Invocation::default()
+            },
+            ..LintRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
+
     assert_eq!(inferred.completion, Completion::Complete);
-    assert!(!rule(&inferred, Rule::ImplicitAnyParameter));
+    assert!(!rule(&inferred, RuleIdentity::ImplicitAnyParameter));
 
-    project.change(Change::Overlay {
-        path: entry.clone(),
-        text: Some(include_str!("../fixtures/linting/inferred/replacement.luau").to_owned()),
-    })?;
+    replace(
+        &project,
+        &entry,
+        include_str!("../fixtures/linting/inferred/replacement.luau"),
+    )?;
 
     let limits = options();
-    let nonstrict = project.lint(&[Entry::new(entry.clone())], &limits)?;
+
+    let nonstrict = complete(project.lint(
+        LintRequest {
+            invocation: Invocation {
+                inputs: vec![Input::Path(entry.clone())],
+                ..Invocation::default()
+            },
+            ..LintRequest::default()
+        },
+        limits.clone(),
+    ))
+    .map_err(io::Error::from)?;
 
     assert_eq!(
-        project.lint(&[Entry::new(entry.clone())], &limits)?,
-        nonstrict
+        {
+            let report = complete(project.lint(
+                LintRequest {
+                    invocation: Invocation {
+                        inputs: vec![Input::Path(entry.clone())],
+                        ..Invocation::default()
+                    },
+                    ..LintRequest::default()
+                },
+                limits.clone(),
+            ))
+            .map_err(io::Error::from)?;
+            (report.findings, report.sources, report.completion)
+        },
+        (
+            nonstrict.findings.clone(),
+            nonstrict.sources.clone(),
+            nonstrict.completion.clone()
+        )
     );
 
     assert_eq!(nonstrict.completion, Completion::Complete);
-    assert!(rule(&nonstrict, Rule::ImplicitAnyParameter));
+    assert!(rule(&nonstrict, RuleIdentity::ImplicitAnyParameter));
 
-    project.change(Change::Overlay {
-        path: entry.clone(),
-        text: Some(include_str!("../fixtures/linting/inferred/invalid.luau").to_owned()),
-    })?;
+    replace(
+        &project,
+        &entry,
+        include_str!("../fixtures/linting/inferred/invalid.luau"),
+    )?;
 
-    let nocheck = project.lint(&[Entry::new(entry)], &options())?;
-    assert_eq!(nocheck.completion, Completion::Incomplete(Reason::Analysis));
+    let nocheck = complete(project.lint(
+        LintRequest {
+            invocation: Invocation {
+                inputs: vec![Input::Path(entry)],
+                ..Invocation::default()
+            },
+            ..LintRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
 
-    assert!(nocheck.diagnostics.iter().any(|diagnostic| matches!(
-        diagnostic.kind,
-        Kind::Analysis(analysis::Kind::Analysis { .. })
-    )));
+    assert_eq!(
+        nocheck.completion,
+        Completion::Incomplete(vec![Reason::UnavailableSemantics])
+    );
+
+    assert!(
+        nocheck
+            .findings
+            .iter()
+            .any(|diagnostic| diagnostic.category == DiagnosticCategory::Analysis)
+    );
 
     Ok(())
 }
@@ -321,60 +546,98 @@ fn missing_and_invalid_definitions_remain_explicit_with_syntax_findings() -> io:
         include_str!("../fixtures/linting/missing/entry.luau"),
     )?;
 
-    let mut project = project();
-    let missing = project.lint(&[Entry::new(entry.clone())], &options())?;
+    let project = project();
+
+    let missing = complete(project.lint(
+        LintRequest {
+            invocation: Invocation {
+                inputs: vec![Input::Path(entry.clone())],
+                ..Invocation::default()
+            },
+            ..LintRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
 
     assert_eq!(
         missing.completion,
-        Completion::Incomplete(Reason::Environment)
+        Completion::Incomplete(vec![Reason::UnavailableEnvironment])
     );
 
-    assert!(rule(&missing, Rule::DivideByZero));
-
-    assert!(missing.diagnostics.iter().any(|diagnostic| {
-        matches!(diagnostic.location.module, Origin::Module(_))
-            && matches!(
-                diagnostic.kind,
-                Kind::Analysis(analysis::Kind::Analysis { .. })
-            )
-            && diagnostic
-                .related
-                .iter()
-                .any(|related| matches!(related.location.module, Origin::Definition(_)))
-    }));
+    assert!(rule(&missing, RuleIdentity::DivideByZero));
 
     let definition = directory.path().join("globals.luau");
 
-    project.change(Change::Overlay {
-        path: definition.clone(),
-        text: Some(include_str!("../fixtures/linting/missing/invalid.luau").to_owned()),
-    })?;
+    assert!(missing.findings.iter().any(|diagnostic| {
+        missing
+            .snapshot
+            .origin(diagnostic.primary.source.identity)
+            .and_then(SourceOrigin::path)
+            == Some(entry.as_path())
+            && diagnostic.category == DiagnosticCategory::Analysis
+            && diagnostic.related.iter().any(|related| {
+                missing
+                    .snapshot
+                    .origin(related.location.source.identity)
+                    .and_then(SourceOrigin::path)
+                    == Some(definition.as_path())
+            })
+    }));
 
-    let invalid = project.lint(&[Entry::new(entry.clone())], &options())?;
+    replace(
+        &project,
+        &definition,
+        include_str!("../fixtures/linting/missing/invalid.luau"),
+    )?;
+
+    let invalid = complete(project.lint(
+        LintRequest {
+            invocation: Invocation {
+                inputs: vec![Input::Path(entry.clone())],
+                ..Invocation::default()
+            },
+            ..LintRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
 
     assert_eq!(
         invalid.completion,
-        Completion::Incomplete(Reason::Environment)
+        Completion::Incomplete(vec![Reason::UnavailableEnvironment])
     );
 
-    assert!(invalid.diagnostics.iter().any(|diagnostic| {
-        diagnostic
-            .related
-            .iter()
-            .any(|related| related.location.module.source() == definition)
-            && matches!(
-                diagnostic.kind,
-                Kind::Analysis(analysis::Kind::Analysis { .. })
-            )
+    assert!(invalid.findings.iter().any(|diagnostic| {
+        diagnostic.related.iter().any(|related| {
+            project
+                .snapshot()
+                .origin(related.location.source.identity)
+                .and_then(SourceOrigin::path)
+                .expect("finding origin")
+                == definition
+        }) && diagnostic.category == DiagnosticCategory::Analysis
     }));
 
-    project.change(Change::Overlay {
-        path: definition,
-        text: Some(include_str!("../fixtures/linting/missing/definition.luau").to_owned()),
-    })?;
+    replace(
+        &project,
+        &definition,
+        include_str!("../fixtures/linting/missing/definition.luau"),
+    )?;
 
     assert_eq!(
-        project.lint(&[Entry::new(entry)], &options())?.completion,
+        complete(project.lint(
+            LintRequest {
+                invocation: Invocation {
+                    inputs: vec![Input::Path(entry)],
+                    ..Invocation::default()
+                },
+                ..LintRequest::default()
+            },
+            options()
+        ))
+        .map_err(io::Error::from)?
+        .completion,
         Completion::Complete
     );
 
@@ -395,25 +658,39 @@ fn invalid_roblox_metadata_keeps_known_lint_findings() -> io::Result<()> {
         include_str!("../fixtures/linting/invalid/entry.luau"),
     )?;
 
-    let mut project = project();
+    let project = project();
 
-    project.change(Change::Overlay {
-        path: roblox::cache_directory()?.join("metadata.json"),
-        text: Some("{}".to_owned()),
-    })?;
+    replace(
+        &project,
+        &roblox_cache_directory()?.join("metadata.json"),
+        "{}",
+    )?;
 
-    let result = project.lint(&[Entry::new(entry)], &options())?;
+    let result = complete(project.lint(
+        LintRequest {
+            invocation: Invocation {
+                inputs: vec![Input::Path(entry)],
+                ..Invocation::default()
+            },
+            ..LintRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
 
     assert_eq!(
         result.completion,
-        Completion::Incomplete(Reason::Environment)
+        Completion::Incomplete(vec![Reason::UnavailableEnvironment])
     );
 
-    assert!(rule(&result, Rule::RobloxIncorrectColor3NewBounds));
+    assert!(rule(&result, RuleIdentity::RobloxIncorrectColor3NewBounds));
 
-    assert!(result.diagnostics.iter().any(
-        |diagnostic| diagnostic.kind == Kind::Analysis(analysis::Kind::Analysis { code: None })
-    ));
+    assert!(
+        result
+            .findings
+            .iter()
+            .any(|diagnostic| diagnostic.category == DiagnosticCategory::Analysis)
+    );
 
     Ok(())
 }
@@ -442,41 +719,119 @@ fn source_updates_and_contexts_keep_exact_revision_identity() -> io::Result<()> 
         include_str!("../fixtures/linting/source/sourcemap.json"),
     )?;
 
-    let mut project = project();
-    let contexts = project.contexts(&shared)?;
+    let project = project();
+
+    let initial = complete(project.lint(
+        LintRequest {
+            invocation: Invocation {
+                inputs: vec![Input::Path(shared.clone())],
+                ..Invocation::default()
+            },
+            ..LintRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
+
+    let source = initial
+        .snapshot
+        .source_at(&shared)
+        .expect("shared source")
+        .version
+        .identity;
+
+    let contexts = initial
+        .modules
+        .iter()
+        .copied()
+        .filter(|module| module.source == source)
+        .collect::<Vec<_>>();
+
     assert_eq!(contexts.len(), 2);
 
     let entries = contexts
         .iter()
-        .map(|module| Entry {
-            source: shared.clone(),
-            context: Some(module.identity.clone()),
-        })
+        .copied()
+        .map(Input::Module)
         .collect::<Vec<_>>();
 
     let limits = options();
-    let result = project.lint(&entries, &limits)?;
-    assert_eq!(project.lint(&entries, &limits)?, result);
+
+    let result = complete(project.lint(
+        LintRequest {
+            invocation: Invocation {
+                inputs: entries.to_vec(),
+                ..Invocation::default()
+            },
+            ..LintRequest::default()
+        },
+        limits.clone(),
+    ))
+    .map_err(io::Error::from)?;
+
+    assert_eq!(
+        {
+            let report = complete(project.lint(
+                LintRequest {
+                    invocation: Invocation {
+                        inputs: entries.to_vec(),
+                        ..Invocation::default()
+                    },
+                    ..LintRequest::default()
+                },
+                limits.clone(),
+            ))
+            .map_err(io::Error::from)?;
+            (report.findings, report.sources, report.completion)
+        },
+        (
+            result.findings.clone(),
+            result.sources.clone(),
+            result.completion.clone()
+        )
+    );
+
     assert_eq!(result.modules.len(), 2);
 
     let findings = result
-        .diagnostics
+        .module_findings
         .iter()
-        .filter(|diagnostic| diagnostic.kind == Kind::Rule(Rule::DivideByZero))
+        .filter(|finding| finding.diagnostic.code == RuleIdentity::DivideByZero.name())
         .collect::<Vec<_>>();
 
     assert_eq!(findings.len(), 2);
-    assert_ne!(findings[0].location.module, findings[1].location.module);
-    let revision = findings[0].location.revision;
+    assert_ne!(findings[0].module, findings[1].module);
+    let revision = findings[0].diagnostic.primary.source.revision;
 
-    project.change(Change::Overlay {
-        path: shared,
-        text: Some(include_str!("../fixtures/linting/source/replacement.luau").to_owned()),
-    })?;
+    replace(
+        &project,
+        &shared,
+        include_str!("../fixtures/linting/source/replacement.luau"),
+    )?;
 
-    let updated = project.lint(&entries, &limits)?;
-    assert!(!rule(&updated, Rule::DivideByZero));
-    assert_ne!(project.source(&entries[0].source)?.revision, revision);
+    let updated = complete(project.lint(
+        LintRequest {
+            invocation: Invocation {
+                inputs: entries.to_vec(),
+                ..Invocation::default()
+            },
+            ..LintRequest::default()
+        },
+        limits.clone(),
+    ))
+    .map_err(io::Error::from)?;
+
+    assert!(!rule(&updated, RuleIdentity::DivideByZero));
+
+    assert_ne!(
+        project
+            .snapshot()
+            .source_at(&shared)
+            .expect("source")
+            .version
+            .revision,
+        revision
+    );
 
     Ok(())
 }
@@ -491,7 +846,10 @@ fn syntax_jobs_preserve_order_and_coordinator_progress() -> io::Result<()> {
     )?;
 
     directory.file("dependency.luau", "return 1")?;
-    directory.file("child/instar.toml", "[lint.divide_by_zero]\nlevel='allow'")?;
+
+    directory.file("child/instar.toml",
+        "linting = { rules = { divide_by_zero = { enabled = false, severity = 'Warning', settings = { rule = 'divide_by_zero', parameters = {} } } } }")?;
+
     let mut entries = Vec::new();
 
     for index in 0..8 {
@@ -501,38 +859,58 @@ fn syntax_jobs_preserve_order_and_coordinator_progress() -> io::Result<()> {
             "{prefix}local path='./dependency'\nlocal dependency=require(path)\nreturn 1/0"
         );
 
-        entries.push(Entry::new(
+        entries.push(Input::Path(
             directory.file(&format!("entry{index}.luau"), &source)?,
         ));
     }
 
-    entries.push(Entry::new(
+    entries.push(Input::Path(
         directory.file("child/entry.luau", "return 1/0")?,
     ));
 
-    let mut project = project();
+    let project = project();
     let mut limits = options();
-    let original = project.lint(&entries, &limits)?;
+
+    let original = complete(project.lint(
+        LintRequest {
+            invocation: Invocation {
+                inputs: entries.to_vec(),
+                ..Invocation::default()
+            },
+            ..LintRequest::default()
+        },
+        limits.clone(),
+    ))
+    .map_err(io::Error::from)?;
+
     assert_eq!(original.completion, Completion::Complete);
-    assert_eq!(original.modules.len(), 10);
-    assert!(rule(&original, Rule::RestrictedModulePaths));
+    assert_eq!(original.sources.len(), 10);
+    assert!(rule(&original, RuleIdentity::RestrictedModulePaths));
 
     assert_eq!(
         original
-            .diagnostics
+            .findings
             .iter()
-            .filter(|diagnostic| diagnostic.kind == Kind::Rule(Rule::DivideByZero))
+            .filter(|diagnostic| diagnostic.code == RuleIdentity::DivideByZero.name())
             .count(),
         8
     );
 
     let progress = Arc::new(Mutex::new(Vec::new()));
     let recorded = Arc::clone(&progress);
-    let coordinator = thread::current().id();
+    let coordinator = Arc::new(Mutex::new(None));
 
-    limits.progress = Some(Arc::new(move |event| {
-        if event.phase == "Syntax linting" {
-            assert_eq!(thread::current().id(), coordinator);
+    limits.observer = Some(Arc::new(move |event| {
+        if let EventPayload::Progress(event) = event.payload
+            && event.phase == "Syntax linting"
+        {
+            assert_eq!(
+                *coordinator
+                    .lock()
+                    .expect("syntax coordinator")
+                    .get_or_insert_with(|| thread::current().id()),
+                thread::current().id()
+            );
 
             recorded
                 .lock()
@@ -541,7 +919,28 @@ fn syntax_jobs_preserve_order_and_coordinator_progress() -> io::Result<()> {
         }
     }));
 
-    assert_eq!(project.lint(&entries, &limits)?, original);
+    assert_eq!(
+        {
+            let report = complete(project.lint(
+                LintRequest {
+                    invocation: Invocation {
+                        inputs: entries.to_vec(),
+                        ..Invocation::default()
+                    },
+                    ..LintRequest::default()
+                },
+                limits.clone(),
+            ))
+            .map_err(io::Error::from)?;
+            (report.findings, report.sources, report.completion)
+        },
+        (
+            original.findings.clone(),
+            original.sources.clone(),
+            original.completion.clone()
+        )
+    );
+
     let progress = progress.lock().expect("syntax progress");
     assert_eq!(progress.first(), Some(&(0, Some(10))));
     assert_eq!(progress.last(), Some(&(10, Some(10))));
@@ -554,34 +953,96 @@ fn syntax_jobs_preserve_order_and_coordinator_progress() -> io::Result<()> {
 fn syntax_jobs_preserve_native_syntax_deduplication() -> io::Result<()> {
     let directory = Directory::new(Some(include_str!("../fixtures/linting/native/strict.json")))?;
 
+    let first = directory.file("first.luau", "local =")?;
+
     let entries = [
-        Entry::new(directory.file("first.luau", "local =")?),
-        Entry::new(directory.file("second.luau", "return (")?),
+        Input::Path(first.clone()),
+        Input::Path(directory.file("second.luau", "return (")?),
     ];
 
-    let mut project = project();
-    let checked = project.check(&entries, &options())?;
+    let project = project();
+
+    let checked = complete(project.check(
+        CheckRequest {
+            invocation: Invocation {
+                inputs: entries.to_vec(),
+                ..Invocation::default()
+            },
+            ..CheckRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
+
     let limits = options();
-    let original = project.lint(&entries, &limits)?;
-    assert_eq!(project.lint(&entries, &limits)?, original);
+
+    let original = complete(project.lint(
+        LintRequest {
+            invocation: Invocation {
+                inputs: entries.to_vec(),
+                ..Invocation::default()
+            },
+            ..LintRequest::default()
+        },
+        limits.clone(),
+    ))
+    .map_err(io::Error::from)?;
+
+    assert_eq!(
+        {
+            let report = complete(project.lint(
+                LintRequest {
+                    invocation: Invocation {
+                        inputs: entries.to_vec(),
+                        ..Invocation::default()
+                    },
+                    ..LintRequest::default()
+                },
+                limits.clone(),
+            ))
+            .map_err(io::Error::from)?;
+            (report.findings, report.sources, report.completion)
+        },
+        (
+            original.findings.clone(),
+            original.sources.clone(),
+            original.completion.clone()
+        )
+    );
+
+    let version = checked
+        .snapshot
+        .source_at(&first)
+        .expect("first source")
+        .version;
+
+    let primary = Location {
+        source: version,
+        span: Span { start: 6, end: 7 },
+    };
 
     let mut expected = vec![Diagnostic {
-        location: analysis::Location {
-            module: checked.modules[0].clone(),
-            revision: project.source(&entries[0].source)?.revision,
-            range: [6, 7],
-        },
-        kind: Kind::Native {
-            code: 7,
-            name: "LocalUnused".to_owned(),
-        },
-        level: Level::Warn,
+        identity: FindingIdentity::new("luau", vec![version], "LocalUnused", primary),
+        code: "LocalUnused".to_owned(),
+        category: DiagnosticCategory::Lint,
+        severity: Severity::Warning,
+        primary,
         message: "Variable '%error-id%' is never used; prefix with '_' to silence".to_owned(),
         related: Vec::new(),
+        tags: Vec::new(),
     }];
 
-    expected.extend(checked.diagnostics.into_iter().map(Diagnostic::from));
-    assert_eq!(original.diagnostics, expected);
+    expected.extend(checked.findings.into_iter());
+
+    expected.sort_by(|left, right| {
+        left.primary
+            .source
+            .cmp(&right.primary.source)
+            .then_with(|| left.primary.span.start.cmp(&right.primary.span.start))
+            .then_with(|| left.code.cmp(&right.code))
+    });
+
+    assert_eq!(original.findings, expected);
 
     Ok(())
 }
@@ -592,37 +1053,94 @@ fn syntax_jobs_stop_accepting_results_after_cancellation() -> io::Result<()> {
     let mut entries = Vec::new();
 
     for index in 0..8 {
-        entries.push(Entry::new(
+        entries.push(Input::Path(
             directory.file(&format!("entry{index}.luau"), "return 1/0")?,
         ));
     }
 
-    let mut project = project();
+    let project = project();
 
     for completed in [0, 1] {
         let mut limits = options();
         let cancellation = limits.cancellation.clone();
 
-        limits.progress = Some(Arc::new(move |event| {
-            if event.phase == "Syntax linting" && event.completed == completed {
+        limits.observer = Some(Arc::new(move |event| {
+            if let EventPayload::Progress(event) = event.payload
+                && event.phase == "Syntax linting"
+                && event.completed == completed
+            {
                 cancellation.cancel();
             }
         }));
 
-        let interrupted = project.lint(&entries, &limits)?;
+        let interrupted = complete(project.lint(
+            LintRequest {
+                invocation: Invocation {
+                    inputs: entries.to_vec(),
+                    ..Invocation::default()
+                },
+                ..LintRequest::default()
+            },
+            limits,
+        ));
 
-        assert_eq!(
-            interrupted.completion,
-            Completion::Incomplete(Reason::Cancelled)
-        );
+        match interrupted {
+            Ok(report) => {
+                assert_eq!(report.completion, Completion::Cancelled);
+                assert_eq!(report.modules.len(), 8);
+                assert_eq!(report.findings.len(), completed);
+            }
 
-        assert_eq!(interrupted.modules.len(), 8);
-        assert_eq!(interrupted.diagnostics.len(), completed);
+            Err(failure) => {
+                assert_eq!(failure.completion, Completion::Cancelled);
+                assert_eq!(failure.diagnostics.len(), completed);
+                let snapshot = project.snapshot();
+
+                let sources = entries
+                    .iter()
+                    .map(|input| {
+                        let Input::Path(path) = input else {
+                            panic!("fixture path");
+                        };
+
+                        snapshot.source_at(path).expect("prepared source").version
+                    })
+                    .collect::<Vec<SourceVersion>>();
+
+                assert_eq!(sources.len(), 8);
+
+                assert!(
+                    failure
+                        .diagnostics
+                        .iter()
+                        .all(|finding| sources.contains(&finding.primary.source))
+                );
+
+                assert!(
+                    failure
+                        .completed_sources
+                        .iter()
+                        .all(|outcome| sources.contains(&outcome.source))
+                );
+            }
+        }
 
         let retry = options();
-        let recovered = project.lint(&entries, &retry)?;
+
+        let recovered = complete(project.lint(
+            LintRequest {
+                invocation: Invocation {
+                    inputs: entries.to_vec(),
+                    ..Invocation::default()
+                },
+                ..LintRequest::default()
+            },
+            retry.clone(),
+        ))
+        .map_err(io::Error::from)?;
+
         assert_eq!(recovered.completion, Completion::Complete);
-        assert_eq!(recovered.diagnostics.len(), 8);
+        assert_eq!(recovered.findings.len(), 8);
     }
 
     Ok(())
@@ -633,38 +1151,67 @@ fn syntax_jobs_keep_the_elapsed_operation_budget() -> io::Result<()> {
     let directory = Directory::new(Some(include_str!("../fixtures/linting/shared/.luaurc")))?;
 
     let entries = [
-        Entry::new(directory.file("first.luau", "return 1/0")?),
-        Entry::new(directory.file("second.luau", "return 1/0")?),
+        Input::Path(directory.file("first.luau", "return 1/0")?),
+        Input::Path(directory.file("second.luau", "return 1/0")?),
     ];
 
-    let mut project = project();
+    let project = project();
 
     assert_eq!(
-        project.lint(&entries, &options())?.completion,
+        complete(project.lint(
+            LintRequest {
+                invocation: Invocation {
+                    inputs: entries.to_vec(),
+                    ..Invocation::default()
+                },
+                ..LintRequest::default()
+            },
+            options()
+        ))
+        .map_err(io::Error::from)?
+        .completion,
         Completion::Complete
     );
 
-    let mut limits = Options::new(Duration::from_secs(1));
+    let mut limits = Options::new(Some(Instant::now() + Duration::from_secs(1)));
     let reached = Arc::new(Mutex::new(false));
     let observed = Arc::clone(&reached);
-    let timeout = limits.timeout;
+    let timeout = limits.remaining().expect("deadline");
 
-    limits.progress = Some(Arc::new(move |event| {
-        if event.phase == "Syntax linting" && event.completed == 0 {
+    limits.observer = Some(Arc::new(move |event| {
+        if let EventPayload::Progress(event) = event.payload
+            && event.phase == "Syntax linting"
+            && event.completed == 0
+        {
             *observed.lock().expect("syntax deadline") = true;
             thread::sleep(timeout);
         }
     }));
 
-    let interrupted = project.lint(&entries, &limits)?;
+    let interrupted = complete(project.lint(
+        LintRequest {
+            invocation: Invocation {
+                inputs: entries.to_vec(),
+                ..Invocation::default()
+            },
+            ..LintRequest::default()
+        },
+        limits,
+    ));
+
     assert!(*reached.lock().expect("syntax deadline"));
 
-    assert_eq!(
-        interrupted.completion,
-        Completion::Incomplete(Reason::Timeout)
-    );
+    match interrupted {
+        Ok(report) => {
+            assert_eq!(report.completion, Completion::TimedOut);
+            assert_eq!(report.findings, Vec::new());
+        }
 
-    assert_eq!(interrupted.diagnostics, Vec::new());
+        Err(failure) => {
+            assert_eq!(failure.completion, Completion::TimedOut);
+            assert_eq!(failure.diagnostics, Vec::new());
+        }
+    }
 
     Ok(())
 }
@@ -674,22 +1221,42 @@ fn cancellation_and_timeout_are_explicit() -> io::Result<()> {
     let directory = Directory::new(Some(include_str!("../fixtures/linting/native/strict.json")))?;
 
     let entry = directory.file("entry.luau", "return 1")?;
-    let mut project = project();
-    let entries = [Entry::new(entry)];
+    let project = project();
+    let entries = [Input::Path(entry)];
 
     assert_eq!(
-        project
-            .lint(&entries, &Options::new(Duration::ZERO))?
-            .completion,
-        Completion::Incomplete(Reason::Timeout)
+        complete(project.lint(
+            LintRequest {
+                invocation: Invocation {
+                    inputs: entries.to_vec(),
+                    ..Invocation::default()
+                },
+                ..LintRequest::default()
+            },
+            Options::new(Some(Instant::now()))
+        ))
+        .expect_err("expired invocation")
+        .completion,
+        Completion::TimedOut
     );
 
     let cancelled = options();
     cancelled.cancellation.cancel();
 
     assert_eq!(
-        project.lint(&entries, &cancelled)?.completion,
-        Completion::Incomplete(Reason::Cancelled)
+        complete(project.lint(
+            LintRequest {
+                invocation: Invocation {
+                    inputs: entries.to_vec(),
+                    ..Invocation::default()
+                },
+                ..LintRequest::default()
+            },
+            cancelled
+        ))
+        .expect_err("cancelled invocation")
+        .completion,
+        Completion::Cancelled
     );
 
     Ok(())
@@ -706,86 +1273,126 @@ fn native_analysis_identity_survives_lint_conversion() -> io::Result<()> {
         include_str!("../fixtures/linting/conversion/entry.luau"),
     )?;
 
-    let mut project = project();
-    let entries = [Entry::new(entry.clone())];
+    let project = project();
+    let entries = [Input::Path(entry.clone())];
 
     for source in [
         include_str!("../fixtures/linting/conversion/entry.luau"),
         include_str!("../fixtures/linting/conversion/input.luau"),
         "local =",
     ] {
-        project.change(Change::Overlay {
-            path: entry.clone(),
-            text: Some(source.to_owned()),
-        })?;
+        replace(&project, &entry, &source.to_owned())?;
 
-        let checked = project.check(&entries, &options())?;
-        let linted = project.lint(&entries, &options())?;
+        let checked = complete(project.check(
+            CheckRequest {
+                invocation: Invocation {
+                    inputs: entries.to_vec(),
+                    ..Invocation::default()
+                },
+                ..CheckRequest::default()
+            },
+            options(),
+        ))
+        .map_err(io::Error::from)?;
+
+        let linted = complete(project.lint(
+            LintRequest {
+                invocation: Invocation {
+                    inputs: entries.to_vec(),
+                    ..Invocation::default()
+                },
+                ..LintRequest::default()
+            },
+            options(),
+        ))
+        .map_err(io::Error::from)?;
+
         assert_eq!(linted.completion, checked.completion);
-        assert_eq!(linted.modules, checked.modules);
-        assert_ne!(checked.diagnostics, Vec::new());
+        assert_eq!(linted.sources, checked.sources);
+        assert_ne!(checked.findings, Vec::new());
 
         assert!(
             checked
-                .diagnostics
+                .findings
                 .iter()
-                .all(|diagnostic| diagnostic.kind.native_code().is_some())
+                .all(|diagnostic| (diagnostic.identity.producer() == "luau"
+                    && diagnostic.code.parse::<u32>().is_ok())
+                    || (diagnostic.identity.producer() == "project"
+                        && diagnostic.code == "resolution.unresolved"
+                        && diagnostic.category == DiagnosticCategory::Resolution))
         );
 
         assert_eq!(
-            linted.diagnostics,
+            linted.findings,
             checked
-                .diagnostics
+                .findings
                 .into_iter()
-                .map(Diagnostic::from)
+                .filter(|diagnostic| diagnostic.category != DiagnosticCategory::Type)
                 .collect::<Vec<_>>()
         );
     }
 
-    project.change(Change::Overlay {
-        path: entry,
-        text: Some("return 1".to_owned()),
-    })?;
+    replace(&project, &entry, "return 1")?;
 
-    project.change(Change::Overlay {
-        path: directory.path().join("instar.toml"),
-        text: Some(include_str!("../fixtures/linting/missing/instar.toml").to_owned()),
-    })?;
+    replace(
+        &project,
+        &directory.path().join("instar.toml"),
+        include_str!("../fixtures/linting/missing/instar.toml"),
+    )?;
 
     for declaration in [
         include_str!("../fixtures/linting/missing/invalid.luau"),
         include_str!("../fixtures/linting/conversion/definition.luau"),
     ] {
-        project.change(Change::Overlay {
-            path: directory.path().join("globals.luau"),
-            text: Some(declaration.to_owned()),
-        })?;
+        replace(
+            &project,
+            &directory.path().join("globals.luau"),
+            &declaration.to_owned(),
+        )?;
 
-        let checked = project.check(&entries, &options())?;
-        let linted = project.lint(&entries, &options())?;
+        let checked = complete(project.check(
+            CheckRequest {
+                invocation: Invocation {
+                    inputs: entries.to_vec(),
+                    ..Invocation::default()
+                },
+                ..CheckRequest::default()
+            },
+            options(),
+        ))
+        .map_err(io::Error::from)?;
+
+        let linted = complete(project.lint(
+            LintRequest {
+                invocation: Invocation {
+                    inputs: entries.to_vec(),
+                    ..Invocation::default()
+                },
+                ..LintRequest::default()
+            },
+            options(),
+        ))
+        .map_err(io::Error::from)?;
 
         assert_eq!(
             checked.completion,
-            Completion::Incomplete(Reason::Environment)
+            Completion::Incomplete(vec![Reason::UnavailableEnvironment])
         );
 
         assert_eq!(linted.completion, checked.completion);
-        assert_ne!(checked.diagnostics, Vec::new());
+        assert_ne!(checked.findings, Vec::new());
 
         assert!(
             checked
-                .diagnostics
+                .findings
                 .iter()
-                .all(|diagnostic| diagnostic.kind.native_code().is_some())
+                .all(|diagnostic| diagnostic.identity.producer() == "luau"
+                    && diagnostic.code.parse::<u32>().is_ok())
         );
 
         assert_eq!(
-            linted.diagnostics,
-            checked
-                .diagnostics
-                .into_iter()
-                .map(Diagnostic::from)
-                .collect::<Vec<_>>()
+            linted.findings,
+            checked.findings.into_iter().collect::<Vec<_>>()
         );
     }
 
@@ -796,7 +1403,7 @@ fn native_analysis_identity_survives_lint_conversion() -> io::Result<()> {
 fn runtime_member_requires_preserve_lint_rules_and_static_failures() -> io::Result<()> {
     let directory = Directory::new(Some(include_str!("../fixtures/linting/shared/.luaurc")))?;
 
-    directory.file("instar.toml", "[roblox]\nenabled=true\n")?;
+    directory.file("instar.toml", "[environment]\nroblox=true\n")?;
 
     directory.file(
         "sourcemap.json",
@@ -805,86 +1412,148 @@ fn runtime_member_requires_preserve_lint_rules_and_static_failures() -> io::Resu
 
     let source = "require(script.Parent.Reference.Value)\nrequire(script.Parent.Model.PrimaryPart)\nreturn 1/0";
     let entry = directory.file("caller.luau", source)?;
-    let entries = [Entry::new(entry.clone())];
-    let mut project = project();
+    let entries = [Input::Path(entry.clone())];
+    let project = project();
 
     for configuration in [
         include_str!("../fixtures/linting/shared/.luaurc"),
         include_str!("../fixtures/linting/conversion/strict.json"),
     ] {
-        project.change(Change::Overlay {
-            path: directory.path().join(".luaurc"),
-            text: Some(configuration.to_owned()),
-        })?;
+        replace(
+            &project,
+            &directory.path().join(".luaurc"),
+            &configuration.to_owned(),
+        )?;
 
-        let linted = project.lint(&entries, &options())?;
+        let linted = complete(project.lint(
+            LintRequest {
+                invocation: Invocation {
+                    inputs: entries.to_vec(),
+                    ..Invocation::default()
+                },
+                ..LintRequest::default()
+            },
+            options(),
+        ))
+        .map_err(io::Error::from)?;
+
         assert_eq!(linted.completion, Completion::Complete);
-        assert!(rule(&linted, Rule::DivideByZero));
+        assert!(rule(&linted, RuleIdentity::DivideByZero));
 
-        assert!(!linted.diagnostics.iter().any(|diagnostic| matches!(
-            diagnostic.kind,
-            Kind::Analysis(analysis::Kind::Resolution { .. } | analysis::Kind::Type { .. })
+        assert!(!linted.findings.iter().any(|diagnostic| matches!(
+            diagnostic.category,
+            DiagnosticCategory::Resolution | DiagnosticCategory::Type
         )));
 
-        let checked = project.check(&entries, &options())?;
+        let checked = complete(project.check(
+            CheckRequest {
+                invocation: Invocation {
+                    inputs: entries.to_vec(),
+                    ..Invocation::default()
+                },
+                ..CheckRequest::default()
+            },
+            options(),
+        ))
+        .map_err(io::Error::from)?;
+
         assert_eq!(checked.completion, Completion::Complete);
 
         assert_eq!(
             checked
-                .diagnostics
+                .imports
                 .iter()
-                .filter(
-                    |diagnostic| matches!(diagnostic.kind, analysis::Kind::Resolution { .. })
-                        && diagnostic.message.contains("runtime member")
-                )
+                .filter(|site| matches!(site.outcome, ImportOutcome::Nonconstant))
                 .count(),
             2
         );
 
-        assert_eq!(project.lint(&entries, &options())?, linted);
+        assert!(
+            !checked
+                .findings
+                .iter()
+                .any(|finding| finding.category == DiagnosticCategory::Resolution)
+        );
+
+        assert_eq!(
+            {
+                let report = complete(project.lint(
+                    LintRequest {
+                        invocation: Invocation {
+                            inputs: entries.to_vec(),
+                            ..Invocation::default()
+                        },
+                        ..LintRequest::default()
+                    },
+                    options(),
+                ))
+                .map_err(io::Error::from)?;
+                (report.findings, report.sources, report.completion)
+            },
+            (
+                linted.findings.clone(),
+                linted.sources.clone(),
+                linted.completion.clone()
+            )
+        );
     }
 
-    project.change(Change::Overlay {
-        path: directory.path().join("instar.toml"),
-        text: Some("[roblox]\nenabled=true\n[lint.non_const_require]\nlevel='warn'\n".to_owned()),
-    })?;
+    replace(
+        &project,
+        &directory.path().join("instar.toml"),
+        "environment = { roblox = true }\nlinting = { rules = { non_const_require = { enabled = true, severity = 'Warning', settings = { rule = 'non_const_require', parameters = {} } } } }\n",
+    )?;
 
-    let configured = project.lint(&entries, &options())?;
+    let configured = complete(project.lint(
+        LintRequest {
+            invocation: Invocation {
+                inputs: entries.to_vec(),
+                ..Invocation::default()
+            },
+            ..LintRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
 
     assert_eq!(
         configured
-            .diagnostics
+            .findings
             .iter()
-            .filter(|diagnostic| diagnostic.kind == Kind::Rule(Rule::NonConstRequire))
+            .filter(|diagnostic| diagnostic.code == RuleIdentity::NonConstRequire.name())
             .count(),
         2
     );
 
-    project.change(Change::Overlay {
-        path: entry.clone(),
-        text: Some(format!("require('./missing')\n{source}")),
-    })?;
+    replace(&project, &entry, &format!("require('./missing')\n{source}"))?;
 
-    let missing = project.lint(&entries, &options())?;
+    let missing = complete(project.lint(
+        LintRequest {
+            invocation: Invocation {
+                inputs: entries.to_vec(),
+                ..Invocation::default()
+            },
+            ..LintRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
+
     assert_eq!(missing.completion, Completion::Complete);
-    assert!(rule(&missing, Rule::DivideByZero));
-    assert!(rule(&missing, Rule::NonConstRequire));
+    assert!(rule(&missing, RuleIdentity::DivideByZero));
+    assert!(rule(&missing, RuleIdentity::NonConstRequire));
 
     let failures = missing
-        .diagnostics
+        .findings
         .iter()
-        .filter(|diagnostic| {
-            matches!(
-                diagnostic.kind,
-                Kind::Analysis(analysis::Kind::Resolution { .. })
-            )
-        })
+        .filter(|diagnostic| diagnostic.category == DiagnosticCategory::Resolution)
         .collect::<Vec<_>>();
 
     assert_eq!(failures.len(), 1);
 
     assert_eq!(
-        &project.source(&entry)?.text[failures[0].location.range[0]..failures[0].location.range[1]],
+        &project.snapshot().source_at(&entry).expect("source").text
+            [failures[0].primary.span.start..failures[0].primary.span.end],
         "'./missing'"
     );
 
@@ -902,30 +1571,73 @@ fn source_type_errors_stay_with_check_while_lint_findings_remain() -> io::Result
         "local number: number = 'bad'\nreturn number/0",
     )?;
 
-    let entries = [Entry::new(entry)];
-    let mut project = project();
-    let linted = project.lint(&entries, &options())?;
+    let entries = [Input::Path(entry)];
+    let project = project();
+
+    let linted = complete(project.lint(
+        LintRequest {
+            invocation: Invocation {
+                inputs: entries.to_vec(),
+                ..Invocation::default()
+            },
+            ..LintRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
+
     assert_eq!(linted.completion, Completion::Complete);
-    assert!(rule(&linted, Rule::DivideByZero));
+    assert!(rule(&linted, RuleIdentity::DivideByZero));
 
     assert!(
-        !linted.diagnostics.iter().any(|diagnostic| matches!(
-            diagnostic.kind,
-            Kind::Analysis(analysis::Kind::Type { .. })
-        ))
+        !linted
+            .findings
+            .iter()
+            .any(|diagnostic| diagnostic.category == DiagnosticCategory::Type)
     );
 
-    let checked = project.check(&entries, &options())?;
+    let checked = complete(project.check(
+        CheckRequest {
+            invocation: Invocation {
+                inputs: entries.to_vec(),
+                ..Invocation::default()
+            },
+            ..CheckRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
+
     assert_eq!(checked.completion, Completion::Complete);
 
     assert!(
         checked
-            .diagnostics
+            .findings
             .iter()
-            .any(|diagnostic| matches!(diagnostic.kind, analysis::Kind::Type { .. }))
+            .any(|diagnostic| diagnostic.category == DiagnosticCategory::Type)
     );
 
-    assert_eq!(project.lint(&entries, &options())?, linted);
+    assert_eq!(
+        {
+            let report = complete(project.lint(
+                LintRequest {
+                    invocation: Invocation {
+                        inputs: entries.to_vec(),
+                        ..Invocation::default()
+                    },
+                    ..LintRequest::default()
+                },
+                options(),
+            ))
+            .map_err(io::Error::from)?;
+            (report.findings, report.sources, report.completion)
+        },
+        (
+            linted.findings.clone(),
+            linted.sources.clone(),
+            linted.completion.clone()
+        )
+    );
 
     Ok(())
 }

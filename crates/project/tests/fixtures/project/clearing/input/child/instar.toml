@@ -1,3 +1,2 @@
-environment = []
-[roblox]
-sourcemaps = []
+resolution = { "sourcemaps" = [] }
+environment = { "groups" = [] }

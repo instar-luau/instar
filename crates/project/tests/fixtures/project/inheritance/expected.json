@@ -1,38 +1,38 @@
 {
-  "/configuration/include": [
+  "/settings/selection/include": [
     "$ROOT/source/**"
   ],
-  "/configuration/exclude": [],
-  "/configuration/check/include": [
+  "/settings/selection/exclude": [],
+  "/selection/checking/include": [
     "$ROOT/source/**"
   ],
-  "/configuration/format/width": 100,
-  "/configuration/format/indent_style": "spaces",
-  "/configuration/format/quote_style": "prefer_double",
-  "/configuration/format/requires/order": "grouped",
-  "/configuration/format/requires/groups": [
+  "/settings/formatting/width": 100,
+  "/settings/formatting/indent_style": "spaces",
+  "/settings/formatting/quote_style": "prefer_double",
+  "/settings/formatting/requires/order": "grouped",
+  "/settings/formatting/requires/groups": [
     "relative",
     "other"
   ],
-  "/configuration/lint/restricted_globals/names": {
+  "/settings/linting/rules/restricted_globals/settings/parameters/names": {
     "old": "child",
     "kept": "root"
   },
-  "/configuration/editor/hints/variable_types": true,
-  "/configuration/editor/hints/parameter_names": true,
-  "/configuration/environment/0/namespace": "@child",
-  "/configuration/environment/0/definitions": [],
-  "/configuration/environment/0/documentation": [
+  "/settings/editing/hints/variable_types": true,
+  "/settings/editing/hints/parameter_names": true,
+  "/settings/environment/groups/0/namespace": "@child",
+  "/settings/environment/groups/0/definitions": [],
+  "/settings/environment/groups/0/documentation": [
     "$ROOT/child/child.json"
   ],
-  "/configuration/roblox/enabled": false,
-  "/native/mode": "strict",
-  "/native/globals": [
+  "/settings/environment/roblox": false,
+  "/settings/checking": "strict",
+  "/settings/environment/globals": [
     "child1",
     "child2"
   ],
-  "/native/aliases/base/value": "./modules",
-  "/native/aliases/base/directory": "$ROOT",
-  "/native/aliases/child/directory": "$ROOT/child",
-  "/native/lint/LocalUnused/enabled": true
+  "/settings/resolution/aliases/base": "$ROOT/modules",
+  "/origins/resolution.aliases.base": "$ROOT",
+  "/origins/resolution.aliases.child": "$ROOT/child",
+  "/settings/linting/rules/LocalUnused/enabled": true
 }

@@ -1,17 +1,17 @@
 //! Synthetic native checking across project snapshots.
-use std::{fs, io, time::Duration};
 
-use instar_analysis::{self as analysis, Completion, Kind, Options, Reason};
-
-use instar_core::{
-    analysis::{Entry, Origin},
-    project::Change,
-    roblox,
+use std::{
+    fs, io,
+    time::{Duration, Instant},
 };
 
-use instar_lint::Diagnostic;
+use instar_shared::{Completion, DiagnosticCategory, Options, Reason};
 
-use crate::support::{Directory, options, project};
+use instar_project::{
+    CheckReport, CheckRequest, Input, Invocation, LintRequest, SourceOrigin, roblox_cache_directory,
+};
+
+use crate::support::{Directory, complete, options, project, replace};
 
 #[test]
 fn imported_types_and_source_updates() -> io::Result<()> {
@@ -29,34 +29,60 @@ fn imported_types_and_source_updates() -> io::Result<()> {
         include_str!("../fixtures/checking/imported/entry.luau"),
     )?;
 
-    let mut project = project();
-    let entries = [Entry::new(entry.clone())];
-    let first = project.check(&entries, &options())?;
+    let project = project();
+    let entries = [Input::Path(entry.clone())];
+
+    let first = complete(project.check(
+        CheckRequest {
+            invocation: Invocation {
+                inputs: entries.to_vec(),
+                ..Invocation::default()
+            },
+            ..CheckRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
+
     assert_eq!(first.completion, Completion::Complete);
 
     assert!(
         first
-            .diagnostics
+            .findings
             .iter()
-            .any(|diagnostic| matches!(diagnostic.kind, Kind::Type { .. }))
+            .any(|diagnostic| diagnostic.category == DiagnosticCategory::Type)
     );
 
-    assert!(
-        first
-            .diagnostics
-            .iter()
-            .all(|diagnostic| diagnostic.location.range[1]
-                <= project.source(&entry).expect("entry source").text.len())
-    );
+    assert!(first.findings.iter().all(|diagnostic| {
+        diagnostic.primary.span.end
+            <= project
+                .snapshot()
+                .source_at(&entry)
+                .expect("source")
+                .text
+                .len()
+    }));
 
-    project.change(Change::Overlay {
-        path: dependency,
-        text: Some(include_str!("../fixtures/checking/imported/replacement.luau").to_owned()),
-    })?;
+    replace(
+        &project,
+        &dependency,
+        include_str!("../fixtures/checking/imported/replacement.luau"),
+    )?;
 
-    let updated = project.check(&entries, &options())?;
+    let updated = complete(project.check(
+        CheckRequest {
+            invocation: Invocation {
+                inputs: entries.to_vec(),
+                ..Invocation::default()
+            },
+            ..CheckRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
+
     assert_eq!(updated.completion, Completion::Complete);
-    assert!(updated.diagnostics.is_empty(), "{:?}", updated.diagnostics);
+    assert!(updated.findings.is_empty(), "{:?}", updated.findings);
 
     Ok(())
 }
@@ -87,29 +113,67 @@ fn dependency_type_findings_are_filtered_without_dropping_analysis() -> io::Resu
         include_str!("../fixtures/checking/dependency/first.luau"),
     )?;
 
-    let mut project = project();
-    let single = project.check(&[Entry::new(first.clone())], &options())?;
-    let multiple = project.check(&[Entry::new(first), Entry::new(second)], &options())?;
+    let project = project();
 
-    let dependency_errors = |result: &analysis::Result<Origin>| {
+    let single = complete(project.check(
+        CheckRequest {
+            invocation: Invocation {
+                inputs: vec![Input::Path(first.clone())],
+                ..Invocation::default()
+            },
+            ..CheckRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
+
+    let multiple = complete(project.check(
+        CheckRequest {
+            invocation: Invocation {
+                inputs: vec![Input::Path(first), Input::Path(second)],
+                ..Invocation::default()
+            },
+            ..CheckRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
+
+    let dependency_errors = |result: &CheckReport| {
         result
-            .diagnostics
+            .findings
             .iter()
-            .filter(|diagnostic| diagnostic.location.module.source() == dependency.as_path())
+            .filter(|diagnostic| {
+                project
+                    .snapshot()
+                    .origin(diagnostic.primary.source.identity)
+                    .and_then(SourceOrigin::path)
+                    .expect("finding origin")
+                    == dependency.as_path()
+            })
             .count()
     };
 
     assert_eq!(dependency_errors(&single), 0);
     assert_eq!(dependency_errors(&multiple), 0);
-    assert_eq!(single.modules.len(), 2);
-    assert_eq!(multiple.modules.len(), 3);
+    assert_eq!(single.sources.len(), 2);
+    assert_eq!(multiple.sources.len(), 3);
     assert_eq!(single.completion, Completion::Complete);
     assert_eq!(multiple.completion, Completion::Complete);
 
     assert_eq!(
-        project
-            .check(&[Entry::new(dependency)], &options())?
-            .diagnostics,
+        complete(project.check(
+            CheckRequest {
+                invocation: Invocation {
+                    inputs: vec![Input::Path(dependency)],
+                    ..Invocation::default()
+                },
+                ..CheckRequest::default()
+            },
+            options()
+        ))
+        .map_err(io::Error::from)?
+        .findings,
         Vec::new()
     );
 
@@ -132,22 +196,37 @@ fn cycles_are_finite_and_keep_native_identity() -> io::Result<()> {
         include_str!("../fixtures/checking/cycles/second.luau"),
     )?;
 
-    let result = project().check(&[Entry::new(first)], &options())?;
+    let project = project();
+
+    let result = complete(project.check(
+        CheckRequest {
+            invocation: Invocation {
+                inputs: vec![Input::Path(first)],
+                ..Invocation::default()
+            },
+            ..CheckRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
+
     assert_eq!(result.completion, Completion::Complete);
-    assert_eq!(result.modules.len(), 2);
-    assert_ne!(result.diagnostics, Vec::new());
+    assert_eq!(result.sources.len(), 2);
+    assert_ne!(result.findings, Vec::new());
 
     assert!(
         result
-            .diagnostics
+            .findings
             .iter()
-            .all(|diagnostic| diagnostic.kind.native_code().is_some())
+            .all(|diagnostic| diagnostic.identity.producer() == "luau"
+                && diagnostic.code.parse::<u32>().is_ok())
     );
 
     Ok(())
 }
 
 #[test]
+
 fn declarations_are_scoped_and_invalidated() -> io::Result<()> {
     let directory = Directory::new(Some(include_str!(
         "../fixtures/checking/imported/strict.json"
@@ -178,57 +257,117 @@ fn declarations_are_scoped_and_invalidated() -> io::Result<()> {
         include_str!("../fixtures/checking/declarations/isolated/entry.luau"),
     )?;
 
-    let mut project = project();
+    let project = project();
 
     assert_eq!(
-        project
-            .check(&[Entry::new(entry.clone())], &options())?
-            .diagnostics,
+        complete(project.check(
+            CheckRequest {
+                invocation: Invocation {
+                    inputs: vec![Input::Path(entry.clone())],
+                    ..Invocation::default()
+                },
+                ..CheckRequest::default()
+            },
+            options()
+        ))
+        .map_err(io::Error::from)?
+        .findings,
         Vec::new()
     );
 
     assert_ne!(
-        project
-            .check(&[Entry::new(isolated)], &options())?
-            .diagnostics,
+        complete(project.check(
+            CheckRequest {
+                invocation: Invocation {
+                    inputs: vec![Input::Path(isolated)],
+                    ..Invocation::default()
+                },
+                ..CheckRequest::default()
+            },
+            options()
+        ))
+        .map_err(io::Error::from)?
+        .findings,
         Vec::new()
     );
 
-    project.change(Change::Overlay {
-        path: definition.clone(),
-        text: Some(include_str!("../fixtures/checking/declarations/definition.luau").to_owned()),
-    })?;
+    replace(
+        &project,
+        &definition,
+        include_str!("../fixtures/checking/declarations/definition.luau"),
+    )?;
 
     assert_ne!(
-        project
-            .check(&[Entry::new(entry.clone())], &options())?
-            .diagnostics,
+        complete(project.check(
+            CheckRequest {
+                invocation: Invocation {
+                    inputs: vec![Input::Path(entry.clone())],
+                    ..Invocation::default()
+                },
+                ..CheckRequest::default()
+            },
+            options()
+        ))
+        .map_err(io::Error::from)?
+        .findings,
         Vec::new()
     );
 
-    project.change(Change::Overlay {
-        path: definition.clone(),
-        text: Some(include_str!("../fixtures/checking/declarations/invalid.luau").to_owned()),
-    })?;
+    replace(
+        &project,
+        &definition,
+        include_str!("../fixtures/checking/declarations/invalid.luau"),
+    )?;
 
-    let invalid = project.check(&[Entry::new(entry.clone())], &options())?;
+    let invalid = complete(project.check(
+        CheckRequest {
+            invocation: Invocation {
+                inputs: vec![Input::Path(entry.clone())],
+                ..Invocation::default()
+            },
+            ..CheckRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
 
-    assert!(invalid.diagnostics.iter().any(|diagnostic| {
-        diagnostic.location.module.source() == entry
-            && diagnostic
-                .related
-                .iter()
-                .any(|related| related.location.module.source() == definition)
-            && matches!(diagnostic.kind, Kind::Analysis { .. })
+    assert!(invalid.findings.iter().any(|diagnostic| {
+        project
+            .snapshot()
+            .origin(diagnostic.primary.source.identity)
+            .and_then(SourceOrigin::path)
+            .expect("finding origin")
+            == entry
+            && diagnostic.related.iter().any(|related| {
+                project
+                    .snapshot()
+                    .origin(related.location.source.identity)
+                    .and_then(SourceOrigin::path)
+                    .expect("finding origin")
+                    == definition
+            })
+            && diagnostic.category == DiagnosticCategory::Analysis
     }));
 
-    project.change(Change::Overlay {
-        path: definition,
-        text: Some(include_str!("../fixtures/checking/declarations/globals.luau").to_owned()),
-    })?;
+    replace(
+        &project,
+        &definition,
+        include_str!("../fixtures/checking/declarations/globals.luau"),
+    )?;
 
     assert_eq!(
-        project.check(&[Entry::new(entry)], &options())?.diagnostics,
+        complete(project.check(
+            CheckRequest {
+                invocation: Invocation {
+                    inputs: vec![Input::Path(entry)],
+                    ..Invocation::default()
+                },
+                ..CheckRequest::default()
+            },
+            options()
+        ))
+        .map_err(io::Error::from)?
+        .findings,
         Vec::new()
     );
 
@@ -248,46 +387,83 @@ fn native_modes_and_lint_ownership() -> io::Result<()> {
         include_str!("../fixtures/checking/native/entry.luau"),
     )?;
 
-    let mut project = project();
+    let project = project();
 
     assert_ne!(
-        project
-            .check(&[Entry::new(entry.clone())], &options())?
-            .diagnostics,
+        complete(project.check(
+            CheckRequest {
+                invocation: Invocation {
+                    inputs: vec![Input::Path(entry.clone())],
+                    ..Invocation::default()
+                },
+                ..CheckRequest::default()
+            },
+            options()
+        ))
+        .map_err(io::Error::from)?
+        .findings,
         Vec::new()
     );
 
-    project.change(Change::Overlay {
-        path: configuration.clone(),
-        text: Some(include_str!("../fixtures/checking/native/nonstrict.json").to_owned()),
-    })?;
+    replace(
+        &project,
+        &configuration,
+        include_str!("../fixtures/checking/native/nonstrict.json"),
+    )?;
 
-    let nonstrict = project.check(&[Entry::new(entry.clone())], &options())?;
-    assert_eq!(nonstrict.diagnostics, Vec::new());
+    let nonstrict = complete(project.check(
+        CheckRequest {
+            invocation: Invocation {
+                inputs: vec![Input::Path(entry.clone())],
+                ..Invocation::default()
+            },
+            ..CheckRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
 
-    project.change(Change::Overlay {
-        path: configuration,
-        text: Some(include_str!("../fixtures/checking/native/nocheck.json").to_owned()),
-    })?;
+    assert_eq!(nonstrict.findings, Vec::new());
+
+    replace(
+        &project,
+        &configuration,
+        include_str!("../fixtures/checking/native/nocheck.json"),
+    )?;
 
     assert_eq!(
-        project
-            .check(&[Entry::new(entry.clone())], &options())?
-            .diagnostics,
+        complete(project.check(
+            CheckRequest {
+                invocation: Invocation {
+                    inputs: vec![Input::Path(entry.clone())],
+                    ..Invocation::default()
+                },
+                ..CheckRequest::default()
+            },
+            options()
+        ))
+        .map_err(io::Error::from)?
+        .findings,
         Vec::new()
     );
 
-    project.change(Change::Overlay {
-        path: entry.clone(),
-        text: Some("local =".to_owned()),
-    })?;
+    replace(&project, &entry, "local =")?;
 
     assert!(
-        project
-            .check(&[Entry::new(entry)], &options())?
-            .diagnostics
-            .iter()
-            .any(|diagnostic| matches!(diagnostic.kind, Kind::Syntax { .. }))
+        complete(project.check(
+            CheckRequest {
+                invocation: Invocation {
+                    inputs: vec![Input::Path(entry)],
+                    ..Invocation::default()
+                },
+                ..CheckRequest::default()
+            },
+            options()
+        ))
+        .map_err(io::Error::from)?
+        .findings
+        .iter()
+        .any(|diagnostic| diagnostic.category == DiagnosticCategory::Syntax)
     );
 
     Ok(())
@@ -304,16 +480,26 @@ fn unresolved_import_has_one_source_diagnostic() -> io::Result<()> {
         include_str!("../fixtures/checking/unresolved/entry.luau"),
     )?;
 
-    let result = project().check(&[Entry::new(entry)], &options())?;
+    let project = project();
+
+    let result = complete(project.check(
+        CheckRequest {
+            invocation: Invocation {
+                inputs: vec![Input::Path(entry)],
+                ..Invocation::default()
+            },
+            ..CheckRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
+
     assert_eq!(result.completion, Completion::Complete);
-    assert_eq!(result.diagnostics.len(), 1);
+    assert_eq!(result.findings.len(), 1);
 
-    assert!(matches!(
-        result.diagnostics[0].kind,
-        Kind::Resolution { .. }
-    ));
+    assert!(result.findings[0].category == DiagnosticCategory::Resolution);
 
-    assert!(result.diagnostics[0].location.range[0] > 0);
+    assert!(result.findings[0].primary.span.start > 0);
 
     Ok(())
 }
@@ -325,26 +511,55 @@ fn interruption_is_not_success_and_can_be_retried() -> io::Result<()> {
     )))?;
 
     let entry = directory.file("entry.luau", "return 1")?;
-    let mut project = project();
+    let project = project();
     let cancelled = options();
     cancelled.cancellation.cancel();
 
     assert_eq!(
-        project
-            .check(&[Entry::new(entry.clone())], &cancelled)?
-            .completion,
-        Completion::Incomplete(Reason::Cancelled)
+        complete(project.check(
+            CheckRequest {
+                invocation: Invocation {
+                    inputs: vec![Input::Path(entry.clone())],
+                    ..Invocation::default()
+                },
+                ..CheckRequest::default()
+            },
+            cancelled.clone()
+        ))
+        .expect_err("cancelled invocation")
+        .completion,
+        Completion::Cancelled
     );
 
     assert_eq!(
-        project
-            .check(&[Entry::new(entry.clone())], &Options::new(Duration::ZERO))?
-            .completion,
-        Completion::Incomplete(Reason::Timeout)
+        complete(project.check(
+            CheckRequest {
+                invocation: Invocation {
+                    inputs: vec![Input::Path(entry.clone())],
+                    ..Invocation::default()
+                },
+                ..CheckRequest::default()
+            },
+            Options::new(Some(Instant::now() + Duration::ZERO)).clone()
+        ))
+        .expect_err("expired invocation")
+        .completion,
+        Completion::TimedOut
     );
 
     assert_eq!(
-        project.check(&[Entry::new(entry)], &options())?.completion,
+        complete(project.check(
+            CheckRequest {
+                invocation: Invocation {
+                    inputs: vec![Input::Path(entry)],
+                    ..Invocation::default()
+                },
+                ..CheckRequest::default()
+            },
+            options()
+        ))
+        .map_err(io::Error::from)?
+        .completion,
         Completion::Complete
     );
 
@@ -367,37 +582,59 @@ fn incomplete_environments_keep_known_source_diagnostics() -> io::Result<()> {
         include_str!("../fixtures/checking/incomplete/entry.luau"),
     )?;
 
-    let mut project = project();
-    let entries = [Entry::new(entry.clone())];
-    let result = project.check(&entries, &options())?;
+    let project = project();
+    let entries = [Input::Path(entry.clone())];
+
+    let result = complete(project.check(
+        CheckRequest {
+            invocation: Invocation {
+                inputs: entries.to_vec(),
+                ..Invocation::default()
+            },
+            ..CheckRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
 
     assert_eq!(
         result.completion,
-        Completion::Incomplete(Reason::Environment)
+        Completion::Incomplete(vec![Reason::UnavailableEnvironment])
     );
 
-    assert_eq!(result.diagnostics.len(), 2);
+    assert_eq!(result.findings.len(), 2);
 
-    assert!(result.diagnostics.iter().any(|diagnostic| matches!(
-        diagnostic.kind,
-        Kind::Resolution { code: None }
-    ) && diagnostic.location.module.source()
-        == entry
-        && &project.source(&entry).expect("entry source").text
-            [diagnostic.location.range[0]..diagnostic.location.range[1]]
-            == "'./absent'"));
+    assert!(result.findings.iter().any(|diagnostic| {
+        diagnostic.category == DiagnosticCategory::Resolution
+            && project
+                .snapshot()
+                .origin(diagnostic.primary.source.identity)
+                .and_then(SourceOrigin::path)
+                .expect("finding origin")
+                == entry
+            && &project.snapshot().source_at(&entry).expect("source").text
+                [diagnostic.primary.span.start..diagnostic.primary.span.end]
+                == "'./absent'"
+    }));
 
-    let linted = project.lint(&entries, &options())?;
+    let linted = complete(project.lint(
+        LintRequest {
+            invocation: Invocation {
+                inputs: entries.to_vec(),
+                ..Invocation::default()
+            },
+            ..LintRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
+
     assert_eq!(linted.completion, result.completion);
-    assert_eq!(linted.modules, result.modules);
+    assert_eq!(linted.sources, result.sources);
 
     assert_eq!(
-        linted.diagnostics,
-        result
-            .diagnostics
-            .into_iter()
-            .map(Diagnostic::from)
-            .collect::<Vec<_>>()
+        linted.findings,
+        result.findings.into_iter().collect::<Vec<_>>()
     );
 
     Ok(())
@@ -419,25 +656,36 @@ fn invalid_roblox_metadata_is_explicitly_incomplete() -> io::Result<()> {
         include_str!("../fixtures/checking/invalid/entry.luau"),
     )?;
 
-    let mut project = project();
+    let project = project();
 
-    project.change(Change::Overlay {
-        path: roblox::cache_directory()?.join("metadata.json"),
-        text: Some("{}".to_owned()),
-    })?;
+    replace(
+        &project,
+        &roblox_cache_directory()?.join("metadata.json"),
+        "{}",
+    )?;
 
-    let result = project.check(&[Entry::new(entry)], &options())?;
+    let result = complete(project.check(
+        CheckRequest {
+            invocation: Invocation {
+                inputs: vec![Input::Path(entry)],
+                ..Invocation::default()
+            },
+            ..CheckRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
 
     assert_eq!(
         result.completion,
-        Completion::Incomplete(Reason::Environment)
+        Completion::Incomplete(vec![Reason::UnavailableEnvironment])
     );
 
     assert!(
         result
-            .diagnostics
+            .findings
             .iter()
-            .any(|diagnostic| diagnostic.kind == Kind::Analysis { code: None })
+            .any(|diagnostic| diagnostic.category == DiagnosticCategory::Analysis)
     );
 
     Ok(())
@@ -456,23 +704,45 @@ fn broken_dependency_reports_failure_on_the_selected_importer() -> io::Result<()
         include_str!("../fixtures/checking/dependency/first.luau"),
     )?;
 
-    let result = project().check(&[Entry::new(entry.clone())], &options())?;
+    let project = project();
+
+    let result = complete(project.check(
+        CheckRequest {
+            invocation: Invocation {
+                inputs: vec![Input::Path(entry.clone())],
+                ..Invocation::default()
+            },
+            ..CheckRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
+
     assert_eq!(result.completion, Completion::Complete);
 
-    assert!(result.diagnostics.iter().any(|diagnostic| {
-        diagnostic.location.module.source() == entry.as_path()
-            && matches!(diagnostic.kind, Kind::Analysis { .. })
-            && diagnostic
-                .related
-                .iter()
-                .any(|related| related.location.module.source() == dependency)
+    assert!(result.findings.iter().any(|diagnostic| {
+        project
+            .snapshot()
+            .origin(diagnostic.primary.source.identity)
+            .and_then(SourceOrigin::path)
+            .expect("finding origin")
+            == entry.as_path()
+            && diagnostic.category == DiagnosticCategory::Analysis
+            && diagnostic.related.iter().any(|related| {
+                project
+                    .snapshot()
+                    .origin(related.location.source.identity)
+                    .and_then(SourceOrigin::path)
+                    .expect("finding origin")
+                    == dependency
+            })
     }));
 
     assert!(
         !result
-            .diagnostics
+            .findings
             .iter()
-            .any(|diagnostic| matches!(diagnostic.kind, Kind::Resolution { .. }))
+            .any(|diagnostic| diagnostic.category == DiagnosticCategory::Resolution)
     );
 
     Ok(())
@@ -489,14 +759,24 @@ fn malformed_require_has_one_resolution_error() -> io::Result<()> {
         include_str!("../fixtures/checking/malformed/entry.luau"),
     )?;
 
-    let result = project().check(&[Entry::new(entry)], &options())?;
-    assert_eq!(result.completion, Completion::Complete);
-    assert_eq!(result.diagnostics.len(), 1);
+    let project = project();
 
-    assert!(matches!(
-        result.diagnostics[0].kind,
-        Kind::Resolution { .. }
-    ));
+    let result = complete(project.check(
+        CheckRequest {
+            invocation: Invocation {
+                inputs: vec![Input::Path(entry)],
+                ..Invocation::default()
+            },
+            ..CheckRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
+
+    assert_eq!(result.completion, Completion::Complete);
+    assert_eq!(result.findings.len(), 1);
+
+    assert!(result.findings[0].category == DiagnosticCategory::Resolution);
 
     Ok(())
 }
@@ -510,8 +790,8 @@ fn executable_configuration_and_module_directives_control_modes() -> io::Result<
     fs::remove_file(directory.path().join(".luaurc"))?;
 
     directory.file(
-        ".config.luau",
-        include_str!("../fixtures/checking/executable/.config.luau"),
+        "instar.luau",
+        include_str!("../fixtures/checking/executable/instar.luau"),
     )?;
 
     let entry = directory.file(
@@ -519,22 +799,43 @@ fn executable_configuration_and_module_directives_control_modes() -> io::Result<
         include_str!("../fixtures/checking/executable/entry.luau"),
     )?;
 
-    let mut project = project();
+    let project = project();
 
     assert_eq!(
-        project
-            .check(&[Entry::new(entry.clone())], &options())?
-            .diagnostics,
+        complete(project.check(
+            CheckRequest {
+                invocation: Invocation {
+                    inputs: vec![Input::Path(entry.clone())],
+                    ..Invocation::default()
+                },
+                ..CheckRequest::default()
+            },
+            options()
+        ))
+        .map_err(io::Error::from)?
+        .findings,
         Vec::new()
     );
 
-    project.change(Change::Overlay {
-        path: entry.clone(),
-        text: Some(include_str!("../fixtures/checking/executable/input.luau").to_owned()),
-    })?;
+    replace(
+        &project,
+        &entry,
+        include_str!("../fixtures/checking/executable/input.luau"),
+    )?;
 
     assert_ne!(
-        project.check(&[Entry::new(entry)], &options())?.diagnostics,
+        complete(project.check(
+            CheckRequest {
+                invocation: Invocation {
+                    inputs: vec![Input::Path(entry)],
+                    ..Invocation::default()
+                },
+                ..CheckRequest::default()
+            },
+            options()
+        ))
+        .map_err(io::Error::from)?
+        .findings,
         Vec::new()
     );
 
@@ -567,24 +868,43 @@ fn declarations_can_build_on_prior_files_and_be_removed() -> io::Result<()> {
         include_str!("../fixtures/checking/declarations/entry.luau"),
     )?;
 
-    let mut project = project();
+    let project = project();
 
     assert_eq!(
-        project
-            .check(&[Entry::new(entry.clone())], &options())?
-            .diagnostics,
+        complete(project.check(
+            CheckRequest {
+                invocation: Invocation {
+                    inputs: vec![Input::Path(entry.clone())],
+                    ..Invocation::default()
+                },
+                ..CheckRequest::default()
+            },
+            options()
+        ))
+        .map_err(io::Error::from)?
+        .findings,
         Vec::new()
     );
 
-    project.change(Change::Overlay {
-        path: configuration,
-        text: Some(
-            include_str!("../fixtures/checking/declarations/isolated/instar.toml").to_owned(),
-        ),
-    })?;
+    replace(
+        &project,
+        &configuration,
+        include_str!("../fixtures/checking/declarations/isolated/instar.toml"),
+    )?;
 
     assert_ne!(
-        project.check(&[Entry::new(entry)], &options())?.diagnostics,
+        complete(project.check(
+            CheckRequest {
+                invocation: Invocation {
+                    inputs: vec![Input::Path(entry)],
+                    ..Invocation::default()
+                },
+                ..CheckRequest::default()
+            },
+            options()
+        ))
+        .map_err(io::Error::from)?
+        .findings,
         Vec::new()
     );
 
@@ -624,26 +944,66 @@ fn explicit_declarations_preserve_distinct_mapped_contexts() -> io::Result<()> {
         include_str!("../fixtures/checking/explicit/sourcemap.json"),
     )?;
 
-    let mut project = project();
-    let contexts = project.contexts(&caller)?;
+    let project = project();
+
+    let initial = complete(project.check(
+        CheckRequest {
+            invocation: Invocation {
+                inputs: vec![Input::Path(caller.clone())],
+                ..Invocation::default()
+            },
+            ..CheckRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
+
+    let source = initial
+        .snapshot
+        .source_at(&caller)
+        .expect("caller")
+        .version
+        .identity;
+
+    let contexts = initial
+        .modules
+        .iter()
+        .copied()
+        .filter(|module| module.source == source)
+        .collect::<Vec<_>>();
+
     assert_eq!(contexts.len(), 2);
 
     let entries = contexts
         .iter()
-        .map(|module| Entry {
-            source: module.source.clone(),
-            context: Some(module.identity.clone()),
-        })
+        .copied()
+        .map(Input::Module)
         .collect::<Vec<_>>();
 
-    let result = project.check(&entries, &options())?;
+    let result = complete(project.check(
+        CheckRequest {
+            invocation: Invocation {
+                inputs: entries.to_vec(),
+                ..Invocation::default()
+            },
+            ..CheckRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
+
     assert_eq!(result.completion, Completion::Complete);
     assert_eq!(result.modules.len(), 4);
-    assert_ne!(result.diagnostics, Vec::new());
+    assert_ne!(result.findings, Vec::new());
 
-    assert!(result.diagnostics.iter().all(|diagnostic| matches!(
-        &diagnostic.location.module, Origin::Module(module) if module.identity == contexts[1].identity
-    )));
+    assert_eq!(result.module_findings.len(), result.findings.len());
+
+    assert!(
+        result
+            .module_findings
+            .iter()
+            .all(|finding| finding.module == contexts[1])
+    );
 
     Ok(())
 }
@@ -664,38 +1024,73 @@ fn roblox_security_profiles_and_metadata_control_native_types() -> io::Result<()
         include_str!("../fixtures/checking/roblox/entry.luau"),
     )?;
 
-    let entries = [Entry::new(entry)];
-    let mut project = project();
-    let plugin = project.check(&entries, &options())?;
+    let entries = [Input::Path(entry)];
+    let project = project();
+
+    let plugin = complete(project.check(
+        CheckRequest {
+            invocation: Invocation {
+                inputs: entries.to_vec(),
+                ..Invocation::default()
+            },
+            ..CheckRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
+
     assert_eq!(plugin.completion, Completion::Complete);
-    assert_eq!(plugin.diagnostics, Vec::new());
+    assert_eq!(plugin.findings, Vec::new());
 
-    project.change(Change::Overlay {
-        path: configuration,
-        text: Some(include_str!("../fixtures/checking/roblox/input.toml").to_owned()),
-    })?;
+    replace(
+        &project,
+        &configuration,
+        include_str!("../fixtures/checking/roblox/input.toml"),
+    )?;
 
-    let game = project.check(&entries, &options())?;
+    let game = complete(project.check(
+        CheckRequest {
+            invocation: Invocation {
+                inputs: entries.to_vec(),
+                ..Invocation::default()
+            },
+            ..CheckRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
+
     assert_eq!(game.completion, Completion::Complete);
-    assert_eq!(game.diagnostics.len(), 1);
-    assert!(game.diagnostics[0].message.contains("plugin"));
-    let metadata = roblox::cache_directory()?.join("none.d.luau");
+    assert_eq!(game.findings.len(), 1);
+    assert!(game.findings[0].message.contains("plugin"));
+    let metadata = roblox_cache_directory()?.join("none.d.luau");
 
-    project.change(Change::Overlay {
-        path: metadata,
-        text: Some(include_str!("../fixtures/checking/roblox/definition.luau").to_owned()),
-    })?;
+    replace(
+        &project,
+        &metadata,
+        include_str!("../fixtures/checking/roblox/definition.luau"),
+    )?;
 
-    let mismatched = project.check(&entries, &options())?;
+    let mismatched = complete(project.check(
+        CheckRequest {
+            invocation: Invocation {
+                inputs: entries.to_vec(),
+                ..Invocation::default()
+            },
+            ..CheckRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
 
     assert_eq!(
         mismatched.completion,
-        Completion::Incomplete(Reason::Environment)
+        Completion::Incomplete(vec![Reason::UnavailableEnvironment])
     );
 
     assert!(
         mismatched
-            .diagnostics
+            .findings
             .iter()
             .any(|diagnostic| diagnostic.message.contains("do not match"))
     );
@@ -719,18 +1114,31 @@ fn nonstrict_keeps_native_unknown_global_errors() -> io::Result<()> {
         include_str!("../fixtures/checking/nonstrict/entry.luau"),
     )?;
 
-    let result = project().check(&[Entry::new(entry.clone())], &options())?;
+    let project = project();
+
+    let result = complete(project.check(
+        CheckRequest {
+            invocation: Invocation {
+                inputs: vec![Input::Path(entry.clone())],
+                ..Invocation::default()
+            },
+            ..CheckRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
+
     assert_eq!(result.completion, Completion::Complete);
 
-    assert!(
-        result
-            .diagnostics
-            .iter()
-            .any(
-                |diagnostic| diagnostic.location.module.source() == entry.as_path()
-                    && matches!(diagnostic.kind, Kind::Type { .. })
-            )
-    );
+    assert!(result.findings.iter().any(|diagnostic| {
+        project
+            .snapshot()
+            .origin(diagnostic.primary.source.identity)
+            .and_then(SourceOrigin::path)
+            .expect("finding origin")
+            == entry.as_path()
+            && diagnostic.category == DiagnosticCategory::Type
+    }));
 
     Ok(())
 }
@@ -759,57 +1167,120 @@ fn excluded_dependency_environment_failures_are_attributed_and_recover() -> io::
     )?;
 
     let definition = directory.path().join("dependency/missing.luau");
-    let entries = [Entry::new(entry.clone())];
-    let mut project = project();
-    let checked = project.check(&entries, &options())?;
-    let linted = project.lint(&entries, &options())?;
+    let entries = [Input::Path(entry.clone())];
+    let project = project();
+
+    let checked = complete(project.check(
+        CheckRequest {
+            invocation: Invocation {
+                inputs: entries.to_vec(),
+                ..Invocation::default()
+            },
+            ..CheckRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
+
+    let linted = complete(project.lint(
+        LintRequest {
+            invocation: Invocation {
+                inputs: entries.to_vec(),
+                ..Invocation::default()
+            },
+            ..LintRequest::default()
+        },
+        options(),
+    ))
+    .map_err(io::Error::from)?;
 
     assert_eq!(
         checked.completion,
-        Completion::Incomplete(Reason::Environment)
+        Completion::Incomplete(vec![Reason::UnavailableEnvironment])
     );
 
     assert_eq!(linted.completion, checked.completion);
-    assert_eq!(checked.modules.len(), 2);
-    assert_eq!(linted.modules, checked.modules);
+    assert_eq!(checked.sources.len(), 2);
+    assert_eq!(linted.sources, checked.sources);
 
-    for diagnostic in &checked.diagnostics {
-        assert_eq!(diagnostic.location.module.source(), entry);
-
-        assert!(
-            diagnostic
-                .related
-                .iter()
-                .any(|related| related.location.module.source() == definition)
+    for diagnostic in &checked.findings {
+        assert_eq!(
+            project
+                .snapshot()
+                .origin(diagnostic.primary.source.identity)
+                .and_then(SourceOrigin::path)
+                .expect("finding origin"),
+            entry
         );
+
+        assert!(diagnostic.related.iter().any(|related| {
+            project
+                .snapshot()
+                .origin(related.location.source.identity)
+                .and_then(SourceOrigin::path)
+                .expect("finding origin")
+                == definition
+        }));
     }
 
-    assert_ne!(checked.diagnostics, Vec::new());
-    assert_ne!(linted.diagnostics, Vec::new());
+    assert_ne!(checked.findings, Vec::new());
+    assert_ne!(linted.findings, Vec::new());
 
-    for diagnostic in &linted.diagnostics {
-        assert_eq!(diagnostic.location.module.source(), entry);
-
-        assert!(
-            diagnostic
-                .related
-                .iter()
-                .any(|related| related.location.module.source() == definition)
+    for diagnostic in &linted.findings {
+        assert_eq!(
+            project
+                .snapshot()
+                .origin(diagnostic.primary.source.identity)
+                .and_then(SourceOrigin::path)
+                .expect("finding origin"),
+            entry
         );
+
+        assert!(diagnostic.related.iter().any(|related| {
+            project
+                .snapshot()
+                .origin(related.location.source.identity)
+                .and_then(SourceOrigin::path)
+                .expect("finding origin")
+                == definition
+        }));
     }
 
-    project.change(Change::Overlay {
-        path: definition,
-        text: Some(include_str!("../fixtures/checking/declarations/globals.luau").to_owned()),
-    })?;
+    replace(
+        &project,
+        &definition,
+        include_str!("../fixtures/checking/declarations/globals.luau"),
+    )?;
 
     assert_eq!(
-        project.check(&entries, &options())?.completion,
+        complete(project.check(
+            CheckRequest {
+                invocation: Invocation {
+                    inputs: entries.to_vec(),
+                    ..Invocation::default()
+                },
+                ..CheckRequest::default()
+            },
+            options()
+        ))
+        .map_err(io::Error::from)?
+        .completion,
         Completion::Complete
     );
 
     assert_eq!(
-        project.lint(&entries, &options())?.completion,
+        complete(project.lint(
+            LintRequest {
+                invocation: Invocation {
+                    inputs: entries.to_vec(),
+                    ..Invocation::default()
+                },
+                ..LintRequest::default()
+            },
+            options()
+        ))
+        .map_err(io::Error::from)?
+        .completion,
         Completion::Complete
     );
 

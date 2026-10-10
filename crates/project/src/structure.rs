@@ -1,15 +1,13 @@
 //! Syntax folding and nested source selections.
 
-use std::{cmp::Reverse, io, path::Path, time::Instant};
+use std::{cmp::Reverse, io};
 
-use instar_analysis::{Options, error::invalid};
+use instar_shared::{Options, error::invalid};
 
-use vermis::{
+use instar_syntax::{
     token::TokenKind,
     tree::{Node, NodeKind, Tree},
 };
-
-use crate::project::Project;
 
 /// A foldable source region with byte offsets.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -21,159 +19,138 @@ pub struct Fold {
     pub comment: bool,
 }
 
-impl Project {
-    /// Finds foldable syntax and multiline tokens without preparing environments.
-    ///
-    /// # Errors
-    /// Returns source access or interruption failures.
-    pub fn folds(&mut self, path: &Path, options: &Options) -> io::Result<Vec<Fold>> {
-        let started = Instant::now();
+pub(crate) fn folds(
+    source: &instar_shared::SourceSnapshot,
+    settings: &instar_syntax::SyntaxSettings,
+    options: &Options,
+) -> io::Result<Vec<Fold>> {
+    let syntax = instar_syntax::parse(source, settings, options);
+    let tree = syntax.tree.syntax();
+    let mut folds = Vec::new();
 
-        self.during(
-            |project| {
-                options.check(started)?;
-                let source = project.source(path)?;
-                let tree = vermis::parse(source.text.as_bytes());
-                let mut folds = Vec::new();
+    for node in &tree.nodes {
+        options.check()?;
 
-                for node in &tree.nodes {
-                    options.check(started)?;
-
-                    if let Some(fold) = fold(&tree, node) {
-                        folds.push(fold);
-                    }
-                }
-
-                let mut previous_comment: Option<usize> = None;
-
-                for token in &tree.tokens {
-                    options.check(started)?;
-
-                    if token.kind == TokenKind::Comment {
-                        if let Some(index) = previous_comment
-                            && source
-                                .text
-                                .get(folds[index].range[1]..token.span.start)
-                                .is_some_and(|gap| gap.trim().is_empty())
-                        {
-                            folds[index].range[1] = token.span.end;
-                            continue;
-                        }
-
-                        previous_comment = Some(folds.len());
-
-                        folds.push(Fold {
-                            range: [token.span.start, token.span.end],
-                            comment: true,
-                        });
-                    } else if matches!(
-                        token.kind,
-                        TokenKind::BlockComment
-                            | TokenKind::MalformedComment
-                            | TokenKind::RawString
-                            | TokenKind::QuotedString
-                            | TokenKind::InterpolatedStringStart
-                            | TokenKind::InterpolatedStringMiddle
-                            | TokenKind::InterpolatedStringEnd
-                            | TokenKind::InterpolatedStringSimple
-                            | TokenKind::MalformedString
-                    ) {
-                        folds.push(Fold {
-                            range: [token.span.start, token.span.end],
-                            comment: matches!(
-                                token.kind,
-                                TokenKind::BlockComment | TokenKind::MalformedComment
-                            ),
-                        });
-                    }
-                }
-
-                folds.retain(|fold| {
-                    source
-                        .text
-                        .get(fold.range[0]..fold.range[1])
-                        .is_some_and(|text| text.contains(['\r', '\n']))
-                });
-
-                folds.sort_by_key(|fold| (fold.range[0], Reverse(fold.range[1])));
-                folds.dedup();
-                options.check(started)?;
-
-                Ok(folds)
-            },
-            options,
-        )
+        if let Some(fold) = fold(tree, node) {
+            folds.push(fold);
+        }
     }
 
-    /// Returns inner-to-outer selections for each supplied byte position.
-    ///
-    /// # Errors
-    /// Returns invalid positions, source access, or interruption failures.
-    pub fn selections(
-        &mut self,
-        path: &Path,
-        offsets: &[usize],
-        options: &Options,
-    ) -> io::Result<Vec<Vec<[usize; 2]>>> {
-        let started = Instant::now();
+    let mut previous_comment: Option<usize> = None;
 
-        self.during(
-            |project| {
-                options.check(started)?;
-                let source = project.source(path)?;
-                let tree = vermis::parse(source.text.as_bytes());
-                let mut selections = Vec::new();
+    for token in &tree.tokens {
+        options.check()?;
 
-                for &offset in offsets {
-                    options.check(started)?;
+        if token.kind == TokenKind::Comment {
+            if let Some(index) = previous_comment
+                && source
+                    .text
+                    .get(folds[index].range[1]..token.span.start)
+                    .is_some_and(|gap| gap.trim().is_empty())
+            {
+                folds[index].range[1] = token.span.end;
+                continue;
+            }
 
-                    if source.text.get(..offset).is_none() {
-                        return Err(invalid("invalid selection position"));
-                    }
+            previous_comment = Some(folds.len());
 
-                    let mut ranges = vec![[0, source.text.len()]];
-
-                    for span in tree
-                        .nodes
-                        .iter()
-                        .map(|node| node.span)
-                        .chain(tree.tokens.iter().map(|token| token.span))
-                    {
-                        options.check(started)?;
-
-                        if span.start <= offset
-                            && offset <= span.end
-                            && span.start < span.end
-                            && source.text.get(span.start..span.end).is_some()
-                        {
-                            ranges.push([span.start, span.end]);
-                        }
-                    }
-
-                    ranges.sort_unstable_by_key(|range| (range[1] - range[0], range[0]));
-                    ranges.dedup();
-                    let mut nested: Vec<[usize; 2]> = Vec::new();
-
-                    for range in ranges {
-                        options.check(started)?;
-
-                        if nested.last().is_none_or(|previous| {
-                            range[0] <= previous[0] && previous[1] <= range[1]
-                        }) {
-                            nested.push(range);
-                        }
-                    }
-
-                    selections.push(nested);
-                }
-
-                options.check(started)?;
-
-                Ok(selections)
-            },
-            options,
-        )
+            folds.push(Fold {
+                range: [token.span.start, token.span.end],
+                comment: true,
+            });
+        } else if matches!(
+            token.kind,
+            TokenKind::BlockComment
+                | TokenKind::MalformedComment
+                | TokenKind::RawString
+                | TokenKind::QuotedString
+                | TokenKind::InterpolatedStringStart
+                | TokenKind::InterpolatedStringMiddle
+                | TokenKind::InterpolatedStringEnd
+                | TokenKind::InterpolatedStringSimple
+                | TokenKind::MalformedString
+        ) {
+            folds.push(Fold {
+                range: [token.span.start, token.span.end],
+                comment: matches!(
+                    token.kind,
+                    TokenKind::BlockComment | TokenKind::MalformedComment
+                ),
+            });
+        }
     }
+
+    folds.retain(|fold| {
+        source
+            .text
+            .get(fold.range[0]..fold.range[1])
+            .is_some_and(|text| text.contains(['\r', '\n']))
+    });
+
+    folds.sort_by_key(|fold| (fold.range[0], Reverse(fold.range[1])));
+    folds.dedup();
+    options.check()?;
+
+    Ok(folds)
+}
+
+pub(crate) fn selections(
+    source: &instar_shared::SourceSnapshot,
+    settings: &instar_syntax::SyntaxSettings,
+    offsets: &[usize],
+    options: &Options,
+) -> io::Result<Vec<Vec<[usize; 2]>>> {
+    let syntax = instar_syntax::parse(source, settings, options);
+    let tree = syntax.tree.syntax();
+    let mut selections = Vec::new();
+
+    for &offset in offsets {
+        options.check()?;
+
+        if source.text.get(..offset).is_none() {
+            return Err(invalid("invalid selection position"));
+        }
+
+        let mut ranges = vec![[0, source.text.len()]];
+
+        for span in tree
+            .nodes
+            .iter()
+            .map(|node| node.span)
+            .chain(tree.tokens.iter().map(|token| token.span))
+        {
+            options.check()?;
+
+            if span.start <= offset
+                && offset <= span.end
+                && span.start < span.end
+                && source.text.get(span.start..span.end).is_some()
+            {
+                ranges.push([span.start, span.end]);
+            }
+        }
+
+        ranges.sort_unstable_by_key(|range| (range[1] - range[0], range[0]));
+        ranges.dedup();
+        let mut nested: Vec<[usize; 2]> = Vec::new();
+
+        for range in ranges {
+            options.check()?;
+
+            if nested
+                .last()
+                .is_none_or(|previous| range[0] <= previous[0] && previous[1] <= range[1])
+            {
+                nested.push(range);
+            }
+        }
+
+        selections.push(nested);
+    }
+
+    options.check()?;
+
+    Ok(selections)
 }
 
 fn fold(tree: &Tree<'_>, node: &Node) -> Option<Fold> {

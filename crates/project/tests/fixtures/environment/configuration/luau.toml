@@ -1,2 +1,1 @@
-[[environment]]
-namespace='@luau'
+environment = { "groups" = [{ "namespace" = "@luau" }] }

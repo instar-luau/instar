@@ -1,300 +1,940 @@
-//! Rust-owned lazy module graph and source-revision require sites.
-
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io, mem,
-    path::{Path, PathBuf},
-    rc::Rc,
+    io,
+    path::Path,
+    sync::Arc,
 };
 
-use instar_analysis::error::invalid;
+use instar_luau::{
+    AnalysisIdentity, AnalysisPurpose, AnalysisRequest, ClosureIdentity, CycleEdge, CyclePath,
+    ImportOutcome, ImportRequest, ImportSite, InferenceMode, InferenceSettings, InstanceStep,
+    ModuleIdentity, ModuleInput, ReportingSettings, ResolvedImport, SemanticCategory, SourceInput,
+    flags::LanguageProfile,
+};
+
+use instar_shared::{
+    Completion, Diagnostic, DiagnosticCategory, FindingIdentity, OperationFailure, Options, Reason,
+    Severity, SourceSnapshot,
+};
+
+use instar_syntax::{DirectiveKind, SyntaxSettings, directives, parse};
+
+use petgraph::{
+    algo::kosaraju_scc,
+    graphmap::{DiGraphMap, UnGraphMap},
+};
+
+use serde::Serialize;
 
 use crate::{
+    capture::Capture,
+    configuration::{CheckingMode, EffectiveSettings, OperationOverrides, TYPE_FUNCTION_MEMORY},
+    environments::{self, EnvironmentRecipe},
+    execution::Runtime,
     extract::extract,
-    project::Project,
-    resolve::{Identity, Module, Request},
-    source::{Document, Failure, related},
+    inputs::{InputVersion, SourceOrigin},
+    report::{ImportExplanation, ImportFailure, ModuleDiagnostic},
+    request::{Input, Invocation},
+    selection::SelectedSource,
+    sourcemap::Map,
 };
 
-/// A syntax parsing problem, independent of checker diagnostics.
-#[derive(Clone, Debug)]
-pub struct Problem {
-    /// Source byte range at the document revision.
-    pub range: [usize; 2],
+/// A resolved import between captured module contexts.
+#[derive(Clone, Debug, Serialize)]
+pub struct DependencyEdge {
+    /// Module containing the import.
+    pub importer: ModuleIdentity,
 
-    /// Parser explanation.
-    pub message: String,
+    /// Module selected by resolution.
+    pub target: ModuleIdentity,
+
+    /// Exact captured call, argument, and import request.
+    pub site: ImportSite,
 }
 
-/// One lexical require call, including dynamic and failed requests.
-#[derive(Clone, Debug)]
-pub struct Site {
-    /// Source revision anchoring both byte ranges.
-    pub revision: u64,
-
-    /// Argument byte range, with exclusive end.
-    pub range: [usize; 2],
-
-    /// Entire call byte range, with exclusive end.
-    pub call: [usize; 2],
-
-    /// Statically known argument, when available.
-    pub request: Option<Request>,
-
-    /// Resolved target, without forcing its dependencies to be expanded.
-    pub target: Option<Module>,
-
-    /// Retained extraction or resolution failure.
-    pub failure: Option<Failure>,
-
-    /// Present and absent consulted files, settings and maps.
-    pub inputs: BTreeSet<PathBuf>,
+pub(crate) struct ModuleNode {
+    pub(crate) identity: ModuleIdentity,
+    pub(crate) source: SourceSnapshot,
+    pub(crate) effective: EffectiveSettings,
+    pub(crate) environment: EnvironmentRecipe,
+    pub(crate) imports: Vec<ResolvedImport>,
+    pub(crate) map: Option<(Arc<Map>, usize)>,
 }
 
-/// One immutable parsed module snapshot.
-#[derive(Clone, Debug)]
-pub struct Node {
-    /// Exact module and source identity.
-    pub module: Module,
-
-    /// Source snapshot anchoring require sites and syntax problems.
-    pub document: Document,
-
-    /// Require calls in source order.
-    pub sites: Vec<Site>,
-
-    /// Syntax parsing problems, without typechecking.
-    pub problems: Vec<Problem>,
-
-    /// All source, navigation, configuration and map inputs.
-    pub inputs: BTreeSet<PathBuf>,
+pub(crate) struct DependencyGraph {
+    pub(crate) modules: BTreeMap<ModuleIdentity, ModuleNode>,
+    pub(crate) edges: Vec<DependencyEdge>,
+    pub(crate) imports: Vec<ImportExplanation>,
+    pub(crate) module_findings: Vec<ModuleDiagnostic>,
+    pub(crate) roots: BTreeSet<ModuleIdentity>,
+    pub(crate) diagnostics: Vec<Diagnostic>,
+    pub(crate) completion: Completion,
 }
 
-/// Module storage and incoming dependency adjacency.
-#[derive(Default)]
-pub struct Graph {
-    pub(crate) nodes: BTreeMap<Identity, Rc<Node>>,
-    reverse: BTreeMap<Identity, BTreeSet<Identity>>,
+pub(crate) struct ClosureRecipe {
+    pub(crate) request: AnalysisRequest,
+    pub(crate) inputs: Vec<InputVersion>,
 }
 
-impl Graph {
-    /// Returns a cached immutable module snapshot if it has been expanded.
-    #[must_use]
-    pub fn node(&self, identity: &Identity) -> Option<Rc<Node>> {
-        self.nodes.get(identity).cloned()
-    }
+type ModulePlacement = (ModuleIdentity, Option<(Arc<Map>, usize)>);
 
-    /// Returns direct incoming dependencies, including targets not yet expanded.
-    #[must_use]
-    pub fn dependents(&self, identity: &Identity) -> BTreeSet<Identity> {
-        self.reverse.get(identity).cloned().unwrap_or_default()
-    }
-
-    /// Returns the number of expanded module contexts, not backing files.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.nodes.len()
-    }
-
-    /// Whether no module context has been expanded.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.nodes.is_empty()
-    }
-
-    pub(crate) fn invalidate(&mut self, path: &Path) -> BTreeSet<Identity> {
-        let mut affected = self
-            .nodes
-            .iter()
-            .filter(|(_, node)| node.inputs.iter().any(|input| related(input, path)))
-            .map(|(identity, _)| identity.clone())
-            .collect::<BTreeSet<_>>();
-
-        let mut pending = affected.iter().cloned().collect::<Vec<_>>();
-
-        while let Some(identity) = pending.pop() {
-            for dependent in self.reverse.get(&identity).into_iter().flatten() {
-                if affected.insert(dependent.clone()) {
-                    pending.push(dependent.clone());
-                }
-            }
-        }
-
-        self.nodes
-            .retain(|identity, _| !affected.contains(identity));
-
-        self.reverse.clear();
-
-        for node in self.nodes.values() {
-            for site in &node.sites {
-                if let Some(target) = &site.target {
-                    self.reverse
-                        .entry(target.identity.clone())
-                        .or_default()
-                        .insert(node.module.identity.clone());
-                }
-            }
-        }
-
-        affected
-    }
-
-    fn insert(&mut self, node: Rc<Node>) {
-        for site in &node.sites {
-            if let Some(target) = &site.target {
-                self.reverse
-                    .entry(target.identity.clone())
-                    .or_default()
-                    .insert(node.module.identity.clone());
-            }
-        }
-
-        self.nodes.insert(node.module.identity.clone(), node);
-    }
+struct GraphRequest<'request> {
+    invocation: &'request Invocation,
+    overrides: &'request OperationOverrides,
+    prepare_environment: bool,
 }
 
-impl Project {
-    /// Returns the Rust-owned module graph.
-    #[must_use]
-    pub fn graph(&self) -> &Graph {
-        &self.graph
-    }
+struct PendingModule {
+    identity: ModuleIdentity,
+    source: SourceSnapshot,
+    effective: EffectiveSettings,
+    map: Option<(Arc<Map>, usize)>,
+}
 
-    /// Extracts and resolves document links without expanding target modules.
-    ///
-    /// # Errors
-    /// Returns entry source, identity, configuration or map errors. Site failures are retained.
-    pub fn links(&mut self, source: &Path, context: Option<&Identity>) -> io::Result<Rc<Node>> {
-        self.interrupted()?;
-        let outer = mem::take(&mut self.view.consulted);
+struct GraphBuild {
+    graph: DependencyGraph,
+    pending: Vec<PendingModule>,
+}
 
-        let result = (|| {
-            let module = self.module(source, context)?;
-
-            if let Some(node) = self.graph.node(&module.identity) {
-                self.view.consult(&node.inputs);
-
-                return Ok(node);
-            }
-
-            self.analyze(module)
-        })();
-
-        let inputs = mem::take(&mut self.view.consulted);
-        self.view.consulted = outer;
-        self.view.consult(&inputs);
-
-        result
-    }
-
-    /// Expands reachable modules on demand; failures and cycles remain graph data.
-    ///
-    /// # Errors
-    /// Returns errors identifying or loading the explicit entry or a resolved target.
-    pub fn discover(
+impl Runtime {
+    pub(crate) fn graph(
         &mut self,
-        source: &Path,
-        context: Option<&Identity>,
-    ) -> io::Result<BTreeSet<Identity>> {
-        let entry = self.links(source, context)?;
+        selected: &[SelectedSource],
+        invocation: &Invocation,
+        overrides: &OperationOverrides,
+        capture: &mut Capture,
+        prepare_environment: bool,
+        options: &Options,
+    ) -> io::Result<DependencyGraph> {
+        let request = GraphRequest {
+            invocation,
+            overrides,
+            prepare_environment,
+        };
 
-        self.discovery(&entry.module, &BTreeSet::new())
-    }
+        let mut build = GraphBuild {
+            graph: DependencyGraph {
+                modules: BTreeMap::new(),
+                edges: Vec::new(),
+                imports: Vec::new(),
+                module_findings: Vec::new(),
+                roots: BTreeSet::new(),
+                diagnostics: Vec::new(),
+                completion: Completion::Complete,
+            },
+            pending: Vec::new(),
+        };
 
-    pub(crate) fn discovery(
-        &mut self,
-        entry: &Module,
-        discovered: &BTreeSet<Identity>,
-    ) -> io::Result<BTreeSet<Identity>> {
-        let mut seen = BTreeSet::new();
-        let mut pending = vec![entry.clone()];
+        self.graph_roots(selected, &request, &mut build, capture, options)?;
 
-        while let Some(module) = pending.pop() {
-            self.interrupted()?;
+        while let Some(module) = build.pending.pop() {
+            options.check()?;
 
-            if discovered.contains(&module.identity) || !seen.insert(module.identity.clone()) {
+            if build.graph.modules.contains_key(&module.identity) {
                 continue;
             }
 
-            let node = if let Some(node) = self.graph.node(&module.identity) {
-                self.view.consult(&node.inputs);
-
-                node
-            } else {
-                self.links(&module.source, Some(&module.identity))?
-            };
-
-            pending.extend(node.sites.iter().filter_map(|site| site.target.clone()));
+            let prepared = self.graph_node(module, &request, &mut build.graph, capture, options)?;
+            self.graph_imports(prepared, &request, &mut build, capture, options)?;
         }
 
-        Ok(seen)
+        let mut graph = build.graph;
+
+        if matches!(overrides, OperationOverrides::Lint(_)) {
+            self.graph_lint_environment(&mut graph, capture, options)?;
+        }
+
+        graph
+            .edges
+            .sort_by_key(|edge| (edge.importer, edge.target, edge.site.argument.span.start));
+
+        graph.imports.sort_by_key(|import| {
+            (
+                import.importer,
+                import.site.argument.span.start,
+                import.site.identity,
+            )
+        });
+
+        Ok(graph)
     }
 
-    fn analyze(&mut self, module: Module) -> io::Result<Rc<Node>> {
-        let document = self.source(&module.source)?;
+    fn graph_roots(
+        &mut self,
+        selected: &[SelectedSource],
+        request: &GraphRequest<'_>,
+        build: &mut GraphBuild,
+        capture: &mut Capture,
+        options: &Options,
+    ) -> io::Result<()> {
+        for selected in selected {
+            let source = capture
+                .snapshot
+                .source(selected.identity)
+                .cloned()
+                .ok_or_else(|| invalid("selected source is absent"))?;
 
-        let directory = module
-            .source
-            .parent()
-            .ok_or_else(|| invalid("module source has no directory"))?;
+            let mut contexts =
+                self.module_contexts(&source, &selected.effective, capture, options)?;
 
-        let settings = self.configuration(directory)?;
-
-        self.view.consult(
-            settings
-                .configuration
-                .environment
+            let explicit = request
+                .invocation
+                .inputs
                 .iter()
-                .flat_map(|environment| {
-                    environment
-                        .definitions
-                        .iter()
-                        .chain(&environment.documentation)
-                }),
-        );
+                .filter_map(|input| match input {
+                    Input::Module(module) if module.source == selected.identity => Some(*module),
+                    _ => None,
+                })
+                .collect::<BTreeSet<_>>();
 
-        let (mut sites, problems) =
-            extract(&document.text, document.revision, self.operation.as_ref())?;
-
-        let shared = self.view.consulted.clone();
-
-        for site in &mut sites {
-            self.interrupted()?;
-            site.inputs.extend(shared.iter().cloned());
-
-            if let Some(request) = &site.request {
-                let resolution = self.resolve(&module, request);
-                site.inputs.extend(resolution.inputs);
-
-                match resolution.result {
-                    Ok(target) => {
-                        self.view.consulted.insert(target.source.clone());
-                        site.inputs.insert(target.source.clone());
-                        site.target = Some(target);
-                    }
-
-                    Err(failure) => {
-                        if failure.kind == io::ErrorKind::Unsupported {
-                            site.request = None;
-                        }
-
-                        site.failure = Some(failure);
-                    }
+            for module in &explicit {
+                if contexts.iter().any(|(identity, _)| identity == module) {
+                    continue;
                 }
+
+                let Some((root, version, placement)) = self.host.module_placement(module.context)
+                else {
+                    return Err(invalid(
+                        "selected module context is obsolete or unavailable",
+                    ));
+                };
+
+                if root != selected.effective.context {
+                    return Err(invalid(
+                        "selected module context belongs to a different project context",
+                    ));
+                }
+
+                let path = capture
+                    .snapshot
+                    .origin(version.identity)
+                    .and_then(SourceOrigin::path)
+                    .ok_or_else(|| invalid("selected module sourcemap is unavailable"))?
+                    .to_path_buf();
+
+                let source_path = capture
+                    .snapshot
+                    .origin(source.version.identity)
+                    .and_then(SourceOrigin::path)
+                    .ok_or_else(|| invalid("selected mapped module has no source path"))?;
+
+                if path
+                    .parent()
+                    .is_some_and(|directory| source_path.starts_with(directory))
+                {
+                    return Err(invalid(
+                        "selected module context is obsolete or unavailable",
+                    ));
+                }
+
+                let document = capture.source(&path, options)?;
+
+                if document.version != version {
+                    return Err(invalid("selected module sourcemap revision is obsolete"));
+                }
+
+                let map = Map::parse(&path, &document)?;
+
+                let source_path = capture
+                    .snapshot
+                    .origin(source.version.identity)
+                    .and_then(SourceOrigin::path)
+                    .ok_or_else(|| invalid("selected mapped module has no source path"))?;
+
+                let placements = map.placements(source_path);
+
+                if !placements.is_empty() && !placements.contains(&placement) {
+                    return Err(invalid("selected module instance placement is obsolete"));
+                }
+
+                contexts.push((*module, Some((map, placement))));
+            }
+
+            for (identity, map) in contexts {
+                if !explicit.is_empty() && !explicit.contains(&identity) {
+                    continue;
+                }
+
+                build.graph.roots.insert(identity);
+
+                build.pending.push(PendingModule {
+                    identity,
+                    source: source.clone(),
+                    effective: selected.effective.clone(),
+                    map,
+                });
             }
         }
 
-        let node = Rc::new(Node {
-            module,
-            document,
-            sites,
-            problems,
-            inputs: self.view.consulted.clone(),
+        Ok(())
+    }
+
+    fn graph_node(
+        &mut self,
+        module: PendingModule,
+        request: &GraphRequest<'_>,
+        graph: &mut DependencyGraph,
+        capture: &mut Capture,
+        options: &Options,
+    ) -> io::Result<(ModuleNode, Vec<ImportSite>)> {
+        let PendingModule {
+            identity,
+            source,
+            effective,
+            map,
+        } = module;
+
+        capture.consult_source(&source);
+        let syntax = parse(&source, &syntax_settings(&effective), options);
+        graph.completion = graph.completion.clone().combine(syntax.completion.clone());
+
+        graph
+            .module_findings
+            .extend(
+                syntax
+                    .diagnostics
+                    .iter()
+                    .cloned()
+                    .map(|diagnostic| ModuleDiagnostic {
+                        module: identity,
+                        diagnostic,
+                    }),
+            );
+
+        graph.diagnostics.extend(syntax.diagnostics.clone());
+        let sites = extract(&syntax.tree, options)?;
+        let member_precedence = sites.iter().any(|site| matches!(&site.request, ImportRequest::Instance(path) if path.steps.iter().any(|step| matches!(step, InstanceStep::Field(_)))));
+
+        let requested = if matches!(request.overrides, OperationOverrides::Lint(_)) {
+            effective.settings.linting.enabled().any(|(rule, _)| {
+                rule.prerequisites.environment || !rule.prerequisites.semantics.is_empty()
+            })
+        } else {
+            request.prepare_environment
+        };
+
+        let environment = self.environment(
+            &effective,
+            map.as_ref(),
+            capture,
+            requested,
+            member_precedence,
+            options,
+        )?;
+
+        graph.completion = graph
+            .completion
+            .clone()
+            .combine(environment.completion.clone());
+
+        graph
+            .module_findings
+            .extend(
+                environment
+                    .diagnostics
+                    .iter()
+                    .cloned()
+                    .map(|diagnostic| ModuleDiagnostic {
+                        module: identity,
+                        diagnostic,
+                    }),
+            );
+
+        graph.diagnostics.extend(environment.diagnostics.clone());
+
+        let node = ModuleNode {
+            identity,
+            source: source.clone(),
+            effective,
+            environment,
+            imports: Vec::new(),
+            map,
+        };
+
+        Ok((node, sites))
+    }
+
+    fn graph_target(
+        &mut self,
+        node: &ModuleNode,
+        site: &ImportSite,
+        request: &GraphRequest<'_>,
+        capture: &mut Capture,
+        options: &Options,
+    ) -> io::Result<Option<PendingModule>> {
+        let Some(target) = Self::resolve(node, site, capture, options)? else {
+            return Ok(None);
+        };
+
+        let target_source = capture.source(&target.path, options)?;
+        let mut dependency_overrides = request.overrides.clone();
+
+        if let OperationOverrides::Check(overrides) = &mut dependency_overrides {
+            overrides.checking.mode = None;
+        }
+
+        let effective = self.effective(
+            target_source.version.identity,
+            request.invocation,
+            &dependency_overrides,
+            capture,
+            options,
+        )?;
+
+        let (target_identity, map) = if let Some((map, placement)) = target.map {
+            let context = self
+                .host
+                .module_context(effective.context, map.version, placement)?;
+
+            (
+                ModuleIdentity {
+                    context,
+                    source: target_source.version.identity,
+                },
+                Some((map, placement)),
+            )
+        } else {
+            let mut placements =
+                self.module_contexts(&target_source, &effective, capture, options)?;
+
+            if placements.len() != 1 {
+                return Err(invalid("dependency maps to multiple instances"));
+            }
+
+            placements
+                .pop()
+                .ok_or_else(|| invalid("dependency has no module context"))?
+        };
+
+        Ok(Some(PendingModule {
+            identity: target_identity,
+            source: target_source,
+            effective,
+            map,
+        }))
+    }
+
+    fn graph_imports(
+        &mut self,
+        prepared: (ModuleNode, Vec<ImportSite>),
+        request: &GraphRequest<'_>,
+        build: &mut GraphBuild,
+        capture: &mut Capture,
+        options: &Options,
+    ) -> io::Result<()> {
+        let (mut node, sites) = prepared;
+
+        for site in sites {
+            options.check()?;
+            capture.begin_consultation();
+            let target = self.graph_target(&node, &site, request, capture, options);
+            let inputs = capture.end_consultation();
+
+            let (outcome, failure) = match target {
+                Ok(Some(target)) => {
+                    build.graph.edges.push(DependencyEdge {
+                        importer: node.identity,
+                        target: target.identity,
+                        site: site.clone(),
+                    });
+
+                    let identity = target.identity;
+                    build.pending.push(target);
+
+                    (ImportOutcome::Module(identity), None)
+                }
+
+                Ok(None) => (ImportOutcome::Nonconstant, None),
+                Err(error) => resolution_failure(&node, &site, error, &mut build.graph, options)?,
+            };
+
+            build.graph.imports.push(ImportExplanation {
+                importer: node.identity,
+                site: site.clone(),
+                outcome: outcome.clone(),
+                failure,
+                inputs,
+            });
+
+            node.imports.push(ResolvedImport { site, outcome });
+        }
+
+        build.graph.modules.insert(node.identity, node);
+
+        Ok(())
+    }
+
+    fn graph_lint_environment(
+        &mut self,
+        graph: &mut DependencyGraph,
+        capture: &mut Capture,
+        options: &Options,
+    ) -> io::Result<()> {
+        let mut connected = UnGraphMap::<ModuleIdentity, ()>::new();
+
+        for identity in graph.modules.keys() {
+            connected.add_node(*identity);
+        }
+
+        for edge in &graph.edges {
+            connected.add_edge(edge.importer, edge.target, ());
+        }
+
+        for component in kosaraju_scc(&connected) {
+            if !component.iter().any(|identity| {
+                graph.modules[identity]
+                    .effective
+                    .settings
+                    .linting
+                    .enabled()
+                    .any(|(rule, _)| !rule.prerequisites.semantics.is_empty())
+            }) {
+                continue;
+            }
+
+            for identity in component {
+                let node = graph
+                    .modules
+                    .get_mut(&identity)
+                    .ok_or_else(|| invalid("dependency module is absent"))?;
+
+                if node.environment.requested {
+                    continue;
+                }
+
+                node.environment = self.environment(
+                    &node.effective,
+                    node.map.as_ref(),
+                    capture,
+                    true,
+                    false,
+                    options,
+                )?;
+
+                graph.completion = graph
+                    .completion
+                    .clone()
+                    .combine(node.environment.completion.clone());
+
+                graph
+                    .module_findings
+                    .extend(
+                        node.environment
+                            .diagnostics
+                            .iter()
+                            .cloned()
+                            .map(|diagnostic| ModuleDiagnostic {
+                                module: identity,
+                                diagnostic,
+                            }),
+                    );
+
+                graph
+                    .diagnostics
+                    .extend(node.environment.diagnostics.clone());
+            }
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn module_contexts(
+        &mut self,
+        source: &SourceSnapshot,
+        effective: &EffectiveSettings,
+        capture: &mut Capture,
+        options: &Options,
+    ) -> io::Result<Vec<ModulePlacement>> {
+        let Some(path) = capture
+            .snapshot
+            .origin(source.version.identity)
+            .and_then(SourceOrigin::path)
+            .map(Path::to_path_buf)
+        else {
+            return Ok(vec![(
+                ModuleIdentity {
+                    context: effective.context,
+                    source: source.version.identity,
+                },
+                None,
+            )]);
+        };
+
+        if matches!(
+            capture.snapshot.origin(source.version.identity),
+            Some(SourceOrigin::Stdin { .. })
+        ) {
+            return Ok(vec![(
+                ModuleIdentity {
+                    context: effective.context,
+                    source: source.version.identity,
+                },
+                None,
+            )]);
+        }
+
+        let mut contexts = Vec::new();
+
+        for map_path in &effective.settings.resolution.sourcemaps {
+            let map_source = capture.source(map_path, options)?;
+            let map = Map::parse(map_path, &map_source)?;
+
+            for node in map.placements(&path) {
+                let context = self
+                    .host
+                    .module_context(effective.context, map.version, node)?;
+
+                contexts.push((
+                    ModuleIdentity {
+                        context,
+                        source: source.version.identity,
+                    },
+                    Some((Arc::clone(&map), node)),
+                ));
+            }
+        }
+
+        if contexts.is_empty() {
+            contexts.push((
+                ModuleIdentity {
+                    context: effective.context,
+                    source: source.version.identity,
+                },
+                None,
+            ));
+        }
+
+        Ok(contexts)
+    }
+
+    pub(crate) fn closures(
+        &mut self,
+        graph: &DependencyGraph,
+        purpose: AnalysisPurpose,
+        semantic: &[SemanticCategory],
+        capture: &Capture,
+        options: &Options,
+    ) -> io::Result<(Vec<ClosureRecipe>, Completion, Vec<Diagnostic>)> {
+        let mut connected = UnGraphMap::<ModuleIdentity, ()>::new();
+        let mut directed = DiGraphMap::<ModuleIdentity, ()>::new();
+
+        for identity in graph.modules.keys() {
+            connected.add_node(*identity);
+            directed.add_node(*identity);
+        }
+
+        for edge in &graph.edges {
+            connected.add_edge(edge.importer, edge.target, ());
+            directed.add_edge(edge.importer, edge.target, ());
+        }
+
+        let components = kosaraju_scc(&connected);
+        let cyclic = kosaraju_scc(&directed);
+        let mut recipes = Vec::new();
+        let mut completion = graph.completion.clone();
+        let mut diagnostics = Vec::new();
+
+        for mut component in components {
+            options.check()?;
+            component.sort();
+            let mut profile = None;
+            let mut compatible = true;
+
+            for identity in &component {
+                let node = &graph.modules[identity];
+
+                let current = LanguageProfile::new(
+                    &node.effective.settings.language.flags,
+                    TYPE_FUNCTION_MEMORY,
+                )?;
+
+                if profile.as_ref().is_some_and(|profile| profile != &current) {
+                    compatible = false;
+                } else if profile.is_none() {
+                    profile = Some(current);
+                }
+            }
+
+            if !compatible {
+                completion =
+                    completion.combine(Completion::Incomplete(vec![Reason::UnsupportedFeature]));
+
+                for identity in &component {
+                    diagnostics.push(environments::diagnostic(&graph.modules[identity].source, "analysis.cross_profile", DiagnosticCategory::Analysis, "imports span incompatible process-global language profiles; cross-profile semantic exports are unavailable".to_owned()));
+                }
+
+                continue;
+            }
+
+            let revision = self.identity();
+
+            let modules = component
+                .iter()
+                .map(|identity| {
+                    closure_module(
+                        *identity,
+                        &graph.modules[identity],
+                        revision,
+                        purpose,
+                        semantic,
+                        options,
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            let mut cycles = Vec::new();
+
+            for component in &cyclic {
+                if component.len() > 1
+                    || component
+                        .first()
+                        .is_some_and(|identity| directed.contains_edge(*identity, *identity))
+                {
+                    let members = component.iter().copied().collect::<BTreeSet<_>>();
+
+                    if members.iter().all(|identity| {
+                        modules
+                            .iter()
+                            .any(|module| module.analysis.module == *identity)
+                    }) {
+                        cycles.extend(cycle_paths(&members, &graph.edges, options)?);
+                    }
+                }
+            }
+
+            recipes.push(ClosureRecipe {
+                request: AnalysisRequest {
+                    closure: ClosureIdentity::new(revision),
+                    profile: profile.ok_or_else(|| invalid("empty captured closure"))?,
+                    purpose,
+                    roots: graph
+                        .roots
+                        .intersection(&component.into_iter().collect())
+                        .copied()
+                        .collect(),
+                    modules,
+                    cycles,
+                },
+                inputs: capture.guards(),
+            });
+        }
+
+        recipes.sort_by_key(|recipe| recipe.request.roots.first().copied());
+
+        Ok((recipes, completion, diagnostics))
+    }
+}
+
+pub(crate) fn syntax_settings(effective: &EffectiveSettings) -> SyntaxSettings {
+    effective.settings.syntax.clone()
+}
+
+fn resolution_failure(
+    node: &ModuleNode,
+    site: &ImportSite,
+    error: io::Error,
+    graph: &mut DependencyGraph,
+    options: &Options,
+) -> io::Result<(ImportOutcome, Option<ImportFailure>)> {
+    options.check()?;
+
+    if matches!(
+        error.kind(),
+        io::ErrorKind::Interrupted | io::ErrorKind::TimedOut
+    ) {
+        return Err(error);
+    }
+
+    let primary = site.argument;
+
+    if let Some(failure) = error
+        .get_ref()
+        .and_then(|error| error.downcast_ref::<OperationFailure>())
+    {
+        graph.completion = graph.completion.clone().combine(failure.completion.clone());
+
+        graph
+            .module_findings
+            .extend(
+                failure
+                    .diagnostics
+                    .iter()
+                    .cloned()
+                    .map(|diagnostic| ModuleDiagnostic {
+                        module: node.identity,
+                        diagnostic,
+                    }),
+            );
+
+        graph.diagnostics.extend(failure.diagnostics.clone());
+    } else {
+        let diagnostic = Diagnostic {
+            identity: FindingIdentity::new(
+                "project",
+                vec![node.source.version],
+                "resolution.unresolved",
+                primary,
+            ),
+            code: "resolution.unresolved".to_owned(),
+            category: DiagnosticCategory::Resolution,
+            severity: Severity::Error,
+            message: error.to_string(),
+            primary,
+            related: Vec::new(),
+            tags: Vec::new(),
+        };
+
+        graph.module_findings.push(ModuleDiagnostic {
+            module: node.identity,
+            diagnostic: diagnostic.clone(),
         });
 
-        self.interrupted()?;
-        self.graph.insert(Rc::clone(&node));
-
-        Ok(node)
+        graph.diagnostics.push(diagnostic);
     }
+
+    if error.kind() == io::ErrorKind::Unsupported {
+        graph.completion = graph
+            .completion
+            .clone()
+            .combine(Completion::Incomplete(vec![Reason::UnavailableSemantics]));
+    }
+
+    Ok((
+        ImportOutcome::Unresolved,
+        Some(ImportFailure {
+            kind: error.kind(),
+            message: error.to_string(),
+        }),
+    ))
+}
+
+fn closure_module(
+    identity: ModuleIdentity,
+    node: &ModuleNode,
+    revision: u64,
+    purpose: AnalysisPurpose,
+    semantic: &[SemanticCategory],
+    options: &Options,
+) -> ModuleInput {
+    let mode = source_mode(node, options);
+
+    let required =
+        purpose == AnalysisPurpose::Editor || !semantic.is_empty() || mode != CheckingMode::Nocheck;
+
+    let available = required
+        && node.environment.requested
+        && node.environment.completion == Completion::Complete;
+
+    ModuleInput {
+        analysis: AnalysisIdentity {
+            module: identity,
+            revision,
+        },
+        source: SourceInput {
+            module: identity,
+            source: node.source.clone(),
+            language: node.effective.settings.language.clone(),
+        },
+        environment: available.then(|| node.environment.input.clone()),
+        inference: InferenceSettings {
+            required: available,
+            mode: if mode == CheckingMode::Strict {
+                InferenceMode::Strict
+            } else {
+                InferenceMode::Nonstrict
+            },
+            retained: if available {
+                semantic.to_vec()
+            } else {
+                Vec::new()
+            },
+        },
+        reporting: ReportingSettings {
+            ordinary_type_diagnostics: available
+                && purpose == AnalysisPurpose::Source
+                && semantic.is_empty()
+                && mode != CheckingMode::Nocheck
+                && node.effective.settings.type_errors,
+        },
+        imports: node.imports.clone(),
+    }
+}
+
+fn source_mode(node: &ModuleNode, options: &Options) -> CheckingMode {
+    if node
+        .effective
+        .origins
+        .iter()
+        .any(|origin| origin.field == "checking.mode" && origin.precedence == usize::MAX)
+    {
+        return node.effective.settings.checking;
+    }
+
+    let parsed = parse(&node.source, &syntax_settings(&node.effective), options);
+
+    for directive in directives(&parsed.tree, options).directives {
+        if directive.scope.start != 0 || directive.scope.end != node.source.text.len() {
+            continue;
+        }
+
+        if let DirectiveKind::Source(mode) = directive.kind {
+            match mode.as_str() {
+                "!strict" => return CheckingMode::Strict,
+                "!nonstrict" => return CheckingMode::Nonstrict,
+                "!nocheck" => return CheckingMode::Nocheck,
+                _ => {}
+            }
+        }
+    }
+
+    node.effective.settings.checking
+}
+
+fn cycle_paths(
+    members: &BTreeSet<ModuleIdentity>,
+    edges: &[DependencyEdge],
+    options: &Options,
+) -> io::Result<Vec<CyclePath>> {
+    let mut paths = Vec::new();
+
+    for start in members {
+        let mut pending = vec![(*start, Vec::<CycleEdge>::new(), BTreeSet::new())];
+
+        while let Some((current, path, mut visited)) = pending.pop() {
+            options.check()?;
+
+            if !visited.insert(current) {
+                continue;
+            }
+
+            for edge in edges
+                .iter()
+                .filter(|edge| edge.importer == current && members.contains(&edge.target))
+            {
+                let mut path = path.clone();
+
+                path.push(CycleEdge {
+                    from: edge.importer,
+                    to: edge.target,
+                    site: edge.site.call,
+                });
+
+                if edge.target == *start {
+                    paths.push(CyclePath { edges: path });
+                    pending.clear();
+                    break;
+                }
+
+                if !visited.contains(&edge.target) {
+                    pending.push((edge.target, path, visited.clone()));
+                }
+            }
+        }
+    }
+
+    Ok(paths)
+}
+
+fn invalid(message: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, message)
 }

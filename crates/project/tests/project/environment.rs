@@ -1,13 +1,33 @@
-use std::io;
+use std::{io, path::Path};
 
-use instar_core::{
-    analysis::Entry, configuration::Configuration, documentation::Index, project::Change, roblox,
+use instar_project::{
+    ChangeBatch, CheckOverrides, CheckRequest, Input, InputIdentity, InputState, Invocation,
+    OperationOverrides, Project, ProjectChange, Query, QueryOutput, QueryReport, QueryRequest,
+    SettingsRequest, roblox_cache_directory,
 };
 
-use crate::support::{Directory, options, project};
+use instar_shared::{Completion, OperationFailure, SourceVersion};
+
+use crate::support::{Directory, complete, options, project, replace};
+
+fn lookup(project: &Project, entry: &Path, symbol: &str) -> Result<QueryReport, OperationFailure> {
+    let snapshot = project.snapshot();
+    let source = snapshot.source_at(entry).expect("query source").version;
+
+    complete(project.query(
+        QueryRequest {
+            snapshot,
+            operation: Query::Documentation {
+                source,
+                symbol: symbol.to_owned(),
+            },
+        },
+        options(),
+    ))
+}
 
 #[test]
-fn configuration_rejects_reserved_namespaces_and_invalid_flags() {
+fn configuration_rejects_reserved_namespaces_and_invalid_flags() -> io::Result<()> {
     for source in [
         include_str!("../fixtures/environment/configuration/luau.toml"),
         include_str!("../fixtures/environment/configuration/roblox.toml"),
@@ -18,8 +38,29 @@ fn configuration_rejects_reserved_namespaces_and_invalid_flags() {
         include_str!("../fixtures/environment/configuration/string.toml"),
         include_str!("../fixtures/environment/configuration/overflow.toml"),
     ] {
-        assert!(Configuration::parse(source).is_err(), "{source}");
+        let directory = Directory::new(None)?;
+        let entry = directory.file("entry.luau", "return 1")?;
+        directory.file("instar.toml", source)?;
+        let project = Project::new(vec![directory.path().to_path_buf()]);
+
+        assert!(
+            complete(project.settings(
+                SettingsRequest {
+                    snapshot: None,
+                    invocation: Invocation {
+                        inputs: vec![Input::Path(entry)],
+                        ..Invocation::default()
+                    },
+                    overrides: OperationOverrides::Check(CheckOverrides::default()),
+                },
+                options()
+            ))
+            .is_err(),
+            "{source}"
+        );
     }
+
+    Ok(())
 }
 
 #[test]
@@ -38,32 +79,29 @@ fn documentation_lookup_tracks_overlays_and_rejects_invalid_entries() -> io::Res
         include_str!("../fixtures/environment/documentation/docs.json"),
     )?;
 
-    let mut project = project();
+    let project = project();
+    replace(&project, &entry, "return 1")?;
+    let first = lookup(&project, &entry, "@custom/global/value").map_err(io::Error::from)?;
 
-    assert_eq!(
-        project
-            .documentation(&entry, &options())?
-            .get("@custom/global/value")
-            .expect("symbol")
-            .documentation
-            .as_deref(),
-        Some("first")
-    );
+    let QueryOutput::Documentation(Some(first)) = first.output else {
+        panic!("symbol");
+    };
 
-    project.change(Change::Overlay {
-        path: documentation.clone(),
-        text: Some(include_str!("../fixtures/environment/documentation/input.json").to_owned()),
-    })?;
+    assert_eq!(first.documentation.as_deref(), Some("first"));
 
-    assert_eq!(
-        project
-            .documentation(&entry, &options())?
-            .get("@custom/global/value")
-            .expect("symbol")
-            .documentation
-            .as_deref(),
-        Some("updated")
-    );
+    replace(
+        &project,
+        &documentation,
+        include_str!("../fixtures/environment/documentation/input.json"),
+    )?;
+
+    let updated = lookup(&project, &entry, "@custom/global/value").map_err(io::Error::from)?;
+
+    let QueryOutput::Documentation(Some(updated)) = updated.output else {
+        panic!("symbol");
+    };
+
+    assert_eq!(updated.documentation.as_deref(), Some("updated"));
 
     for text in [
         include_str!("../fixtures/environment/documentation/replacement.json"),
@@ -71,25 +109,22 @@ fn documentation_lookup_tracks_overlays_and_rejects_invalid_entries() -> io::Res
         include_str!("../fixtures/environment/documentation/alternate.json"),
         include_str!("../fixtures/environment/documentation/final.json"),
     ] {
-        project.change(Change::Overlay {
-            path: documentation.clone(),
-            text: Some(text.to_owned()),
-        })?;
+        replace(&project, &documentation, text)?;
 
-        assert!(project.documentation(&entry, &options()).is_err(), "{text}");
+        assert!(
+            lookup(&project, &entry, "@custom/global/value").is_err(),
+            "{text}"
+        );
     }
 
-    project.change(Change::Overlay {
-        path: configuration,
-        text: Some(include_str!("../fixtures/environment/documentation/input.toml").to_owned()),
-    })?;
+    replace(
+        &project,
+        &configuration,
+        include_str!("../fixtures/environment/documentation/input.toml"),
+    )?;
 
-    assert!(
-        project
-            .documentation(&entry, &options())?
-            .get("@custom/global/value")
-            .is_none()
-    );
+    let removed = lookup(&project, &entry, "@custom/global/value").map_err(io::Error::from)?;
+    assert!(matches!(removed.output, QueryOutput::Documentation(None)));
 
     Ok(())
 }
@@ -100,23 +135,44 @@ fn project_flags_follow_configuration_changes() -> io::Result<()> {
     let configuration = directory.file("instar.toml", "")?;
     let source = format!("return {}1{}", "(".repeat(40), ")".repeat(40));
     let entry = directory.file("entry.luau", &source)?;
-    let mut project = project();
-    let entries = [Entry::new(entry)];
-    assert_eq!(project.check(&entries, &options())?.diagnostics, Vec::new());
+    let project = project();
 
-    project.change(Change::Overlay {
-        path: configuration.clone(),
-        text: Some(include_str!("../fixtures/environment/project/input.toml").to_owned()),
-    })?;
+    let request = CheckRequest {
+        invocation: Invocation {
+            inputs: vec![Input::Path(entry)],
+            ..Invocation::default()
+        },
+        ..CheckRequest::default()
+    };
 
-    assert_ne!(project.check(&entries, &options())?.diagnostics, Vec::new());
+    assert_eq!(
+        complete(project.check(request.clone(), options()))
+            .map_err(io::Error::from)?
+            .findings,
+        Vec::new()
+    );
 
-    project.change(Change::Overlay {
-        path: configuration,
-        text: Some(String::new()),
-    })?;
+    replace(
+        &project,
+        &configuration,
+        include_str!("../fixtures/environment/project/input.toml"),
+    )?;
 
-    assert_eq!(project.check(&entries, &options())?.diagnostics, Vec::new());
+    assert_ne!(
+        complete(project.check(request.clone(), options()))
+            .map_err(io::Error::from)?
+            .findings,
+        Vec::new()
+    );
+
+    replace(&project, &configuration, "")?;
+
+    assert_eq!(
+        complete(project.check(request, options()))
+            .map_err(io::Error::from)?
+            .findings,
+        Vec::new()
+    );
 
     Ok(())
 }
@@ -141,13 +197,47 @@ fn parent_environment_paths_invalidate_consumers() -> io::Result<()> {
     )?;
 
     let documentation = directory.file("docs.json", "{}")?;
-    let mut project = project();
+    let project = project();
+
+    replace(
+        &project,
+        &entry,
+        include_str!("../fixtures/environment/parent/nested/entry.luau"),
+    )?;
 
     for path in [definitions, documentation] {
-        let identity = project.links(&entry, None)?.module.identity.clone();
-        assert!(project.watch_inputs().contains(&path));
-        let affected = project.change(Change::Disk(path))?;
-        assert!(affected.contains(&identity));
+        let report = complete(project.check(
+            CheckRequest {
+                invocation: Invocation {
+                    inputs: vec![Input::Path(entry.clone())],
+                    ..Invocation::default()
+                },
+                ..CheckRequest::default()
+            },
+            options(),
+        ))
+        .map_err(io::Error::from)?;
+
+        let consulted = report
+            .inputs
+            .iter()
+            .find(|input| input.identity == InputIdentity::Path(path.clone()))
+            .expect("consulted environment path")
+            .clone();
+
+        assert!(project.current(&report.inputs));
+        let mut changed = consulted.clone();
+        changed.revision += 1;
+        changed.state = InputState::Stale;
+
+        project.change(ChangeBatch {
+            changes: vec![ProjectChange::Input {
+                expected: Some(consulted),
+                current: changed,
+            }],
+        })?;
+
+        assert!(!project.current(&report.inputs));
     }
 
     Ok(())
@@ -157,27 +247,51 @@ fn parent_environment_paths_invalidate_consumers() -> io::Result<()> {
 fn cancelled_preparation_and_documentation_do_not_load_sources() -> io::Result<()> {
     let directory = Directory::new(None)?;
     let entry = directory.file("entry.luau", "return 1")?;
-    let mut project = project();
+    let project = project();
+    let original = project.snapshot();
     let limits = options();
     limits.cancellation.cancel();
 
+    let failure = complete(project.check(
+        CheckRequest {
+            invocation: Invocation {
+                inputs: vec![Input::Path(entry.clone())],
+                ..Invocation::default()
+            },
+            ..CheckRequest::default()
+        },
+        limits.clone(),
+    ))
+    .expect_err("cancelled preparation");
+
+    assert_eq!(failure.completion, Completion::Cancelled);
+    assert_eq!(io::Error::from(failure).kind(), io::ErrorKind::Interrupted);
+    assert_eq!(project.snapshot().identity, original.identity);
+
     assert_eq!(
-        project
-            .prepare(&entry, None, &limits)
-            .expect_err("cancelled preparation")
-            .kind(),
-        io::ErrorKind::Interrupted
+        project.snapshot().sources().count(),
+        original.sources().count()
     );
 
-    assert!(project.graph().is_empty());
+    let identity = project.source_identity();
 
-    assert_eq!(
-        project
-            .documentation(&entry, &limits)
-            .expect_err("cancelled documentation")
-            .kind(),
-        io::ErrorKind::Interrupted
-    );
+    let failure = complete(project.query(
+        QueryRequest {
+            snapshot: original,
+            operation: Query::Documentation {
+                source: SourceVersion {
+                    identity,
+                    revision: 1,
+                },
+                symbol: "@luau/global/print".to_owned(),
+            },
+        },
+        limits,
+    ))
+    .expect_err("cancelled documentation");
+
+    assert_eq!(failure.completion, Completion::Cancelled);
+    assert_eq!(io::Error::from(failure).kind(), io::ErrorKind::Interrupted);
 
     Ok(())
 }
@@ -196,31 +310,55 @@ fn builtin_documentation_loads_without_roblox_assets() -> io::Result<()> {
         include_str!("../fixtures/environment/builtin/entry.luau"),
     )?;
 
-    let mut project = project();
+    let project = project();
 
-    project.change(Change::Overlay {
-        path: roblox::cache_directory()?.join("metadata.json"),
-        text: Some("invalid Roblox metadata".to_owned()),
-    })?;
+    replace(
+        &project,
+        &entry,
+        include_str!("../fixtures/environment/builtin/entry.luau"),
+    )?;
 
-    let documentation = project.documentation(&entry, &options())?;
+    replace(
+        &project,
+        &roblox_cache_directory()?.join("metadata.json"),
+        "invalid Roblox metadata",
+    )?;
+
+    let documentation = lookup(&project, &entry, "@luau/global/print").map_err(io::Error::from)?;
+
+    let QueryOutput::Documentation(Some(documentation)) = documentation.output else {
+        panic!("builtin documentation");
+    };
 
     assert_eq!(
-        documentation
-            .get("@luau/global/print")
-            .expect("builtin documentation")
-            .documentation
-            .as_deref(),
+        documentation.documentation.as_deref(),
         Some("Prints values.")
     );
 
-    assert!(documentation.get("@roblox/global/game").is_none());
+    assert!(matches!(
+        lookup(&project, &entry, "@roblox/global/game")
+            .map_err(io::Error::from)?
+            .output,
+        QueryOutput::Documentation(None)
+    ));
 
     Ok(())
 }
 
 #[test]
-fn deserialization_enforces_documentation_semantics() {
+fn deserialization_enforces_documentation_semantics() -> io::Result<()> {
+    let directory = Directory::new(None)?;
+
+    directory.file(
+        "instar.toml",
+        include_str!("../fixtures/environment/documentation/instar.toml"),
+    )?;
+
+    let entry = directory.file("entry.luau", "return 1")?;
+    let documentation = directory.path().join("docs.json");
+    let project = project();
+    replace(&project, &entry, "return 1")?;
+
     for source in [
         include_str!("../fixtures/environment/documentation/alternate.json"),
         include_str!("../fixtures/environment/deserialization/input.json"),
@@ -228,6 +366,13 @@ fn deserialization_enforces_documentation_semantics() {
         include_str!("../fixtures/environment/deserialization/invalid.json"),
         include_str!("../fixtures/environment/deserialization/alternate.json"),
     ] {
-        assert!(serde_json::from_str::<Index>(source).is_err(), "{source}");
+        replace(&project, &documentation, source)?;
+
+        assert!(
+            lookup(&project, &entry, "@custom/global/value").is_err(),
+            "{source}"
+        );
     }
+
+    Ok(())
 }

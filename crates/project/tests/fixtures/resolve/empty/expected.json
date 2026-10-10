@@ -1,0 +1,5 @@
+[
+  {
+    "error": "$ROOT/caller.luau: require \"@empty\": $ROOT/.luaurc: configuration paths must name nonempty local files"
+  }
+]

@@ -1,2 +1,1 @@
-[[environment]]
-namespace='@roblox'
+environment = { "groups" = [{ "namespace" = "@roblox" }] }

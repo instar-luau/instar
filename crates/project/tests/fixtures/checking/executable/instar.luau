@@ -1,0 +1,1 @@
+return {checking = {mode = 'strict'}}

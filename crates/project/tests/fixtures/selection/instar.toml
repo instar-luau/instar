@@ -1,7 +1,3 @@
-exclude = ['dependency/']
-
-[roblox]
-enabled = false
-
-[lint.implicit_any_local]
-level = 'warn'
+linting = { "rules" = { "implicit_any_local" = { "enabled" = true, "severity" = "Warning", "settings" = { "rule" = "implicit_any_local", "parameters" = {  } } } } }
+environment = { "roblox" = false }
+selection = { "exclude" = ["dependency/"] }

@@ -1,2 +1,1 @@
-[[environment]]
-namespace='missing-prefix'
+environment = { "groups" = [{ "namespace" = "missing-prefix" }] }

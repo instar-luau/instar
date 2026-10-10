@@ -9,7 +9,7 @@
     }
   },
   {
-    "error": "$ROOT/caller.luau: require \"./directory\": directory has no module source: $ROOT/directory"
+    "error": "$ROOT/caller.luau: require \"./directory\": unresolved module $ROOT/directory (consulted $ROOT/directory.luau, $ROOT/directory.lua, $ROOT/directory/init.luau, $ROOT/directory/init.lua)"
   },
   {
     "module": {

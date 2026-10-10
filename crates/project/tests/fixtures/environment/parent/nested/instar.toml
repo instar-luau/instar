@@ -1,6 +1,1 @@
-[roblox]
-enabled=false
-[[environment]]
-namespace='@custom'
-definitions=['../types.luau']
-documentation=['../docs.json']
+environment = { "groups" = [{ "namespace" = "@custom", "definitions" = ["../types.luau"], "documentation" = ["../docs.json"] }], "roblox" = false }

@@ -1,4 +1,1 @@
-[[environment]]
-namespace='@custom'
-[[environment]]
-namespace='@custom'
+environment = { "groups" = [{ "namespace" = "@custom" }, { "namespace" = "@custom" }] }

@@ -1,18 +1,18 @@
 [
   {
     "source": "caller.luau",
-    "request": "./.config"
+    "request": "./instar"
   },
   {
     "source": "caller.luau",
-    "request": "./.config.luau"
+    "request": "./instar.luau"
   },
   {
     "source": "caller.luau",
     "request": "@configuration"
   },
   {
-    "source": ".config.luau",
+    "source": "instar.luau",
     "request": "./caller"
   },
   {

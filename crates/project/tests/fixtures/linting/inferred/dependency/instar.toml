@@ -1,4 +1,1 @@
-[lint.implicit_any_parameter]
-level='allow'
-[lint.implicit_any_local]
-level='allow'
+linting = { "rules" = { "implicit_any_parameter" = { "enabled" = false, "severity" = "Warning", "settings" = { "rule" = "implicit_any_parameter", "parameters" = {  } } }, "implicit_any_local" = { "enabled" = false, "severity" = "Warning", "settings" = { "rule" = "implicit_any_local", "parameters" = {  } } } } }

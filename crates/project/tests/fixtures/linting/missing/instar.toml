@@ -1,3 +1,1 @@
-[[environment]]
-namespace='@custom'
-definitions=['globals.luau']
+environment = { "groups" = [{ "namespace" = "@custom", "definitions" = ["globals.luau"] }] }

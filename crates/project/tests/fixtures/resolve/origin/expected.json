@@ -18,7 +18,7 @@
     }
   },
   {
-    "error": "$ROOT/child/deep/caller.luau: require \"@missing\": module path not found: $ROOT/absent"
+    "error": "$ROOT/child/deep/caller.luau: require \"@missing\": unresolved module $ROOT/absent (consulted $ROOT/absent.luau, $ROOT/absent.lua, $ROOT/absent/init.luau, $ROOT/absent/init.lua)"
   },
   {
     "error": "$ROOT/child/deep/caller.luau: require \"$ROOT/library/item\": require path must start with ./, ../, or @"

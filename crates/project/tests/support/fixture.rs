@@ -1,18 +1,24 @@
 use std::{
-    fs, io,
+    collections::BTreeMap,
+    fs,
+    future::Future,
+    io,
     path::{Path, PathBuf},
-    time::Duration,
+    pin::pin,
+    sync::Arc,
+    task::{Context, Poll, Wake, Waker},
+    thread,
+    time::{Duration, Instant},
 };
 
-use instar_analysis::Options;
-
-use instar_core::{
-    documentation,
-    project::{Change, Project},
-    roblox,
+use instar_project::{
+    ChangeBatch, Project, ProjectChange, SourceChange, SourceOrigin, documentation_cache_directory,
+    roblox_cache_directory,
 };
 
+use instar_shared::Options;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
 pub(crate) struct Directory {
@@ -46,14 +52,14 @@ impl Directory {
 }
 
 pub(crate) fn project() -> Project {
-    let mut project = Project::new(Duration::from_secs(2));
-    assets(&mut project).expect("Roblox cache fixture");
+    let project = Project::new(Vec::new());
+    assets(&project).expect("Roblox cache fixture");
 
     project
 }
 
 pub(crate) fn options() -> Options {
-    Options::new(Duration::from_secs(5))
+    Options::new(Some(Instant::now() + Duration::from_secs(5)))
 }
 
 pub(crate) fn copy(source: &Path, target: &Path, root: Option<&str>) -> io::Result<()> {
@@ -86,22 +92,164 @@ pub(crate) fn normalize(root: &str, value: &mut Value) {
     }
 }
 
-fn assets(project: &mut Project) -> io::Result<()> {
+pub(crate) fn complete<Output>(future: impl Future<Output = Output>) -> Output {
+    struct Notification(thread::Thread);
+
+    impl Wake for Notification {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+
+    let waker = Waker::from(Arc::new(Notification(thread::current())));
+    let mut context = Context::from_waker(&waker);
+    let mut future = pin!(future);
+
+    loop {
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(output) => return output,
+            Poll::Pending => thread::park(),
+        }
+    }
+}
+
+pub(crate) fn replace(project: &Project, path: &Path, text: &str) -> io::Result<()> {
+    let snapshot = project.snapshot();
+
+    let origin = SourceOrigin::Document {
+        address: path.to_string_lossy().into_owned(),
+        context: Some(path.to_path_buf()),
+    };
+
+    let mut changes = Vec::new();
+
+    if let Some(source) = snapshot.source_at(path) {
+        let mut expected = source.version;
+
+        if !matches!(
+            snapshot.origin(expected.identity),
+            Some(SourceOrigin::Document { .. })
+        ) {
+            changes.push(ProjectChange::Source(SourceChange::Move {
+                expected,
+                origin,
+            }));
+
+            expected.revision = expected
+                .revision
+                .checked_add(1)
+                .ok_or_else(|| io::Error::other("fixture revision overflow"))?;
+        }
+
+        changes.push(ProjectChange::Source(SourceChange::Replace {
+            expected,
+            text: Arc::from(text),
+        }));
+    } else {
+        changes.push(ProjectChange::Source(SourceChange::Open {
+            identity: project.source_identity(),
+            origin,
+            text: Arc::from(text),
+        }));
+    }
+
+    project.change(ChangeBatch { changes })?;
+
+    Ok(())
+}
+
+fn assets(project: &Project) -> io::Result<()> {
     for (directory, fixture) in [
-        (roblox::cache_directory()?, "project"),
-        (documentation::cache_directory()?, "documentation"),
+        (roblox_cache_directory()?, "project"),
+        (documentation_cache_directory()?, "documentation"),
     ] {
-        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/assets")
             .join(fixture);
 
-        for entry in fs::read_dir(fixture)? {
-            let entry = entry?;
+        let mut files = fs::read_dir(source)?
+            .map(|entry| {
+                let entry = entry?;
 
-            project.change(Change::Overlay {
-                path: directory.join(entry.file_name()),
-                text: Some(fs::read_to_string(entry.path())?),
-            })?;
+                let name = entry
+                    .file_name()
+                    .into_string()
+                    .map_err(|_| io::Error::other("fixture filename must be UTF-8"))?;
+
+                Ok((name, fs::read_to_string(entry.path())?))
+            })
+            .collect::<io::Result<BTreeMap<_, _>>>()?;
+
+        if fixture == "project" {
+            let mut metadata: Value = serde_json::from_str(
+                files
+                    .get("metadata.json")
+                    .ok_or_else(|| io::Error::other("fixture metadata is missing"))?,
+            )
+            .map_err(io::Error::other)?;
+
+            let profiles = metadata
+                .get_mut("profiles")
+                .and_then(Value::as_object_mut)
+                .ok_or_else(|| io::Error::other("fixture metadata profiles are missing"))?;
+
+            for profile in ["none", "local", "plugin", "roblox"] {
+                let declarations = files
+                    .get_mut(&format!("{profile}.d.luau"))
+                    .ok_or_else(|| io::Error::other("fixture declarations are missing"))?;
+
+                let digest = profiles
+                    .get_mut(profile)
+                    .ok_or_else(|| io::Error::other("fixture profile digest is missing"))?;
+
+                if digest.as_str()
+                    != Some(format!("{:x}", Sha256::digest(declarations.as_bytes())).as_str())
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "fixture declarations do not match their metadata",
+                    ));
+                }
+
+                if profile == "none" {
+                    *declarations = declarations.replace(
+                        "declare extern type Model extends Instance with",
+                        "declare extern type PVInstance extends Instance with end\n\
+                        declare extern type Model extends PVInstance with",
+                    );
+                } else {
+                    declarations.push_str(
+                        "\ndeclare extern type PVInstance extends Instance with end\n\
+                        declare extern type Model extends PVInstance with PrimaryPart: Part? end\n",
+                    );
+                }
+
+                declarations.push_str(
+                    "\ndeclare extern type Folder extends Instance with end\n\
+                    declare extern type LuaSourceContainer extends Instance with end\n\
+                    declare extern type BaseScript extends LuaSourceContainer with end\n\
+                    declare extern type Script extends BaseScript with end\n\
+                    declare extern type ModuleScript extends LuaSourceContainer with end\n\
+                    declare extern type ReplicatedStorage extends Instance with end\n\
+                    declare extern type WorldRoot extends Model with end\n\
+                    declare extern type Workspace extends WorldRoot with end\n",
+                );
+
+                *digest = Value::String(format!("{:x}", Sha256::digest(declarations.as_bytes())));
+            }
+
+            files.insert(
+                "metadata.json".to_owned(),
+                serde_json::to_string(&metadata).map_err(io::Error::other)?,
+            );
+        }
+
+        for (name, text) in files {
+            replace(project, &directory.join(name), &text)?;
         }
     }
 

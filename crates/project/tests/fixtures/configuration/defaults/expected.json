@@ -1,6 +1,5 @@
 {
-  "check": {},
-  "format": {
+  "formatting": {
     "width": 120,
     "indent_style": "tabs",
     "indent_width": 4,
@@ -8,63 +7,607 @@
     "quote_style": "prefer_double",
     "requires": {
       "order": "preserve",
-      "groups": ["alias", "relative", "other"],
+      "groups": [
+        "alias",
+        "relative",
+        "other"
+      ],
       "blank_lines": "between_groups"
-    }
-  },
-  "lint": {
-    "almost_swapped": { "level": "warn" },
-    "bad_string_escape": { "level": "warn" },
-    "compare_nan": { "level": "warn" },
-    "constant_condition": { "level": "warn" },
-    "constant_table_comparison": { "level": "warn" },
-    "length_as_condition": { "level": "warn" },
-    "mismatched_argument_count": { "level": "warn" },
-    "must_use": { "level": "warn" },
-    "zero_step_loop": { "level": "warn" },
-    "divide_by_zero": { "level": "warn" },
-    "self_assignment": { "level": "warn" },
-    "empty_if": { "level": "warn" },
-    "empty_loop": { "level": "warn" },
-    "if_same_then_else": { "level": "warn" },
-    "ignored_pcall_result": { "level": "warn" },
-    "mixed_table": { "level": "warn" },
-    "unscoped_variables": { "level": "warn" },
-    "roblox_incorrect_color3_new_bounds": { "level": "warn" },
-    "roblox_manual_fromscale_or_fromoffset": { "level": "warn" },
-    "roblox_prefer_get_players": { "level": "warn" },
-    "roblox_suspicious_udim2_new": { "level": "warn" },
-    "implicit_any_local": { "level": "allow" },
-    "implicit_any_parameter": { "level": "allow" },
-    "and_or_conditional": { "level": "allow" },
-    "collapsible_if": { "level": "allow" },
-    "else_after_return": { "level": "allow" },
-    "if_expression_assignment": { "level": "allow" },
-    "negated_condition": { "level": "allow" },
-    "non_const_require": { "level": "allow" },
-    "parenthesized_conditions": { "level": "allow" },
-    "global_usage": { "level": "allow" },
-    "type_check_inside_call": { "level": "allow" },
-    "loop_invariant_call": { "level": "allow" },
-    "manual_table_clone": { "level": "allow" },
-    "string_concat_in_loop": { "level": "allow" },
-    "unused_variable": {
-      "level": "warn",
-      "parameters": false,
-      "loop_variables": false,
-      "ignore_pattern": "^_"
     },
-    "high_cyclomatic_complexity": { "level": "allow", "maximum_complexity": 40 },
-    "prefer_const": { "level": "allow", "mutated_tables_stay_local": false },
-    "deprecated": { "level": "warn", "paths": {}, "ambiguous_methods": false },
-    "restricted_globals": { "level": "warn", "names": {} },
-    "restricted_module_paths": { "level": "warn", "paths": {} }
+    "final_newline": true
   },
-  "editor": {
-    "diagnostics": { "scope": "open_files" },
-    "index": {},
-    "completion": { "snippets": true },
-    "imports": { "enabled": true, "require": "string", "binding": "const" },
+  "linting": {
+    "rules": {
+      "almost_swapped": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "almost_swapped",
+          "parameters": {}
+        }
+      },
+      "bad_string_escape": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "bad_string_escape",
+          "parameters": {}
+        }
+      },
+      "compare_nan": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "compare_nan",
+          "parameters": {}
+        }
+      },
+      "constant_condition": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "constant_condition",
+          "parameters": {}
+        }
+      },
+      "constant_table_comparison": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "constant_table_comparison",
+          "parameters": {}
+        }
+      },
+      "length_as_condition": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "length_as_condition",
+          "parameters": {}
+        }
+      },
+      "mismatched_argument_count": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "mismatched_argument_count",
+          "parameters": {}
+        }
+      },
+      "must_use": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "must_use",
+          "parameters": {}
+        }
+      },
+      "zero_step_loop": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "zero_step_loop",
+          "parameters": {}
+        }
+      },
+      "divide_by_zero": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "divide_by_zero",
+          "parameters": {}
+        }
+      },
+      "self_assignment": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "self_assignment",
+          "parameters": {}
+        }
+      },
+      "empty_if": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "empty_if",
+          "parameters": {}
+        }
+      },
+      "empty_loop": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "empty_loop",
+          "parameters": {}
+        }
+      },
+      "if_same_then_else": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "if_same_then_else",
+          "parameters": {}
+        }
+      },
+      "ignored_pcall_result": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "ignored_pcall_result",
+          "parameters": {}
+        }
+      },
+      "mixed_table": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "mixed_table",
+          "parameters": {}
+        }
+      },
+      "unscoped_variables": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "unscoped_variables",
+          "parameters": {}
+        }
+      },
+      "roblox_incorrect_color3_new_bounds": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "roblox_incorrect_color3_new_bounds",
+          "parameters": {}
+        }
+      },
+      "roblox_manual_fromscale_or_fromoffset": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "roblox_manual_fromscale_or_fromoffset",
+          "parameters": {}
+        }
+      },
+      "roblox_prefer_get_players": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "roblox_prefer_get_players",
+          "parameters": {}
+        }
+      },
+      "roblox_suspicious_udim2_new": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "roblox_suspicious_udim2_new",
+          "parameters": {}
+        }
+      },
+      "implicit_any_local": {
+        "enabled": false,
+        "severity": "Warning",
+        "settings": {
+          "rule": "implicit_any_local",
+          "parameters": {}
+        }
+      },
+      "implicit_any_parameter": {
+        "enabled": false,
+        "severity": "Warning",
+        "settings": {
+          "rule": "implicit_any_parameter",
+          "parameters": {}
+        }
+      },
+      "and_or_conditional": {
+        "enabled": false,
+        "severity": "Warning",
+        "settings": {
+          "rule": "and_or_conditional",
+          "parameters": {}
+        }
+      },
+      "collapsible_if": {
+        "enabled": false,
+        "severity": "Warning",
+        "settings": {
+          "rule": "collapsible_if",
+          "parameters": {}
+        }
+      },
+      "else_after_return": {
+        "enabled": false,
+        "severity": "Warning",
+        "settings": {
+          "rule": "else_after_return",
+          "parameters": {}
+        }
+      },
+      "if_expression_assignment": {
+        "enabled": false,
+        "severity": "Warning",
+        "settings": {
+          "rule": "if_expression_assignment",
+          "parameters": {}
+        }
+      },
+      "negated_condition": {
+        "enabled": false,
+        "severity": "Warning",
+        "settings": {
+          "rule": "negated_condition",
+          "parameters": {}
+        }
+      },
+      "non_const_require": {
+        "enabled": false,
+        "severity": "Warning",
+        "settings": {
+          "rule": "non_const_require",
+          "parameters": {}
+        }
+      },
+      "parenthesized_conditions": {
+        "enabled": false,
+        "severity": "Warning",
+        "settings": {
+          "rule": "parenthesized_conditions",
+          "parameters": {}
+        }
+      },
+      "global_usage": {
+        "enabled": false,
+        "severity": "Warning",
+        "settings": {
+          "rule": "global_usage",
+          "parameters": {}
+        }
+      },
+      "type_check_inside_call": {
+        "enabled": false,
+        "severity": "Warning",
+        "settings": {
+          "rule": "type_check_inside_call",
+          "parameters": {}
+        }
+      },
+      "loop_invariant_call": {
+        "enabled": false,
+        "severity": "Warning",
+        "settings": {
+          "rule": "loop_invariant_call",
+          "parameters": {}
+        }
+      },
+      "manual_table_clone": {
+        "enabled": false,
+        "severity": "Warning",
+        "settings": {
+          "rule": "manual_table_clone",
+          "parameters": {}
+        }
+      },
+      "string_concat_in_loop": {
+        "enabled": false,
+        "severity": "Warning",
+        "settings": {
+          "rule": "string_concat_in_loop",
+          "parameters": {}
+        }
+      },
+      "unused_variable": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "unused_variable",
+          "parameters": {
+            "parameters": false,
+            "loop_variables": false,
+            "ignore_pattern": "^_"
+          }
+        }
+      },
+      "prefer_const": {
+        "enabled": false,
+        "severity": "Warning",
+        "settings": {
+          "rule": "prefer_const",
+          "parameters": {
+            "mutated_tables_stay_local": false
+          }
+        }
+      },
+      "deprecated": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "deprecated",
+          "parameters": {
+            "paths": {},
+            "ambiguous_methods": false
+          }
+        }
+      },
+      "restricted_globals": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "restricted_globals",
+          "parameters": {
+            "names": {}
+          }
+        }
+      },
+      "restricted_module_paths": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "restricted_module_paths",
+          "parameters": {
+            "paths": {}
+          }
+        }
+      },
+      "UnknownGlobal": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "UnknownGlobal",
+          "parameters": {}
+        }
+      },
+      "DeprecatedGlobal": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "DeprecatedGlobal",
+          "parameters": {}
+        }
+      },
+      "GlobalUsedAsLocal": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "GlobalUsedAsLocal",
+          "parameters": {}
+        }
+      },
+      "LocalShadow": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "LocalShadow",
+          "parameters": {}
+        }
+      },
+      "SameLineStatement": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "SameLineStatement",
+          "parameters": {}
+        }
+      },
+      "MultiLineStatement": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "MultiLineStatement",
+          "parameters": {}
+        }
+      },
+      "LocalUnused": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "LocalUnused",
+          "parameters": {}
+        }
+      },
+      "FunctionUnused": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "FunctionUnused",
+          "parameters": {}
+        }
+      },
+      "ImportUnused": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "ImportUnused",
+          "parameters": {}
+        }
+      },
+      "BuiltinGlobalWrite": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "BuiltinGlobalWrite",
+          "parameters": {}
+        }
+      },
+      "PlaceholderRead": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "PlaceholderRead",
+          "parameters": {}
+        }
+      },
+      "UnreachableCode": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "UnreachableCode",
+          "parameters": {}
+        }
+      },
+      "UnknownType": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "UnknownType",
+          "parameters": {}
+        }
+      },
+      "ForRange": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "ForRange",
+          "parameters": {}
+        }
+      },
+      "UnbalancedAssignment": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "UnbalancedAssignment",
+          "parameters": {}
+        }
+      },
+      "ImplicitReturn": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "ImplicitReturn",
+          "parameters": {}
+        }
+      },
+      "DuplicateLocal": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "DuplicateLocal",
+          "parameters": {}
+        }
+      },
+      "FormatString": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "FormatString",
+          "parameters": {}
+        }
+      },
+      "TableLiteral": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "TableLiteral",
+          "parameters": {}
+        }
+      },
+      "UninitializedLocal": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "UninitializedLocal",
+          "parameters": {}
+        }
+      },
+      "DuplicateFunction": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "DuplicateFunction",
+          "parameters": {}
+        }
+      },
+      "DeprecatedApi": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "DeprecatedApi",
+          "parameters": {}
+        }
+      },
+      "TableOperations": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "TableOperations",
+          "parameters": {}
+        }
+      },
+      "DuplicateCondition": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "DuplicateCondition",
+          "parameters": {}
+        }
+      },
+      "MisleadingAndOr": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "MisleadingAndOr",
+          "parameters": {}
+        }
+      },
+      "CommentDirective": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "CommentDirective",
+          "parameters": {}
+        }
+      },
+      "IntegerParsing": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "IntegerParsing",
+          "parameters": {}
+        }
+      },
+      "ComparisonPrecedence": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "ComparisonPrecedence",
+          "parameters": {}
+        }
+      },
+      "RedundantNativeAttribute": {
+        "enabled": true,
+        "severity": "Warning",
+        "settings": {
+          "rule": "RedundantNativeAttribute",
+          "parameters": {}
+        }
+      }
+    },
+    "globals": [],
+    "roblox": false
+  },
+  "language": {
+    "flags": {},
+    "declaration_syntax": true
+  },
+  "environment": {
+    "groups": [],
+    "security": "none",
+    "globals": [],
+    "roblox": false,
+    "roblox_explicit": false,
+    "asset_directory": null,
+    "capabilities": null
+  },
+  "editing": {
+    "format_on_save": false,
+    "fix_on_save": false,
+    "diagnostic_scope": "open_files",
+    "completion_snippets": true,
+    "imports_enabled": true,
+    "import_require": "string",
+    "import_binding": "const",
     "hints": {
       "variable_types": false,
       "parameter_names": false,
@@ -72,7 +615,41 @@
       "hide_obvious": true
     }
   },
-  "environment": [],
-  "luau": { "flags": {} },
-  "roblox": { "security": "none" }
+  "checking": "nonstrict",
+  "type_errors": true,
+  "selection": {
+    "include": null,
+    "exclude": null,
+    "override_exclusions": false,
+    "checking": {
+      "include": null,
+      "exclude": null,
+      "override_exclusions": false
+    },
+    "formatting": {
+      "include": null,
+      "exclude": null,
+      "override_exclusions": false
+    },
+    "linting": {
+      "include": null,
+      "exclude": null,
+      "override_exclusions": false
+    },
+    "index": {
+      "include": null,
+      "exclude": null,
+      "override_exclusions": false
+    },
+    "imports": {
+      "include": null,
+      "exclude": null,
+      "override_exclusions": false
+    }
+  },
+  "resolution": {
+    "aliases": {},
+    "sourcemaps": [],
+    "sourcemaps_explicit": false
+  }
 }

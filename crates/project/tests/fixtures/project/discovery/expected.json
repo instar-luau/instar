@@ -1,6 +1,6 @@
 {
-  "/configuration/roblox/enabled": true,
-  "/configuration/roblox/sourcemaps": [
+  "/settings/environment/roblox": true,
+  "/settings/resolution/sourcemaps": [
     "$ROOT/child/sourcemap.json"
   ]
 }

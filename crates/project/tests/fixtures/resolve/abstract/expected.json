@@ -54,9 +54,15 @@
     }
   },
   {
-    "error": "$ROOT/caller.luau: require \"./package/init\": module path not found: $ROOT/package/init"
+    "module": {
+      "path": "$ROOT/package",
+      "source": "$ROOT/package/init.luau"
+    }
   },
   {
-    "error": "$ROOT/caller.luau: require \"./package/child/init\": module path not found: $ROOT/package/child/init"
+    "module": {
+      "path": "$ROOT/package/child",
+      "source": "$ROOT/package/child/init.lua"
+    }
   }
 ]

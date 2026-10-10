@@ -1,6 +1,1 @@
-include = ["root/**"]
-exclude = ["generated/**"]
-[format]
-include = ["formatted/**"]
-[editor.imports]
-exclude = ["private/**"]
+selection = { "include" = ["root/**"], "exclude" = ["generated/**"], "formatting" = { "include" = ["formatted/**"] }, "imports" = { "exclude" = ["private/**"] } }

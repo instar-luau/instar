@@ -1,1 +1,1 @@
-cannot coexist
+instar.toml and instar.luau are competing definitions

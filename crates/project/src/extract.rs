@@ -1,21 +1,15 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    io,
-    time::Instant,
+use std::{collections::BTreeMap, io};
+
+use instar_luau::{
+    ImportIdentity, ImportRequest, ImportSite, InstancePath, InstanceRoot, InstanceStep,
 };
 
-use instar_analysis::Options;
-use instar_syntax::{bindings::Bindings, literal};
+use instar_shared::{Completion, Location, Options, SourceSnapshot, Span};
+use instar_syntax::{BindingResult, bindings, literal};
 
-use vermis::{
+use instar_syntax::{
     token::{Keyword, Symbol, TokenKind},
     tree::{NodeIndex, NodeKind, NodeList, Tree},
-};
-
-use crate::{
-    graph::{Problem, Site},
-    resolve::{Request, Root, Step},
-    source::Failure,
 };
 
 #[derive(Clone)]
@@ -24,16 +18,16 @@ enum Value {
     Loader(bool),
     String(String),
     Boolean(bool),
-    Instance(Root, Vec<Step>),
+    Instance(InstanceRoot, Vec<InstanceStep>),
 }
 
 struct Extractor<'tree, 'source> {
     tree: &'tree Tree<'source>,
-    operation: Option<&'tree (Options, Instant)>,
-    bindings: Bindings,
+    operation: &'tree Options,
+    snapshot: &'tree SourceSnapshot,
+    bindings: BindingResult,
     values: BTreeMap<usize, Value>,
-    revision: u64,
-    sites: Vec<Site>,
+    sites: Vec<ImportSite>,
 }
 
 impl Extractor<'_, '_> {
@@ -68,9 +62,9 @@ impl Extractor<'_, '_> {
         }
 
         match name.as_str() {
-            "script" => Value::Instance(Root::Script, Vec::new()),
-            "game" => Value::Instance(Root::Game, Vec::new()),
-            "workspace" => Value::Instance(Root::Workspace, Vec::new()),
+            "script" => Value::Instance(InstanceRoot::Script, Vec::new()),
+            "game" => Value::Instance(InstanceRoot::Game, Vec::new()),
+            "workspace" => Value::Instance(InstanceRoot::Workspace, Vec::new()),
             _ => Value::Other,
         }
     }
@@ -140,9 +134,9 @@ impl Extractor<'_, '_> {
                 };
 
                 let step = match (self.name(*method).as_str(), arguments.len()) {
-                    ("GetService", 1) => Step::Service(name),
+                    ("GetService", 1) => InstanceStep::Service(name),
 
-                    ("WaitForChild", 1 | 2) | ("FindFirstChild", 1) => Step::Child {
+                    ("WaitForChild", 1 | 2) | ("FindFirstChild", 1) => InstanceStep::Child {
                         name,
                         recursive: false,
                     },
@@ -152,7 +146,7 @@ impl Extractor<'_, '_> {
                             return Value::Other;
                         };
 
-                        Step::Child { name, recursive }
+                        InstanceStep::Child { name, recursive }
                     }
 
                     _ => return Value::Other,
@@ -173,9 +167,9 @@ impl Extractor<'_, '_> {
         };
 
         steps.push(if name == "Parent" {
-            Step::Parent
+            InstanceStep::Parent
         } else {
-            Step::Field(name.to_owned())
+            InstanceStep::Field(name.to_owned())
         });
 
         Value::Instance(root, steps)
@@ -232,34 +226,37 @@ impl Extractor<'_, '_> {
 
             let request = if stable && values.len() == 1 {
                 match self.value(argument) {
-                    Value::String(value) => Some(Request::String(value)),
-                    Value::Instance(root, steps) => Some(Request::Instance { root, steps }),
-                    _ => None,
+                    Value::String(value) => ImportRequest::Static(value),
+
+                    Value::Instance(root, steps) => {
+                        ImportRequest::Instance(InstancePath { root, steps })
+                    }
+
+                    _ => ImportRequest::Nonconstant,
                 }
             } else {
-                None
+                ImportRequest::Nonconstant
             };
-
-            let failure = request.is_none().then(|| Failure {
-                kind: io::ErrorKind::InvalidData,
-                message: if values.len() == 1 {
-                    "require target is not a statically known string or instance"
-                } else {
-                    "require expects one argument"
-                }
-                .to_owned(),
-            });
 
             let call = self.tree.node(node).span;
 
-            self.sites.push(Site {
-                revision: self.revision,
-                range: [range.start, range.end],
-                call: [call.start, call.end],
+            self.sites.push(ImportSite {
+                identity: ImportIdentity(node.get() as u64),
+                call: Location {
+                    source: self.snapshot.version,
+                    span: Span {
+                        start: call.start,
+                        end: call.end,
+                    },
+                },
+                argument: Location {
+                    source: self.snapshot.version,
+                    span: Span {
+                        start: range.start,
+                        end: range.end,
+                    },
+                },
                 request,
-                target: None,
-                failure,
-                inputs: BTreeSet::new(),
             });
         }
 
@@ -269,10 +266,7 @@ impl Extractor<'_, '_> {
     }
 
     fn visit(&mut self, node: NodeIndex) {
-        if self
-            .operation
-            .is_some_and(|(options, started)| options.interrupted(*started).is_some())
-        {
+        if self.operation.interrupted().is_some() {
             return;
         }
 
@@ -303,50 +297,28 @@ impl Extractor<'_, '_> {
 }
 
 pub(crate) fn extract(
-    source: &str,
-    revision: u64,
-    operation: Option<&(Options, Instant)>,
-) -> io::Result<(Vec<Site>, Vec<Problem>)> {
-    if let Some((options, started)) = operation {
-        options.check(*started)?;
-    }
+    tree: &instar_syntax::Tree<'_>,
+    options: &Options,
+) -> io::Result<Vec<ImportSite>> {
+    options.check()?;
+    let bindings = bindings(tree, options);
 
-    let tree = vermis::parse(source.as_bytes());
-
-    let bindings = Bindings::analyze(
-        &tree,
-        operation.map(|(options, started)| (options, *started)),
-    );
-
-    if let Some(reason) = bindings.interruption {
-        return Err(reason.error());
+    if bindings.completion != Completion::Complete {
+        return Err(bindings.completion.error());
     }
 
     let mut extractor = Extractor {
-        tree: &tree,
-        operation,
+        tree: tree.syntax(),
+        operation: options,
+        snapshot: tree.snapshot(),
         bindings,
         values: BTreeMap::new(),
-        revision,
         sites: Vec::new(),
     };
 
-    extractor.visit(tree.root);
+    extractor.visit(tree.syntax().root);
+    options.check()?;
+    extractor.sites.sort_by_key(|site| site.argument.span.start);
 
-    if let Some((options, started)) = operation {
-        options.check(*started)?;
-    }
-
-    extractor.sites.sort_by_key(|site| site.range);
-
-    let problems = tree
-        .diagnostics
-        .iter()
-        .map(|diagnostic| Problem {
-            range: [diagnostic.span.start, diagnostic.span.end],
-            message: diagnostic.message.to_owned(),
-        })
-        .collect();
-
-    Ok((extractor.sites, problems))
+    Ok(extractor.sites)
 }

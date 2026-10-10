@@ -1,2 +1,1 @@
-[lint.UnknownGlobal]
-level = "warn"
+linting = { "rules" = { "MissingInstarRule" = { "enabled" = true, "severity" = "Warning", "settings" = { "rule" = "MissingInstarRule", "parameters" = {  } } } } }

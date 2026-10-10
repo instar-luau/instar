@@ -1,2 +1,1 @@
-[format.requires]
-groups = [{ name = "services", patterns = [""] }]
+formatting = { "requires" = { "groups" = [{ "name" = "services", "patterns" = [""] }] } }

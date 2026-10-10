@@ -1,2 +1,1 @@
-[luau.flags]
-MissingInstarFlag=true
+language = { "flags" = { "MissingInstarFlag" = true } }

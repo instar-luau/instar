@@ -1,5 +1,5 @@
 [
   {
-    "error": "$ROOT/caller.luau: require \"@named\": $ROOT/.config.luau: Invalid alias @named"
+    "error": "$ROOT/caller.luau: require \"@named\": $ROOT/instar.luau: invalid module alias name @named"
   }
 ]

@@ -1,15 +1,15 @@
 [
   {
-    "error": "$ROOT/caller.luau: require \"./.config\": .config.luau is not an importable module"
+    "error": "$ROOT/caller.luau: require \"./instar\": instar.luau is not an importable module"
   },
   {
-    "error": "$ROOT/caller.luau: require \"./.config.luau\": .config.luau is not an importable module"
+    "error": "$ROOT/caller.luau: require \"./instar.luau\": instar.luau is not an importable module"
   },
   {
-    "error": "$ROOT/caller.luau: require \"@configuration\": .config.luau is not an importable module"
+    "error": "$ROOT/caller.luau: require \"@configuration\": instar.luau is not an importable module"
   },
   {
-    "error": "$ROOT/.config.luau: require \"./caller\": .config.luau is not an importable module"
+    "error": "$ROOT/instar.luau: require \"./caller\": instar.luau is not an importable module"
   },
   {
     "module": {

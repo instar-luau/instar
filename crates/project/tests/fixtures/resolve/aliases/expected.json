@@ -66,18 +66,15 @@
     }
   },
   {
-    "error": "$ROOT/child/caller.luau: require \"@empty\": alias @empty target must be nonempty and contain no NUL"
-  },
-  {
     "error": "$ROOT/child/caller.luau: require \"@missing\": unknown alias @missing"
   },
   {
-    "error": "$ROOT/child/caller.luau: require \"@\": invalid alias name @"
+    "error": "$ROOT/child/caller.luau: require \"@\": invalid module alias name"
   },
   {
-    "error": "$ROOT/child/caller.luau: require \"@bad!\": invalid alias name @bad!"
+    "error": "$ROOT/child/caller.luau: require \"@bad!\": invalid module alias name"
   },
   {
-    "error": "$ROOT/child/caller.luau: require \"@ümlaut\": invalid alias name @ümlaut"
+    "error": "$ROOT/child/caller.luau: require \"@ümlaut\": invalid module alias name"
   }
 ]

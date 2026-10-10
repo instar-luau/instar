@@ -1,4 +1,5 @@
 mod checking;
+mod configuration;
 mod discovery;
 mod environment;
 mod lifecycle;

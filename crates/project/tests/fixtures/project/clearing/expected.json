@@ -1,5 +1,5 @@
 {
-  "/configuration/environment": [],
-  "/configuration/roblox/sourcemaps": [],
-  "/configuration/roblox/enabled": false
+  "/settings/environment/groups": [],
+  "/settings/resolution/sourcemaps": [],
+  "/settings/environment/roblox": false
 }

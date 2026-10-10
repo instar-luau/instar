@@ -1,2 +1,1 @@
-[lint.unused_variable]
-level='info'
+linting = { "rules" = { "unused_variable" = { "enabled" = true, "severity" = "Information", "settings" = { "rule" = "unused_variable", "parameters" = { "parameters" = false, "loop_variables" = false, "ignore_pattern" = "^_" } } } } }

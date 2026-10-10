@@ -3,9 +3,8 @@ use std::{
     io,
 };
 
-use instar_analysis::error::invalid;
-use instar_syntax::literal;
-use vermis::tree::NodeKind;
+use instar_shared::{Completion, Options, SourceSnapshot, error::invalid};
+use instar_syntax::{SyntaxSettings, literal, parse, tree::NodeKind};
 
 pub(crate) struct Members(BTreeMap<String, Class>);
 
@@ -16,8 +15,16 @@ struct Class {
 }
 
 impl Members {
-    pub(super) fn parse(source: &str) -> io::Result<Self> {
-        let tree = vermis::parse(source.as_bytes());
+    pub(crate) fn parse(source: &SourceSnapshot, options: &Options) -> io::Result<Self> {
+        options.check()?;
+        let syntax = parse(source, &SyntaxSettings::default(), options);
+        options.check()?;
+
+        if syntax.completion != Completion::Complete {
+            return Err(invalid("unsupported Roblox declaration syntax"));
+        }
+
+        let tree = syntax.tree.syntax();
 
         if let Some(diagnostic) = tree.diagnostics.first() {
             return Err(invalid(format!(
@@ -69,7 +76,7 @@ impl Members {
                 };
 
                 let name = if matches!(tree.node(key).kind, NodeKind::String { .. }) {
-                    literal::string(&tree, key)
+                    literal::string(tree, key)
                         .ok_or_else(|| invalid("invalid Roblox member name"))?
                 } else {
                     String::from_utf8_lossy(tree.text(key)).into_owned()
@@ -103,7 +110,14 @@ impl Members {
     ) -> io::Result<bool> {
         let mut visited = BTreeSet::new();
 
-        while let Some(declaration) = self.0.get(class) {
+        loop {
+            let declaration = self.0.get(class).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!("Roblox member precedence is unavailable for class {class}"),
+                )
+            })?;
+
             if !visited.insert(class) {
                 return Err(invalid("cyclic Roblox class inheritance"));
             }
@@ -113,12 +127,10 @@ impl Members {
             }
 
             let Some(parent) = &declaration.parent else {
-                break;
+                return Ok(false);
             };
 
             class = parent;
         }
-
-        Ok(false)
     }
 }

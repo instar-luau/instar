@@ -1,11 +1,17 @@
 //! Synthetic configuration discovery and inheritance fixtures.
-use std::{error::Error, fs, io, path::Path, slice, time::Duration};
 
-use instar_analysis::selection;
-use instar_core::project::Project;
+use std::{collections::BTreeSet, error::Error, fs, io, path::Path, sync::Arc};
+
+use globset::GlobBuilder;
+
+use instar_project::{
+    CheckOverrides, CheckRequest, Input, Invocation, OperationOverrides, Project, SettingsRequest,
+    SourceOrigin,
+};
+
 use serde_json::{Map, Value, json};
 
-use crate::support::{Directory, copy, normalize};
+use crate::support::{Directory, complete, copy, normalize, options};
 
 #[test]
 fn configuration_projects() -> Result<(), Box<dyn Error>> {
@@ -27,27 +33,71 @@ fn configuration_projects() -> Result<(), Box<dyn Error>> {
             Err(error) => return Err(error.into()),
         };
 
-        let mut view = Project::new(Duration::from_secs(2));
-        let result = view.configuration(&directory.path().join(relative.trim()));
+        let project = Project::new(vec![directory.path().to_path_buf()]);
+
+        let result = complete(project.settings(
+            SettingsRequest {
+                snapshot: None,
+                invocation: Invocation {
+                    inputs: vec![Input::Stdin {
+                        text: Arc::from("return 1"),
+                        context: Some(directory.path().join(relative.trim()).join("entry.luau")),
+                    }],
+                    ..Invocation::default()
+                },
+                overrides: OperationOverrides::Check(CheckOverrides::default()),
+            },
+            options(),
+        ));
 
         if case.join("error.txt").exists() {
             let expected = fs::read_to_string(case.join("error.txt"))?;
-            let error = result.err().expect("invalid fixture must fail").to_string();
+            let failure = result.expect_err("invalid fixture must fail");
+            let snapshot = project.snapshot();
 
             assert!(
-                error.contains(expected.trim()),
-                "{}: {error}",
-                case.display()
-            );
-
-            assert!(
-                error.contains(&directory.path().to_string_lossy().to_string()),
-                "{}: error must name its origin: {error}",
+                failure.diagnostics.iter().any(|diagnostic| {
+                    diagnostic.message.contains(expected.trim())
+                        && snapshot
+                            .origin(diagnostic.primary.source.identity)
+                            .and_then(SourceOrigin::path)
+                            .is_some_and(|path| path.starts_with(directory.path()))
+                }),
+                "{}: error must retain its cause and origin: {failure:?}",
                 case.display()
             );
         } else {
-            let project = result?;
-            let mut output = json!({"configuration": project.configuration, "native": project.native.snapshot()?});
+            let report = result?;
+            assert_eq!(report.settings.len(), 1, "{}", case.display());
+            let effective = &report.settings[0];
+            let settings = &effective.settings;
+            let common = &settings.selection;
+            let mut selections = Map::new();
+
+            for (name, policy) in [
+                ("checking", &common.checking),
+                ("formatting", &common.formatting),
+                ("linting", &common.linting),
+                ("index", &common.index),
+                ("imports", &common.imports),
+            ] {
+                selections.insert(
+                    name.to_owned(),
+                    json!({
+                        "include": policy.include.as_ref().or(common.include.as_ref()),
+                        "exclude": policy.exclude.as_ref().or(common.exclude.as_ref()),
+                    }),
+                );
+            }
+
+            let origins = effective
+                .origins
+                .iter()
+                .map(|origin| (origin.field.clone(), json!(origin.base)))
+                .collect::<Map<_, _>>();
+
+            let mut output =
+                json!({ "settings": settings, "selection": selections, "origins": origins });
 
             normalize(
                 &directory.path().to_string_lossy().replace('\\', "/"),
@@ -75,42 +125,104 @@ fn configuration_projects() -> Result<(), Box<dyn Error>> {
 fn file_patterns_share_directory_and_wildcard_semantics() -> Result<(), Box<dyn Error>> {
     let fixture: Value = serde_json::from_str(include_str!("../fixtures/selection/cases.json"))?;
     let directory = Directory::new(None)?;
+    let project = Project::new(vec![directory.path().to_path_buf()]);
+    let sources = fixture["sources"].as_array().expect("sources");
 
     for case in fixture["cases"].as_array().expect("matching cases") {
-        let pattern =
-            selection::anchor(directory.path(), case["pattern"].as_str().expect("pattern"))?;
+        let configuration = format!("selection = {{ include = [{}] }}", case["pattern"]);
+        directory.file("instar.toml", &configuration)?;
 
-        let mut found = Vec::new();
+        let report = complete(
+            project.check(
+                CheckRequest {
+                    invocation: Invocation {
+                        inputs: sources
+                            .iter()
+                            .map(|source| Input::Stdin {
+                                text: Arc::from("return 1"),
+                                context: Some(
+                                    directory.path().join(source.as_str().expect("source")),
+                                ),
+                            })
+                            .collect(),
+                        ..Invocation::default()
+                    },
+                    ..CheckRequest::default()
+                },
+                options(),
+            ),
+        )?;
 
-        for source in fixture["sources"].as_array().expect("sources") {
-            let source = source.as_str().expect("source");
+        let selected = report
+            .selection
+            .iter()
+            .filter(|decision| decision.selected)
+            .filter_map(|decision| decision.source)
+            .map(|identity| {
+                report
+                    .snapshot
+                    .origin(identity)
+                    .and_then(SourceOrigin::path)
+                    .expect("selection context")
+                    .to_path_buf()
+            })
+            .collect::<BTreeSet<_>>();
 
-            if selection::matches(
-                &directory.path().join(source),
-                Some(slice::from_ref(&pattern)),
-                false,
-            )? {
-                found.push(source);
-            }
-        }
+        let found = sources
+            .iter()
+            .filter_map(|source| {
+                let source = source.as_str().expect("source");
+
+                selected
+                    .contains(&directory.path().join(source))
+                    .then_some(source)
+            })
+            .collect::<Vec<_>>();
 
         assert_eq!(json!(found), case["expected"], "{case}");
     }
 
     for pattern in fixture["invalid"].as_array().expect("invalid patterns") {
-        let patterns = vec![pattern.as_str().expect("pattern").to_owned()];
+        directory.file(
+            "instar.toml",
+            &format!("selection = {{ include = [{pattern}] }}"),
+        )?;
 
         assert!(
-            selection::validate(Some(&patterns), "selection").is_err(),
+            complete(project.settings(
+                SettingsRequest {
+                    snapshot: None,
+                    invocation: Invocation {
+                        inputs: vec![Input::Stdin {
+                            text: Arc::from("return 1"),
+                            context: Some(directory.path().join("entry.luau"))
+                        }],
+                        ..Invocation::default()
+                    },
+                    overrides: OperationOverrides::Check(CheckOverrides::default()),
+                },
+                options()
+            ))
+            .is_err(),
             "{pattern}"
         );
     }
 
-    assert!(selection::string("@vendor/item", "@vendor/*")?);
-    assert!(!selection::string("@vendor/nested/item", "@vendor/*")?);
-    assert!(selection::string("@vendor/nested/item", "@vendor/**")?);
-    assert!(!selection::string("./nested/item", "item")?);
-    assert!(selection::string("./item", "./**/item")?);
+    for (source, pattern, expected) in [
+        ("@vendor/item", "@vendor/*", true),
+        ("@vendor/nested/item", "@vendor/*", false),
+        ("@vendor/nested/item", "@vendor/**", true),
+        ("./nested/item", "item", false),
+        ("./item", "./**/item", true),
+    ] {
+        let matcher = GlobBuilder::new(pattern)
+            .literal_separator(true)
+            .backslash_escape(false)
+            .build()?
+            .compile_matcher();
+
+        assert_eq!(matcher.is_match(source), expected, "{source}: {pattern}");
+    }
 
     Ok(())
 }

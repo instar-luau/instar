@@ -1,2 +1,1 @@
-[format.tables]
-wrap = "preserve"
+formatting = { "tables" = { "wrap" = "preserve" } }

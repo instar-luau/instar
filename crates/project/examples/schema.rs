@@ -5,11 +5,11 @@ use std::{
     io::{self, Write},
 };
 
-use instar_core::configuration;
+use instar_project::Project;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut output = io::stdout().lock();
-    serde_json::to_writer_pretty(&mut output, &configuration::schema())?;
+    serde_json::to_writer_pretty(&mut output, &Project::configuration_schema())?;
     writeln!(output)?;
 
     Ok(())

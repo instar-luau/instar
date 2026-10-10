@@ -1,22 +1,22 @@
 {
-  "/configuration/check/include": [
+  "/selection/checking/include": [
     "$ROOT/child/child/**"
   ],
-  "/configuration/check/exclude": [],
-  "/configuration/format/include": [
+  "/selection/checking/exclude": [],
+  "/selection/formatting/include": [
     "$ROOT/formatted/**"
   ],
-  "/configuration/format/exclude": [
+  "/selection/formatting/exclude": [
     "$ROOT/generated/**"
   ],
-  "/configuration/lint/include": [
+  "/selection/linting/include": [
     "$ROOT/child/child/**"
   ],
-  "/configuration/editor/index/include": [],
-  "/configuration/editor/imports/include": [
+  "/selection/index/include": [],
+  "/selection/imports/include": [
     "$ROOT/child/child/**"
   ],
-  "/configuration/editor/imports/exclude": [
+  "/selection/imports/exclude": [
     "$ROOT/private/**"
   ]
 }

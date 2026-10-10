@@ -1,6 +1,1 @@
-[lint.restricted_module_paths]
-level='deny'
-[lint.restricted_module_paths.paths]
-'./dependency'='blocked'
-[lint.non_const_require]
-level='warn'
+linting = { "rules" = { "restricted_module_paths" = { "enabled" = true, "severity" = "Error", "settings" = { "rule" = "restricted_module_paths", "parameters" = { "paths" = { "./dependency" = "blocked" } } } }, "non_const_require" = { "enabled" = true, "severity" = "Warning", "settings" = { "rule" = "non_const_require", "parameters" = {  } } } } }

@@ -1,2 +1,1 @@
-[check]
-mode = "strict"
+checking = { mode = "missing" }

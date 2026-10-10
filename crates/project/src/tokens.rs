@@ -1,27 +1,17 @@
 //! Source token classes combined with native binding and type identities.
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    io,
-    time::Instant,
-};
+use std::{collections::BTreeMap, io};
 
-use instar_analysis::{Location, Options, error::invalid};
-use instar_bridge::frontend::Role;
+use instar_shared::{Options, error::invalid};
 
-use vermis::{
-    token::{Span, Symbol, TokenKind},
+use instar_syntax::{
+    token::{Span, Symbol, TokenKind as SyntaxTokenKind},
     tree::{NodeKind, Tree},
-};
-
-use crate::{
-    analysis::{Entry, Origin},
-    project::Project,
 };
 
 /// Language role of a source token.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind {
+pub enum TokenKind {
     /// Source comment.
     Comment,
 
@@ -64,7 +54,7 @@ pub enum Kind {
 
 /// Additional semantic property of a source occurrence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Modifier {
+pub enum TokenModifier {
     /// Declares a binding or member.
     Declaration,
 
@@ -85,138 +75,103 @@ pub struct Token {
     pub range: [usize; 2],
 
     /// Language role.
-    pub kind: Kind,
+    pub kind: TokenKind,
 
     /// Additional native properties of the occurrence.
-    pub modifiers: Vec<Modifier>,
+    pub modifiers: Vec<TokenModifier>,
 }
 
-/// Classified tokens from one exact source and module context.
-pub struct Tokens {
-    /// Whole-source location anchoring all token ranges.
-    pub location: Location<Origin>,
-
-    /// Tokens in source order.
-    pub entries: Vec<Token>,
-}
-
-impl Project {
-    /// Classifies lexical tokens and native references in an explicit module context.
-    ///
-    /// # Errors
-    /// Returns source, configuration, semantic preparation, source agreement, or interruption failures.
-    pub fn tokens(&mut self, entry: &Entry, options: &Options) -> io::Result<Tokens> {
-        let started = Instant::now();
-
-        self.during(
-            |project| {
-                let source = project.source(&entry.source)?;
-                let tree = vermis::parse(source.text.as_bytes());
-                let mut tokens = syntax(&tree, options, started)?;
-
-                let (origin, references) =
-                    project.reference_index(entry, &mut BTreeSet::new(), options, started)?;
-
-                for reference in references {
-                    options.check(started)?;
-
-                    if reference.location.module != origin || reference.literal {
-                        continue;
-                    }
-
-                    let range = reference.location.range;
-
-                    if reference.location.revision != source.revision
-                        || source.text.get(range[0]..range[1]) != Some(reference.name.as_str())
-                    {
-                        return Err(invalid("semantic token source revision mismatch"));
-                    }
-
-                    let kind = match reference.classification.role {
-                        Role::Type => Kind::Type,
-                        Role::Parameter => Kind::Parameter,
-                        Role::Method => Kind::Method,
-                        Role::Property => Kind::Property,
-                        Role::Function => Kind::Function,
-                        Role::Variable => Kind::Variable,
-                    };
-
-                    let modifiers = [
-                        (Modifier::Declaration, reference.declaration),
-                        (
-                            Modifier::Modification,
-                            reference.write && !reference.declaration,
-                        ),
-                        (Modifier::DefaultLibrary, reference.symbol.is_some()),
-                        (Modifier::Deprecated, reference.classification.deprecated),
-                    ]
-                    .into_iter()
-                    .filter_map(|(modifier, present)| present.then_some(modifier))
-                    .collect();
-
-                    tokens.insert(
-                        range,
-                        Token {
-                            range,
-                            kind,
-                            modifiers,
-                        },
-                    );
-                }
-
-                let entries = tokens.into_values().collect::<Vec<_>>();
-
-                if entries
-                    .windows(2)
-                    .any(|pair| pair[0].range[1] > pair[1].range[0])
-                {
-                    return Err(invalid("semantic token ranges overlap"));
-                }
-
-                options.check(started)?;
-
-                Ok(Tokens {
-                    location: Location {
-                        module: origin,
-                        revision: source.revision,
-                        range: [0, source.text.len()],
-                    },
-                    entries,
-                })
-            },
-            options,
-        )
-    }
-}
-
-fn syntax(
-    tree: &Tree<'_>,
+pub(crate) fn tokens(
+    source: &instar_shared::SourceSnapshot,
+    settings: &instar_syntax::SyntaxSettings,
+    facts: Option<&instar_luau::FactsResult>,
     options: &Options,
-    started: Instant,
-) -> io::Result<BTreeMap<[usize; 2], Token>> {
+) -> io::Result<Vec<Token>> {
+    let parsed = instar_syntax::parse(source, settings, options);
+    let mut tokens = syntax(parsed.tree.syntax(), options)?;
+
+    if let Some(facts) = facts {
+        for occurrence in &facts.facts.occurrences {
+            options.check()?;
+
+            if occurrence.location.source != source.version {
+                continue;
+            }
+
+            let range = [occurrence.location.span.start, occurrence.location.span.end];
+            occurrence.location.validate(source)?;
+
+            let kind = match occurrence.role {
+                instar_luau::OccurrenceRole::Variable => TokenKind::Variable,
+                instar_luau::OccurrenceRole::Parameter => TokenKind::Parameter,
+                instar_luau::OccurrenceRole::Function => TokenKind::Function,
+                instar_luau::OccurrenceRole::Property => TokenKind::Property,
+                instar_luau::OccurrenceRole::Method => TokenKind::Method,
+                instar_luau::OccurrenceRole::Type => TokenKind::Type,
+            };
+
+            let builtin = matches!(&occurrence.targets, instar_shared::Knowledge::Known(targets) if targets.iter().any(|target| matches!(target, instar_luau::SemanticIdentity::Environment { .. })));
+
+            let modifiers = [
+                (TokenModifier::Declaration, occurrence.declaration),
+                (
+                    TokenModifier::Modification,
+                    occurrence.access.writes() && !occurrence.declaration,
+                ),
+                (TokenModifier::DefaultLibrary, builtin),
+                (TokenModifier::Deprecated, occurrence.deprecated),
+            ]
+            .into_iter()
+            .filter_map(|(modifier, present)| present.then_some(modifier))
+            .collect();
+
+            tokens.insert(
+                range,
+                Token {
+                    range,
+                    kind,
+                    modifiers,
+                },
+            );
+        }
+    }
+
+    let tokens = tokens.into_values().collect::<Vec<_>>();
+
+    if tokens
+        .windows(2)
+        .any(|pair| pair[0].range[1] > pair[1].range[0])
+    {
+        return Err(invalid("semantic token ranges overlap"));
+    }
+
+    Ok(tokens)
+}
+
+fn syntax(tree: &Tree<'_>, options: &Options) -> io::Result<BTreeMap<[usize; 2], Token>> {
     let mut tokens = BTreeMap::new();
 
     for token in &tree.tokens {
-        options.check(started)?;
+        options.check()?;
 
         let kind = match token.kind {
-            TokenKind::Comment | TokenKind::BlockComment | TokenKind::MalformedComment => {
-                Kind::Comment
-            }
+            SyntaxTokenKind::Comment
+            | SyntaxTokenKind::BlockComment
+            | SyntaxTokenKind::MalformedComment => TokenKind::Comment,
 
-            TokenKind::Keyword(_) => Kind::Keyword,
+            SyntaxTokenKind::Keyword(_) => TokenKind::Keyword,
 
-            TokenKind::RawString
-            | TokenKind::QuotedString
-            | TokenKind::InterpolatedStringStart
-            | TokenKind::InterpolatedStringMiddle
-            | TokenKind::InterpolatedStringEnd
-            | TokenKind::InterpolatedStringSimple
-            | TokenKind::MalformedString => Kind::String,
+            SyntaxTokenKind::RawString
+            | SyntaxTokenKind::QuotedString
+            | SyntaxTokenKind::InterpolatedStringStart
+            | SyntaxTokenKind::InterpolatedStringMiddle
+            | SyntaxTokenKind::InterpolatedStringEnd
+            | SyntaxTokenKind::InterpolatedStringSimple
+            | SyntaxTokenKind::MalformedString => TokenKind::String,
 
-            TokenKind::Number => Kind::Number,
-            TokenKind::Attribute => Kind::Decorator,
-            TokenKind::Symbol(symbol) if operator(symbol) => Kind::Operator,
+            SyntaxTokenKind::Number => TokenKind::Number,
+            SyntaxTokenKind::Attribute => TokenKind::Decorator,
+            SyntaxTokenKind::Symbol(symbol) if operator(symbol) => TokenKind::Operator,
             _ => continue,
         };
 
@@ -226,7 +181,7 @@ fn syntax(
     let mut pending = vec![tree.root];
 
     while let Some(node) = pending.pop() {
-        options.check(started)?;
+        options.check()?;
 
         match &tree.node(node).kind {
             NodeKind::TypeAlias { keyword, .. }
@@ -236,15 +191,15 @@ fn syntax(
             | NodeKind::Export { keyword, .. }
             | NodeKind::Declaration { keyword, .. }
             | NodeKind::Extends { keyword, .. } => {
-                append(tree.token(*keyword).span, Kind::Keyword, &mut tokens);
+                append(tree.token(*keyword).span, TokenKind::Keyword, &mut tokens);
             }
 
             NodeKind::TypeName { name, .. } => {
-                append(tree.node(*name).span, Kind::Type, &mut tokens);
+                append(tree.node(*name).span, TokenKind::Type, &mut tokens);
             }
 
             NodeKind::Generic { name, .. } | NodeKind::GenericPack { name, .. } => {
-                append(tree.node(*name).span, Kind::TypeParameter, &mut tokens);
+                append(tree.node(*name).span, TokenKind::TypeParameter, &mut tokens);
             }
 
             _ => {}
@@ -256,7 +211,7 @@ fn syntax(
     Ok(tokens)
 }
 
-fn append(span: Span, kind: Kind, tokens: &mut BTreeMap<[usize; 2], Token>) {
+fn append(span: Span, kind: TokenKind, tokens: &mut BTreeMap<[usize; 2], Token>) {
     if span.start == span.end {
         return;
     }

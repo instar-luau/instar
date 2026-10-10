@@ -33,10 +33,13 @@
     "error": "$ROOT/child/caller.luau: require \"//server/target\": require path must start with ./, ../, or @"
   },
   {
-    "error": "$ROOT/child/caller.luau: require \"./sibling.luau\": module path not found: $ROOT/child/sibling.luau"
+    "module": {
+      "path": "$ROOT/child/sibling",
+      "source": "$ROOT/child/sibling.luau"
+    }
   },
   {
-    "error": "$ROOT/child/caller.luau: require \"./\": directory has no module source: $ROOT/child"
+    "error": "$ROOT/child/caller.luau: require \"./\": unresolved module $ROOT/child (consulted $ROOT/child.luau, $ROOT/child.lua, $ROOT/child/init.luau, $ROOT/child/init.lua)"
   },
   {
     "error": "$ROOT/child/caller.luau: require \".\": require path must start with ./, ../, or @"

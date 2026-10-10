@@ -49,10 +49,6 @@
   },
   {
     "source": "child/caller.luau",
-    "request": "@empty"
-  },
-  {
-    "source": "child/caller.luau",
     "request": "@missing"
   },
   {

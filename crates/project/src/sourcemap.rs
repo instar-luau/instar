@@ -4,16 +4,14 @@ use std::{
     collections::BTreeMap,
     io,
     path::{Path, PathBuf},
-    rc::Rc,
+    sync::Arc,
 };
 
-use instar_analysis::error::invalid;
+use instar_luau::{InstanceEnvironment, InstanceRecord};
+use instar_shared::{SourceSnapshot, SourceVersion, error::invalid};
 use serde::Deserialize;
 
-use crate::{
-    resolve::{Identity, Module, module_path},
-    source::{Document, normalize},
-};
+use crate::inputs::normalize;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -38,13 +36,13 @@ struct Node {
 
 pub(crate) struct Map {
     pub(crate) path: PathBuf,
-    revision: u64,
+    pub(crate) version: SourceVersion,
     nodes: Vec<Node>,
     sources: BTreeMap<PathBuf, Vec<usize>>,
 }
 
 impl Map {
-    pub(crate) fn parse(path: &Path, document: &Document) -> io::Result<Rc<Self>> {
+    pub(crate) fn parse(path: &Path, document: &SourceSnapshot) -> io::Result<Arc<Self>> {
         let root: Raw = serde_json::from_str(&document.text)
             .map_err(|error| invalid(format!("{}: {error}", path.display())))?;
 
@@ -54,7 +52,7 @@ impl Map {
 
         let mut map = Self {
             path: path.to_path_buf(),
-            revision: document.revision,
+            version: document.version,
             nodes: Vec::new(),
             sources: BTreeMap::new(),
         };
@@ -118,34 +116,34 @@ impl Map {
             );
         }
 
-        Ok(Rc::new(map))
+        Ok(Arc::new(map))
     }
 
-    pub(crate) fn placements(&self, source: &Path) -> Vec<Identity> {
-        self.sources
-            .get(source)
-            .into_iter()
-            .flatten()
-            .map(|&node| self.identity(node))
-            .collect()
+    pub(crate) fn placements(&self, source: &Path) -> Vec<usize> {
+        self.sources.get(source).cloned().unwrap_or_default()
     }
 
-    pub(crate) fn index(&self, identity: &Identity) -> io::Result<usize> {
-        if let Identity::Instance {
-            map,
-            revision,
-            node,
-        } = identity
-            && map == &self.path
-            && *revision == self.revision
-            && *node < self.nodes.len()
-        {
-            return Ok(*node);
+    pub(crate) fn environment(&self, script: usize) -> InstanceEnvironment {
+        InstanceEnvironment {
+            root: self.identity(0),
+            script: self.identity(script),
+            instances: self
+                .nodes
+                .iter()
+                .enumerate()
+                .map(|(index, node)| InstanceRecord {
+                    identity: self.identity(index),
+                    name: node.name.clone(),
+                    class: node.class.clone(),
+                    parent: node.parent.map(|parent| self.identity(parent)),
+                    children: node
+                        .children
+                        .iter()
+                        .map(|&child| self.identity(child))
+                        .collect(),
+                })
+                .collect(),
         }
-
-        Err(invalid(
-            "instance context no longer belongs to the current sourcemap",
-        ))
     }
 
     pub(crate) fn root(&self) -> io::Result<usize> {
@@ -173,20 +171,6 @@ impl Map {
             .children
             .iter()
             .map(|&child| self.nodes[child].name.as_str())
-    }
-
-    pub(crate) fn field(&self, node: usize, name: &str, member: bool) -> io::Result<usize> {
-        if member {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                format!(
-                    "require target depends on runtime member {}.{name}",
-                    self.class(node)
-                ),
-            ));
-        }
-
-        self.child(node, name, false)
     }
 
     pub(crate) fn child(&self, node: usize, name: &str, recursive: bool) -> io::Result<usize> {
@@ -221,7 +205,7 @@ impl Map {
         unique(&matches, &format!("service {class:?}"))
     }
 
-    pub(crate) fn module(&self, node: usize, requiring: bool) -> io::Result<Module> {
+    pub(crate) fn module_source(&self, node: usize, requiring: bool) -> io::Result<PathBuf> {
         let instance = &self.nodes[node];
 
         if requiring && instance.class != "ModuleScript" {
@@ -249,26 +233,20 @@ impl Map {
             }
         };
 
-        if source
-            .file_name()
-            .is_some_and(|name| name == ".config.luau")
-        {
-            return Err(invalid(".config.luau is not an importable module"));
+        if source.file_name().is_some_and(|name| name == "instar.luau") {
+            return Err(invalid("instar.luau is not an importable module"));
         }
 
-        Ok(Module {
-            identity: self.identity(node),
-            path: module_path(&source),
-            source,
-        })
+        Ok(source)
     }
 
-    fn identity(&self, node: usize) -> Identity {
-        Identity::Instance {
-            map: self.path.clone(),
-            revision: self.revision,
-            node,
-        }
+    fn identity(&self, node: usize) -> String {
+        format!(
+            "{}:{}:{}:{node}",
+            self.path.display(),
+            self.version.identity.get(),
+            self.version.revision
+        )
     }
 }
 

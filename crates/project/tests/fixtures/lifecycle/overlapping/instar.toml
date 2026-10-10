@@ -1,2 +1,1 @@
-[roblox]
-sourcemaps=['one.json','two.json']
+resolution = { "sourcemaps" = ["one.json", "two.json"] }
