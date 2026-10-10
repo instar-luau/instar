@@ -10,6 +10,7 @@ categories.workspace = true
 
 [dependencies]
 instar-shared.workspace = true
+instar-syntax.workspace = true
 instar-luau.workspace = true
 instar-project.workspace = true
 instar-format.workspace = true

@@ -6,6 +6,7 @@ use instar_project::{
 };
 
 use instar_shared::{Completion, Location as DomainLocation, Options, SourceVersion, Span};
+use instar_syntax::literal::quote;
 use serde_json::{Value, json};
 
 use tower_lsp_server::{
@@ -964,16 +965,6 @@ fn kind(candidate: &CompletionCandidate) -> CompletionItemKind {
         CompletionKind::Path if candidate.name.ends_with('/') => CompletionItemKind::Folder,
         CompletionKind::Path => CompletionItemKind::File,
     }
-}
-
-fn quote(text: &str) -> String {
-    format!(
-        "\"{}\"",
-        text.replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace('\n', "\\n")
-            .replace('\r', "\\r")
-    )
 }
 
 fn escape(text: &str) -> String {

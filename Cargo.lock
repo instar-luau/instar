@@ -985,6 +985,7 @@ dependencies = [
  "instar-luau",
  "instar-project",
  "instar-shared",
+ "instar-syntax",
  "serde",
  "serde_json",
  "tempfile",

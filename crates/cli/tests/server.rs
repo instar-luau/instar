@@ -1687,6 +1687,17 @@ fn completion_negotiate_positions_and_member_notation() -> io::Result<()> {
         );
 
         assert_eq!(indexed["insertTextFormat"], Value::Null);
+
+        let controlled = items
+            .iter()
+            .find(|item| item["label"] == "tab\tkey")
+            .expect("control character member");
+
+        assert_eq!(
+            controlled["textEdit"],
+            json!({"range":{"start":{"line":0,"character":character - 1},"end":{"line":0,"character":character}},"newText":"[\"tab\\009key\"]"})
+        );
+
         client.send(&json!({"jsonrpc":"2.0","id":3,"method":"shutdown"}))?;
         assert_eq!(client.receive(3)["result"], Value::Null);
         client.send(&json!({"jsonrpc":"2.0","method":"exit"}))?;

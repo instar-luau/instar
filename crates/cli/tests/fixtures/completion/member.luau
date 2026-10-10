@@ -1,1 +1,1 @@
-local marker = "😀"; local record = {value = 1, ["odd key"] = true}; record.
+local marker = "😀"; local record = {value = 1, ["odd key"] = true, ["tab\tkey"] = 2}; record.
