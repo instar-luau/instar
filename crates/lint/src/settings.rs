@@ -453,8 +453,11 @@ impl RuleSettings {
     pub fn validate(&self) -> io::Result<()> {
         match self {
             Self::UnusedVariable(settings) => {
-                Regex::new(&settings.ignore_pattern)
-                    .map_err(|error| invalid(format!("unused_variable.ignore_pattern: {error}")))?;
+                Regex::new(&settings.ignore_pattern).map_err(|error| {
+                    invalid(format!(
+                        "unused_variable.ignore_pattern: invalid regular expression: {error}"
+                    ))
+                })?;
             }
 
             Self::Deprecated(settings) => validate_map(&settings.paths, true)?,
