@@ -48,27 +48,6 @@ fn relocated_executable_runs_all_workers() -> io::Result<()> {
 }
 
 #[test]
-fn completions_exclude_internal_worker_modes() -> io::Result<()> {
-    for shell in ["bash", "elvish", "fish", "nushell", "powershell", "zsh"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_instar"))
-            .args(["completions", shell])
-            .output()?;
-
-        assert!(output.status.success(), "{shell}: {output:?}");
-        assert!(output.stderr.is_empty(), "{shell}: {output:?}");
-
-        let script = str::from_utf8(&output.stdout).expect("UTF-8 completions");
-
-        assert!(
-            !script.contains("worker"),
-            "{shell} exposes internal worker commands"
-        );
-    }
-
-    Ok(())
-}
-
-#[test]
 fn stdout_flag_is_rejected_by_worker_before_initialization() -> io::Result<()> {
     let directory = tempfile::tempdir()?;
 

@@ -25,7 +25,7 @@ pub struct BasicSettings {}
 macro_rules! define_settings {
     ($(
         $identity:ident, $name:literal, $parameters:ty, $schema:ident,
-        $summary:literal, $description:literal, $documentation:literal,
+        $summary:literal,
         $category:ident, $prerequisites:expr, $fixes:ident, $producer:ident $(($evaluator:path))?;
     )*) => {
         /// Typed parameters for each catalog identity.

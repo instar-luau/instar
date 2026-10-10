@@ -81,8 +81,7 @@ pub use queries::{
 
 pub use report::{
     ApplyReport, CheckReport, Counts, EditReport, FormatReport, FormattedSource, ImportExplanation,
-    ImportFailure, LintReport, ModuleDiagnostic, ProjectLink, QueryReport, RuleDescription,
-    SettingsReport,
+    ImportFailure, LintReport, ModuleDiagnostic, ProjectLink, QueryReport, SettingsReport,
 };
 
 pub use request::{

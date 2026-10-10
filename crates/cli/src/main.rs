@@ -1,7 +1,6 @@
 //! Command-line interface for the Luau toolchain.
 
 mod command;
-mod completion;
 mod report;
 
 use std::{

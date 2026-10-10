@@ -14,8 +14,8 @@ use instar_lint::RuleIdentity;
 
 use instar_project::{
     CheckOverrides, CheckRequest, ExplanationSelection, FixMode, FormatMode, FormatOverrides,
-    FormatRequest, Input, Invocation, LintOverrides, LintRequest, Operation, OperationOverrides,
-    Project, SettingsRequest, WatchCommandReport, WatchOperation, WatchRequest,
+    FormatRequest, Input, Invocation, LintOverrides, LintRequest, Project, WatchCommandReport,
+    WatchOperation, WatchRequest,
 };
 
 use instar_shared::{
@@ -30,13 +30,10 @@ use tracing_subscriber::fmt;
 use super::arguments::{
     Arguments, CheckArguments, CheckingMode, Command, DiagnosticArguments, DiagnosticSeverity,
     FormatArguments, ImportOrder, Indentation, InputArguments, LineEnding, LintArguments,
-    OperationKind, QuoteStyle, ReportStyle,
+    QuoteStyle, ReportStyle,
 };
 
-use crate::{
-    completion,
-    report::{CommandReport, Reporter},
-};
+use crate::report::{CommandReport, Reporter};
 
 pub(crate) struct CommandOutcome {
     pub(crate) status: CommandStatus,
@@ -169,22 +166,6 @@ async fn execute(
             output_cancellation.cancel();
         }
     }));
-
-    if let Command::Completions { shell } = &command {
-        if execution.watch || execution.stdin_filepath.is_some() {
-            return Err(invalid("completions does not accept watch or stdin context").into());
-        }
-
-        let output = completion::generate(shell)?;
-        let mut reporter = reporter.lock().expect("reporter lock");
-        reporter.document(&output)?;
-        reporter.publish()?;
-
-        return Ok(CommandOutcome {
-            status: CommandStatus::Clean,
-            completion: Completion::Complete,
-        });
-    }
 
     let request = match command {
         Command::Check(arguments) => {
@@ -325,78 +306,7 @@ async fn execute(
             })
         }
 
-        Command::Settings(arguments) => {
-            if execution.watch {
-                return Err(invalid("settings does not accept watch").into());
-            }
-
-            let value = overrides(&arguments.inputs)?;
-
-            let overrides = match arguments.operation {
-                OperationKind::Check => {
-                    OperationOverrides::Check(serde_json::from_value(value).map_err(invalid_json)?)
-                }
-
-                OperationKind::Format => {
-                    OperationOverrides::Format(serde_json::from_value(value).map_err(invalid_json)?)
-                }
-
-                OperationKind::Lint => {
-                    OperationOverrides::Lint(serde_json::from_value(value).map_err(invalid_json)?)
-                }
-            };
-
-            let invocation = invocation(
-                &arguments.inputs,
-                execution.stdin_filepath.as_deref(),
-                options,
-            )
-            .await?;
-
-            let report = project
-                .settings(
-                    SettingsRequest {
-                        invocation,
-                        overrides,
-                        snapshot: None,
-                    },
-                    options.clone(),
-                )
-                .await;
-
-            reporter.lock().expect("reporter lock").check_output()?;
-            let report = report?;
-
-            return finish(&reporter, CommandReport::Settings(report));
-        }
-
-        Command::Schema(arguments) => {
-            if execution.watch || execution.stdin_filepath.is_some() {
-                return Err(invalid("schema does not accept watch or stdin context").into());
-            }
-
-            return finish(
-                &reporter,
-                CommandReport::Schema(Project::schema(operation(arguments.operation))),
-            );
-        }
-
-        Command::Rules(arguments) => {
-            if execution.watch || execution.stdin_filepath.is_some() {
-                return Err(invalid("rules does not accept watch or stdin context").into());
-            }
-
-            let mut rules = Project::rules();
-
-            if let Some(name) = arguments.rule {
-                let selected = rule(&name)?;
-                rules.retain(|description| description.identity == selected);
-            }
-
-            return finish(&reporter, CommandReport::Rules(rules));
-        }
-
-        Command::Completions { .. } | Command::Server => {
+        Command::Server => {
             unreachable!("command dispatched before operation translation")
         }
     };
@@ -1082,14 +992,6 @@ fn set(root: &mut Value, field: &str, value: Value) -> io::Result<()> {
     }
 
     Err(invalid("override field cannot be empty"))
-}
-
-fn operation(operation: OperationKind) -> Operation {
-    match operation {
-        OperationKind::Check => Operation::Check,
-        OperationKind::Format => Operation::Format,
-        OperationKind::Lint => Operation::Lint,
-    }
 }
 
 fn severity(severity: DiagnosticSeverity) -> Severity {

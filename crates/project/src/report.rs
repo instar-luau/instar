@@ -1,7 +1,7 @@
 use std::io;
 
 use instar_format::FormatResult;
-use instar_lint::{RuleAvailability, RuleFix, RuleIdentity};
+use instar_lint::{RuleAvailability, RuleFix};
 use instar_luau::{ImportOutcome, ImportSite, ModuleIdentity};
 
 use instar_shared::{
@@ -306,22 +306,6 @@ pub struct SettingsReport {
 
     /// Completion state of settings capture.
     pub completion: Completion,
-}
-
-/// Public description of a catalogued lint rule.
-#[derive(Clone, Debug, Serialize)]
-pub struct RuleDescription {
-    /// Stable catalog rule identity.
-    pub identity: RuleIdentity,
-
-    /// Short catalog description.
-    pub description: String,
-
-    /// Catalog-provided documentation.
-    pub documentation: String,
-
-    /// Whether the catalog provides fix support for this rule.
-    pub fixes: bool,
 }
 
 /// A source location linked to an optional resolved destination.

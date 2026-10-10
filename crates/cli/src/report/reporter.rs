@@ -13,13 +13,12 @@ use instar_format::FormatOutcome;
 
 use instar_project::{
     CheckReport, Counts, ExplanationSelection, FixMode, FormatMode, FormatReport, InputIdentity,
-    InputVersion, LintReport, ProjectSnapshot, RuleDescription, SelectionDecision, SettingsReport,
-    SourceOrigin, WatchReport, WriteOutcome,
+    InputVersion, LintReport, ProjectSnapshot, SelectionDecision, SourceOrigin, WatchReport,
+    WriteOutcome,
 };
 
 use instar_shared::{
     Completion, Diagnostic, Event, EventPayload, FindingIdentity, LogLevel, OperationFailure,
-    Severity,
 };
 
 use serde_json::{Value, json};
@@ -34,10 +33,7 @@ pub(crate) enum CommandReport {
     Check(CheckReport),
     Format(FormatReport, FormatMode),
     Lint(LintReport, FixMode),
-    Settings(SettingsReport),
     Watch(WatchReport),
-    Schema(Value),
-    Rules(Vec<RuleDescription>),
     Failure(OperationFailure),
 }
 
@@ -47,10 +43,8 @@ impl CommandReport {
             Self::Check(report) => &report.completion,
             Self::Format(report, _) => &report.completion,
             Self::Lint(report, _) => &report.completion,
-            Self::Settings(report) => &report.completion,
             Self::Watch(report) => &report.completion,
             Self::Failure(report) => &report.completion,
-            Self::Schema(_) | Self::Rules(_) => &Completion::Complete,
         }
     }
 
@@ -114,19 +108,7 @@ impl CommandReport {
                 }
             }
 
-            Self::Settings(report) => {
-                if report
-                    .diagnostics
-                    .iter()
-                    .any(|diagnostic| diagnostic.severity == Severity::Error)
-                {
-                    CommandStatus::InvalidInvocation
-                } else {
-                    CommandStatus::Clean
-                }
-            }
-
-            Self::Schema(_) | Self::Rules(_) | Self::Watch(_) => CommandStatus::Clean,
+            Self::Watch(_) => CommandStatus::Clean,
             Self::Failure(_) => unreachable!("failure classified before report outcomes"),
         }
     }
@@ -136,9 +118,8 @@ impl CommandReport {
             Self::Check(report) => Some(&report.snapshot),
             Self::Format(report, _) => Some(&report.snapshot),
             Self::Lint(report, _) => Some(&report.snapshot),
-            Self::Settings(report) => Some(&report.snapshot),
             Self::Watch(report) => Some(&report.snapshot),
-            Self::Schema(_) | Self::Rules(_) | Self::Failure(_) => None,
+            Self::Failure(_) => None,
         }
     }
 
@@ -162,7 +143,6 @@ impl CommandReport {
                 .collect(),
 
             Self::Lint(report, _) => report.final_findings.iter().collect(),
-            Self::Settings(report) => report.diagnostics.iter().collect(),
             Self::Failure(report) => report.diagnostics.iter().collect(),
 
             Self::Watch(report) => report
@@ -170,8 +150,6 @@ impl CommandReport {
                 .iter()
                 .flat_map(|failure| &failure.diagnostics)
                 .collect(),
-
-            Self::Schema(_) | Self::Rules(_) => Vec::new(),
         }
     }
 }
@@ -361,14 +339,6 @@ impl Reporter {
         Ok(())
     }
 
-    pub(crate) fn document(&mut self, bytes: &[u8]) -> io::Result<()> {
-        if self.destination.is_some() {
-            self.write_report(bytes)
-        } else {
-            io::stdout().lock().write_all(bytes)
-        }
-    }
-
     pub(crate) fn watch(
         &mut self,
         snapshot: &ProjectSnapshot,
@@ -549,22 +519,6 @@ impl Reporter {
         self.capture_report(report);
         self.check_output()?;
 
-        match report {
-            CommandReport::Schema(schema) => {
-                self.metadata(schema)?;
-
-                return Ok(());
-            }
-
-            CommandReport::Rules(rules) => {
-                self.metadata(&json!(rules))?;
-
-                return Ok(());
-            }
-
-            _ => {}
-        }
-
         let findings = report.findings();
         let mut identities = BTreeSet::new();
 
@@ -666,16 +620,9 @@ impl Reporter {
                 json!({"operation":"lint","mode":format!("{mode:?}"),"sources":report.sources,"modules":report.modules,"module_findings":report.module_findings,"imports":report.imports,"outcomes":report.outcomes,"findings":report.findings.iter().map(|finding|self.diagnostics.record(finding)).collect::<Vec<_>>(),"final_findings":diagnostics,"availability":report.availability,"fixes":report.fixes,"proposals":report.proposals.iter().map(|proposal|proposal.proposal()).collect::<Vec<_>>(),"previews":report.previews,"writes":report.writes,"selection":report.selection,"settings":report.settings,"dependencies":report.dependencies,"counts":report.counts,"failed":report.failed,"changed":[],"skipped":skipped(&report.snapshot,&report.selection)})
             }
 
-            CommandReport::Settings(report) => {
-                json!({"operation":report.operation,"settings":report.settings,"schema_identity":report.schema_identity})
-            }
-
             CommandReport::Watch(report) => {
                 json!({"operation":"watch","iterations":[],"failure":report.failure})
             }
-
-            CommandReport::Schema(schema) => schema.clone(),
-            CommandReport::Rules(rules) => json!(rules),
 
             CommandReport::Failure(failure) => {
                 let mut record = failure_record(failure);
@@ -816,43 +763,100 @@ impl Reporter {
                     if let FormatOutcome::Validated(proposal) = &source.result.outcome {
                         let name = self.diagnostics.name(source.result.source);
 
-                        if matches!(mode,FormatMode::Check) && proposal.input().source.text.as_ref() != proposal.output() { self.write_report(format!("Would reformat {name}\n").as_bytes())?; }
+                        if matches!(mode, FormatMode::Check)
+                            && proposal.input().source.text.as_ref() != proposal.output()
+                        {
+                            self.write_report(format!("Would reformat {name}\n").as_bytes())?;
+                        }
 
-                        if matches!(mode,FormatMode::Preview) {
-                            let mut patch = Vec::new(); difference::render(&mut patch, &name, &proposal.input().source.text, proposal.output())?; self.write_report(&patch)?;
+                        if matches!(mode, FormatMode::Preview) {
+                            let mut patch = Vec::new();
+
+                            difference::render(
+                                &mut patch,
+                                &name,
+                                &proposal.input().source.text,
+                                proposal.output(),
+                            )?;
+
+                            self.write_report(&patch)?;
                         }
                     }
 
-                    if matches!(source.write,WriteOutcome::Failed { .. } | WriteOutcome::Unapplied { .. }) { self.write_report(format!("{:?}\n",source.write).as_bytes())?; }
+                    if matches!(
+                        source.write,
+                        WriteOutcome::Failed { .. } | WriteOutcome::Unapplied { .. }
+                    ) {
+                        self.write_report(format!("{:?}\n", source.write).as_bytes())?;
+                    }
                 }
 
-                if !self.quiet { self.summary("Formatting",&report.counts,&report.completion,Some(*mode))?; }
+                if !self.quiet {
+                    self.summary(
+                        "Formatting",
+                        &report.counts,
+                        &report.completion,
+                        Some(*mode),
+                    )?;
+                }
             }
 
             CommandReport::Lint(report, mode) => {
-                if matches!(mode,FixMode::Preview) { for preview in &report.previews { for line in preview.lines().take(400) { self.write_report(format!("{line}\n").as_bytes())?; } if preview.lines().count() > 400 { self.write_report(b"... patch truncated after 400 lines\n")?; } } }
+                if matches!(mode, FixMode::Preview) {
+                    for preview in &report.previews {
+                        for line in preview.lines().take(400) {
+                            self.write_report(format!("{line}\n").as_bytes())?;
+                        }
 
-                for write in &report.writes { if matches!(write,WriteOutcome::Failed { .. } | WriteOutcome::Unapplied { .. }) { self.write_report(format!("{write:?}\n").as_bytes())?; } }
+                        if preview.lines().count() > 400 {
+                            self.write_report(b"... patch truncated after 400 lines\n")?;
+                        }
+                    }
+                }
 
-                if !self.quiet { self.summary("Linting",&report.counts,&report.completion,None)?; }
+                for write in &report.writes {
+                    if matches!(
+                        write,
+                        WriteOutcome::Failed { .. } | WriteOutcome::Unapplied { .. }
+                    ) {
+                        self.write_report(format!("{write:?}\n").as_bytes())?;
+                    }
+                }
+
+                if !self.quiet {
+                    self.summary("Linting", &report.counts, &report.completion, None)?;
+                }
             }
 
-            CommandReport::Check(report) => { if !self.quiet { self.summary("Checking",&report.counts,&report.completion,None)?; } }
-            CommandReport::Settings(report) => self.metadata(&json!({"operation":report.operation,"settings":report.settings,"schema_identity":report.schema_identity,"completion":report.completion}))?,
+            CommandReport::Check(report) => {
+                if !self.quiet {
+                    self.summary("Checking", &report.counts, &report.completion, None)?;
+                }
+            }
 
             CommandReport::Watch(report) => {
-                if let Some(failure) = &report.failure { self.write_report(format!("{}\n", failure.message).as_bytes())?; }
+                if let Some(failure) = &report.failure {
+                    self.write_report(format!("{}\n", failure.message).as_bytes())?;
+                }
 
                 self.watch_history()?;
-                self.write_report(format!("Watch completion: {:?}\n", report.completion).as_bytes())?;
+
+                self.write_report(
+                    format!("Watch completion: {:?}\n", report.completion).as_bytes(),
+                )?;
             }
 
             CommandReport::Failure(failure) => {
                 self.watch_history()?;
-                self.write_report(format!("{}\nCompletion: {:?}\n", failure.message, failure.completion).as_bytes())?;
-            }
 
-            CommandReport::Schema(_) | CommandReport::Rules(_) => {},
+                self.write_report(
+                    format!(
+                        "{}\nCompletion: {:?}\n",
+                        failure.message, failure.completion
+                    )
+                    .as_bytes(),
+                )?;
+            }
         }
 
         if !self.quiet {
@@ -992,21 +996,6 @@ impl Reporter {
         };
 
         self.write_report(format!("{operation} {state}: {files} file{}{details}; {} diagnostics; {} dependencies; {} written; {} fixes; completion {completion:?}\n",if files == 1 { "" } else { "s" },counts.findings,counts.dependencies,counts.written,counts.fixes).as_bytes())
-    }
-
-    fn metadata(&mut self, value: &Value) -> io::Result<()> {
-        let output = serde_json::to_vec_pretty(value).map_err(io::Error::other)?;
-
-        if self.destination.is_some() {
-            self.write_report(&output)?;
-
-            self.write_report(b"\n")
-        } else {
-            let mut output_stream = io::stdout().lock();
-            output_stream.write_all(&output)?;
-
-            writeln!(output_stream)
-        }
     }
 
     fn record(&mut self, value: &Value) -> io::Result<()> {

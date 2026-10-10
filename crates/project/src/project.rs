@@ -7,7 +7,6 @@ use std::{
     },
 };
 
-use instar_lint::{self as lint, FixSupport};
 use instar_shared::{Options, SourceIdentity, SourceSnapshot};
 use serde_json::Value;
 
@@ -15,16 +14,13 @@ use crate::{
     assets::{AssetRequest, AssetSnapshot},
     capture::Capture,
     change::{ChangeBatch, ProjectChange},
-    configuration::{
-        CheckOverrides, FormatOverrides, LintOverrides, Operation, ProjectSettingsPatch,
-    },
+    configuration::ProjectSettingsPatch,
     editing::{ApplyRequest, EditRequest},
     execution::{Execution, Host, Task},
     inputs::{InputVersion, ProjectSnapshot, initial},
     queries::QueryRequest,
     report::{
-        ApplyReport, CheckReport, EditReport, FormatReport, LintReport, QueryReport,
-        RuleDescription, SettingsReport,
+        ApplyReport, CheckReport, EditReport, FormatReport, LintReport, QueryReport, SettingsReport,
     },
     request::{CheckRequest, FormatRequest, LintRequest, SettingsRequest},
     watch::{WatchReport, WatchRequest},
@@ -193,36 +189,10 @@ impl Project {
         })
     }
 
-    /// Returns the settings-override schema for an operation.
-    #[must_use]
-    pub fn schema(operation: Operation) -> Value {
-        let schema = match operation {
-            Operation::Check => schemars::schema_for!(CheckOverrides),
-            Operation::Format => schemars::schema_for!(FormatOverrides),
-            Operation::Lint => schemars::schema_for!(LintOverrides),
-        };
-
-        serde_json::to_value(schema).unwrap_or(Value::Null)
-    }
-
     /// Returns the project configuration schema.
     #[must_use]
     pub fn configuration_schema() -> Value {
         serde_json::to_value(schemars::schema_for!(ProjectSettingsPatch)).unwrap_or(Value::Null)
-    }
-
-    /// Returns the lint catalog's rule descriptions and fix support.
-    #[must_use]
-    pub fn rules() -> Vec<RuleDescription> {
-        lint::rules()
-            .iter()
-            .map(|rule| RuleDescription {
-                identity: rule.identity,
-                description: rule.description.to_owned(),
-                documentation: rule.documentation.to_owned(),
-                fixes: !matches!(rule.fixes, FixSupport::None),
-            })
-            .collect()
     }
 
     /// Stops admission and requests cancellation of queued and running operations.

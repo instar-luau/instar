@@ -1,11 +1,6 @@
 use std::{num::NonZeroUsize, path::PathBuf};
 
-use clap::{
-    Args, Parser, Subcommand, ValueEnum,
-    builder::{PossibleValue, PossibleValuesParser},
-};
-
-use clap_complete::Shell;
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
 #[command(version, about = "Format, lint, and check Luau sources")]
@@ -87,21 +82,6 @@ pub(crate) enum Command {
 
     #[command(about = "Lint selected sources and their dependencies")]
     Lint(LintArguments),
-
-    #[command(about = "Show effective operation settings and their origins")]
-    Settings(SettingsArguments),
-
-    #[command(about = "Show the operation configuration schema")]
-    Schema(SchemaArguments),
-
-    #[command(about = "List rules or show a rule's documentation")]
-    Rules(RulesArguments),
-
-    #[command(about = "Generate a shell completion script")]
-    Completions {
-        #[arg(value_parser = shells())]
-        shell: String,
-    },
 
     #[command(about = "Run the language server over stdio")]
     Server,
@@ -290,46 +270,10 @@ pub(crate) struct LintArguments {
     pub(crate) fix_rules: Vec<String>,
 }
 
-#[derive(Args)]
-pub(crate) struct SettingsArguments {
-    #[arg(value_enum)]
-    pub(crate) operation: OperationKind,
-
-    #[command(flatten)]
-    pub(crate) inputs: InputArguments,
-}
-
-#[derive(Args)]
-pub(crate) struct SchemaArguments {
-    #[arg(value_enum)]
-    pub(crate) operation: OperationKind,
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-pub(crate) enum OperationKind {
-    Check,
-    Format,
-    Lint,
-}
-
-#[derive(Args)]
-pub(crate) struct RulesArguments {
-    pub(crate) rule: Option<String>,
-}
-
 #[derive(Parser)]
 pub(crate) enum WorkerKind {
     Configuration,
     Analysis,
     Format,
     ProjectAssets,
-}
-
-fn shells() -> PossibleValuesParser {
-    PossibleValuesParser::new(
-        Shell::value_variants()
-            .iter()
-            .filter_map(ValueEnum::to_possible_value)
-            .chain([PossibleValue::new("nushell")]),
-    )
 }
