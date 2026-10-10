@@ -248,5 +248,5 @@ fn assignment(
         return Vec::new();
     }
 
-    vec![([span.start, span.end], ";".to_owned())]
+    vec![([span.start, span.end], String::new())]
 }
