@@ -1,5 +1,6 @@
 [bans]
 skip = [
+  "foldhash",
   "getrandom",
   "hashbrown",
   "miniz_oxide",
