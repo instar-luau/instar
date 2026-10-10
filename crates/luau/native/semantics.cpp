@@ -1531,7 +1531,7 @@ namespace instar::native {
                 const std::string name(module.name);
                 const auto checked = state.frontend.moduleResolver.getModule(name);
 
-                if (state.inferred.at(name) && checked && checked->hasModuleScope()) {
+                if (state.outcomes.at(name).inferred && checked && checked->hasModuleScope()) {
                     result.push_back(module.name);
                 }
             }
@@ -1629,7 +1629,9 @@ namespace instar::native {
             for (const auto &module : state.captured.modules) {
                 const std::string name(module.name);
 
-                if (!state.inferred.at(name) || !state.graph_available.at(name)) {
+                const auto &outcome = state.outcomes.at(name);
+
+                if (!outcome.inferred || !outcome.graph_available) {
                     return false;
                 }
 
@@ -1808,13 +1810,14 @@ namespace instar::native {
             throw std::invalid_argument("captured native syntax is unavailable");
         }
 
-        auto checked = state.inferred.at(name) ? state.frontend.moduleResolver.getModule(name) : nullptr;
+        const auto &outcome = state.outcomes.at(name);
+        auto checked = outcome.inferred ? state.frontend.moduleResolver.getModule(name) : nullptr;
 
         if (checked && !checked->hasModuleScope()) {
             checked = nullptr;
         }
 
-        result.evidence_complete = checked && state.graph_available.at(name);
+        result.evidence_complete = checked && outcome.graph_available;
 
         if (checked) {
             rust::Vec<rust::String> current;
@@ -1922,10 +1925,6 @@ namespace instar::native {
         const uint32_t position[] = {input.line, input.column};
         result.hierarchy = hierarchy(state, operation, {modules.data(), modules.size()}, input.name, {position, 2});
         result.completion = interruption(operation);
-
-        if (result.completion == NativeCompletion::Complete && !state.graph_available.at(std::string(input.name))) {
-            result.completion = NativeCompletion::Analysis;
-        }
 
         return result;
     }

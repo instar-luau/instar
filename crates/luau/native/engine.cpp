@@ -116,11 +116,7 @@ namespace instar {
                 state->resolver.captured.erase(name);
                 state->resolver.configurations.erase(name);
                 state->resolver.environments.erase(name);
-                state->inferred.erase(name);
-                state->environment_available.erase(name);
-                state->parsed.erase(name);
-                state->graph_available.erase(name);
-                state->prerequisites.erase(name);
+                state->outcomes.erase(name);
             }
         }
 

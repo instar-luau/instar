@@ -27,6 +27,14 @@ namespace instar::native {
         const Luau::Config &getConfig(const Luau::ModuleName &name, const Luau::TypeCheckLimits &) const override;
     };
 
+    struct ModuleOutcome {
+        rust::Vec<NativeDiagnostic> prerequisites;
+        bool environment_available = false;
+        bool parsed = false;
+        bool inferred = false;
+        bool graph_available = false;
+    };
+
     struct AnalysisState {
         Resolver resolver;
         Luau::Frontend frontend{Luau::SolverMode::New, &resolver, &resolver};
@@ -37,11 +45,7 @@ namespace instar::native {
         uint64_t revision = 0;
         uint8_t purpose = 0;
         NativeAnalysisRequest captured;
-        std::map<std::string, rust::Vec<NativeDiagnostic>> prerequisites;
-        std::map<std::string, bool> environment_available;
-        std::map<std::string, bool> parsed;
-        std::map<std::string, bool> inferred;
-        std::map<std::string, bool> graph_available;
+        std::map<std::string, ModuleOutcome> outcomes;
         bool reusable = false;
         AnalysisState();
     };

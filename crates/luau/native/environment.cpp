@@ -651,7 +651,7 @@ namespace instar::native {
     prepare_environment(AnalysisState &state, const NativeModuleInput &input, const NativeOperation &operation) {
         EnvironmentPreparation result{{}, NativeCompletion::Complete};
         const std::string name(input.name);
-        state.environment_available[name] = false;
+        state.outcomes.at(name).environment_available = false;
 
         if (!input.has_environment) {
             return result;
@@ -674,7 +674,7 @@ namespace instar::native {
 
         if (const auto found = state.environments.find(signature); found != state.environments.end()) {
             state.resolver.environments.insert_or_assign(name, found->second);
-            state.environment_available[name] = true;
+            state.outcomes.at(name).environment_available = true;
 
             return result;
         }
@@ -754,7 +754,7 @@ namespace instar::native {
             register_instances(frontend.globals, input);
             state.resolver.environments.insert_or_assign(name, environment);
             state.environments.emplace(signature, environment);
-            state.environment_available[name] = true;
+            state.outcomes.at(name).environment_available = true;
         } catch (const std::invalid_argument &error) {
             result.diagnostics.push_back(
                 NativeDiagnostic{NativeLocation{input.name, input.revision, 0, 0},

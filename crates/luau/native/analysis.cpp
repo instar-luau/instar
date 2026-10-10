@@ -139,9 +139,7 @@ namespace instar::native {
 
             const std::string name(module.name);
             const auto previous = state.resolver.captured.find(name);
-            state.inferred[name] = false;
-            state.graph_available[name] = false;
-            state.parsed[name] = false;
+            state.outcomes.insert_or_assign(name, ModuleOutcome{});
 
             if (previous == state.resolver.captured.end() || previous->second.signature != module.signature) {
                 state.frontend.markDirty(name);
@@ -167,7 +165,7 @@ namespace instar::native {
             NativeModuleAnalysis observed{};
             observed.name = module.name;
             observed.logical_revision = module.logical_revision;
-            observed.environment_available = state.environment_available[name];
+            observed.environment_available = state.outcomes.at(name).environment_available;
             observed.environment_diagnostics = environment.diagnostics;
             observed.completion = environment.completion;
 
@@ -227,7 +225,7 @@ namespace instar::native {
                                             : Luau::Mode::NoCheck;
 
             observed.parsed = true;
-            state.parsed[name] = true;
+            state.outcomes.at(name).parsed = true;
 
             if (module.inference &&
                 ((force_strict && module.mode != 0) || (!force_strict && force_nonstrict && module.mode != 1))) {
@@ -376,8 +374,9 @@ namespace instar::native {
                 observed.semantic_complete = false;
             }
 
-            state.inferred[name] = observed.inferred;
-            state.graph_available[name] = observed.semantic_complete;
+            auto &outcome = state.outcomes.at(name);
+            outcome.inferred = observed.inferred;
+            outcome.graph_available = observed.semantic_complete;
 
             if (observed.completion != NativeCompletion::Complete && result.completion == NativeCompletion::Complete) {
                 result.completion = observed.completion;
@@ -391,23 +390,24 @@ namespace instar::native {
 
             for (const auto &module : input.modules) {
                 const std::string name(module.name);
+                auto &outcome = state.outcomes.at(name);
 
-                if (!state.inferred[name] && !state.graph_available[name]) {
+                if (!outcome.inferred && !outcome.graph_available) {
                     continue;
                 }
 
                 for (const auto &site : module.sites) {
-                    if (state.inferred[name] && site.static_resolution && !site.target.empty() &&
-                        !state.inferred.at(std::string(site.target))) {
-                        state.inferred[name] = false;
-                        state.graph_available[name] = false;
+                    if (outcome.inferred && site.static_resolution && !site.target.empty() &&
+                        !state.outcomes.at(std::string(site.target)).inferred) {
+                        outcome.inferred = false;
+                        outcome.graph_available = false;
                         changed = true;
                         break;
                     }
 
-                    if (state.graph_available[name] && site.static_resolution &&
-                        (site.target.empty() || !state.graph_available.at(std::string(site.target)))) {
-                        state.graph_available[name] = false;
+                    if (outcome.graph_available && site.static_resolution &&
+                        (site.target.empty() || !state.outcomes.at(std::string(site.target)).graph_available)) {
+                        outcome.graph_available = false;
                         changed = true;
                         break;
                     }
@@ -417,8 +417,9 @@ namespace instar::native {
 
         for (auto &module : result.modules) {
             const std::string name(module.name);
+            const auto &outcome = state.outcomes.at(name);
 
-            if (module.inferred && !state.inferred.at(name)) {
+            if (module.inferred && !outcome.inferred) {
                 module.inferred = false;
 
                 if (module.completion == NativeCompletion::Complete) {
@@ -430,8 +431,8 @@ namespace instar::native {
                 }
             }
 
-            module.semantic_complete = state.graph_available.at(name);
-            auto &prerequisites = state.prerequisites[name];
+            module.semantic_complete = outcome.graph_available;
+            auto &prerequisites = state.outcomes.at(name).prerequisites;
             prerequisites = module.environment_diagnostics;
 
             for (const auto &diagnostic : module.diagnostics) {
@@ -461,11 +462,13 @@ namespace instar::native {
             throw std::invalid_argument("native logical analysis identity is unavailable");
         }
 
-        if (!state.parsed.count(name) || !state.parsed.at(name)) {
+        const auto outcome = state.outcomes.find(name);
+
+        if (outcome == state.outcomes.end() || !outcome->second.parsed) {
             throw std::invalid_argument("requested native syntax has not been established");
         }
 
-        if (inference && (!state.inferred.count(name) || !state.inferred.at(name))) {
+        if (inference && !outcome->second.inferred) {
             throw std::invalid_argument("requested native inference is unavailable");
         }
 

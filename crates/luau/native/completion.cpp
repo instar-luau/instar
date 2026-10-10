@@ -313,7 +313,8 @@ namespace instar::native {
             result.completion = NativeCompletion::Timeout;
         }
 
-        if (result.completion == NativeCompletion::Complete && !state.graph_available.at(std::string(input.name))) {
+        if (result.completion == NativeCompletion::Complete &&
+            !state.outcomes.at(std::string(input.name)).graph_available) {
             result.completion = NativeCompletion::Analysis;
         }
 

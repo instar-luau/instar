@@ -42,7 +42,7 @@ namespace instar::native {
                 continue;
             }
 
-            for (const auto &diagnostic : state.prerequisites.at(current)) {
+            for (const auto &diagnostic : state.outcomes.at(current).prerequisites) {
                 result.diagnostics.push_back(diagnostic);
             }
 
@@ -53,14 +53,15 @@ namespace instar::native {
             }
         }
 
-        auto checked = state.inferred.at(name) ? state.frontend.moduleResolver.getModule(name) : nullptr;
+        const auto &outcome = state.outcomes.at(name);
+        auto checked = outcome.inferred ? state.frontend.moduleResolver.getModule(name) : nullptr;
 
         if (checked &&
             (!checked->hasModuleScope() || checked->cancelled || checked->timeout || state.frontend.isDirty(name))) {
             checked = nullptr;
         }
 
-        const bool environment_available = state.environment_available.at(name);
+        const bool environment_available = outcome.environment_available;
         Luau::ScopePtr environment = state.frontend.globals.globalScope;
 
         if (checked && checked->hasModuleScope()) {
@@ -91,8 +92,7 @@ namespace instar::native {
 
             const bool available = (!semantics || checked) && (!globals || environment_available);
 
-            const bool complete =
-                source->parseErrors.empty() && (!semantics || state.graph_available.at(std::string(input.name)));
+            const bool complete = source->parseErrors.empty() && (!semantics || outcome.graph_available);
 
             result.availability.push_back(
                 NativeWarningAvailability{warning, static_cast<uint8_t>(available ? complete ? 0 : 1 : 2)}
