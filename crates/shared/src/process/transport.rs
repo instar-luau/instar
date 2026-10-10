@@ -204,6 +204,12 @@ impl<Request, Response> Process<Request, Response> {
         Request: Serialize + Send + 'static,
         Response: DeserializeOwned + Send + 'static,
     {
+        if let Some(transport) = self.transport.as_mut()
+            && transport.child.try_wait()?.is_some()
+        {
+            self.discard()?;
+        }
+
         if self.transport.is_none() {
             self.generation = self
                 .generation
