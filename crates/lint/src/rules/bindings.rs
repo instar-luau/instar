@@ -4,7 +4,7 @@ use instar_luau::BindingKind;
 use instar_shared::{Knowledge, Options, Reason};
 
 use instar_syntax::{
-    Category,
+    Binding, Category,
     tree::{NodeIndex, NodeKind},
 };
 
@@ -67,6 +67,29 @@ pub struct RestrictedGlobals {
 }
 
 impl Context<'_, '_> {
+    pub(crate) fn declarations(
+        &mut self,
+        options: &Options,
+        mut check: impl FnMut(&mut Self, &Binding),
+    ) {
+        if !self.bindings.recovery.is_empty() {
+            self.unavailable(Reason::UnsupportedSyntax);
+
+            return;
+        }
+
+        let bindings = self.bindings;
+
+        for binding in bindings.declarations.values() {
+            if let Some(completion) = options.interrupted() {
+                self.result.completion = self.result.completion.clone().combine(completion);
+                break;
+            }
+
+            check(self, binding);
+        }
+    }
+
     fn deprecated(&mut self, node: NodeIndex, ancestors: &[NodeIndex]) {
         let RuleSettings::Deprecated(settings) = self.parameters else {
             return;
@@ -116,97 +139,9 @@ impl Context<'_, '_> {
         }
     }
 
-    pub(crate) fn declarations(&mut self, options: &Options) {
-        if !self.bindings.recovery.is_empty() {
-            self.unavailable(Reason::UnsupportedSyntax);
-
-            return;
-        }
-
-        let mut findings = Vec::new();
-
-        let ignored = match self.parameters {
-            RuleSettings::UnusedVariable(settings) => Regex::new(&settings.ignore_pattern).ok(),
-            _ => None,
-        };
-
-        for binding in self.bindings.declarations.values() {
-            if let Some(completion) = options.interrupted() {
-                self.result.completion = self.result.completion.clone().combine(completion);
-                break;
-            }
-
-            let name = String::from_utf8_lossy(self.tree.text(binding.name));
-
-            if let RuleSettings::UnusedVariable(settings) = self.parameters {
-                let included = match binding.category {
-                    Category::Parameter => settings.parameters,
-                    Category::Loop => settings.loop_variables,
-                    _ => true,
-                };
-
-                if included
-                    && !binding.read
-                    && ignored
-                        .as_ref()
-                        .is_some_and(|ignored| !ignored.is_match(&name))
-                {
-                    findings.push((
-                        binding.name,
-                        RuleIdentity::UnusedVariable,
-                        "binding is never read",
-                    ));
-                }
-            }
-
-            if self.rule == RuleIdentity::IgnoredPcallResult
-                && !binding.read
-                && let Some(value) = binding.value
-                && let NodeKind::Call { callee, .. } =
-                    &self.tree.node(unwrap(self.tree, value)).kind
-                && (self.global(*callee, b"pcall") || self.global(*callee, b"xpcall"))
-            {
-                findings.push((
-                    binding.name,
-                    RuleIdentity::IgnoredPcallResult,
-                    "protected-call success status is never read",
-                ));
-            }
-
-            if let RuleSettings::PreferConst(settings) = self.parameters
-                && binding.category == Category::Local
-                && binding.value.is_some()
-                && !binding.assigned
-            {
-                let table = binding.value.is_some_and(|value| {
-                    matches!(
-                        self.tree.node(unwrap(self.tree, value)).kind,
-                        NodeKind::Table { .. }
-                    )
-                });
-
-                if !(table && binding.mutated && settings.mutated_tables_stay_local) {
-                    findings.push((
-                        binding.name,
-                        RuleIdentity::PreferConst,
-                        "unchanged local binding can be declared const",
-                    ));
-                }
-            }
-        }
-
-        for (node, rule, message) in findings {
-            self.finding(node, rule, message);
-        }
-    }
-
     fn implicit(&mut self, options: &Options) {
         let parameter = self.rule == RuleIdentity::ImplicitAnyParameter;
         let local = self.rule == RuleIdentity::ImplicitAnyLocal;
-
-        if !parameter && !local {
-            return;
-        }
 
         let Some(facts) = self.facts else {
             self.unavailable(Reason::UnavailableSemantics);
@@ -269,12 +204,6 @@ impl Context<'_, '_> {
         if !self.bindings.globals.contains(&node.get()) {
             return;
         }
-
-        self.finding(
-            node,
-            RuleIdentity::GlobalUsage,
-            "access to a global binding",
-        );
 
         if let RuleSettings::RestrictedGlobals(settings) = self.parameters {
             let name = String::from_utf8_lossy(self.tree.text(node));
@@ -344,16 +273,92 @@ pub(crate) fn evaluate(
     options: &Options,
 ) -> RuleResult {
     let mut context = Context::new(input, settings);
-    context.declarations(options);
-    context.implicit(options);
-    context.walk(options, check);
+
+    match settings {
+        RuleSettings::UnusedVariable(parameters) => {
+            let ignored = Regex::new(&parameters.ignore_pattern).ok();
+
+            context.declarations(options, |context, binding| {
+                let included = match binding.category {
+                    Category::Parameter => parameters.parameters,
+                    Category::Loop => parameters.loop_variables,
+                    _ => true,
+                };
+
+                if included
+                    && !binding.read
+                    && ignored.as_ref().is_some_and(|ignored| {
+                        !ignored.is_match(&String::from_utf8_lossy(context.tree.text(binding.name)))
+                    })
+                {
+                    context.finding(
+                        binding.name,
+                        RuleIdentity::UnusedVariable,
+                        "binding is never read",
+                    );
+                }
+            });
+        }
+
+        RuleSettings::PreferConst(parameters) => {
+            context.declarations(options, |context, binding| {
+                if binding.category == Category::Local
+                    && binding.value.is_some()
+                    && !binding.assigned
+                {
+                    let table = binding.value.is_some_and(|value| {
+                        matches!(
+                            context.tree.node(unwrap(context.tree, value)).kind,
+                            NodeKind::Table { .. }
+                        )
+                    });
+
+                    if !(table && binding.mutated && parameters.mutated_tables_stay_local) {
+                        context.finding(
+                            binding.name,
+                            RuleIdentity::PreferConst,
+                            "unchanged local binding can be declared const",
+                        );
+                    }
+                }
+            });
+        }
+
+        RuleSettings::ImplicitAnyLocal(_) | RuleSettings::ImplicitAnyParameter(_) => {
+            context.implicit(options)
+        }
+
+        RuleSettings::Deprecated(_) => context.walk(options, |context, node, ancestors| {
+            context.deprecated(node, ancestors)
+        }),
+
+        RuleSettings::GlobalUsage(_) => context.walk(options, |context, node, _| {
+            if matches!(context.tree.node(node).kind, NodeKind::Name { .. })
+                && context.bindings.globals.contains(&node.get())
+            {
+                context.finding(
+                    node,
+                    RuleIdentity::GlobalUsage,
+                    "access to a global binding",
+                );
+            }
+        }),
+
+        RuleSettings::RestrictedGlobals(_) => context.walk(options, |context, node, _| {
+            if matches!(context.tree.node(node).kind, NodeKind::Name { .. }) {
+                context.name(node);
+            }
+        }),
+
+        RuleSettings::UnscopedVariables(_) => context.walk(options, unscoped),
+        _ => unreachable!("binding producer received another rule"),
+    }
 
     context.finish(options)
 }
 
-fn check(context: &mut Context<'_, '_>, node: NodeIndex, ancestors: &[NodeIndex]) {
+fn unscoped(context: &mut Context<'_, '_>, node: NodeIndex, _: &[NodeIndex]) {
     match &context.tree.node(node).kind {
-        NodeKind::Name { .. } => context.name(node),
         NodeKind::Function { .. } => context.function(node),
 
         NodeKind::Assignment { targets, .. } => {
@@ -365,6 +370,4 @@ fn check(context: &mut Context<'_, '_>, node: NodeIndex, ancestors: &[NodeIndex]
         NodeKind::CompoundAssignment { target, .. } => context.unscoped(*target),
         _ => {}
     }
-
-    context.deprecated(node, ancestors);
 }

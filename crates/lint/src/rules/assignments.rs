@@ -64,15 +64,14 @@ pub(crate) fn evaluate(
     options: &Options,
 ) -> RuleResult {
     let mut context = Context::new(input, settings);
+
+    let check: fn(&mut Context<'_, '_>, NodeIndex, &[NodeIndex]) = match context.rule {
+        RuleIdentity::AlmostSwapped => |context, node, _| context.swapped(node),
+        RuleIdentity::SelfAssignment => |context, node, _| context.assignments(node),
+        _ => unreachable!("assignment producer received another rule"),
+    };
+
     context.walk(options, check);
 
     context.finish(options)
-}
-
-fn check(context: &mut Context<'_, '_>, node: NodeIndex, _: &[NodeIndex]) {
-    match &context.tree.node(node).kind {
-        NodeKind::Block { .. } => context.swapped(node),
-        NodeKind::Assignment { .. } => context.assignments(node),
-        _ => {}
-    }
 }

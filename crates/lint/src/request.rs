@@ -100,10 +100,6 @@ impl<'tree, 'source> Context<'tree, 'source> {
         rule: RuleIdentity,
         message: impl Into<String>,
     ) {
-        if self.rule != rule {
-            return;
-        }
-
         let primary = Location {
             source: self.source.version,
             span: Span {
@@ -159,10 +155,21 @@ impl<'tree, 'source> Context<'tree, 'source> {
             .combine(Completion::Incomplete(vec![reason]));
     }
 
+    pub(crate) fn require_number(&mut self, node: NodeIndex) {
+        if matches!(self.tree.node(node).kind, NodeKind::Number { .. })
+            && !matches!(
+                literal::number(self.tree, node),
+                Some(literal::NumberValue::Float(_))
+            )
+        {
+            self.unavailable(Reason::UnsupportedFeature);
+        }
+    }
+
     pub(crate) fn walk(
         &mut self,
         options: &Options,
-        check: fn(&mut Context<'_, '_>, NodeIndex, &[NodeIndex]),
+        mut check: impl FnMut(&mut Self, NodeIndex, &[NodeIndex]),
     ) {
         let mut pending = vec![(self.tree.root, Vec::new())];
 
@@ -170,23 +177,6 @@ impl<'tree, 'source> Context<'tree, 'source> {
             if let Some(completion) = options.interrupted() {
                 self.result.completion = self.result.completion.clone().combine(completion);
                 break;
-            }
-
-            if matches!(
-                self.rule,
-                RuleIdentity::DivideByZero
-                    | RuleIdentity::CompareNan
-                    | RuleIdentity::ZeroStepLoop
-                    | RuleIdentity::ConstantCondition
-                    | RuleIdentity::RobloxIncorrectColor3NewBounds
-                    | RuleIdentity::RobloxManualFromscaleOrFromoffset
-            ) && matches!(self.tree.node(node).kind, NodeKind::Number { .. })
-                && !matches!(
-                    literal::number(self.tree, node),
-                    Some(literal::NumberValue::Float(_))
-                )
-            {
-                self.unavailable(Reason::UnsupportedFeature);
             }
 
             check(self, node, &ancestors);

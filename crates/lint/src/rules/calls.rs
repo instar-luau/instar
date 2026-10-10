@@ -25,20 +25,13 @@ pub struct RestrictedImports {
 
 impl Context<'_, '_> {
     fn requires(&mut self, options: &Options) {
-        if !matches!(
-            self.rule,
-            RuleIdentity::NonConstRequire | RuleIdentity::RestrictedModulePaths
-        ) {
-            return;
-        }
-
         for site in self.imports {
             if let Some(completion) = options.interrupted() {
                 self.result.completion = self.result.completion.clone().combine(completion);
                 break;
             }
 
-            if !site.constant {
+            if self.rule == RuleIdentity::NonConstRequire && !site.constant {
                 self.emit(
                     Span {
                         start: site.argument.span.start,
@@ -71,7 +64,7 @@ impl Context<'_, '_> {
         }
     }
 
-    fn discarded(&mut self, node: NodeIndex) {
+    fn protected_result(&mut self, node: NodeIndex) {
         let NodeKind::Call { callee, .. } = &self.tree.node(node).kind else {
             return;
         };
@@ -83,6 +76,12 @@ impl Context<'_, '_> {
                 "protected-call result is discarded",
             );
         }
+    }
+
+    fn pure_result(&mut self, node: NodeIndex) {
+        let NodeKind::Call { callee, .. } = &self.tree.node(node).kind else {
+            return;
+        };
 
         if let NodeKind::Field { receiver, name, .. } = &self.tree.node(*callee).kind {
             let required = (self.global(*receiver, b"math")
@@ -118,7 +117,13 @@ impl Context<'_, '_> {
         }
     }
 
-    fn call(&mut self, node: NodeIndex, callee: NodeIndex, arguments: NodeIndex) {
+    fn type_comparison(&mut self, node: NodeIndex) {
+        let NodeKind::Call { callee, arguments } = &self.tree.node(node).kind else {
+            return;
+        };
+
+        let callee = *callee;
+        let arguments = *arguments;
         let values = arguments_values(self.tree, arguments);
 
         if (self.global(callee, b"type") || self.global(callee, b"typeof"))
@@ -131,15 +136,27 @@ impl Context<'_, '_> {
                 "comparison belongs outside the type check",
             );
         }
+    }
 
-        let semantic = self.rule == RuleIdentity::MismatchedArgumentCount
-            && self.facts.is_some_and(|facts| {
-                facts.facts.calls.iter().any(|call| call.location.source == self.source.version
-            && [call.location.span.start, call.location.span.end] == range(self.tree, node)
-            && matches!(&call.signatures, Knowledge::Known(signatures) if !signatures.is_empty()))
-            });
+    fn argument_count(&mut self, node: NodeIndex) {
+        let NodeKind::Call { callee, arguments } = &self.tree.node(node).kind else {
+            if let NodeKind::MethodCall { arguments, .. } = &self.tree.node(node).kind {
+                self.semantic_count(node, &arguments_values(self.tree, *arguments));
+            }
 
-        if self.rule == RuleIdentity::MismatchedArgumentCount && semantic {
+            return;
+        };
+
+        let callee = *callee;
+        let values = arguments_values(self.tree, *arguments);
+
+        let semantic = self.facts.is_some_and(|facts| {
+            facts.facts.calls.iter().any(|call| call.location.source == self.source.version
+                && [call.location.span.start, call.location.span.end] == range(self.tree, node)
+                && matches!(&call.signatures, Knowledge::Known(signatures) if !signatures.is_empty()))
+        });
+
+        if semantic {
             self.semantic_count(node, &values);
         } else if let Some(&(expected, variadic)) = self.bindings.arities.get(&callee.get()) {
             let expands = values.last().is_some_and(|value| {
@@ -158,9 +175,18 @@ impl Context<'_, '_> {
                     "call argument count differs from the local function declaration",
                 );
             }
-        } else if self.rule == RuleIdentity::MismatchedArgumentCount {
+        } else {
             self.semantic_count(node, &values);
         }
+    }
+
+    fn require_call(&mut self, node: NodeIndex) {
+        let NodeKind::Call { callee, arguments } = &self.tree.node(node).kind else {
+            return;
+        };
+
+        let callee = *callee;
+        let values = arguments_values(self.tree, *arguments);
 
         if self.global(callee, b"require")
             && !self
@@ -181,15 +207,10 @@ impl Context<'_, '_> {
                             format!("module path {path} is restricted: {reason}"),
                         );
                     }
-                } else if self.rule == RuleIdentity::NonConstRequire
-                    || self.rule == RuleIdentity::RestrictedModulePaths
-                {
+                } else {
                     self.unavailable(Reason::FailedPrerequisite);
                 }
-            } else if matches!(
-                self.rule,
-                RuleIdentity::NonConstRequire | RuleIdentity::RestrictedModulePaths
-            ) {
+            } else if self.rule == RuleIdentity::NonConstRequire {
                 self.finding(
                     node,
                     RuleIdentity::NonConstRequire,
@@ -200,10 +221,6 @@ impl Context<'_, '_> {
     }
 
     fn semantic_count(&mut self, node: NodeIndex, values: &[NodeIndex]) {
-        if self.rule != RuleIdentity::MismatchedArgumentCount {
-            return;
-        }
-
         let Some(facts) = self.facts else {
             self.unavailable(Reason::UnavailableSemantics);
 
@@ -305,12 +322,10 @@ impl Context<'_, '_> {
     }
 
     fn invariant(&mut self, node: NodeIndex, ancestors: &[NodeIndex], options: &Options) {
-        if self.rule != RuleIdentity::LoopInvariantCall
-            || !matches!(
-                self.tree.node(node).kind,
-                NodeKind::Call { .. } | NodeKind::MethodCall { .. }
-            )
-        {
+        if !matches!(
+            self.tree.node(node).kind,
+            NodeKind::Call { .. } | NodeKind::MethodCall { .. }
+        ) {
             return;
         }
 
@@ -530,37 +545,63 @@ pub(crate) fn evaluate(
     let mut context = Context::new(input, settings);
 
     if context.rule == RuleIdentity::IgnoredPcallResult {
-        context.declarations(options);
-    }
-
-    context.requires(options);
-    let mut pending = vec![(context.tree.root, Vec::new())];
-
-    while let Some((node, mut ancestors)) = pending.pop() {
-        if let Some(completion) = options.interrupted() {
-            context.result.completion = context.result.completion.clone().combine(completion);
-            break;
-        }
-
-        match &context.tree.node(node).kind {
-            NodeKind::CallStatement { call } => context.discarded(*call),
-            NodeKind::Call { callee, arguments } => context.call(node, *callee, *arguments),
-
-            NodeKind::MethodCall { arguments, .. } => {
-                context.semantic_count(node, &arguments_values(context.tree, *arguments));
+        context.declarations(options, |context, binding| {
+            if !binding.read
+                && let Some(value) = binding.value
+                && let NodeKind::Call { callee, .. } =
+                    &context.tree.node(unwrap(context.tree, value)).kind
+                && (context.global(*callee, b"pcall") || context.global(*callee, b"xpcall"))
+            {
+                context.finding(
+                    binding.name,
+                    RuleIdentity::IgnoredPcallResult,
+                    "protected-call success status is never read",
+                );
             }
-
-            _ => {}
-        }
-
-        context.concatenation(node, &ancestors);
-        context.invariant(node, &ancestors, options);
-        ancestors.push(node);
-
-        for child in context.tree.children(node).into_iter().rev() {
-            pending.push((child, ancestors.clone()));
-        }
+        });
     }
+
+    if matches!(
+        context.rule,
+        RuleIdentity::NonConstRequire | RuleIdentity::RestrictedModulePaths
+    ) {
+        context.requires(options);
+    }
+
+    let check: fn(&mut Context<'_, '_>, NodeIndex, &[NodeIndex], &Options) = match context.rule {
+        RuleIdentity::IgnoredPcallResult => |context, node, _, _| {
+            if let NodeKind::CallStatement { call } = &context.tree.node(node).kind {
+                context.protected_result(*call);
+            }
+        },
+
+        RuleIdentity::MustUse => |context, node, _, _| {
+            if let NodeKind::CallStatement { call } = &context.tree.node(node).kind {
+                context.pure_result(*call);
+            }
+        },
+
+        RuleIdentity::MismatchedArgumentCount => |context, node, _, _| context.argument_count(node),
+        RuleIdentity::TypeCheckInsideCall => |context, node, _, _| context.type_comparison(node),
+
+        RuleIdentity::NonConstRequire | RuleIdentity::RestrictedModulePaths => {
+            |context, node, _, _| context.require_call(node)
+        }
+
+        RuleIdentity::StringConcatInLoop => {
+            |context, node, ancestors, _| context.concatenation(node, ancestors)
+        }
+
+        RuleIdentity::LoopInvariantCall => {
+            |context, node, ancestors, options| context.invariant(node, ancestors, options)
+        }
+
+        _ => unreachable!("call producer received another rule"),
+    };
+
+    context.walk(options, |context, node, ancestors| {
+        check(context, node, ancestors, options)
+    });
 
     context.finish(options)
 }

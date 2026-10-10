@@ -89,61 +89,76 @@ impl Context<'_, '_> {
         }
     }
 
-    pub(super) fn binary(&mut self, node: NodeIndex) {
-        let tree = self.tree;
-
-        let NodeKind::Binary {
-            left,
-            operator,
-            right,
-        } = &tree.node(node).kind
-        else {
+    fn divide(&mut self, node: NodeIndex) {
+        let Some((_, operator, right)) = self.operands(node) else {
             return;
         };
-
-        let operator = tree.token(*operator).kind;
 
         if matches!(
             operator,
             TokenKind::Symbol(Symbol::Divide | Symbol::FloorDivide | Symbol::Modulo)
-        ) && number(tree, *right) == Some(0.0)
+        ) && number(self.tree, right) == Some(0.0)
         {
             self.finding(
-                *right,
+                right,
                 RuleIdentity::DivideByZero,
                 "division or modulo by zero",
             );
         }
+    }
+
+    fn compare_not_a_number(&mut self, node: NodeIndex) {
+        let Some((left, operator, right)) = self.operands(node) else {
+            return;
+        };
 
         if matches!(
             operator,
             TokenKind::Symbol(Symbol::Equal | Symbol::NotEqual)
-        ) {
-            if nan(tree, *left) || nan(tree, *right) {
-                self.finding(
-                    node,
-                    RuleIdentity::CompareNan,
-                    "comparison with NaN has a fixed result",
-                );
-            }
-
-            if matches!(tree.node(unwrap(tree, *left)).kind, NodeKind::Table { .. })
-                || matches!(tree.node(unwrap(tree, *right)).kind, NodeKind::Table { .. })
-            {
-                self.finding(
-                    node,
-                    RuleIdentity::ConstantTableComparison,
-                    "fresh tables are compared by identity",
-                );
-            }
+        ) && (nan(self.tree, left) || nan(self.tree, right))
+        {
+            self.finding(
+                node,
+                RuleIdentity::CompareNan,
+                "comparison with NaN has a fixed result",
+            );
         }
+    }
+
+    fn compare_table(&mut self, node: NodeIndex) {
+        let Some((left, operator, right)) = self.operands(node) else {
+            return;
+        };
+
+        if matches!(
+            operator,
+            TokenKind::Symbol(Symbol::Equal | Symbol::NotEqual)
+        ) && (matches!(
+            self.tree.node(unwrap(self.tree, left)).kind,
+            NodeKind::Table { .. }
+        ) || matches!(
+            self.tree.node(unwrap(self.tree, right)).kind,
+            NodeKind::Table { .. }
+        )) {
+            self.finding(
+                node,
+                RuleIdentity::ConstantTableComparison,
+                "fresh tables are compared by identity",
+            );
+        }
+    }
+
+    fn conditional_expression(&mut self, node: NodeIndex) {
+        let Some((left, operator, _)) = self.operands(node) else {
+            return;
+        };
 
         if operator == TokenKind::Keyword(Keyword::Or)
             && let NodeKind::Binary {
                 operator, right, ..
-            } = &tree.node(unwrap(tree, *left)).kind
-            && tree.token(*operator).kind == TokenKind::Keyword(Keyword::And)
-            && truth(tree, *right) != Some(false)
+            } = &self.tree.node(unwrap(self.tree, left)).kind
+            && self.tree.token(*operator).kind == TokenKind::Keyword(Keyword::And)
+            && truth(self.tree, *right) != Some(false)
         {
             self.finding(
                 node,
@@ -181,30 +196,18 @@ impl Context<'_, '_> {
             );
         }
     }
-}
 
-fn check(context: &mut Context<'_, '_>, node: NodeIndex, _: &[NodeIndex]) {
-    match &context.tree.node(node).kind {
-        NodeKind::Binary { .. } => context.binary(node),
-        NodeKind::Table { .. } => context.table(node),
-        NodeKind::GenericFor { .. } => context.cloning(node),
+    fn operands(&self, node: NodeIndex) -> Option<(NodeIndex, TokenKind, NodeIndex)> {
+        let NodeKind::Binary {
+            left,
+            operator,
+            right,
+        } = &self.tree.node(node).kind
+        else {
+            return None;
+        };
 
-        NodeKind::String { token }
-            if matches!(
-                context.tree.token(*token).kind,
-                TokenKind::QuotedString
-                    | TokenKind::RawString
-                    | TokenKind::InterpolatedStringSimple
-            ) && literal::bytes(context.tree, node).is_none() =>
-        {
-            context.finding(
-                node,
-                RuleIdentity::BadStringEscape,
-                "string contains an invalid escape",
-            );
-        }
-
-        _ => {}
+        Some((*left, self.tree.token(*operator).kind, *right))
     }
 }
 
@@ -214,6 +217,26 @@ pub(crate) fn evaluate(
     options: &Options,
 ) -> RuleResult {
     let mut context = Context::new(input, settings);
+
+    let check: fn(&mut Context<'_, '_>, NodeIndex, &[NodeIndex]) = match context.rule {
+        RuleIdentity::DivideByZero => |context, node, _| {
+            context.require_number(node);
+            context.divide(node);
+        },
+
+        RuleIdentity::CompareNan => |context, node, _| {
+            context.require_number(node);
+            context.compare_not_a_number(node);
+        },
+
+        RuleIdentity::ConstantTableComparison => |context, node, _| context.compare_table(node),
+        RuleIdentity::AndOrConditional => |context, node, _| context.conditional_expression(node),
+        RuleIdentity::MixedTable => |context, node, _| context.table(node),
+        RuleIdentity::ManualTableClone => |context, node, _| context.cloning(node),
+        RuleIdentity::BadStringEscape => string_escape,
+        _ => unreachable!("expression producer received another rule"),
+    };
+
     context.walk(options, check);
 
     context.finish(options)
@@ -506,4 +529,25 @@ pub(super) fn builtin(name: &[u8]) -> bool {
         b"_VERSION",
     ]
     .contains(&name)
+}
+
+fn string_escape(context: &mut Context<'_, '_>, node: NodeIndex, _: &[NodeIndex]) {
+    match &context.tree.node(node).kind {
+        NodeKind::String { token }
+            if matches!(
+                context.tree.token(*token).kind,
+                TokenKind::QuotedString
+                    | TokenKind::RawString
+                    | TokenKind::InterpolatedStringSimple
+            ) && literal::bytes(context.tree, node).is_none() =>
+        {
+            context.finding(
+                node,
+                RuleIdentity::BadStringEscape,
+                "string contains an invalid escape",
+            );
+        }
+
+        _ => {}
+    }
 }
