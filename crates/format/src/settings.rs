@@ -1,5 +1,5 @@
 //! Formatter configuration and require grouping policies.
-use std::{collections::BTreeSet, io, num::NonZeroUsize, slice};
+use std::{collections::BTreeSet, io, num::NonZeroUsize};
 
 use instar_shared::error::invalid;
 use schemars::JsonSchema;
@@ -172,10 +172,11 @@ impl Requires {
                             )));
                         }
 
-                        validate_patterns(
-                            Some(slice::from_ref(pattern)),
-                            "format.requires.groups",
-                        )?;
+                        globset::Glob::new(pattern).map_err(|error| {
+                            invalid(format!(
+                                "format.requires.groups: invalid glob {pattern:?}: {error}"
+                            ))
+                        })?;
                     }
 
                     group.name.as_str()
@@ -325,12 +326,4 @@ impl FormatOverrides {
 
         Ok(())
     }
-}
-
-fn validate_patterns(patterns: Option<&[String]>, setting: &str) -> io::Result<()> {
-    for pattern in patterns.into_iter().flatten() {
-        globset::Glob::new(pattern).map_err(|error| invalid(format!("{setting}: {error}")))?;
-    }
-
-    Ok(())
 }
