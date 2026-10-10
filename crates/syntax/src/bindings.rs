@@ -1,16 +1,15 @@
 //! Lexical bindings and global identity over typed Luau syntax.
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    time::Instant,
-};
+use std::collections::{BTreeMap, BTreeSet};
 
-use instar_analysis::{Options, Reason};
+use instar_shared::{Availability, Completion, Options, Reason, SourceVersion, Span};
 
 use vermis::{
     token::{Keyword, TokenKind},
     tree::{NodeIndex, NodeKind, NodeList, Tree},
 };
+
+use crate::Tree as SnapshotTree;
 
 /// Lexical declaration category.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -24,11 +23,24 @@ pub enum Category {
     /// Function parameter.
     Parameter,
 
+    /// Implicit receiver of a colon-method declaration.
+    Receiver,
+
     /// Loop binding.
     Loop,
 
     /// Local function.
     Function,
+}
+
+/// Execution realm supplying lexical occurrences and aggregate binding effects.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExecutionScope {
+    /// Ordinary module execution, including its runtime closures.
+    Runtime,
+
+    /// An independent type-function virtual machine and its closures.
+    TypeFunction(NodeIndex),
 }
 
 /// One lexical declaration and its observed uses.
@@ -42,32 +54,49 @@ pub struct Binding {
     /// Initializer expression when available.
     pub value: Option<NodeIndex>,
 
-    /// Whether the binding is read.
+    /// Whether the binding is read in its execution realm.
     pub read: bool,
 
-    /// Whether the binding is reassigned.
+    /// Whether the binding is reassigned in its execution realm.
     pub assigned: bool,
 
-    /// Whether the referenced value is mutated.
+    /// Whether the referenced value is mutated in its execution realm.
     pub mutated: bool,
 }
 
 /// Lexical declarations and references from one immutable syntax tree.
-#[derive(Default)]
-pub struct Bindings {
+pub struct BindingResult {
+    /// Exact snapshot revision supplying these lexical identities.
+    pub source: SourceVersion,
+
     /// Declarations indexed by syntax node identity.
     pub declarations: BTreeMap<usize, Binding>,
 
     /// References mapped to their declaration identities.
     pub references: BTreeMap<usize, usize>,
 
+    /// Execution realm for traversed nodes, declarations and name occurrences.
+    pub execution: BTreeMap<usize, ExecutionScope>,
+
+    /// Name occurrences read by expressions or compound assignments.
+    pub reads: BTreeSet<usize>,
+
+    /// Assignment target occurrences.
+    pub writes: BTreeSet<usize>,
+
+    /// Root receiver occurrences whose members are mutated.
+    pub mutations: BTreeSet<usize>,
+
+    /// Declarations mapped to the prior lexical declarations they shadow.
+    pub shadows: BTreeMap<usize, usize>,
+
     /// Unbound name references.
     pub globals: BTreeSet<usize>,
 
-    /// Global names reassigned in this source.
+    /// Runtime global names reassigned in this source.
     pub global_assignments: BTreeSet<String>,
 
-    /// Global values whose members are mutated in this source.
+    /// Runtime global values whose members are mutated in this source.
     pub global_mutations: BTreeSet<String>,
 
     /// Known function argument counts and variadic status at references.
@@ -75,20 +104,43 @@ pub struct Bindings {
 
     scopes: Vec<BTreeMap<String, usize>>,
     functions: BTreeMap<usize, (usize, bool)>,
-    limits: Option<(Options, Instant)>,
+    options: Options,
+    execution_scope: ExecutionScope,
 
-    /// Why lexical traversal stopped early.
-    pub interruption: Option<Reason>,
+    /// Malformed spans where lexical facts are unavailable.
+    pub recovery: Vec<Span>,
+
+    /// Lexical coverage in the presence of recovered or interrupted syntax.
+    pub availability: Availability,
+
+    /// Whether lexical traversal completed.
+    pub completion: Completion,
 }
 
-impl Bindings {
-    /// Analyzes lexical identity with an optional operation budget.
-    #[must_use]
-    pub fn analyze(tree: &Tree<'_>, operation: Option<(&Options, Instant)>) -> Self {
+impl BindingResult {
+    fn collect(snapshot: &SnapshotTree<'_>, options: &Options) -> Self {
+        let tree = snapshot.syntax();
+
         let mut bindings = Self {
+            source: snapshot.snapshot().version,
+            declarations: BTreeMap::new(),
+            references: BTreeMap::new(),
+            execution: BTreeMap::new(),
+            reads: BTreeSet::new(),
+            writes: BTreeSet::new(),
+            mutations: BTreeSet::new(),
+            shadows: BTreeMap::new(),
+            globals: BTreeSet::new(),
+            global_assignments: BTreeSet::new(),
+            global_mutations: BTreeSet::new(),
+            arities: BTreeMap::new(),
             scopes: vec![BTreeMap::new()],
-            limits: operation.map(|(options, started)| (options.clone(), started)),
-            ..Self::default()
+            functions: BTreeMap::new(),
+            options: options.clone(),
+            execution_scope: ExecutionScope::Runtime,
+            recovery: Vec::new(),
+            availability: Availability::Available,
+            completion: Completion::Complete,
         };
 
         bindings.visit(tree, tree.root);
@@ -96,12 +148,19 @@ impl Bindings {
         bindings
     }
 
-    /// Whether a reference names an unchanged global.
+    /// Whether a reference names an unchanged runtime global.
     #[must_use]
     pub fn global(&self, tree: &Tree<'_>, node: NodeIndex) -> bool {
-        self.globals.contains(&node.get())
+        self.runtime(node)
+            && self.globals.contains(&node.get())
             && !self.global_assignments.contains(&text(tree, node))
             && !self.global_mutations.contains(&text(tree, node))
+    }
+
+    /// Whether a traversed node belongs to ordinary runtime execution.
+    #[must_use]
+    pub fn runtime(&self, node: NodeIndex) -> bool {
+        self.execution.get(&node.get()) == Some(&ExecutionScope::Runtime)
     }
 
     /// Returns the declaration referenced by a syntax node.
@@ -127,6 +186,11 @@ impl Bindings {
         value: Option<NodeIndex>,
     ) {
         let index = name.get();
+        self.execution.insert(index, self.execution_scope);
+
+        if let Some(shadowed) = self.resolve(tree, name) {
+            self.shadows.insert(index, shadowed);
+        }
 
         self.scopes
             .last_mut()
@@ -188,13 +252,18 @@ impl Bindings {
     }
 
     fn read(&mut self, tree: &Tree<'_>, node: NodeIndex) {
+        self.reads.insert(node.get());
+        self.execution.insert(node.get(), self.execution_scope);
+
         if let Some(index) = self.resolve(tree, node) {
             self.references.insert(node.get(), index);
 
-            self.declarations
-                .get_mut(&index)
-                .expect("resolved binding")
-                .read = true;
+            if self.execution.get(&index) == Some(&self.execution_scope) {
+                self.declarations
+                    .get_mut(&index)
+                    .expect("resolved binding")
+                    .read = true;
+            }
 
             if let Some(arity) = self.functions.get(&index) {
                 self.arities.insert(node.get(), *arity);
@@ -205,16 +274,29 @@ impl Bindings {
     }
 
     fn write(&mut self, tree: &Tree<'_>, node: NodeIndex, reading: bool) {
+        self.writes.insert(node.get());
+        self.execution.insert(node.get(), self.execution_scope);
+
+        if reading {
+            self.reads.insert(node.get());
+        }
+
         if matches!(tree.node(node).kind, NodeKind::Name { .. }) {
             if let Some(index) = self.resolve(tree, node) {
                 self.references.insert(node.get(), index);
-                let binding = self.declarations.get_mut(&index).expect("resolved write");
-                binding.assigned = true;
-                binding.read |= reading;
-                self.functions.remove(&index);
+
+                if self.execution.get(&index) == Some(&self.execution_scope) {
+                    let binding = self.declarations.get_mut(&index).expect("resolved write");
+                    binding.assigned = true;
+                    binding.read |= reading;
+                    self.functions.remove(&index);
+                }
             } else {
                 self.globals.insert(node.get());
-                self.global_assignments.insert(text(tree, node));
+
+                if self.execution_scope == ExecutionScope::Runtime {
+                    self.global_assignments.insert(text(tree, node));
+                }
             }
         } else {
             self.mutate(tree, node);
@@ -234,12 +316,17 @@ impl Bindings {
         };
 
         if matches!(tree.node(*receiver).kind, NodeKind::Name { .. }) {
+            self.mutations.insert(receiver.get());
+            self.execution.insert(receiver.get(), self.execution_scope);
+
             if let Some(index) = self.resolve(tree, *receiver) {
-                self.declarations
-                    .get_mut(&index)
-                    .expect("resolved mutation")
-                    .mutated = true;
-            } else {
+                if self.execution.get(&index) == Some(&self.execution_scope) {
+                    self.declarations
+                        .get_mut(&index)
+                        .expect("resolved mutation")
+                        .mutated = true;
+                }
+            } else if self.execution_scope == ExecutionScope::Runtime {
                 self.global_mutations.insert(text(tree, *receiver));
             }
         } else {
@@ -287,8 +374,18 @@ impl Bindings {
             return;
         };
 
-        if prefix.is_some_and(|prefix| tree.token(prefix).bytes(tree.source) == b"type") {
-            return;
+        let type_function =
+            prefix.is_some_and(|prefix| tree.token(prefix).bytes(tree.source) == b"type");
+
+        let execution_scope = self.execution_scope;
+
+        if type_function {
+            self.execution_scope = ExecutionScope::TypeFunction(node);
+            self.execution.insert(node.get(), self.execution_scope);
+        }
+
+        if let Some(name) = name {
+            self.execution.insert(name.get(), self.execution_scope);
         }
 
         let local = prefix.is_some_and(|prefix| {
@@ -296,7 +393,7 @@ impl Bindings {
                 || tree.token(prefix).bytes(tree.source) == b"const"
         });
 
-        if let Some(name) = name {
+        if !type_function && let Some(name) = name {
             if local {
                 self.bind_name(tree, *name, Category::Function, Some(node));
             } else if let NodeKind::FunctionName { path, method, .. } = &tree.node(*name).kind {
@@ -305,13 +402,16 @@ impl Bindings {
                         self.write(tree, first.node, false);
                     } else {
                         self.read(tree, first.node);
+                        self.mutations.insert(first.node.get());
 
                         if let Some(index) = self.resolve(tree, first.node) {
-                            self.declarations
-                                .get_mut(&index)
-                                .expect("function receiver")
-                                .mutated = true;
-                        } else {
+                            if self.execution.get(&index) == Some(&self.execution_scope) {
+                                self.declarations
+                                    .get_mut(&index)
+                                    .expect("function receiver")
+                                    .mutated = true;
+                            }
+                        } else if self.execution_scope == ExecutionScope::Runtime {
                             self.global_mutations.insert(text(tree, first.node));
                         }
                     }
@@ -329,16 +429,28 @@ impl Bindings {
                 ..
             } = &tree.node(*name).kind
         {
+            if let Some(shadowed) = self
+                .scopes
+                .iter()
+                .rev()
+                .find_map(|scope| scope.get("self"))
+                .copied()
+            {
+                self.shadows.insert(method.get(), shadowed);
+            }
+
             self.scopes
                 .last_mut()
                 .expect("method scope")
                 .insert("self".to_owned(), method.get());
 
+            self.execution.insert(method.get(), self.execution_scope);
+
             self.declarations.insert(
                 method.get(),
                 Binding {
                     name: *method,
-                    category: Category::Parameter,
+                    category: Category::Receiver,
                     value: None,
                     read: true,
                     assigned: false,
@@ -362,20 +474,21 @@ impl Bindings {
         }
 
         self.scopes.pop();
+        self.execution_scope = execution_scope;
     }
 
     fn visit(&mut self, tree: &Tree<'_>, node: NodeIndex) {
-        if self.interruption.is_some() {
+        if self.completion != Completion::Complete {
             return;
         }
 
-        if let Some((options, started)) = &self.limits {
-            self.interruption = options.interrupted(*started);
+        if let Some(completion) = self.options.interrupted() {
+            self.completion = completion;
 
-            if self.interruption.is_some() {
-                return;
-            }
+            return;
         }
+
+        self.execution.insert(node.get(), self.execution_scope);
 
         match &tree.node(node).kind {
             NodeKind::Name { .. } => self.read(tree, node),
@@ -575,6 +688,134 @@ impl Bindings {
     }
 }
 
+/// Collects lexical declarations, occurrences and writes without inference.
+#[must_use]
+pub fn bindings(tree: &SnapshotTree<'_>, options: &Options) -> BindingResult {
+    let mut bindings = BindingResult::collect(tree, options);
+
+    bindings.recovery = tree
+        .syntax()
+        .diagnostics
+        .iter()
+        .map(|diagnostic| Span {
+            start: diagnostic.span.start,
+            end: diagnostic.span.end,
+        })
+        .collect();
+
+    if tree.coverage() != &Completion::Complete {
+        bindings.completion = tree.coverage().clone();
+    }
+
+    bindings.availability = if bindings.completion != Completion::Complete {
+        Availability::Unavailable(Reason::FailedPrerequisite)
+    } else if bindings.recovery.is_empty() {
+        Availability::Available
+    } else {
+        Availability::Partial(Reason::UnsupportedSyntax)
+    };
+
+    bindings
+}
+
 fn text(tree: &Tree<'_>, node: NodeIndex) -> String {
     String::from_utf8_lossy(tree.text(node)).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use instar_shared::{Options, SourceIdentity, SourceSnapshot, SourceVersion};
+
+    use crate::{SyntaxSettings, bindings, imports, parse};
+
+    use super::ExecutionScope;
+
+    #[test]
+    fn type_function_effects_do_not_change_runtime_bindings() {
+        let source = SourceSnapshot::from_bytes(
+            SourceVersion {
+                identity: SourceIdentity::new(1),
+                revision: 1,
+            },
+            br#"
+local runtime_loader = require
+local runtime_table = {}
+type function transform(value)
+    require = replacement
+    script.Parent = replacement
+    runtime_loader = replacement
+    runtime_table.changed = true
+    local sandbox = {}
+    sandbox.changed = value
+    local state = value
+    state = nil
+    local unavailable = require("vm")
+    function helper()
+        workspace = replacement
+    end
+    return state
+end
+local module = require("runtime")
+runtime_loader("alias")
+"#,
+        )
+        .expect("UTF-8 regression source");
+
+        let options = Options::default();
+        let parsed = parse(&source, &SyntaxSettings::default(), &options);
+        assert_eq!(parsed.diagnostics.len(), 0);
+        let tree = parsed.tree.syntax();
+        let facts = bindings(&parsed.tree, &options);
+        assert!(facts.global_assignments.is_empty());
+        assert!(facts.global_mutations.is_empty());
+
+        let declaration = |name: &[u8]| {
+            facts
+                .declarations
+                .values()
+                .find(|binding| tree.text(binding.name) == name)
+                .expect("lexical declaration")
+        };
+
+        let loader = declaration(b"runtime_loader");
+        assert!(loader.read);
+        assert!(!loader.assigned);
+        assert!(facts.runtime(loader.name));
+        let table = declaration(b"runtime_table");
+        assert!(!table.read);
+        assert!(!table.mutated);
+        let sandbox = declaration(b"sandbox");
+        assert!(sandbox.read);
+        assert!(sandbox.mutated);
+
+        assert!(matches!(
+            facts.execution.get(&sandbox.name.get()),
+            Some(ExecutionScope::TypeFunction(_))
+        ));
+
+        assert!(declaration(b"state").assigned);
+        assert!(declaration(b"state").read);
+        assert!(declaration(b"value").read);
+
+        let write = facts
+            .writes
+            .iter()
+            .find(|write| facts.references.get(*write) == Some(&loader.name.get()))
+            .expect("retained cross-execution lexical write");
+
+        assert!(matches!(
+            facts.execution.get(write),
+            Some(ExecutionScope::TypeFunction(_))
+        ));
+
+        let imports = imports(&parsed.tree, &options);
+
+        assert_eq!(
+            imports
+                .iter()
+                .filter_map(|import| import.request.as_deref())
+                .collect::<Vec<_>>(),
+            vec!["runtime"]
+        );
+    }
 }

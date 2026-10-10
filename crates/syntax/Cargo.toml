@@ -9,9 +9,11 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-instar-analysis.workspace = true
+instar-shared.workspace = true
 
 vermis.workspace = true
+serde.workspace = true
+schemars.workspace = true
 
 [lints]
 workspace = true
