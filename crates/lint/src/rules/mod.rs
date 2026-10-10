@@ -1,11 +1,6 @@
-mod assignments;
-mod bindings;
-mod calls;
-mod control;
-mod execution;
-mod expressions;
-mod roblox;
-mod syntax;
-
-use execution::Context;
-pub use execution::lint;
+pub(crate) mod assignments;
+pub(crate) mod bindings;
+pub(crate) mod calls;
+pub(crate) mod control;
+pub(crate) mod expressions;
+pub(crate) mod roblox;

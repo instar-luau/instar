@@ -1,25 +1,24 @@
-//! Luau source linting.
+//! Catalog-driven Luau lint rules over caller-supplied snapshots and evidence.
 
-pub mod configuration;
-mod diagnostic;
+mod catalog;
 mod fixes;
-
-#[expect(
-    clippy::arbitrary_source_item_ordering,
-    reason = "Rust requires the macro definition before its re-export"
-)]
-mod inventory;
-
+mod request;
 mod result;
-mod rule;
 mod rules;
-mod source;
+mod settings;
 
-pub use configuration::{Configuration, Level};
-pub use diagnostic::{Diagnostic, Kind};
-pub use fixes::fixes;
-pub use instar_analysis::{Cancellation, Completion, Location, Options, Reason, Related};
-pub use result::Result;
-pub use rule::Rule;
-pub use rules::lint;
-pub use source::{Inference, Require, Source};
+pub use catalog::{
+    FixSupport, Prerequisites, Preset, RuleCategory, RuleDefinition, RuleIdentity, RuleProducer,
+    RuleSchema, rules,
+};
+
+pub use fixes::{FixValidation, RuleFix, collect_fixes};
+pub use request::{ResolvedDependency, RuleInput, run};
+pub use result::{RuleAvailability, RuleResult};
+
+pub use rules::{
+    bindings::{DeprecatedSymbols, ImmutableBindings, RestrictedGlobals, UnusedBindings},
+    calls::RestrictedImports,
+};
+
+pub use settings::{BasicSettings, LintSettings, RuleConfiguration, RuleSettings};

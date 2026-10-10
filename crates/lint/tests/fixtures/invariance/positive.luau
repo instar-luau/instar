@@ -1,1 +1,2 @@
-while running do game:GetService('Players') end
+local running = true
+while running do math.abs(1) end

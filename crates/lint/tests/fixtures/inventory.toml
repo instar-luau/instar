@@ -116,7 +116,7 @@ range = [7, 19]
 
 [invariance]
 rule = "loop_invariant_call"
-range = [17, 43]
+range = [37, 48]
 
 [cloning]
 rule = "manual_table_clone"
@@ -129,10 +129,6 @@ range = [30, 36]
 [bindings]
 rule = "unused_variable"
 range = [6, 12]
-
-[complexity]
-rule = "high_cyclomatic_complexity"
-range = [0, 67]
 
 [constants]
 rule = "prefer_const"

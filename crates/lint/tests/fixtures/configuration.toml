@@ -1,6 +1,3 @@
-[high_cyclomatic_complexity]
-maximum_complexity = 2
-
 [deprecated.paths]
 "old.api" = "new.api"
 

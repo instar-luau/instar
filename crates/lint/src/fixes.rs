@@ -1,86 +1,188 @@
-use std::{io, time::Instant};
+use std::{
+    collections::BTreeSet,
+    io,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
-use instar_analysis::{Edit, Location, Options, error::invalid};
-use instar_syntax::bindings::Bindings;
+use instar_shared::{
+    Diagnostic, EditIdentity, EditIntent, EditProposal, Location, Options, SourceSnapshot, Span,
+    TextEdit, error::invalid,
+};
 
-use vermis::{
+use instar_syntax::{
+    BindingResult,
     token::TokenKind,
     tree::{NodeIndex, NodeKind, Tree},
 };
 
-use crate::{Diagnostic, Kind, Level, Rule};
+use serde::Serialize;
 
-/// Plans safe replacements for supported findings from the exact source revision.
-///
-/// Unsupported findings and incomplete syntax produce no edits. Nothing is written.
+use crate::RuleIdentity;
+
+static NEXT_PROPOSAL: AtomicU64 = AtomicU64::new(1);
+
+/// Validation already established by lint, not a claim of project semantic validation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum FixValidation {
+    /// The replacement preserves the recognized syntax operation.
+    Syntax,
+
+    /// The replacement preserves established lexical binding identity.
+    Bindings,
+}
+
+/// A revision-anchored proposal; project validates semantics and applies it separately.
+#[derive(Clone, Debug, Serialize)]
+pub struct RuleFix {
+    /// Catalog rule proposing the correction.
+    pub rule: RuleIdentity,
+
+    /// Shared guarded edits, without write authority.
+    pub proposal: EditProposal,
+
+    /// Guarantees established while constructing the proposal.
+    pub validation: FixValidation,
+}
+
+/// Collects only selected rules' valid, nonconflicting proposals from supplied snapshots.
 ///
 /// # Errors
-/// Returns mismatched revisions, invalid ranges, or interruption failures.
-pub fn fixes<Module: Clone>(
-    diagnostic: &Diagnostic<Module>,
-    source: &str,
-    revision: u64,
+/// Rejects stale guards, missing snapshots, invalid ranges, conflicting selected edits,
+/// inconsistent proposal identities, and interruption. No source is changed.
+pub fn collect_fixes(
+    fixes: &[RuleFix],
+    selected: &[RuleIdentity],
+    sources: &[SourceSnapshot],
     options: &Options,
-) -> io::Result<Vec<Edit<Module>>> {
-    let started = Instant::now();
-    options.check(started)?;
-    let range = diagnostic.location.range;
+) -> io::Result<Vec<RuleFix>> {
+    let mut accepted = Vec::new();
+    let mut identities = BTreeSet::new();
+    let mut edits: Vec<&TextEdit> = Vec::new();
+    let mut source_identities = BTreeSet::new();
 
-    if revision != diagnostic.location.revision || source.get(range[0]..range[1]).is_none() {
-        return Err(invalid("diagnostic fix source revision mismatch"));
+    for source in sources {
+        options.check()?;
+        source.validate()?;
+
+        if !source_identities.insert(source.version.identity) {
+            return Err(invalid("duplicate fix snapshot identity"));
+        }
     }
 
-    let Kind::Rule(rule) = diagnostic.kind else {
-        return Ok(Vec::new());
-    };
+    for fix in fixes.iter().filter(|fix| selected.contains(&fix.rule)) {
+        options.check()?;
 
-    if diagnostic.level == Level::Allow
-        || !matches!(rule, Rule::ParenthesizedConditions | Rule::SelfAssignment)
+        if !identities.insert(fix.proposal.identity) {
+            if accepted.iter().any(|accepted: &RuleFix| {
+                accepted.proposal.identity == fix.proposal.identity
+                    && accepted.proposal == fix.proposal
+                    && accepted.rule == fix.rule
+                    && accepted.validation == fix.validation
+            }) {
+                continue;
+            }
+
+            return Err(invalid("conflicting fix proposal identity"));
+        }
+
+        if fix.proposal.intent != EditIntent::Fix || fix.proposal.edits.is_empty() {
+            return Err(invalid("invalid lint fix proposal intent or empty edits"));
+        }
+
+        fix.proposal.validate(sources)?;
+
+        for edit in &fix.proposal.edits {
+            options.check()?;
+
+            if edits.iter().any(|existing| conflicts(existing, edit)) {
+                return Err(invalid("selected lint fixes conflict"));
+            }
+
+            edits.push(edit);
+        }
+
+        accepted.push(fix.clone());
+    }
+
+    options.check()?;
+
+    Ok(accepted)
+}
+
+pub(crate) fn propose(
+    rule: RuleIdentity,
+    finding: &Diagnostic,
+    tree: &Tree<'_>,
+    bindings: &BindingResult,
+    options: &Options,
+) -> Option<RuleFix> {
+    if !tree.diagnostics.is_empty()
+        || !matches!(
+            rule,
+            RuleIdentity::ParenthesizedConditions | RuleIdentity::SelfAssignment
+        )
     {
-        return Ok(Vec::new());
+        return None;
     }
 
-    let tree = vermis::parse(source.as_bytes());
-
-    if !tree.diagnostics.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let bindings = Bindings::analyze(&tree, Some((options, started)));
-
-    if let Some(reason) = bindings.interruption {
-        return Err(reason.error());
-    }
-
+    let range = [finding.primary.span.start, finding.primary.span.end];
     let mut pending = vec![tree.root];
 
     while let Some(node) = pending.pop() {
-        options.check(started)?;
+        if options.interrupted().is_some() {
+            return None;
+        }
 
         let replacements = match rule {
-            Rule::ParenthesizedConditions => parentheses(&tree, node, range),
-            Rule::SelfAssignment => assignment(&tree, node, range, &bindings),
+            RuleIdentity::ParenthesizedConditions => parentheses(tree, node, range),
+            RuleIdentity::SelfAssignment => assignment(tree, node, range, bindings),
             _ => Vec::new(),
         };
 
         if !replacements.is_empty() {
-            return Ok(replacements
-                .into_iter()
-                .map(|(range, text)| Edit {
-                    location: Location {
-                        module: diagnostic.location.module.clone(),
-                        revision,
-                        range,
-                    },
-                    text,
-                })
-                .collect());
+            return Some(RuleFix {
+                rule,
+                proposal: EditProposal {
+                    identity: EditIdentity::new(NEXT_PROPOSAL.fetch_add(1, Ordering::Relaxed)),
+                    edits: replacements
+                        .into_iter()
+                        .map(|(range, replacement)| TextEdit {
+                            location: Location {
+                                source: finding.primary.source,
+                                span: Span {
+                                    start: range[0],
+                                    end: range[1],
+                                },
+                            },
+                            replacement,
+                        })
+                        .collect(),
+                    guards: vec![finding.primary.source],
+                    intent: EditIntent::Fix,
+                },
+                validation: if rule == RuleIdentity::SelfAssignment {
+                    FixValidation::Bindings
+                } else {
+                    FixValidation::Syntax
+                },
+            });
         }
 
         pending.extend(tree.children(node));
     }
 
-    Ok(Vec::new())
+    None
+}
+
+fn conflicts(left: &TextEdit, right: &TextEdit) -> bool {
+    if left.location.source.identity != right.location.source.identity {
+        return false;
+    }
+
+    let left = left.location.span;
+    let right = right.location.span;
+
+    left.start < right.end && right.start < left.end || left.start == right.start
 }
 
 fn parentheses(tree: &Tree<'_>, node: NodeIndex, range: [usize; 2]) -> Vec<([usize; 2], String)> {
@@ -112,7 +214,7 @@ fn assignment(
     tree: &Tree<'_>,
     node: NodeIndex,
     range: [usize; 2],
-    bindings: &Bindings,
+    bindings: &BindingResult,
 ) -> Vec<([usize; 2], String)> {
     let NodeKind::Assignment {
         targets, values, ..

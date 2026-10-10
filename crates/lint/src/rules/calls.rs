@@ -1,58 +1,77 @@
-use std::time::Instant;
+use std::collections::BTreeMap;
 
-use instar_analysis::Options;
+use instar_luau::{ControlFlow, Determinism, EffectFact, FactsResult, SemanticIdentity};
+use instar_shared::{Knowledge, Options, Reason};
 
-use vermis::{
-    token::Span,
-    tree::{NodeIndex, NodeKind},
+use instar_syntax::{
+    literal,
+    token::{Span, Symbol, TokenKind},
+    tree::{NodeIndex, NodeKind, Tree},
 };
 
-use super::{
-    Context,
-    syntax::{arguments_values, comparison, in_loop, range},
-};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
-use crate::Rule;
+use super::expressions::{arguments_values, assignment, comparison, in_loop, range, same, unwrap};
+use crate::{RuleIdentity, RuleInput, RuleResult, RuleSettings, request::Context};
+
+/// Restricted decoded import requests and their reasons.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct RestrictedImports {
+    /// Exact requested paths mapped to reasons.
+    pub paths: BTreeMap<String, String>,
+}
 
 impl Context<'_, '_> {
-    pub(super) fn requires(&mut self, options: &Options, started: Instant) {
-        for site in self.source.requires {
-            if options.interrupted(started).is_some() {
+    fn requires(&mut self, options: &Options) {
+        if !matches!(
+            self.rule,
+            RuleIdentity::NonConstRequire | RuleIdentity::RestrictedModulePaths
+        ) {
+            return;
+        }
+
+        for site in self.imports {
+            if let Some(completion) = options.interrupted() {
+                self.result.completion = self.result.completion.clone().combine(completion);
                 break;
             }
 
             if !site.constant {
                 self.emit(
                     Span {
-                        start: site.argument[0],
-                        end: site.argument[1],
+                        start: site.argument.span.start,
+                        end: site.argument.span.end,
                     },
-                    Rule::NonConstRequire,
+                    RuleIdentity::NonConstRequire,
                     "require argument is not statically known",
                 );
             }
 
-            if let Some(path) = &site.path
-                && let Some(reason) = self
-                    .source
-                    .configuration
-                    .restricted_module_paths
-                    .paths
-                    .get(path)
-            {
-                self.emit(
-                    Span {
-                        start: site.argument[0],
-                        end: site.argument[1],
-                    },
-                    Rule::RestrictedModulePaths,
-                    format!("module path {path} is restricted: {reason}"),
-                );
+            if let RuleSettings::RestrictedModulePaths(settings) = self.parameters {
+                match &site.requested {
+                    Knowledge::Known(Some(path)) => {
+                        if let Some(reason) = settings.paths.get(path) {
+                            self.emit(
+                                Span {
+                                    start: site.argument.span.start,
+                                    end: site.argument.span.end,
+                                },
+                                RuleIdentity::RestrictedModulePaths,
+                                format!("module path {path} is restricted: {reason}"),
+                            );
+                        }
+                    }
+
+                    Knowledge::Unavailable(reason) => self.unavailable(*reason),
+                    Knowledge::Known(None) => {}
+                }
             }
         }
     }
 
-    pub(super) fn discarded(&mut self, node: NodeIndex) {
+    fn discarded(&mut self, node: NodeIndex) {
         let NodeKind::Call { callee, .. } = &self.tree.node(node).kind else {
             return;
         };
@@ -60,13 +79,13 @@ impl Context<'_, '_> {
         if self.global(*callee, b"pcall") || self.global(*callee, b"xpcall") {
             self.finding(
                 node,
-                Rule::IgnoredPcallResult,
+                RuleIdentity::IgnoredPcallResult,
                 "protected-call result is discarded",
             );
         }
 
         if let NodeKind::Field { receiver, name, .. } = &self.tree.node(*callee).kind {
-            let pure = (self.global(*receiver, b"math")
+            let required = (self.global(*receiver, b"math")
                 && matches!(
                     self.tree.text(*name),
                     b"abs"
@@ -89,23 +108,17 @@ impl Context<'_, '_> {
                 || (self.global(*receiver, b"table")
                     && matches!(self.tree.text(*name), b"clone" | b"concat" | b"find"));
 
-            if pure {
+            if required {
                 self.finding(
                     node,
-                    Rule::MustUse,
+                    RuleIdentity::MustUse,
                     "result of a pure function is discarded",
                 );
             }
         }
     }
 
-    pub(super) fn call(
-        &mut self,
-        node: NodeIndex,
-        callee: NodeIndex,
-        arguments: NodeIndex,
-        ancestors: &[NodeIndex],
-    ) {
+    fn call(&mut self, node: NodeIndex, callee: NodeIndex, arguments: NodeIndex) {
         let values = arguments_values(self.tree, arguments);
 
         if (self.global(callee, b"type") || self.global(callee, b"typeof"))
@@ -114,12 +127,21 @@ impl Context<'_, '_> {
         {
             self.finding(
                 node,
-                Rule::TypeCheckInsideCall,
+                RuleIdentity::TypeCheckInsideCall,
                 "comparison belongs outside the type check",
             );
         }
 
-        if let Some(&(expected, variadic)) = self.bindings.arities.get(&callee.get()) {
+        let semantic = self.rule == RuleIdentity::MismatchedArgumentCount
+            && self.facts.is_some_and(|facts| {
+                facts.facts.calls.iter().any(|call| call.location.source == self.source.version
+            && [call.location.span.start, call.location.span.end] == range(self.tree, node)
+            && matches!(&call.signatures, Knowledge::Known(signatures) if !signatures.is_empty()))
+            });
+
+        if self.rule == RuleIdentity::MismatchedArgumentCount && semantic {
+            self.semantic_count(node, &values);
+        } else if let Some(&(expected, variadic)) = self.bindings.arities.get(&callee.get()) {
             let expands = values.last().is_some_and(|value| {
                 matches!(
                     self.tree.node(*value).kind,
@@ -127,35 +149,465 @@ impl Context<'_, '_> {
                 )
             });
 
-            if (values.len() > expected && !variadic) || (values.len() < expected && !expands) {
+            if values.len() - usize::from(expands) > expected && !variadic
+                || values.len() < expected && !expands
+            {
                 self.finding(
                     node,
-                    Rule::MismatchedArgumentCount,
+                    RuleIdentity::MismatchedArgumentCount,
                     "call argument count differs from the local function declaration",
                 );
             }
+        } else if self.rule == RuleIdentity::MismatchedArgumentCount {
+            self.semantic_count(node, &values);
         }
 
-        if in_loop(self.tree, node, ancestors)
-            && self
-                .source
-                .requires
+        if self.global(callee, b"require")
+            && !self
+                .imports
                 .iter()
-                .any(|site| site.call == range(self.tree, node) && site.constant)
+                .any(|site| [site.call.span.start, site.call.span.end] == range(self.tree, node))
         {
+            if values.len() == 1 {
+                let argument = unwrap(self.tree, values[0]);
+
+                if let Some(path) = literal::string(self.tree, argument) {
+                    if let RuleSettings::RestrictedModulePaths(settings) = self.parameters
+                        && let Some(reason) = settings.paths.get(&path)
+                    {
+                        self.finding(
+                            argument,
+                            RuleIdentity::RestrictedModulePaths,
+                            format!("module path {path} is restricted: {reason}"),
+                        );
+                    }
+                } else if self.rule == RuleIdentity::NonConstRequire
+                    || self.rule == RuleIdentity::RestrictedModulePaths
+                {
+                    self.unavailable(Reason::FailedPrerequisite);
+                }
+            } else if matches!(
+                self.rule,
+                RuleIdentity::NonConstRequire | RuleIdentity::RestrictedModulePaths
+            ) {
+                self.finding(
+                    node,
+                    RuleIdentity::NonConstRequire,
+                    "require argument is not statically known",
+                );
+            }
+        }
+    }
+
+    fn semantic_count(&mut self, node: NodeIndex, values: &[NodeIndex]) {
+        if self.rule != RuleIdentity::MismatchedArgumentCount {
+            return;
+        }
+
+        let Some(facts) = self.facts else {
+            self.unavailable(Reason::UnavailableSemantics);
+
+            return;
+        };
+
+        let Some(call) = facts.facts.calls.iter().find(|call| {
+            call.location.source == self.source.version
+                && [call.location.span.start, call.location.span.end] == range(self.tree, node)
+        }) else {
+            self.unavailable(Reason::UnavailableSemantics);
+
+            return;
+        };
+
+        let Knowledge::Known(signatures) = &call.signatures else {
+            self.unavailable(Reason::UnavailableSemantics);
+
+            return;
+        };
+
+        if signatures.is_empty() {
+            return;
+        }
+
+        let expands = values.last().is_some_and(|value| {
+            matches!(
+                self.tree.node(*value).kind,
+                NodeKind::Call { .. } | NodeKind::MethodCall { .. } | NodeKind::Variadic { .. }
+            )
+        });
+
+        let count = values.len() - usize::from(expands);
+        let mut unavailable = false;
+
+        for signature in signatures {
+            if !signature.variadic && count > signature.parameters.len() {
+                continue;
+            }
+
+            let Knowledge::Known(minimum) = &signature.minimum_arguments else {
+                unavailable = true;
+                continue;
+            };
+
+            if !expands && count < *minimum {
+                continue;
+            }
+
+            if expands && (!signature.variadic || count < *minimum) {
+                unavailable = true;
+                continue;
+            }
+
+            return;
+        }
+
+        if unavailable {
+            self.unavailable(Reason::UnavailableSemantics);
+        } else {
             self.finding(
                 node,
-                Rule::LoopInvariantCall,
-                "constant require call repeated inside a loop",
+                RuleIdentity::MismatchedArgumentCount,
+                "call argument count is incompatible with every established signature",
             );
         }
     }
+
+    fn concatenation(&mut self, node: NodeIndex, ancestors: &[NodeIndex]) {
+        if !in_loop(self.tree, node, ancestors) {
+            return;
+        }
+
+        let repeated = match &self.tree.node(node).kind {
+            NodeKind::CompoundAssignment { operator, .. } => {
+                self.tree.token(*operator).kind == TokenKind::Symbol(Symbol::ConcatenateAssignment)
+            }
+
+            NodeKind::Binary { left, operator, .. } => {
+                self.tree.token(*operator).kind == TokenKind::Symbol(Symbol::Concatenate)
+                    && ancestors
+                        .last()
+                        .and_then(|parent| assignment(self.tree, *parent))
+                        .is_some_and(|(target, value)| {
+                            value == node && same(self.tree, target, *left)
+                        })
+            }
+
+            _ => false,
+        };
+
+        if repeated {
+            self.finding(
+                node,
+                RuleIdentity::StringConcatInLoop,
+                "repeated concatenation grows a string quadratically",
+            );
+        }
+    }
+
+    fn invariant(&mut self, node: NodeIndex, ancestors: &[NodeIndex], options: &Options) {
+        if self.rule != RuleIdentity::LoopInvariantCall
+            || !matches!(
+                self.tree.node(node).kind,
+                NodeKind::Call { .. } | NodeKind::MethodCall { .. }
+            )
+        {
+            return;
+        }
+
+        if !self.bindings.recovery.is_empty() {
+            self.unavailable(Reason::UnsupportedSyntax);
+
+            return;
+        }
+
+        let Some(loop_node) = enclosing_loop(self.tree, node, ancestors) else {
+            return;
+        };
+
+        let Some(facts) = self.facts else {
+            self.unavailable(Reason::UnavailableSemantics);
+
+            return;
+        };
+
+        let call_span = range(self.tree, node);
+
+        let Some(call) = facts.facts.calls.iter().find(|call| {
+            call.location.source == self.source.version
+                && [call.location.span.start, call.location.span.end] == call_span
+        }) else {
+            self.unavailable(Reason::UnavailableSemantics);
+
+            return;
+        };
+
+        let Knowledge::Known(effect) = &call.effects else {
+            self.unavailable(Reason::UnavailableSemantics);
+
+            return;
+        };
+
+        if !hoistable(effect) {
+            return;
+        }
+
+        let Knowledge::Known(targets) = &call.targets else {
+            self.unavailable(Reason::UnavailableSemantics);
+
+            return;
+        };
+
+        if targets.is_empty() {
+            return;
+        }
+
+        let Some(expression) = facts
+            .facts
+            .expressions
+            .iter()
+            .find(|expression| expression.location == call.location)
+        else {
+            self.unavailable(Reason::UnavailableSemantics);
+
+            return;
+        };
+
+        let Knowledge::Known(dependencies) = &expression.dependencies else {
+            self.unavailable(Reason::UnavailableSemantics);
+
+            return;
+        };
+
+        let Knowledge::Known(expression_effect) = &expression.effects else {
+            self.unavailable(Reason::UnavailableSemantics);
+
+            return;
+        };
+
+        if !hoistable(expression_effect) {
+            return;
+        }
+
+        let loop_span = self.tree.node(loop_node).span;
+
+        let dependencies = dependencies
+            .iter()
+            .chain(&effect.reads)
+            .chain(&expression_effect.reads)
+            .chain(targets)
+            .collect::<Vec<_>>();
+
+        if dependencies.iter().any(|identity| matches!(identity, SemanticIdentity::Source { location, .. } if location.source == self.source.version && loop_span.start <= location.span.start && location.span.end <= loop_span.end)) { return; }
+
+        let Some(writes) = self.loop_writes(loop_node, facts, options) else {
+            return;
+        };
+
+        if dependencies
+            .iter()
+            .any(|dependency| writes.contains(dependency))
+        {
+            return;
+        }
+
+        self.finding(
+            node,
+            RuleIdentity::LoopInvariantCall,
+            "call is proven deterministic, effect-free, and independent of loop writes",
+        );
+    }
+
+    fn loop_writes<'facts>(
+        &mut self,
+        loop_node: NodeIndex,
+        facts: &'facts FactsResult,
+        options: &Options,
+    ) -> Option<Vec<&'facts SemanticIdentity>> {
+        let loop_span = self.tree.node(loop_node).span;
+        let mut writes = Vec::new();
+
+        for index in &self.bindings.writes {
+            if let Some(completion) = options.interrupted() {
+                self.result.completion = self.result.completion.clone().combine(completion);
+
+                return None;
+            }
+
+            let Some(node) = self.tree.nodes.get(*index) else {
+                self.unavailable(Reason::FailedPrerequisite);
+
+                return None;
+            };
+
+            if loop_span.start <= node.span.start && node.span.end <= loop_span.end
+                && !facts.facts.occurrences.iter().any(|occurrence| occurrence.location.source == self.source.version
+                    && occurrence.location.span.start == node.span.start && occurrence.location.span.end == node.span.end
+                    && occurrence.access.writes() && matches!(&occurrence.targets, Knowledge::Known(targets) if !targets.is_empty())) {
+                self.unavailable(Reason::UnavailableSemantics);
+
+                return None;
+            }
+        }
+
+        for occurrence in &facts.facts.occurrences {
+            if let Some(completion) = options.interrupted() {
+                self.result.completion = self.result.completion.clone().combine(completion);
+
+                return None;
+            }
+
+            if occurrence.access.writes()
+                && occurrence.location.source == self.source.version
+                && loop_span.start <= occurrence.location.span.start
+                && occurrence.location.span.end <= loop_span.end
+            {
+                let Knowledge::Known(targets) = &occurrence.targets else {
+                    self.unavailable(Reason::UnavailableSemantics);
+
+                    return None;
+                };
+
+                writes.extend(targets.iter());
+            }
+        }
+
+        let mut pending = vec![loop_node];
+
+        while let Some(candidate) = pending.pop() {
+            if let Some(completion) = options.interrupted() {
+                self.result.completion = self.result.completion.clone().combine(completion);
+
+                return None;
+            }
+
+            if candidate != loop_node
+                && matches!(self.tree.node(candidate).kind, NodeKind::Function { .. })
+            {
+                continue;
+            }
+
+            if requires_effect(&self.tree.node(candidate).kind)
+                && (!matches!(self.tree.node(candidate).kind, NodeKind::Name { .. })
+                    || self.bindings.references.contains_key(&candidate.get())
+                    || self.bindings.globals.contains(&candidate.get()))
+            {
+                let span = range(self.tree, candidate);
+
+                let Some(expression) = facts.facts.expressions.iter().find(|expression| {
+                    expression.location.source == self.source.version
+                        && [expression.location.span.start, expression.location.span.end] == span
+                }) else {
+                    self.unavailable(Reason::UnavailableSemantics);
+
+                    return None;
+                };
+
+                let Knowledge::Known(effect) = &expression.effects else {
+                    self.unavailable(Reason::UnavailableSemantics);
+
+                    return None;
+                };
+
+                if effect.control_flow != ControlFlow::Preserved || effect.may_yield {
+                    return None;
+                }
+
+                writes.extend(effect.writes.iter());
+            }
+
+            pending.extend(self.tree.children(candidate));
+        }
+
+        Some(writes)
+    }
 }
 
-pub(super) fn check(context: &mut Context<'_, '_>, node: NodeIndex, ancestors: &[NodeIndex]) {
-    match &context.tree.node(node).kind {
-        NodeKind::CallStatement { call } => context.discarded(*call),
-        NodeKind::Call { callee, arguments } => context.call(node, *callee, *arguments, ancestors),
-        _ => {}
+pub(crate) fn evaluate(
+    input: &RuleInput<'_, '_>,
+    settings: &RuleSettings,
+    options: &Options,
+) -> RuleResult {
+    let mut context = Context::new(input, settings);
+
+    if context.rule == RuleIdentity::IgnoredPcallResult {
+        context.declarations(options);
     }
+
+    context.requires(options);
+    let mut pending = vec![(context.tree.root, Vec::new())];
+
+    while let Some((node, mut ancestors)) = pending.pop() {
+        if let Some(completion) = options.interrupted() {
+            context.result.completion = context.result.completion.clone().combine(completion);
+            break;
+        }
+
+        match &context.tree.node(node).kind {
+            NodeKind::CallStatement { call } => context.discarded(*call),
+            NodeKind::Call { callee, arguments } => context.call(node, *callee, *arguments),
+
+            NodeKind::MethodCall { arguments, .. } => {
+                context.semantic_count(node, &arguments_values(context.tree, *arguments));
+            }
+
+            _ => {}
+        }
+
+        context.concatenation(node, &ancestors);
+        context.invariant(node, &ancestors, options);
+        ancestors.push(node);
+
+        for child in context.tree.children(node).into_iter().rev() {
+            pending.push((child, ancestors.clone()));
+        }
+    }
+
+    context.finish(options)
+}
+
+fn hoistable(effect: &EffectFact) -> bool {
+    effect.writes.is_empty()
+        && !effect.may_throw
+        && !effect.may_yield
+        && !effect.may_allocate
+        && effect.determinism == Determinism::Deterministic
+        && effect.control_flow == ControlFlow::Preserved
+}
+
+fn enclosing_loop(tree: &Tree<'_>, node: NodeIndex, ancestors: &[NodeIndex]) -> Option<NodeIndex> {
+    for ancestor in ancestors.iter().rev() {
+        match &tree.node(*ancestor).kind {
+            NodeKind::Function { .. } => return None,
+
+            NodeKind::While { body, .. }
+            | NodeKind::Repeat { body, .. }
+            | NodeKind::NumericFor { body, .. }
+            | NodeKind::GenericFor { body, .. } => {
+                let span = tree.node(node).span;
+                let body = tree.node(*body).span;
+
+                return (body.start <= span.start && span.end <= body.end).then_some(*ancestor);
+            }
+
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn requires_effect(kind: &NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::Name { .. }
+            | NodeKind::Field { .. }
+            | NodeKind::Index { .. }
+            | NodeKind::Call { .. }
+            | NodeKind::MethodCall { .. }
+            | NodeKind::Binary { .. }
+            | NodeKind::Unary { .. }
+            | NodeKind::Table { .. }
+            | NodeKind::CompoundAssignment { .. }
+            | NodeKind::GenericFor { .. }
+    )
 }

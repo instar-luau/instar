@@ -1,26 +1,55 @@
-use vermis::{
-    token::{Keyword, Span, TokenKind},
+use instar_shared::Options;
+
+use instar_syntax::{
+    token::{Keyword, Span, Symbol, TokenKind},
     tree::{NodeIndex, NodeKind, NodeList},
 };
 
-use super::{
-    Context,
-    syntax::{
-        arguments_values, assignment, body, empty, empty_table, in_loop, number, same, single,
-        unwrap,
-    },
-};
-
-use crate::Rule;
+use super::expressions::{assignment, body, empty, number, same, single, truth, unwrap};
+use crate::{RuleIdentity, RuleInput, RuleResult, RuleSettings, request::Context};
 
 impl Context<'_, '_> {
+    pub(super) fn condition(&mut self, condition: NodeIndex) {
+        if matches!(self.tree.node(condition).kind, NodeKind::Group { .. }) {
+            self.finding(
+                condition,
+                RuleIdentity::ParenthesizedConditions,
+                "unnecessary parentheses around condition",
+            );
+        }
+
+        let node = unwrap(self.tree, condition);
+
+        if truth(self.tree, node).is_some() {
+            self.finding(
+                node,
+                RuleIdentity::ConstantCondition,
+                "condition has a fixed truth value",
+            );
+        }
+
+        if let NodeKind::Unary { operator, .. } = &self.tree.node(node).kind
+            && self.tree.token(*operator).kind == TokenKind::Symbol(Symbol::Length)
+        {
+            self.finding(
+                node,
+                RuleIdentity::LengthAsCondition,
+                "zero is truthy in Luau; compare the length explicitly",
+            );
+        }
+    }
+
     pub(super) fn loops(&mut self, node: NodeIndex) {
         if let NodeKind::NumericFor {
             step: Some(step), ..
         } = &self.tree.node(node).kind
             && number(self.tree, *step) == Some(0.0)
         {
-            self.finding(*step, Rule::ZeroStepLoop, "numeric loop step is zero");
+            self.finding(
+                *step,
+                RuleIdentity::ZeroStepLoop,
+                "numeric loop step is zero",
+            );
         }
 
         match &self.tree.node(node).kind {
@@ -47,7 +76,7 @@ impl Context<'_, '_> {
                         start: self.tree.token(*keyword).span.start,
                         end: self.tree.token(do_keyword.unwrap_or(*keyword)).span.end,
                     },
-                    Rule::EmptyLoop,
+                    RuleIdentity::EmptyLoop,
                     "empty loop body",
                 );
             }
@@ -55,7 +84,7 @@ impl Context<'_, '_> {
             NodeKind::Repeat { keyword, body, .. } if empty(self.tree, *body) => {
                 self.emit(
                     self.tree.token(*keyword).span,
-                    Rule::EmptyLoop,
+                    RuleIdentity::EmptyLoop,
                     "empty loop body",
                 );
             }
@@ -95,7 +124,7 @@ impl Context<'_, '_> {
                         start: tree.token(*keyword).span.start,
                         end: tree.token(then.unwrap_or(*keyword)).span.end,
                     },
-                    Rule::EmptyIf,
+                    RuleIdentity::EmptyIf,
                     "empty conditional branch",
                 );
             }
@@ -109,7 +138,7 @@ impl Context<'_, '_> {
             {
                 self.emit(
                     tree.token(*keyword).span,
-                    Rule::EmptyIf,
+                    RuleIdentity::EmptyIf,
                     "empty conditional branch",
                 );
             }
@@ -120,7 +149,7 @@ impl Context<'_, '_> {
             {
                 self.finding(
                     node,
-                    Rule::IfSameThenElse,
+                    RuleIdentity::IfSameThenElse,
                     "conditional branches have identical bodies",
                 );
             }
@@ -133,7 +162,7 @@ impl Context<'_, '_> {
                 {
                     self.finding(
                         *condition,
-                        Rule::NegatedCondition,
+                        RuleIdentity::NegatedCondition,
                         "negated condition can be expressed by swapping branches",
                     );
                 }
@@ -147,7 +176,7 @@ impl Context<'_, '_> {
                 {
                     self.finding(
                         node,
-                        Rule::IfExpressionAssignment,
+                        RuleIdentity::IfExpressionAssignment,
                         "matching branch assignments can use an if expression",
                     );
                 }
@@ -164,7 +193,7 @@ impl Context<'_, '_> {
         {
             self.finding(
                 node,
-                Rule::CollapsibleIf,
+                RuleIdentity::CollapsibleIf,
                 "nested single-branch conditionals can be combined",
             );
         }
@@ -194,108 +223,8 @@ impl Context<'_, '_> {
         }) {
             self.finding(
                 node,
-                Rule::ElseAfterReturn,
+                RuleIdentity::ElseAfterReturn,
                 "else follows branches that return",
-            );
-        }
-    }
-
-    pub(super) fn iteration(&mut self, node: NodeIndex, ancestors: &[NodeIndex]) {
-        let tree = self.tree;
-
-        if let NodeKind::MethodCall {
-            receiver,
-            method,
-            arguments,
-            ..
-        } = &tree.node(node).kind
-            && self.global(*receiver, b"game")
-            && tree.text(*method) == b"GetService"
-            && arguments_values(tree, *arguments).len() == 1
-            && matches!(
-                tree.node(arguments_values(tree, *arguments)[0]).kind,
-                NodeKind::String { .. }
-            )
-            && in_loop(tree, node, ancestors)
-        {
-            self.finding(
-                node,
-                Rule::LoopInvariantCall,
-                "GetService call repeated inside a loop",
-            );
-        }
-
-        let NodeKind::GenericFor {
-            bindings,
-            values,
-            body,
-            ..
-        } = &tree.node(node).kind
-        else {
-            return;
-        };
-
-        let bindings = tree.list(bindings);
-        let values = tree.list(values);
-
-        if bindings.len() != 2 || values.len() != 1 {
-            return;
-        }
-
-        let (NodeKind::Binding { name: key, .. }, NodeKind::Binding { name: value, .. }) = (
-            &tree.node(bindings[0].node).kind,
-            &tree.node(bindings[1].node).kind,
-        ) else {
-            return;
-        };
-
-        let NodeKind::Call { callee, arguments } = &tree.node(values[0].node).kind else {
-            return;
-        };
-
-        if !self.global(*callee, b"pairs") || arguments_values(tree, *arguments).len() != 1 {
-            return;
-        }
-
-        let Some(statement) = single(tree, *body) else {
-            return;
-        };
-
-        let Some((target, assigned)) = assignment(tree, statement) else {
-            return;
-        };
-
-        let NodeKind::Index {
-            receiver,
-            key: assigned_key,
-            ..
-        } = &tree.node(target).kind
-        else {
-            return;
-        };
-
-        let Some(destination) = self.bindings.declaration(*receiver) else {
-            return;
-        };
-
-        if destination.assigned
-            || !destination
-                .value
-                .is_some_and(|value| empty_table(tree, value))
-        {
-            return;
-        }
-
-        if matches!(tree.node(assigned).kind, NodeKind::Name { .. })
-            && same(tree, assigned, *value)
-            && same(tree, *assigned_key, *key)
-            && self.bindings.references.get(&assigned.get()) == Some(&value.get())
-            && self.bindings.references.get(&assigned_key.get()) == Some(&key.get())
-        {
-            self.finding(
-                node,
-                Rule::ManualTableClone,
-                "table-copy loop can use table.clone",
             );
         }
     }
@@ -310,9 +239,25 @@ pub(super) fn check(context: &mut Context<'_, '_>, node: NodeIndex, ancestors: &
         } => context.conditional(node, branches, *otherwise),
 
         NodeKind::Else { .. } => context.else_branch(node, ancestors),
+
+        NodeKind::Branch { condition, .. }
+        | NodeKind::While { condition, .. }
+        | NodeKind::Repeat { condition, .. }
+        | NodeKind::Conditional { condition, .. } => context.condition(*condition),
+
         _ => {}
     }
 
     context.loops(node);
-    context.iteration(node, ancestors);
+}
+
+pub(crate) fn evaluate(
+    input: &RuleInput<'_, '_>,
+    settings: &RuleSettings,
+    options: &Options,
+) -> RuleResult {
+    let mut context = Context::new(input, settings);
+    context.walk(options, check);
+
+    context.finish(options)
 }

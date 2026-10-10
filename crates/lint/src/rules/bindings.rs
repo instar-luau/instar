@@ -1,15 +1,77 @@
-use instar_syntax::bindings::Category;
-use vermis::tree::{NodeIndex, NodeKind};
+use std::collections::BTreeMap;
 
-use super::{
-    Context,
-    syntax::{builtin, complexity, path, symbol_path, unwrap},
+use instar_luau::BindingKind;
+use instar_shared::{Knowledge, Options, Reason};
+
+use instar_syntax::{
+    Category,
+    tree::{NodeIndex, NodeKind},
 };
 
-use crate::{Level, Rule};
+use regex::Regex;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use super::expressions::{builtin, path, symbol_path, unwrap};
+use crate::{RuleIdentity, RuleInput, RuleResult, RuleSettings, request::Context};
+
+/// Exemptions for unread lexical declarations.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct UnusedBindings {
+    /// Include unread function parameters.
+    pub parameters: bool,
+
+    /// Include unread loop variables.
+    pub loop_variables: bool,
+
+    /// Regular expression matching exempt names.
+    pub ignore_pattern: String,
+}
+
+impl Default for UnusedBindings {
+    fn default() -> Self {
+        Self {
+            parameters: false,
+            loop_variables: false,
+            ignore_pattern: "^_".to_owned(),
+        }
+    }
+}
+
+/// Policy for declarations whose binding is unchanged.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct ImmutableBindings {
+    /// Retain local declarations when their table value is mutated.
+    pub mutated_tables_stay_local: bool,
+}
+
+/// Project-deprecated global symbol paths.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct DeprecatedSymbols {
+    /// Symbol paths mapped to suggested replacements.
+    pub paths: BTreeMap<String, String>,
+
+    /// Include ambiguous method names matching a configured path.
+    pub ambiguous_methods: bool,
+}
+
+/// Restricted globals and their explanations.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct RestrictedGlobals {
+    /// Global names mapped to reasons.
+    pub names: BTreeMap<String, String>,
+}
 
 impl Context<'_, '_> {
-    pub(super) fn deprecated(&mut self, node: NodeIndex, ancestors: &[NodeIndex]) {
+    fn deprecated(&mut self, node: NodeIndex, ancestors: &[NodeIndex]) {
+        let RuleSettings::Deprecated(settings) = self.parameters else {
+            return;
+        };
+
         let tree = self.tree;
 
         if !matches!(
@@ -19,59 +81,86 @@ impl Context<'_, '_> {
             return;
         }
 
-        let options = &self.source.configuration.deprecated;
-
         if let Some((root, path)) = path(tree, node)
             && self.bindings.global(tree, root)
-            && let Some(replacement) = options.paths.get(&path)
+            && let Some(replacement) = settings.paths.get(&path)
         {
             if ancestors.last().is_some_and(|parent| {
-                symbol_path(tree, *parent).is_some_and(|parent| options.paths.contains_key(&parent))
+                symbol_path(tree, *parent)
+                    .is_some_and(|parent| settings.paths.contains_key(&parent))
             }) {
                 return;
             }
 
             self.finding(
                 node,
-                Rule::Deprecated,
+                RuleIdentity::Deprecated,
                 format!("{path} is deprecated; use {replacement}"),
             );
-        } else if options.ambiguous_methods
+        } else if settings.ambiguous_methods
             && let NodeKind::MethodCall { method, .. } = &tree.node(node).kind
         {
             let method = String::from_utf8_lossy(tree.text(*method));
 
-            if let Some((_, replacement)) = options
+            if let Some((_, replacement)) = settings
                 .paths
                 .iter()
                 .find(|(path, _)| path.rsplit('.').next() == Some(method.as_ref()))
             {
                 self.finding(
                     node,
-                    Rule::Deprecated,
+                    RuleIdentity::Deprecated,
                     format!("method {method} may be deprecated; use {replacement}"),
                 );
             }
         }
     }
 
-    pub(super) fn declarations(&mut self) {
+    pub(crate) fn declarations(&mut self, options: &Options) {
+        if !self.bindings.recovery.is_empty() {
+            self.unavailable(Reason::UnsupportedSyntax);
+
+            return;
+        }
+
         let mut findings = Vec::new();
 
+        let ignored = match self.parameters {
+            RuleSettings::UnusedVariable(settings) => Regex::new(&settings.ignore_pattern).ok(),
+            _ => None,
+        };
+
         for binding in self.bindings.declarations.values() {
-            let name = String::from_utf8_lossy(self.tree.text(binding.name));
-
-            let included = match binding.category {
-                Category::Parameter => self.source.configuration.unused_variable.parameters,
-                Category::Loop => self.source.configuration.unused_variable.loop_variables,
-                _ => true,
-            };
-
-            if included && !binding.read && !self.ignored.is_match(&name) {
-                findings.push((binding.name, Rule::UnusedVariable, "binding is never read"));
+            if let Some(completion) = options.interrupted() {
+                self.result.completion = self.result.completion.clone().combine(completion);
+                break;
             }
 
-            if !binding.read
+            let name = String::from_utf8_lossy(self.tree.text(binding.name));
+
+            if let RuleSettings::UnusedVariable(settings) = self.parameters {
+                let included = match binding.category {
+                    Category::Parameter => settings.parameters,
+                    Category::Loop => settings.loop_variables,
+                    _ => true,
+                };
+
+                if included
+                    && !binding.read
+                    && ignored
+                        .as_ref()
+                        .is_some_and(|ignored| !ignored.is_match(&name))
+                {
+                    findings.push((
+                        binding.name,
+                        RuleIdentity::UnusedVariable,
+                        "binding is never read",
+                    ));
+                }
+            }
+
+            if self.rule == RuleIdentity::IgnoredPcallResult
+                && !binding.read
                 && let Some(value) = binding.value
                 && let NodeKind::Call { callee, .. } =
                     &self.tree.node(unwrap(self.tree, value)).kind
@@ -79,12 +168,16 @@ impl Context<'_, '_> {
             {
                 findings.push((
                     binding.name,
-                    Rule::IgnoredPcallResult,
+                    RuleIdentity::IgnoredPcallResult,
                     "protected-call success status is never read",
                 ));
             }
 
-            if binding.category == Category::Local && binding.value.is_some() && !binding.assigned {
+            if let RuleSettings::PreferConst(settings) = self.parameters
+                && binding.category == Category::Local
+                && binding.value.is_some()
+                && !binding.assigned
+            {
                 let table = binding.value.is_some_and(|value| {
                     matches!(
                         self.tree.node(unwrap(self.tree, value)).kind,
@@ -92,17 +185,10 @@ impl Context<'_, '_> {
                     )
                 });
 
-                if !(table
-                    && binding.mutated
-                    && self
-                        .source
-                        .configuration
-                        .prefer_const
-                        .mutated_tables_stay_local)
-                {
+                if !(table && binding.mutated && settings.mutated_tables_stay_local) {
                     findings.push((
                         binding.name,
-                        Rule::PreferConst,
+                        RuleIdentity::PreferConst,
                         "unchanged local binding can be declared const",
                     ));
                 }
@@ -114,82 +200,120 @@ impl Context<'_, '_> {
         }
     }
 
-    pub(super) fn name(&mut self, node: NodeIndex) {
-        if self.bindings.globals.contains(&node.get()) {
-            self.finding(node, Rule::GlobalUsage, "access to a global binding");
+    fn implicit(&mut self, options: &Options) {
+        let parameter = self.rule == RuleIdentity::ImplicitAnyParameter;
+        let local = self.rule == RuleIdentity::ImplicitAnyLocal;
+
+        if !parameter && !local {
+            return;
+        }
+
+        let Some(facts) = self.facts else {
+            self.unavailable(Reason::UnavailableSemantics);
+
+            return;
+        };
+
+        let mut findings = Vec::new();
+        let mut unavailable = false;
+
+        for binding in self.bindings.declarations.values() {
+            if let Some(completion) = options.interrupted() {
+                self.result.completion = self.result.completion.clone().combine(completion);
+                break;
+            }
+
+            if parameter && binding.category != Category::Parameter
+                || local && !matches!(binding.category, Category::Local | Category::Constant)
+            {
+                continue;
+            }
+
+            let span = self.tree.node(binding.name).span;
+
+            let expected = if parameter {
+                BindingKind::Parameter
+            } else {
+                BindingKind::Local
+            };
+
+            let fact = facts.facts.bindings.iter().find(|fact| fact.kind == expected
+                && matches!(&fact.declaration, Knowledge::Known(Some(location)) if location.source == self.source.version && location.span.start <= span.start && span.end <= location.span.end));
+
+            let Some(fact) = fact else {
+                unavailable = true;
+                continue;
+            };
+
+            if fact.annotation {
+                continue;
+            }
+
+            match &fact.type_information {
+                Knowledge::Known(inferred) if inferred.is_any => findings.push(binding.name),
+                Knowledge::Known(_) => {}
+                Knowledge::Unavailable(_) => unavailable = true,
+            }
+        }
+
+        for node in findings {
+            self.finding(node, self.rule, "unannotated binding has inferred any type");
+        }
+
+        if unavailable {
+            self.unavailable(Reason::UnavailableSemantics);
+        }
+    }
+
+    fn name(&mut self, node: NodeIndex) {
+        if !self.bindings.globals.contains(&node.get()) {
+            return;
+        }
+
+        self.finding(
+            node,
+            RuleIdentity::GlobalUsage,
+            "access to a global binding",
+        );
+
+        if let RuleSettings::RestrictedGlobals(settings) = self.parameters {
             let name = String::from_utf8_lossy(self.tree.text(node));
 
-            if let Some(reason) = self
-                .source
-                .configuration
-                .restricted_globals
-                .names
-                .get(name.as_ref())
-            {
+            if let Some(reason) = settings.names.get(name.as_ref()) {
                 self.finding(
                     node,
-                    Rule::RestrictedGlobals,
+                    RuleIdentity::RestrictedGlobals,
                     format!("global {name} is restricted: {reason}"),
                 );
             }
         }
     }
 
-    pub(super) fn function(&mut self, node: NodeIndex) {
+    fn function(&mut self, node: NodeIndex) {
         let tree = self.tree;
 
         let NodeKind::Function {
-            body: Some(body),
-            prefix,
-            name,
+            prefix: None,
+            name: Some(name),
             ..
         } = &tree.node(node).kind
         else {
             return;
         };
 
-        if prefix.is_some_and(|prefix| tree.token(prefix).bytes(tree.source) == b"type") {
-            return;
-        }
-
-        if prefix.is_none()
-            && let Some(name) = name
+        if let NodeKind::FunctionName {
+            path, method: None, ..
+        } = &tree.node(*name).kind
         {
-            if let NodeKind::FunctionName {
-                path, method: None, ..
-            } = &tree.node(*name).kind
-            {
-                if let [name] = tree.list(path) {
-                    self.unscoped(name.node);
-                }
-            } else {
-                self.unscoped(*name);
+            if let [name] = tree.list(path) {
+                self.unscoped(name.node);
             }
-        }
-
-        if self.source.configuration.high_cyclomatic_complexity.level == Level::Allow {
-            return;
-        }
-
-        let score = complexity(tree, *body) + 1;
-
-        let maximum = self
-            .source
-            .configuration
-            .high_cyclomatic_complexity
-            .maximum_complexity
-            .get();
-
-        if score > maximum {
-            self.finding(
-                node,
-                Rule::HighCyclomaticComplexity,
-                format!("function complexity {score} exceeds maximum {maximum}"),
-            );
+        } else {
+            self.unscoped(*name);
         }
     }
 
-    pub(super) fn unscoped(&mut self, node: NodeIndex) {
+    pub(crate) fn unscoped(&mut self, node: NodeIndex) {
         if !matches!(self.tree.node(node).kind, NodeKind::Name { .. })
             || !self.bindings.globals.contains(&node.get())
         {
@@ -200,24 +324,45 @@ impl Context<'_, '_> {
 
         if !builtin(name)
             && !self
-                .source
+                .policy
                 .globals
                 .iter()
                 .any(|global| global.as_bytes() == name)
         {
             self.finding(
                 node,
-                Rule::UnscopedVariables,
+                RuleIdentity::UnscopedVariables,
                 "assignment creates an undeclared global",
             );
         }
     }
 }
 
-pub(super) fn check(context: &mut Context<'_, '_>, node: NodeIndex, ancestors: &[NodeIndex]) {
+pub(crate) fn evaluate(
+    input: &RuleInput<'_, '_>,
+    settings: &RuleSettings,
+    options: &Options,
+) -> RuleResult {
+    let mut context = Context::new(input, settings);
+    context.declarations(options);
+    context.implicit(options);
+    context.walk(options, check);
+
+    context.finish(options)
+}
+
+fn check(context: &mut Context<'_, '_>, node: NodeIndex, ancestors: &[NodeIndex]) {
     match &context.tree.node(node).kind {
         NodeKind::Name { .. } => context.name(node),
         NodeKind::Function { .. } => context.function(node),
+
+        NodeKind::Assignment { targets, .. } => {
+            for target in context.tree.list(targets) {
+                context.unscoped(target.node);
+            }
+        }
+
+        NodeKind::CompoundAssignment { target, .. } => context.unscoped(*target),
         _ => {}
     }
 

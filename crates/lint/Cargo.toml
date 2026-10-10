@@ -9,13 +9,13 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-instar-analysis.workspace = true
+instar-shared.workspace = true
+instar-luau.workspace = true
 instar-syntax.workspace = true
 
 regex.workspace = true
 schemars.workspace = true
 serde.workspace = true
-vermis.workspace = true
 
 [dev-dependencies]
 toml.workspace = true

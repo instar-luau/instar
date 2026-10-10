@@ -1,12 +1,12 @@
-use instar_syntax::literal;
-use vermis::tree::{NodeIndex, NodeKind};
+use instar_shared::Options;
 
-use super::{
-    Context,
-    syntax::{arguments_values, number, unwrap},
+use instar_syntax::{
+    literal,
+    tree::{NodeIndex, NodeKind},
 };
 
-use crate::Rule;
+use super::expressions::{arguments_values, number, unwrap};
+use crate::{RuleIdentity, RuleInput, RuleResult, RuleSettings, request::Context};
 
 impl Context<'_, '_> {
     pub(super) fn players(&self, node: NodeIndex) -> bool {
@@ -50,8 +50,8 @@ impl Context<'_, '_> {
     }
 }
 
-pub(super) fn check(context: &mut Context<'_, '_>, node: NodeIndex) {
-    if !context.source.roblox {
+fn check(context: &mut Context<'_, '_>, node: NodeIndex, _: &[NodeIndex]) {
+    if !context.policy.roblox {
         return;
     }
 
@@ -70,8 +70,8 @@ pub(super) fn check(context: &mut Context<'_, '_>, node: NodeIndex) {
         {
             context.finding(
                 node,
-                Rule::RobloxIncorrectColor3NewBounds,
-                "Color3.new channels use a 0â€“1 scale",
+                RuleIdentity::RobloxIncorrectColor3NewBounds,
+                "Color3.new channels use a 0–1 scale",
             );
         }
 
@@ -79,7 +79,7 @@ pub(super) fn check(context: &mut Context<'_, '_>, node: NodeIndex) {
             if values.len() == 2 {
                 context.finding(
                     node,
-                    Rule::RobloxSuspiciousUdim2New,
+                    RuleIdentity::RobloxSuspiciousUdim2New,
                     "UDim2.new needs scale and offset components for both axes",
                 );
             }
@@ -94,7 +94,7 @@ pub(super) fn check(context: &mut Context<'_, '_>, node: NodeIndex) {
                 if scale || offset {
                     context.finding(
                         node,
-                        Rule::RobloxManualFromscaleOrFromoffset,
+                        RuleIdentity::RobloxManualFromscaleOrFromoffset,
                         if scale {
                             "use UDim2.fromScale when both offsets are zero"
                         } else {
@@ -114,8 +114,19 @@ pub(super) fn check(context: &mut Context<'_, '_>, node: NodeIndex) {
     {
         context.finding(
             node,
-            Rule::RobloxPreferGetPlayers,
+            RuleIdentity::RobloxPreferGetPlayers,
             "use Players:GetPlayers() to select players",
         );
     }
+}
+
+pub(crate) fn evaluate(
+    input: &RuleInput<'_, '_>,
+    settings: &RuleSettings,
+    options: &Options,
+) -> RuleResult {
+    let mut context = Context::new(input, settings);
+    context.walk(options, check);
+
+    context.finish(options)
 }
