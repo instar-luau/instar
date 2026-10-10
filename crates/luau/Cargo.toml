@@ -16,13 +16,13 @@ path = "tests/native.rs"
 [dependencies]
 instar-shared.workspace = true
 
-cxx = "1"
-serde = { workspace = true, features = ["rc"] }
+cxx.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 
 [build-dependencies]
-cmake = "0.1"
-cxx-build = "1"
+cmake.workspace = true
+cxx-build.workspace = true
 serde_json.workspace = true
 
 [lints]

@@ -12,10 +12,10 @@ categories.workspace = true
 instar-shared.workspace = true
 instar-syntax.workspace = true
 
-schemars.workspace = true
 globset.workspace = true
+schemars.workspace = true
 serde.workspace = true
-unicode-width = "0.2"
+unicode-width.workspace = true
 
 [dev-dependencies]
 toml.workspace = true

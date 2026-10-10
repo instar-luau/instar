@@ -11,25 +11,45 @@ keywords = ["formatter", "linter", "lsp", "luau", "roblox"]
 categories = ["development-tools"]
 
 [workspace.dependencies]
-instar-shared = { path = "crates/shared" }
-instar-luau = { path = "crates/luau" }
-instar-project = { path = "crates/project" }
 instar-format = { path = "crates/format" }
 instar-lint = { path = "crates/lint" }
+instar-luau = { path = "crates/luau" }
+instar-project = { path = "crates/project" }
 instar-server = { path = "crates/server" }
+instar-shared = { path = "crates/shared" }
 instar-syntax = { path = "crates/syntax" }
 
-globset = "0.4.20"
-notify = "8.2.0"
-petgraph = { version = "0.8.3", default-features = false, features = ["std", "graphmap"] }
+clap = { version = "4", features = ["derive"] }
+cmake = "0.1"
+codespan-reporting = "0.13"
+color-eyre = "0.6"
+console = "0.16"
+cxx = "1"
+cxx-build = "1"
+dirs = "7"
+eyre = "0.6"
+globset = "0.4"
+ignore = "0.4"
+indicatif = "0.18"
+notify = "8"
+petgraph = { version = "0.8", default-features = false, features = ["graphmap", "std"] }
 regex = "1"
 schemars = "1"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
-similar = "3.2.0"
+serde_path_to_error = "0.1"
+sha2 = "0.11"
+similar = "3"
+similar-asserts = "2"
 tempfile = "3"
+tokio = "1"
 toml = "1"
+tower-lsp-server = { version = "0.24.0-rc.1", features = ["url-url"] }
+tower-service = "0.3"
 tracing = { version = "0.1", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["ansi", "fmt", "json", "registry"] }
+unicode-width = "0.2"
+ureq = "3"
 vermis = "0.7"
 
 [workspace.lints.clippy]

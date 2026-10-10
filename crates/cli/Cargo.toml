@@ -13,25 +13,25 @@ name = "instar"
 path = "src/main.rs"
 
 [dependencies]
-instar-shared.workspace = true
-instar-luau.workspace = true
-instar-project.workspace = true
 instar-format.workspace = true
 instar-lint.workspace = true
+instar-luau.workspace = true
+instar-project.workspace = true
 instar-server.workspace = true
+instar-shared.workspace = true
 
-clap = { version = "4", features = ["derive"] }
-codespan-reporting = "0.13"
-color-eyre = "0.6"
-console = "0.16"
-eyre = "0.6"
-indicatif = "0.18"
+clap.workspace = true
+codespan-reporting.workspace = true
+color-eyre.workspace = true
+console.workspace = true
+eyre.workspace = true
+indicatif.workspace = true
 serde_json.workspace = true
-tempfile.workspace = true
 similar.workspace = true
-tokio = { version = "1", features = ["rt", "signal", "time"] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt", "signal", "time"] }
 tracing.workspace = true
-tracing-subscriber = { version = "0.3", default-features = false, features = ["ansi", "fmt", "json", "registry"] }
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

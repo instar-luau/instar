@@ -9,8 +9,8 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-instar-shared.workspace = true
 instar-luau.workspace = true
+instar-shared.workspace = true
 instar-syntax.workspace = true
 
 regex.workspace = true
