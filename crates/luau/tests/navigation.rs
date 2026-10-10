@@ -2,9 +2,11 @@
 
 use std::{io, time::Duration};
 
-use instar_analysis::{Location, Options};
-use instar_bridge::{Configuration, frontend::Frontend};
+use instar_luau::{Native, PositionInput};
+use instar_shared::{Knowledge, Location, Span};
 use serde::Deserialize;
+
+use crate::support::{module, options, request};
 
 #[derive(Deserialize)]
 struct Case {
@@ -20,25 +22,49 @@ struct Case {
 fn definitions_preserve_lexical_identity_and_type_locations() -> io::Result<()> {
     let source = include_str!("fixtures/navigation/input.luau");
     let cases: Vec<Case> = serde_json::from_str(include_str!("fixtures/navigation/expected.json"))?;
-    let mut frontend = Frontend::default();
-    frontend.insert("entry", source, 11, &Configuration::new()?, &[])?;
-    let options = Options::new(Duration::from_secs(5));
+    let input = request(vec![module(1, source, 11)?])?;
+    let mut native = Native::default();
+    let established = native.analyze(&input, &options(Duration::from_secs(5)))?;
+
+    let reference = established.modules[0]
+        .reference
+        .clone()
+        .expect("established reference");
 
     for case in cases {
         let offset = source.find(&case.query).expect("query") + case.offset;
         let target = source.find(&case.target).expect("target") + case.target_offset;
 
+        let occurrence = native
+            .inspect(
+                &PositionInput {
+                    analysis: reference.clone(),
+                    offset,
+                },
+                &options(Duration::from_secs(5)),
+            )?
+            .occurrence
+            .expect("navigation occurrence");
+
+        let locations = if case.type_definition {
+            occurrence.type_definitions
+        } else {
+            occurrence.definitions
+        };
+
         assert_eq!(
-            frontend.definition("entry", offset, case.type_definition, &options)?,
-            vec![Location {
-                module: "entry".to_owned(),
-                revision: 11,
-                range: [target, target + case.length]
-            }],
+            locations,
+            Knowledge::Known(vec![Location::new(
+                &input.modules[0].source.source,
+                Span {
+                    start: target,
+                    end: target + case.length
+                }
+            )?]),
             "{}",
             case.query
         );
     }
 
-    Ok(())
+    native.finish()
 }

@@ -2,248 +2,487 @@
 
 use std::{io, time::Duration};
 
-use instar_analysis::{Completion, Options};
-
-use instar_bridge::{
-    Configuration,
-    frontend::{Definition, Frontend},
+use instar_luau::{
+    AnalysisReference, AnalysisRequest, AnalysisResult, Definition, ModuleInput, Native,
+    PositionInput,
 };
+
+use instar_shared::{Availability, Completion, Knowledge, Reason};
+
+use crate::support::{definition, module, options, request};
+
+fn namespace_fixture(source: &str) -> io::Result<(ModuleInput, Vec<Definition>)> {
+    let mut entry = module(1, source, 1)?;
+
+    let definitions = vec![
+        definition(
+            2,
+            include_str!("fixtures/documentation/namespaces/types.luau"),
+            1,
+            "@game",
+        )?,
+        definition(
+            3,
+            include_str!("fixtures/documentation/namespaces/globals.luau"),
+            1,
+            "@game",
+        )?,
+    ];
+
+    entry
+        .environment
+        .as_mut()
+        .expect("environment")
+        .declarations[0]
+        .definitions
+        .clone_from(&definitions);
+
+    Ok((entry, definitions))
+}
+
+fn shared_declaration_fixture() -> io::Result<AnalysisRequest> {
+    let mut input = request(vec![
+        module(
+            1,
+            include_str!("fixtures/documentation/shared/input.luau"),
+            1,
+        )?,
+        module(
+            2,
+            include_str!("fixtures/documentation/shared/input.luau"),
+            1,
+        )?,
+    ])?;
+
+    for (entry, namespace) in input.modules.iter_mut().zip(["@first", "@second"]) {
+        entry
+            .environment
+            .as_mut()
+            .expect("environment")
+            .declarations[0]
+            .definitions = vec![definition(
+            3,
+            include_str!("fixtures/documentation/declaration/definition.luau"),
+            1,
+            namespace,
+        )?];
+    }
+
+    Ok(input)
+}
+
+fn shared_documentation(
+    native: &mut Native,
+    checked: &AnalysisResult,
+    input: &AnalysisRequest,
+) -> io::Result<()> {
+    for (entry, namespace) in checked.modules.iter().zip(["@first", "@second"]) {
+        assert!(entry.diagnostics.is_empty(), "{:?}", entry.diagnostics);
+
+        let occurrence = native
+            .inspect(
+                &PositionInput {
+                    analysis: entry.reference.clone().expect("updated reference"),
+                    offset: input.modules[0]
+                        .source
+                        .source
+                        .text
+                        .find("= value")
+                        .expect("value read")
+                        + 2,
+                },
+                &options(Duration::from_secs(5)),
+            )?
+            .occurrence
+            .expect("updated documentation");
+
+        assert_eq!(
+            occurrence.documentation,
+            Knowledge::Known(Some(format!("{namespace}/global/value")))
+        );
+    }
+
+    Ok(())
+}
+
+fn namespace_documentation(
+    native: &mut Native,
+    source: &str,
+    reference: &AnalysisReference,
+    symbols: Vec<[String; 2]>,
+) -> io::Result<()> {
+    for ([path, expected], expression) in
+        symbols
+            .into_iter()
+            .zip(["library.call", "thing.Method", "thing,", "type"])
+    {
+        let offset = source.find(expression).expect("symbol expression")
+            + expression.find('.').map_or(0, |separator| separator + 1);
+
+        let occurrence = native
+            .inspect(
+                &PositionInput {
+                    analysis: reference.clone(),
+                    offset,
+                },
+                &options(Duration::from_secs(5)),
+            )?
+            .occurrence
+            .expect("documentation occurrence");
+
+        assert_eq!(
+            occurrence.documentation,
+            Knowledge::Known(Some(expected)),
+            "{path}"
+        );
+    }
+
+    Ok(())
+}
 
 #[test]
 fn namespaces_preserve_builtins_members_and_file_diagnostics() -> io::Result<()> {
-    let mut frontend = Frontend::default();
-    frontend.insert("entry", "return 1", 1, &Configuration::new()?, &[])?;
-    let options = Options::new(Duration::from_secs(5));
-
-    let mut definitions = vec![
-        Definition {
-            name: "types.d.luau".to_owned(),
-            namespace: "@game".to_owned(),
-            revision: 1,
-            text: include_str!("fixtures/documentation/namespaces/types.luau").into(),
-        },
-        Definition {
-            name: "globals.d.luau".to_owned(),
-            namespace: "@game".to_owned(),
-            revision: 1,
-            text: include_str!("fixtures/documentation/namespaces/globals.luau").into(),
-        },
-    ];
-
-    frontend.definitions("entry", &definitions)?;
+    let source = "return library.call, thing.Method, thing, type";
+    let (mut entry, mut definitions) = namespace_fixture(source)?;
 
     let symbols: Vec<[String; 2]> = serde_json::from_str(include_str!(
         "fixtures/documentation/namespaces/expected.json"
     ))?;
 
     assert_eq!(symbols.len(), 4);
+    let mut native = Native::default();
 
-    for [path, expected] in symbols {
-        assert_eq!(
-            frontend.documentation("entry", &path, &options)?.as_deref(),
-            Some(expected.as_str())
-        );
-    }
+    let established = native.analyze(
+        &request(vec![entry.clone()])?,
+        &options(Duration::from_secs(5)),
+    )?;
+
+    let reference = established.modules[0]
+        .reference
+        .clone()
+        .expect("established reference");
+
+    namespace_documentation(&mut native, source, &reference, symbols)?;
 
     for definition in &mut definitions {
         definition.namespace = "@renamed".to_owned();
     }
 
-    frontend.definitions("entry", &definitions)?;
+    entry.analysis.revision = 2;
+
+    entry
+        .environment
+        .as_mut()
+        .expect("environment")
+        .declarations[0]
+        .definitions = definitions.clone();
+
+    let established = native.analyze(
+        &request(vec![entry.clone()])?,
+        &options(Duration::from_secs(5)),
+    )?;
+
+    let occurrence = native
+        .inspect(
+            &PositionInput {
+                analysis: established.modules[0]
+                    .reference
+                    .clone()
+                    .expect("renamed reference"),
+                offset: source.find("call").expect("member"),
+            },
+            &options(Duration::from_secs(5)),
+        )?
+        .occurrence
+        .expect("member documentation");
 
     assert_eq!(
-        frontend
-            .documentation("entry", "global/library.call", &options)?
-            .as_deref(),
-        Some("@renamed/global/library.call")
+        occurrence.documentation,
+        Knowledge::Known(Some("@renamed/global/library.call".to_owned()))
     );
 
-    definitions[1].text = include_str!("fixtures/documentation/namespaces/invalid.luau").into();
-    definitions[1].revision = 2;
-    frontend.definitions("entry", &definitions)?;
-    let result = frontend.check(&["entry".to_owned()], &options)?;
+    definitions[1] = definition(
+        3,
+        include_str!("fixtures/documentation/namespaces/invalid.luau"),
+        2,
+        "@renamed",
+    )?;
+
+    entry.analysis.revision = 3;
+
+    entry
+        .environment
+        .as_mut()
+        .expect("environment")
+        .declarations[0]
+        .definitions = definitions.clone();
+
+    let result = native.analyze(&request(vec![entry])?, &options(Duration::from_secs(5)))?;
     assert_ne!(result.completion, Completion::Complete);
-    assert_ne!(result.diagnostics, Vec::new());
+
+    let diagnostics = &result.modules[0]
+        .environment
+        .as_ref()
+        .expect("environment metadata")
+        .diagnostics;
+
+    assert_ne!(diagnostics.as_slice(), []);
 
     assert!(
-        result
-            .diagnostics
+        diagnostics
             .iter()
-            .all(|diagnostic| diagnostic.location.module == "globals.d.luau"
-                && diagnostic.location.revision == 2)
+            .all(
+                |diagnostic| diagnostic.primary.source == definitions[1].source.version
+                    && diagnostic.primary.source.revision == 2
+            )
     );
 
-    Ok(())
+    native.finish()
 }
 
 #[test]
 fn declaration_identity_is_shared_across_distinct_namespaces() -> io::Result<()> {
-    let mut frontend = Frontend::default();
-    let configuration = Configuration::new()?;
-    let options = Options::new(Duration::from_secs(5));
+    let mut first = module(1, "return value", 1)?;
+    let mut second = module(2, "return value", 1)?;
 
-    for (module, namespace) in [("first", "@first"), ("second", "@second")] {
-        frontend.insert(module, "return 1", 1, &configuration, &[])?;
-
-        frontend.definitions(
-            module,
-            &[Definition {
-                name: "shared.d.luau".to_owned(),
-                namespace: namespace.to_owned(),
-                revision: 1,
-                text: include_str!("fixtures/documentation/declaration/definition.luau").into(),
-            }],
-        )?;
+    for (entry, namespace) in [(&mut first, "@first"), (&mut second, "@second")] {
+        entry
+            .environment
+            .as_mut()
+            .expect("environment")
+            .declarations[0]
+            .definitions = vec![definition(
+            3,
+            include_str!("fixtures/documentation/declaration/definition.luau"),
+            1,
+            namespace,
+        )?];
     }
 
-    for (module, expected) in [
-        ("first", "@first/global/value"),
-        ("second", "@second/global/value"),
-    ] {
+    let mut native = Native::default();
+
+    let result = native.analyze(
+        &request(vec![first, second])?,
+        &options(Duration::from_secs(5)),
+    )?;
+
+    for (entry, expected) in result
+        .modules
+        .iter()
+        .zip(["@first/global/value", "@second/global/value"])
+    {
+        let occurrence = native
+            .inspect(
+                &PositionInput {
+                    analysis: entry.reference.clone().expect("established reference"),
+                    offset: 7,
+                },
+                &options(Duration::from_secs(5)),
+            )?
+            .occurrence
+            .expect("global documentation");
+
         assert_eq!(
-            frontend
-                .documentation(module, "global/value", &options)?
-                .as_deref(),
-            Some(expected)
+            occurrence.documentation,
+            Knowledge::Known(Some(expected.to_owned()))
         );
     }
 
-    Ok(())
+    native.finish()
 }
 
 #[test]
 fn shared_declaration_revisions_update_atomically() -> io::Result<()> {
-    let mut frontend = Frontend::default();
-    let configuration = Configuration::new()?;
-    let options = Options::new(Duration::from_secs(5));
+    let mut input = shared_declaration_fixture()?;
 
-    for module in ["first", "second"] {
-        frontend.insert(
-            module,
-            include_str!("fixtures/documentation/shared/input.luau"),
-            1,
-            &configuration,
-            &[],
-        )?;
+    let mut native = Native::default();
+    native.analyze(&input, &options(Duration::from_secs(5)))?;
 
-        frontend.definitions(
-            module,
-            &[Definition {
-                name: "shared".to_owned(),
-                namespace: format!("@{module}"),
-                revision: 1,
-                text: include_str!("fixtures/documentation/declaration/definition.luau").into(),
-            }],
-        )?;
-    }
+    let mut replacement = definition(
+        3,
+        include_str!("fixtures/documentation/shared/definition.luau"),
+        2,
+        "@first",
+    )?;
 
-    let mut replacement = Definition {
-        name: "shared".to_owned(),
-        namespace: "@first".to_owned(),
-        revision: 2,
-        text: include_str!("fixtures/documentation/shared/definition.luau").into(),
-    };
+    input.modules[0].analysis.revision = 2;
 
-    frontend.definitions("first", &[replacement.clone()])?;
-
-    for module in ["first", "second"] {
-        let checked = frontend.check(&[module.to_owned()], &options)?;
-        assert_eq!(checked.completion, Completion::Complete);
-        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
-
-        assert_eq!(
-            frontend.documentation(module, "global/value", &options)?,
-            Some(format!("@{module}/global/value"))
-        );
-    }
-
-    replacement.text = include_str!("fixtures/documentation/declaration/definition.luau").into();
+    input.modules[0]
+        .environment
+        .as_mut()
+        .expect("environment")
+        .declarations[0]
+        .definitions = vec![replacement.clone()];
 
     assert!(
-        frontend
-            .definitions("first", &[replacement.clone()])
+        native
+            .analyze(&input, &options(Duration::from_secs(5)))
             .is_err()
     );
 
-    replacement.revision = 1;
-    assert!(frontend.definitions("first", &[replacement]).is_err());
-    let checked = frontend.check(&["second".to_owned()], &options)?;
-    assert_eq!(checked.diagnostics, Vec::new());
+    replacement.namespace = "@second".to_owned();
+    input.modules[1].analysis.revision = 2;
 
-    Ok(())
+    input.modules[1]
+        .environment
+        .as_mut()
+        .expect("environment")
+        .declarations[0]
+        .definitions = vec![replacement.clone()];
+
+    let checked = native.analyze(&input, &options(Duration::from_secs(5)))?;
+    assert_eq!(checked.completion, Completion::Complete);
+
+    shared_documentation(&mut native, &checked, &input)?;
+
+    replacement.source = definition(
+        3,
+        include_str!("fixtures/documentation/declaration/definition.luau"),
+        2,
+        "@second",
+    )?
+    .source;
+
+    input.modules[1]
+        .environment
+        .as_mut()
+        .expect("environment")
+        .declarations[0]
+        .definitions = vec![replacement.clone()];
+
+    assert!(
+        native
+            .analyze(&input, &options(Duration::from_secs(5)))
+            .is_err()
+    );
+
+    replacement.source.version.revision = 1;
+
+    input.modules[1]
+        .environment
+        .as_mut()
+        .expect("environment")
+        .declarations[0]
+        .definitions = vec![replacement];
+
+    assert!(
+        native
+            .analyze(&input, &options(Duration::from_secs(5)))
+            .is_err()
+    );
+
+    input.modules[1]
+        .environment
+        .as_mut()
+        .expect("environment")
+        .declarations[0]
+        .definitions = vec![definition(
+        3,
+        include_str!("fixtures/documentation/shared/definition.luau"),
+        2,
+        "@second",
+    )?];
+
+    assert_eq!(
+        native
+            .analyze(&input, &options(Duration::from_secs(5)))?
+            .modules[1]
+            .diagnostics
+            .as_slice(),
+        []
+    );
+
+    native.finish()
 }
 
 #[test]
 fn documentation_preserves_interruption_and_environment_error_categories() -> io::Result<()> {
-    let mut frontend = Frontend::default();
-    frontend.insert("entry", "return 1", 1, &Configuration::new()?, &[])?;
-    let cancelled = Options::new(Duration::from_secs(5));
+    let mut input = request(vec![module(1, "return print", 1)?])?;
+    let mut native = Native::default();
+    let cancelled = options(Duration::from_secs(5));
     cancelled.cancellation.cancel();
 
     assert_eq!(
-        frontend
-            .documentation("entry", "global/print", &cancelled)
-            .expect_err("cancelled")
-            .kind(),
-        io::ErrorKind::Interrupted
+        native.analyze(&input, &cancelled)?.completion,
+        Completion::Cancelled
     );
 
     assert_eq!(
-        frontend
-            .documentation("entry", "global/print", &Options::new(Duration::ZERO))
-            .expect_err("timed out")
-            .kind(),
-        io::ErrorKind::TimedOut
+        native.analyze(&input, &options(Duration::ZERO))?.completion,
+        Completion::TimedOut
     );
 
-    frontend.definitions(
-        "entry",
-        &[Definition {
-            name: "invalid".to_owned(),
-            namespace: "@custom".to_owned(),
-            revision: 1,
-            text: include_str!("fixtures/documentation/documentation/invalid.luau").into(),
-        }],
-    )?;
+    input.modules[0]
+        .environment
+        .as_mut()
+        .expect("environment")
+        .declarations[0]
+        .definitions = vec![definition(
+        2,
+        include_str!("fixtures/documentation/documentation/invalid.luau"),
+        1,
+        "@custom",
+    )?];
+
+    let unavailable = native.analyze(&input, &options(Duration::from_secs(5)))?;
 
     assert_eq!(
-        frontend
-            .documentation(
-                "entry",
-                "global/value",
-                &Options::new(Duration::from_secs(5))
-            )
-            .expect_err("invalid environment")
-            .kind(),
-        io::ErrorKind::InvalidData
+        unavailable.completion,
+        Completion::Incomplete(vec![Reason::UnavailableEnvironment])
     );
 
-    Ok(())
+    assert_eq!(
+        unavailable.modules[0]
+            .environment
+            .as_ref()
+            .expect("environment metadata")
+            .availability,
+        Availability::Unavailable(Reason::UnavailableEnvironment)
+    );
+
+    assert_ne!(
+        unavailable.modules[0]
+            .environment
+            .as_ref()
+            .expect("environment metadata")
+            .diagnostics
+            .as_slice(),
+        []
+    );
+
+    native.finish()
 }
 
 #[test]
 fn unrelated_type_errors_do_not_hide_builtin_documentation() -> io::Result<()> {
-    let mut frontend = Frontend::default();
-
-    frontend.insert(
-        "entry",
-        include_str!("fixtures/documentation/unrelated/input.luau"),
-        1,
-        &Configuration::new()?,
-        &[],
-    )?;
-
-    let options = Options::new(Duration::from_secs(5));
-
-    assert_ne!(
-        frontend.check(&["entry".to_owned()], &options)?.diagnostics,
-        Vec::new()
+    let source = format!(
+        "{}\nprint(value)",
+        include_str!("fixtures/documentation/unrelated/input.luau").replace("return value", "")
     );
+
+    let input = request(vec![module(1, &source, 1)?])?;
+    let mut native = Native::default();
+    let checked = native.analyze(&input, &options(Duration::from_secs(5)))?;
+    assert_ne!(checked.modules[0].diagnostics.as_slice(), []);
+
+    let occurrence = native
+        .inspect(
+            &PositionInput {
+                analysis: checked.modules[0]
+                    .reference
+                    .clone()
+                    .expect("partial established reference"),
+                offset: source.find("print").expect("builtin"),
+            },
+            &options(Duration::from_secs(5)),
+        )?
+        .occurrence
+        .expect("builtin documentation");
 
     assert_eq!(
-        frontend.documentation("entry", "global/print", &options)?,
-        Some("@luau/global/print".to_owned())
+        occurrence.documentation,
+        Knowledge::Known(Some("@luau/global/print".to_owned()))
     );
 
-    Ok(())
+    native.finish()
 }

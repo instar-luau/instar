@@ -2,23 +2,24 @@
 
 use std::{collections::BTreeMap, io, time::Duration};
 
-use instar_analysis::{Kind, Options};
-
-use instar_bridge::{
-    Configuration,
-    flags::{self, Value},
-    frontend::{Frontend, Site},
+use instar_luau::{
+    FlagValue, ImportIdentity, ImportOutcome, ImportRequest, ImportSite, LanguageProfile, Native,
+    ResolvedImport, flags,
 };
+
+use instar_shared::DiagnosticCategory;
+
+use crate::support::{location, module, options, request};
 
 #[test]
 fn flags_validate_registry_names_types_and_aliases() {
     for (name, value) in [
-        ("MissingInstarFlag", Value::Boolean(true)),
-        ("LuauRecursionLimit", Value::Boolean(true)),
-        ("LuauExportValueSyntax", Value::Integer(1)),
+        ("MissingInstarFlag", FlagValue::Boolean(true)),
+        ("LuauRecursionLimit", FlagValue::Boolean(true)),
+        ("LuauExportValueSyntax", FlagValue::Integer(1)),
     ] {
         assert_eq!(
-            flags::validate(&BTreeMap::from([(name.to_owned(), value)]))
+            flags::normalize(&BTreeMap::from([(name.to_owned(), value)]))
                 .expect_err("invalid flag")
                 .kind(),
             io::ErrorKind::InvalidData
@@ -26,9 +27,12 @@ fn flags_validate_registry_names_types_and_aliases() {
     }
 
     assert!(
-        flags::validate(&BTreeMap::from([
-            ("LuauExportValueSyntax".to_owned(), Value::Boolean(true)),
-            ("LuauExportValueSyntax5".to_owned(), Value::Boolean(true)),
+        flags::normalize(&BTreeMap::from([
+            ("LuauExportValueSyntax".to_owned(), FlagValue::Boolean(true)),
+            (
+                "LuauExportValueSyntax5".to_owned(),
+                FlagValue::Boolean(true)
+            )
         ]))
         .is_err()
     );
@@ -45,8 +49,11 @@ fn stdout_flags_reject_enabling_and_accept_disabling() {
         "DebugLuauLogTypeFamilies",
         "DebugLuauMagicTypes",
     ] {
-        let error = flags::validate(&BTreeMap::from([(name.to_owned(), Value::Boolean(true))]))
-            .expect_err("stdout flag must fail");
+        let error = flags::normalize(&BTreeMap::from([(
+            name.to_owned(),
+            FlagValue::Boolean(true),
+        )]))
+        .expect_err("stdout flag must fail");
 
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
 
@@ -55,112 +62,172 @@ fn stdout_flags_reject_enabling_and_accept_disabling() {
             format!("Luau flag writes to stdout and is unavailable: {name}")
         );
 
-        flags::validate(&BTreeMap::from([(name.to_owned(), Value::Boolean(false))]))
-            .expect("disabling stdout must remain valid");
+        flags::normalize(&BTreeMap::from([(
+            name.to_owned(),
+            FlagValue::Boolean(false),
+        )]))
+        .expect("disabling stdout must remain valid");
     }
 }
 
 #[test]
 fn integer_changes_restart_cached_analysis_and_defaults_are_restored() -> io::Result<()> {
-    let mut frontend = Frontend::default();
     let source = format!("return {}1{}", "(".repeat(40), ")".repeat(40));
-    frontend.insert("entry", source.as_str(), 1, &Configuration::new()?, &[])?;
-    let options = Options::new(Duration::from_secs(5));
-    let roots = ["entry".to_owned()];
-    assert_eq!(frontend.check(&roots, &options)?.diagnostics, Vec::new());
+    let mut input = request(vec![module(1, &source, 1)?])?;
+    let mut native = Native::default();
 
-    frontend.flags(
-        "entry",
-        &flags::validate(&BTreeMap::from([(
-            "LuauRecursionLimit".to_owned(),
-            Value::Integer(20),
-        )]))?,
-    )?;
-
-    assert!(
-        frontend
-            .check(&roots, &options)?
+    assert_eq!(
+        native
+            .analyze(&input, &options(Duration::from_secs(5)))?
+            .modules[0]
             .diagnostics
-            .iter()
-            .any(|diagnostic| matches!(diagnostic.kind, Kind::Syntax { .. }))
+            .as_slice(),
+        []
     );
 
-    frontend.flags("entry", &flags::Overrides::default())?;
-    assert_eq!(frontend.check(&roots, &options)?.diagnostics, Vec::new());
+    let changed = BTreeMap::from([("LuauRecursionLimit".to_owned(), FlagValue::Integer(20))]);
+    input.profile = LanguageProfile::new(&changed, 64 * 1024 * 1024)?;
+    input.modules[0].analysis.revision = 2;
+    input.modules[0].source.language.flags = changed.clone();
 
-    Ok(())
+    input.modules[0]
+        .environment
+        .as_mut()
+        .expect("environment")
+        .language
+        .flags = changed;
+
+    assert!(
+        native
+            .analyze(&input, &options(Duration::from_secs(5)))?
+            .modules[0]
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.category == DiagnosticCategory::Syntax)
+    );
+
+    input.profile = LanguageProfile::new(&BTreeMap::new(), 64 * 1024 * 1024)?;
+    input.modules[0].analysis.revision = 3;
+    input.modules[0].source.language.flags.clear();
+
+    input.modules[0]
+        .environment
+        .as_mut()
+        .expect("environment")
+        .language
+        .flags
+        .clear();
+
+    assert_eq!(
+        native
+            .analyze(&input, &options(Duration::from_secs(5)))?
+            .modules[0]
+            .diagnostics
+            .as_slice(),
+        []
+    );
+
+    native.finish()
 }
 
 #[test]
 fn reachable_modules_require_consistent_effective_flags() -> io::Result<()> {
-    let mut frontend = Frontend::default();
-    let configuration = Configuration::new()?;
     let source = "return require('dependency')";
+    let mut entry = module(1, source, 1)?;
+    let dependency = module(2, "return 1", 1)?;
 
-    frontend.insert(
-        "entry",
-        source,
-        1,
-        &configuration,
-        &[Site {
-            call: [7, source.len()],
-            argument: [15, source.len() - 1],
-            static_request: true,
-            target: Some("dependency".to_owned()),
-        }],
-    )?;
+    entry.imports.push(ResolvedImport {
+        site: ImportSite {
+            identity: ImportIdentity(1),
+            call: location(&entry, [7, source.len()])?,
+            argument: location(&entry, [15, source.len() - 1])?,
+            request: ImportRequest::Static("dependency".to_owned()),
+        },
+        outcome: ImportOutcome::Module(dependency.analysis.module),
+    });
 
-    frontend.insert("dependency", "return 1", 1, &configuration, &[])?;
-    frontend.insert("unreachable", "return 1", 1, &configuration, &[])?;
-    let options = Options::new(Duration::from_secs(5));
-    let roots = ["entry".to_owned()];
+    let mut input = request(vec![entry, dependency])?;
+    input.roots.truncate(1);
+    let mut native = Native::default();
 
-    let changed = flags::validate(&BTreeMap::from([(
-        "LuauRecursionLimit".to_owned(),
-        Value::Integer(20),
-    )]))?;
-
-    frontend.flags("unreachable", &changed)?;
-
-    frontend.flags(
-        "entry",
-        &flags::validate(&BTreeMap::from([(
-            "LuauRecursionLimit".to_owned(),
-            Value::Integer(1000),
-        )]))?,
-    )?;
-
-    assert_eq!(frontend.check(&roots, &options)?.diagnostics, Vec::new());
-    frontend.flags("dependency", &changed)?;
-
-    assert!(
-        frontend
-            .check(&roots, &options)
-            .expect_err("conflicting reachable flags")
-            .to_string()
-            .contains("conflicting")
+    assert_eq!(
+        native
+            .analyze(&input, &options(Duration::from_secs(5)))?
+            .modules[0]
+            .diagnostics
+            .as_slice(),
+        []
     );
 
-    frontend.flags("entry", &changed)?;
-    assert_eq!(frontend.check(&roots, &options)?.diagnostics, Vec::new());
+    let changed = BTreeMap::from([("LuauRecursionLimit".to_owned(), FlagValue::Integer(20))]);
+    input.profile = LanguageProfile::new(&changed, 64 * 1024 * 1024)?;
+    input.modules[0].analysis.revision = 2;
+    input.modules[0].source.language.flags = changed.clone();
 
-    frontend.flags(
-        "entry",
-        &flags::validate(&BTreeMap::from([(
-            "LuauExportValueSyntax".to_owned(),
-            Value::Boolean(true),
-        )]))?,
-    )?;
+    input.modules[0]
+        .environment
+        .as_mut()
+        .expect("environment")
+        .language
+        .flags = changed.clone();
 
-    frontend.flags(
-        "dependency",
-        &flags::validate(&BTreeMap::from([(
-            "LuauExportValueSyntax5".to_owned(),
-            Value::Boolean(true),
-        )]))?,
-    )?;
+    assert!(
+        native
+            .analyze(&input, &options(Duration::from_secs(5)))
+            .expect_err("conflicting reachable flags")
+            .to_string()
+            .contains("disagrees")
+    );
 
-    assert_eq!(frontend.check(&roots, &options)?.diagnostics, Vec::new());
+    input.modules[1].analysis.revision = 2;
+    input.modules[1].source.language.flags = changed.clone();
 
-    Ok(())
+    input.modules[1]
+        .environment
+        .as_mut()
+        .expect("environment")
+        .language
+        .flags = changed;
+
+    assert_eq!(
+        native
+            .analyze(&input, &options(Duration::from_secs(5)))?
+            .modules[0]
+            .diagnostics
+            .as_slice(),
+        []
+    );
+
+    let canonical =
+        BTreeMap::from([("LuauExportValueSyntax".to_owned(), FlagValue::Boolean(true))]);
+
+    let alias = BTreeMap::from([(
+        "LuauExportValueSyntax5".to_owned(),
+        FlagValue::Boolean(true),
+    )]);
+
+    input.profile = LanguageProfile::new(&canonical, 64 * 1024 * 1024)?;
+
+    for (module, flags) in input.modules.iter_mut().zip([canonical, alias]) {
+        module.analysis.revision = 3;
+        module.source.language.flags = flags.clone();
+
+        module
+            .environment
+            .as_mut()
+            .expect("environment")
+            .language
+            .flags = flags;
+    }
+
+    assert_eq!(
+        native
+            .analyze(&input, &options(Duration::from_secs(5)))?
+            .modules[0]
+            .diagnostics
+            .as_slice(),
+        []
+    );
+
+    native.finish()
 }

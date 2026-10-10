@@ -1,1 +1,1 @@
-return {luau={lint={['*']=false,LocalUnused=true},linterrors=true}}
+return { linting = { enabled = true, rules = { ["unused-local"] = { severity = "error" } } } }

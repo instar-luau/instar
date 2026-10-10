@@ -1,207 +1,258 @@
 //! Isolated native configuration safeguards.
 
 use std::{
-    env, io,
-    path::Path,
-    process::Command,
-    thread,
+    io,
     time::{Duration, Instant},
 };
 
-use instar_analysis::Options;
-use instar_bridge::{Configuration, Mode};
+use instar_luau::{ConfigurationEvaluator, ConfigurationKey, ConfigurationValue};
+use instar_shared::{Completion, DiagnosticCategory, Reason};
 
-fn isolated(name: &str) -> bool {
-    if env::var("INSTAR_EXTRACTION_CASE").as_deref() == Ok(name) {
-        return false;
-    }
-
-    let mut child = Command::new(env::current_exe().expect("test executable must be available"))
-        .args(["--exact", name, "--nocapture"])
-        .env("INSTAR_EXTRACTION_CASE", name)
-        .spawn()
-        .expect("isolated extraction case must start");
-
-    let started = Instant::now();
-
-    loop {
-        if let Some(status) = child
-            .try_wait()
-            .expect("isolated extraction case must be observable")
-        {
-            assert!(
-                status.success(),
-                "isolated extraction case failed: {status}"
-            );
-
-            return true;
-        }
-
-        if started.elapsed() > Duration::from_secs(10) {
-            child.kill().expect("stalled extraction case must stop");
-
-            child
-                .wait()
-                .expect("stopped extraction case must be reaped");
-
-            panic!("isolated extraction case exceeded its watchdog");
-        }
-
-        thread::sleep(Duration::from_millis(10));
-    }
-}
+use crate::support::{configuration, options};
 
 fn rejected(
-    name: &str,
     source: &str,
-    path: &Path,
+    executable: bool,
     message: &str,
-    kind: io::ErrorKind,
-    timeout: Duration,
-) {
-    if isolated(name) {
-        return;
-    }
-
-    let mut configuration = Configuration::new().expect("native defaults must load");
-
-    configuration
-        .apply(
-            include_str!("fixtures/strict/.config.luau"),
-            Path::new(".config.luau"),
-            &Options::new(Duration::from_secs(2)),
-        )
-        .expect("valid layer must load");
-
-    let previous = configuration.snapshot().expect("snapshot must load");
-    assert_eq!(previous.mode, Mode::Strict);
-
-    let error = configuration
-        .apply(source, path, &Options::new(timeout))
-        .expect_err("invalid layer must fail");
-
-    assert_eq!(error.kind(), kind);
-    assert!(error.to_string().contains(&path.display().to_string()));
-    assert!(error.to_string().contains(message));
-
-    assert_eq!(
-        configuration.snapshot().expect("snapshot must load"),
-        previous
-    );
-}
-
-#[test]
-fn cyclic_table_is_rejected() {
-    rejected(
-        "cyclic_table_is_rejected",
-        include_str!("fixtures/cycle/.config.luau"),
-        Path::new(".config.luau"),
-        "cycle",
-        io::ErrorKind::InvalidData,
-        Duration::from_secs(2),
-    );
-}
-
-#[test]
-fn deep_table_is_rejected() {
-    rejected(
-        "deep_table_is_rejected",
-        include_str!("fixtures/depth/.config.luau"),
-        Path::new(".config.luau"),
-        "depth limit",
-        io::ErrorKind::InvalidData,
-        Duration::from_secs(2),
-    );
-}
-
-#[test]
-fn timeout_cannot_be_caught_by_configuration() {
-    rejected(
-        "timeout_cannot_be_caught_by_configuration",
-        include_str!("fixtures/timeout/.config.luau"),
-        Path::new(".config.luau"),
-        "timed out",
-        io::ErrorKind::TimedOut,
-        Duration::from_millis(50),
-    );
-}
-
-#[test]
-fn timeout_escapes_unyieldable_callbacks() {
-    rejected(
-        "timeout_escapes_unyieldable_callbacks",
-        include_str!("fixtures/callback/.config.luau"),
-        Path::new(".config.luau"),
-        "timed out",
-        io::ErrorKind::TimedOut,
-        Duration::from_millis(50),
-    );
-}
-
-#[test]
-fn require_is_unavailable() {
-    rejected(
-        "require_is_unavailable",
-        include_str!("fixtures/require/.config.luau"),
-        Path::new(".config.luau"),
-        "nil value",
-        io::ErrorKind::InvalidData,
-        Duration::from_secs(2),
-    );
-}
-
-#[test]
-fn native_parse_failure_is_transactional() {
-    rejected(
-        "native_parse_failure_is_transactional",
-        include_str!("fixtures/parsing/.luaurc"),
-        Path::new(".luaurc"),
-        "Unknown key unknown",
-        io::ErrorKind::InvalidData,
-        Duration::from_secs(2),
-    );
-}
-
-#[test]
-fn sandbox_has_no_external_access() {
-    if isolated("sandbox_has_no_external_access") {
-        return;
-    }
-
-    let mut configuration = Configuration::new().expect("native defaults must load");
-
-    configuration
-        .apply(
-            include_str!("fixtures/sandbox/.config.luau"),
-            Path::new(".config.luau"),
-            &Options::new(Duration::from_secs(2)),
-        )
-        .expect("sandbox checks must pass");
-
-    assert_eq!(
-        configuration.snapshot().expect("snapshot must load").mode,
-        Mode::Strict
-    );
-}
-
-#[test]
-fn upstream_defaults_are_preserved() {
-    let snapshot = Configuration::new()
-        .expect("native defaults must load")
-        .snapshot()
-        .expect("snapshot must load");
-
-    assert_eq!(snapshot.mode, Mode::NonStrict);
-    assert!(!snapshot.lint_errors);
-    assert!(snapshot.type_errors);
-    assert_eq!(snapshot.globals, Vec::<String>::new());
-    assert!(snapshot.aliases.is_empty());
-    assert!(!snapshot.lint.is_empty());
+    completion: &Completion,
+    duration: Duration,
+) -> io::Result<()> {
+    let mut evaluator = ConfigurationEvaluator::default();
+    let valid = configuration(include_str!("fixtures/strict/instar.luau"), true)?;
+    let previous = evaluator.evaluate(&valid, &options(Duration::from_secs(2)))?;
+    assert_eq!(previous.completion, Completion::Complete);
+    let checking = previous.values.as_ref().expect("valid layer values");
 
     assert!(
-        snapshot
-            .lint
-            .values()
-            .all(|policy| policy.enabled && !policy.fatal)
+        matches!(checking, ConfigurationValue::Table(entries) if entries.iter().any(|entry| entry.key == ConfigurationKey::String("checking".to_owned())))
     );
+
+    let invalid = configuration(source, executable)?;
+    let started = Instant::now();
+    let failed = evaluator.evaluate(&invalid, &options(duration))?;
+    assert_eq!(&failed.completion, completion);
+    assert!(failed.values.is_none());
+    assert_eq!(failed.source, invalid.source.version);
+
+    if !message.is_empty() {
+        assert!(
+            failed
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains(message))
+        );
+
+        assert!(
+            failed
+                .diagnostics
+                .iter()
+                .all(
+                    |diagnostic| diagnostic.primary.source == invalid.source.version
+                        && diagnostic.category == DiagnosticCategory::Configuration
+                )
+        );
+    }
+
+    if duration <= Duration::from_millis(50) {
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    assert_eq!(
+        evaluator.evaluate(&valid, &options(Duration::from_secs(2)))?,
+        previous
+    );
+
+    evaluator.finish()
+}
+
+#[test]
+fn cyclic_table_is_rejected() -> io::Result<()> {
+    rejected(
+        include_str!("fixtures/cycle/instar.luau"),
+        true,
+        "cycle",
+        &Completion::Incomplete(vec![Reason::UnavailableSemantics]),
+        Duration::from_secs(2),
+    )
+}
+
+#[test]
+fn deep_table_is_rejected() -> io::Result<()> {
+    rejected(
+        include_str!("fixtures/depth/instar.luau"),
+        true,
+        "depth limit",
+        &Completion::Incomplete(vec![Reason::AnalysisLimit]),
+        Duration::from_secs(2),
+    )
+}
+
+#[test]
+fn timeout_cannot_be_caught_by_configuration() -> io::Result<()> {
+    rejected(
+        include_str!("fixtures/timeout/instar.luau"),
+        true,
+        "",
+        &Completion::TimedOut,
+        Duration::from_millis(50),
+    )
+}
+
+#[test]
+fn timeout_escapes_unyieldable_callbacks() -> io::Result<()> {
+    rejected(
+        include_str!("fixtures/callback/instar.luau"),
+        true,
+        "",
+        &Completion::TimedOut,
+        Duration::from_millis(50),
+    )
+}
+
+#[test]
+fn require_is_unavailable() -> io::Result<()> {
+    rejected(
+        include_str!("fixtures/require/instar.luau"),
+        true,
+        "nil value",
+        &Completion::Incomplete(vec![Reason::UnavailableSemantics]),
+        Duration::from_secs(2),
+    )
+}
+
+#[test]
+fn native_parse_failure_is_transactional() -> io::Result<()> {
+    rejected(
+        include_str!("fixtures/parsing/.luaurc"),
+        false,
+        "Unknown key unknown",
+        &Completion::Incomplete(vec![Reason::UnavailableSemantics]),
+        Duration::from_secs(2),
+    )
+}
+
+#[test]
+fn sandbox_has_no_external_access() -> io::Result<()> {
+    let mut evaluator = ConfigurationEvaluator::default();
+    let input = configuration(include_str!("fixtures/sandbox/instar.luau"), true)?;
+    let evaluated = evaluator.evaluate(&input, &options(Duration::from_secs(2)))?;
+    assert_eq!(evaluated.completion, Completion::Complete);
+
+    let Some(ConfigurationValue::Table(entries)) = evaluated.values else {
+        panic!("root table");
+    };
+
+    let Some(ConfigurationValue::Table(checking)) = entries
+        .iter()
+        .find(|entry| entry.key == ConfigurationKey::String("checking".to_owned()))
+        .map(|entry| &entry.value)
+    else {
+        panic!("checking table");
+    };
+
+    assert!(checking.iter().any(
+        |entry| entry.key == ConfigurationKey::String("mode".to_owned())
+            && entry.value == ConfigurationValue::String("strict".to_owned())
+    ));
+
+    evaluator.finish()
+}
+
+#[test]
+fn declarative_values_preserve_generic_configuration() -> io::Result<()> {
+    let mut evaluator = ConfigurationEvaluator::default();
+
+    let input = configuration(
+        "{\"languageMode\":\"nonstrict\",\"lintErrors\":false,\"typeErrors\":true,\"globals\":[],\"aliases\":{}}",
+        false,
+    )?;
+
+    let evaluated = evaluator.evaluate(&input, &options(Duration::from_secs(2)))?;
+    assert_eq!(evaluated.completion, Completion::Complete);
+
+    let Some(ConfigurationValue::Table(entries)) = evaluated.values else {
+        panic!("root table");
+    };
+
+    assert_eq!(entries.len(), 5);
+
+    for (key, value) in [
+        (
+            "languageMode",
+            ConfigurationValue::String("nonstrict".to_owned()),
+        ),
+        ("lintErrors", ConfigurationValue::Boolean(false)),
+        ("typeErrors", ConfigurationValue::Boolean(true)),
+        ("globals", ConfigurationValue::Table(Vec::new())),
+        ("aliases", ConfigurationValue::Table(Vec::new())),
+    ] {
+        assert!(entries.iter().any(
+            |entry| entry.key == ConfigurationKey::String(key.to_owned()) && entry.value == value
+        ));
+    }
+
+    for (source, names, fatal) in [
+        (
+            include_str!("fixtures/warnings/warning/.luaurc"),
+            vec!["LocalUnused"],
+            true,
+        ),
+        (
+            include_str!("fixtures/warnings/typed/.luaurc"),
+            vec!["TableOperations"],
+            false,
+        ),
+        (
+            include_str!("fixtures/warnings/host/.luaurc"),
+            vec!["LocalUnused"],
+            false,
+        ),
+        (
+            include_str!("fixtures/warnings/invalid/.luaurc"),
+            vec!["LocalUnused", "TableLiteral"],
+            false,
+        ),
+    ] {
+        let evaluated = evaluator.evaluate(
+            &configuration(source, false)?,
+            &options(Duration::from_secs(2)),
+        )?;
+
+        assert_eq!(evaluated.completion, Completion::Complete);
+
+        let Some(ConfigurationValue::Table(entries)) = evaluated.values else {
+            panic!("policy root table");
+        };
+
+        let Some(ConfigurationValue::Table(lint)) = entries
+            .iter()
+            .find(|entry| entry.key == ConfigurationKey::String("lint".to_owned()))
+            .map(|entry| &entry.value)
+        else {
+            panic!("upstream lint masks");
+        };
+
+        assert_eq!(lint.len(), names.len() + 1);
+
+        assert!(lint.iter().any(
+            |entry| entry.key == ConfigurationKey::String("*".to_owned())
+                && entry.value == ConfigurationValue::Boolean(false)
+        ));
+
+        for name in names {
+            assert!(lint.iter().any(|entry| entry.key
+                == ConfigurationKey::String(name.to_owned())
+                && entry.value == ConfigurationValue::Boolean(true)));
+        }
+
+        assert_eq!(
+            entries
+                .iter()
+                .find(|entry| entry.key == ConfigurationKey::String("lintErrors".to_owned()))
+                .map(|entry| &entry.value),
+            fatal.then_some(&ConfigurationValue::Boolean(true))
+        );
+    }
+
+    evaluator.finish()
 }

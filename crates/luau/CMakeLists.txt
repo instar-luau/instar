@@ -13,21 +13,14 @@ target_compile_definitions(Luau.VM PRIVATE LUA_USE_LONGJMP=1)
 add_library(bridge STATIC
     native/configuration.cpp
     native/flags.cpp
-    native/frontend.cpp
-    native/frontend/checking.cpp
-    native/frontend/diagnostics.cpp
-    native/frontend/documentation.cpp
-    native/frontend/hierarchy.cpp
-    native/frontend/hover.cpp
-    native/frontend/linting.cpp
-    native/frontend/navigation.cpp
-    native/frontend/parsing.cpp
-    native/frontend/references.cpp
-    native/frontend/roblox.cpp
-    native/frontend/signatures.cpp
-    native/frontend/state.cpp
-    native/frontend/suggestions.cpp
+    native/engine.cpp
+    native/parsing.cpp
+    native/environment.cpp
+    native/analysis.cpp
+    native/semantics.cpp
+    native/linting.cpp
+    native/completion.cpp
     "${CXX_BRIDGE_SOURCE}"
 )
 target_include_directories(bridge PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CXX_INCLUDE_DIRECTORY}" "${CXX_CRATE_DIRECTORY}")
-target_link_libraries(bridge PRIVATE Luau.Config Luau.VM Luau.Analysis)
+target_link_libraries(bridge PRIVATE Luau.Config Luau.Compiler Luau.VM Luau.Analysis)

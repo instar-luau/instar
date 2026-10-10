@@ -1,4 +1,4 @@
-//! Builds the private native configuration and frontend boundary.
+//! Builds the private captured-analysis and configuration boundary.
 
 use std::{
     env, fs, io,
@@ -6,11 +6,13 @@ use std::{
     process::Command,
 };
 
+use serde_json::Value;
+
 fn main() {
     let output = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo must provide OUT_DIR"));
 
     let libraries = output.join("libraries");
-    let generated = cxx_build::bridge("src/boundary.rs");
+    let generated = cxx_build::bridge("src/boundary/mod.rs");
 
     let source = generated
         .get_files()
@@ -52,7 +54,7 @@ fn main() {
 
     export_database(
         &destination.join("build/compile_commands.json"),
-        &output.join("compile_commands.json"),
+        Path::new("compile_commands.json"),
     );
 
     println!("cargo:rustc-link-search=native={}", libraries.display());
@@ -71,9 +73,9 @@ fn main() {
     }
 
     println!("cargo:rerun-if-changed=CMakeLists.txt");
-    println!("cargo:rerun-if-changed=src/boundary.rs");
+    println!("cargo:rerun-if-changed=src/boundary");
     println!("cargo:rerun-if-changed=native");
-    println!("cargo:rerun-if-changed=src/frontend");
+    println!("cargo:rerun-if-changed=src/worker/operation.rs");
     println!("cargo:rerun-if-changed=vendor/luau");
 }
 
@@ -86,7 +88,7 @@ fn export_database(source: &Path, destination: &Path) {
 
     let contents = fs::read(source).expect("native compilation database must be readable");
 
-    let mut entries: Vec<serde_json::Value> = serde_json::from_slice(&contents)
+    let mut entries: Vec<Value> = serde_json::from_slice(&contents)
         .expect("native compilation database must contain valid entries");
 
     let flag = format!("-resource-dir={}", resource.display());
@@ -96,7 +98,7 @@ fn export_database(source: &Path, destination: &Path) {
             arguments
                 .as_array_mut()
                 .expect("compiler arguments must be an array")
-                .push(serde_json::Value::String(flag.clone()));
+                .push(Value::String(flag.clone()));
         } else {
             let command = entry
                 .get_mut("command")
@@ -104,7 +106,7 @@ fn export_database(source: &Path, destination: &Path) {
 
             let original = command.as_str().expect("compiler command must be a string");
             let escaped = flag.replace('\\', "\\\\").replace('"', "\\\"");
-            *command = serde_json::Value::String(format!("{original} \"{escaped}\""));
+            *command = Value::String(format!("{original} \"{escaped}\""));
         }
     }
 

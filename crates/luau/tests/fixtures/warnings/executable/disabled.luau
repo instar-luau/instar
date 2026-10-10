@@ -1,1 +1,1 @@
-return {luau={lint={['*']=false}}}
+return { linting = { enabled = false } }

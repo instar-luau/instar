@@ -1,1 +1,0 @@
-return { luau = { languagemode = "strict" } }

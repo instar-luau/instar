@@ -1,114 +1,217 @@
-//! Revision-anchored native hover and position contracts.
+//! Revision-anchored native inspection and position contracts.
 
 use std::{io, sync::Arc, time::Duration};
 
-use instar_analysis::Options;
-use instar_bridge::{Configuration, frontend::Frontend};
+use instar_luau::{AnalysisReference, Native, PositionInput, TypeFact};
+use instar_shared::{Completion, EventPayload, Knowledge, Reason, Span};
 
-#[test]
-fn hover_retains_types_after_checks_and_tracks_revisions() -> io::Result<()> {
-    let source = include_str!("fixtures/hover/input.luau");
-    let configuration = Configuration::new()?;
-    let options = Options::new(Duration::from_secs(5));
-    let mut frontend = Frontend::default();
-    frontend.insert("entry", source, 7, &configuration, &[])?;
-    frontend.check(&["entry".to_owned()], &options)?;
-    let offset = source.rfind("count").expect("count reference");
+use crate::support::{module, options, request};
 
-    let hover = frontend
-        .hover("entry", offset, &options)?
-        .expect("inferred type");
-
-    assert_eq!(hover.text, "number");
-    assert_eq!(hover.location.module, "entry");
-    assert_eq!(hover.location.revision, 7);
-    assert_eq!(hover.location.range, [offset, offset + "count".len()]);
-    assert!(hover.documentation.is_none());
-
-    let builtin = frontend
-        .hover(
-            "entry",
-            source.find("math.abs").expect("builtin") + 5,
-            &options,
+fn inspect_builtin_and_positions(
+    native: &mut Native,
+    reference: &AnalysisReference,
+    source: &str,
+) -> io::Result<()> {
+    let builtin = native
+        .inspect(
+            &PositionInput {
+                analysis: reference.clone(),
+                offset: source.find("math.abs").expect("builtin") + 5,
+            },
+            &options(Duration::from_secs(5)),
         )?
+        .occurrence
         .expect("builtin signature");
 
-    assert!(builtin.text.contains("number"), "{}", builtin.text);
-    assert!(builtin.documentation.is_some());
+    assert!(
+        matches!(&builtin.type_information, Knowledge::Known(information) if information.display.contains("number"))
+    );
+
+    assert!(matches!(builtin.documentation, Knowledge::Known(Some(_))));
     let unicode = source.find('😀').expect("Unicode string");
 
     assert_eq!(
-        frontend
-            .hover("entry", unicode + 1, &options)
+        native
+            .inspect(
+                &PositionInput {
+                    analysis: reference.clone(),
+                    offset: unicode + 1
+                },
+                &options(Duration::from_secs(5))
+            )
             .expect_err("split UTF-8 position")
             .kind(),
         io::ErrorKind::InvalidInput
     );
 
     assert_eq!(
-        frontend
-            .hover("entry", source.len() + 1, &options)
+        native
+            .inspect(
+                &PositionInput {
+                    analysis: reference.clone(),
+                    offset: source.len() + 1
+                },
+                &options(Duration::from_secs(5))
+            )
             .expect_err("out of bounds position")
             .kind(),
         io::ErrorKind::InvalidInput
-    );
-
-    frontend.insert("entry", source, 8, &configuration, &[])?;
-
-    assert_eq!(
-        frontend
-            .hover("entry", offset, &options)?
-            .expect("new revision")
-            .location
-            .revision,
-        8
-    );
-
-    options.cancellation.cancel();
-
-    assert_eq!(
-        frontend
-            .hover("entry", offset, &options)
-            .expect_err("cancelled query")
-            .kind(),
-        io::ErrorKind::Interrupted
     );
 
     Ok(())
 }
 
 #[test]
+fn hover_retains_types_after_checks_and_tracks_revisions() -> io::Result<()> {
+    let source = include_str!("fixtures/hover/input.luau");
+    let mut input = request(vec![module(1, source, 7)?])?;
+    let mut native = Native::default();
+    let established = native.analyze(&input, &options(Duration::from_secs(5)))?;
+
+    let reference = established.modules[0]
+        .reference
+        .clone()
+        .expect("established reference");
+
+    let offset = source.rfind("count").expect("count reference");
+
+    let hover = native
+        .inspect(
+            &PositionInput {
+                analysis: reference.clone(),
+                offset,
+            },
+            &options(Duration::from_secs(5)),
+        )?
+        .occurrence
+        .expect("inferred type");
+
+    assert!(
+        matches!(&hover.type_information, Knowledge::Known(TypeFact { display, .. }) if display == "number")
+    );
+
+    assert_eq!(
+        hover.location.source,
+        input.modules[0].source.source.version
+    );
+
+    assert_eq!(hover.location.source.revision, 7);
+
+    assert_eq!(
+        hover.location.span,
+        Span {
+            start: offset,
+            end: offset + "count".len()
+        }
+    );
+
+    assert_eq!(hover.documentation, Knowledge::Known(None));
+
+    inspect_builtin_and_positions(&mut native, &reference, source)?;
+
+    input.modules[0] = module(1, source, 8)?;
+    let established = native.analyze(&input, &options(Duration::from_secs(5)))?;
+
+    let stale = native
+        .inspect(
+            &PositionInput {
+                analysis: reference,
+                offset,
+            },
+            &options(Duration::from_secs(5)),
+        )
+        .expect_err("expired reference");
+
+    assert_eq!(
+        stale
+            .get_ref()
+            .and_then(|error| error.downcast_ref::<Reason>()),
+        Some(&Reason::StaleQuery)
+    );
+
+    let reference = established.modules[0]
+        .reference
+        .clone()
+        .expect("new revision");
+
+    assert_eq!(
+        native
+            .inspect(
+                &PositionInput {
+                    analysis: reference.clone(),
+                    offset
+                },
+                &options(Duration::from_secs(5))
+            )?
+            .occurrence
+            .expect("new revision type")
+            .location
+            .source
+            .revision,
+        8
+    );
+
+    let cancelled = options(Duration::from_secs(5));
+    cancelled.cancellation.cancel();
+
+    assert_eq!(
+        native
+            .inspect(
+                &PositionInput {
+                    analysis: reference,
+                    offset
+                },
+                &cancelled
+            )?
+            .completion,
+        Completion::Cancelled
+    );
+
+    native.finish()
+}
+
+#[test]
 fn interrupted_semantic_work_recovers_in_a_fresh_worker() -> io::Result<()> {
     let source = include_str!("fixtures/hover/input.luau");
-    let mut frontend = Frontend::default();
-    frontend.insert("entry", source, 9, &Configuration::new()?, &[])?;
-    let mut options = Options::new(Duration::from_secs(5));
-    let cancellation = options.cancellation.clone();
+    let input = request(vec![module(1, source, 9)?])?;
+    let mut native = Native::default();
+    let mut interrupted = options(Duration::from_secs(5));
+    let cancellation = interrupted.cancellation.clone();
 
-    options.progress = Some(Arc::new(move |progress| {
-        if progress.phase == "Checking" {
+    interrupted.observer = Some(Arc::new(move |event| {
+        if matches!(event.payload, EventPayload::Progress(progress) if progress.phase == "Checking")
+        {
             cancellation.cancel();
         }
     }));
 
-    let offset = source.rfind("count").expect("count reference");
-
     assert_eq!(
-        frontend
-            .hover("entry", offset, &options)
-            .expect_err("interrupted native work")
-            .kind(),
-        io::ErrorKind::Interrupted
+        native.analyze(&input, &interrupted)?.completion,
+        Completion::Cancelled
     );
 
-    assert!(options.cancellation.requested());
+    assert!(interrupted.cancellation.requested());
+    let established = native.analyze(&input, &options(Duration::from_secs(5)))?;
 
-    let recovered = frontend
-        .hover("entry", offset, &Options::new(Duration::from_secs(5)))?
+    let recovered = native
+        .inspect(
+            &PositionInput {
+                analysis: established.modules[0]
+                    .reference
+                    .clone()
+                    .expect("recovered reference"),
+                offset: source.rfind("count").expect("count reference"),
+            },
+            &options(Duration::from_secs(5)),
+        )?
+        .occurrence
         .expect("recovered type");
 
-    assert_eq!(recovered.text, "number");
-    assert_eq!(recovered.location.revision, 9);
+    assert!(
+        matches!(&recovered.type_information, Knowledge::Known(information) if information.display == "number")
+    );
 
-    Ok(())
+    assert_eq!(recovered.location.source.revision, 9);
+
+    native.finish()
 }

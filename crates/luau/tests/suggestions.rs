@@ -2,22 +2,23 @@
 
 use std::{io, time::Duration};
 
-use instar_analysis::{Location, Options};
-
-use instar_bridge::{
-    Configuration,
-    frontend::{Frontend, SuggestionContext, SuggestionKind},
+use instar_luau::{
+    AnalysisPurpose, CompletionContext, CompletionKind, ImportIdentity, ImportOutcome,
+    ImportRequest, ImportSite, Native, PositionInput, ResolvedImport,
 };
 
+use instar_shared::{Location, Span};
 use serde::Deserialize;
+
+use crate::support::{location, module, options, request};
 
 #[derive(Deserialize)]
 struct Case {
     query: String,
     offset: usize,
-    context: SuggestionContext,
+    context: CompletionContext,
     name: String,
-    kind: SuggestionKind,
+    kind: CompletionKind,
     detail: String,
     callable: bool,
     target: String,
@@ -32,28 +33,43 @@ fn native_suggestions_preserve_context_types_and_replacement_ranges() -> io::Res
     let cases: Vec<Case> =
         serde_json::from_str(include_str!("fixtures/suggestions/expected.json"))?;
 
-    let mut frontend = Frontend::default();
-    frontend.insert("entry", source, 11, &Configuration::new()?, &[])?;
-    let options = Options::new(Duration::from_secs(5));
+    let mut input = request(vec![module(1, source, 11)?])?;
+    input.purpose = AnalysisPurpose::Editor;
+    let mut native = Native::default();
+    let established = native.analyze(&input, &options(Duration::from_secs(5)))?;
+
+    let reference = established.modules[0]
+        .reference
+        .clone()
+        .expect("editor reference");
 
     for case in cases {
         let offset = source.find(&case.query).expect("query") + case.offset;
         let target = source.find(&case.target).expect("target") + case.target_offset;
-        let suggestions = frontend.suggest("entry", offset, &options)?;
+
+        let suggestions = native.complete(
+            &PositionInput {
+                analysis: reference.clone(),
+                offset,
+            },
+            &options(Duration::from_secs(5)),
+        )?;
 
         assert_eq!(
-            suggestions.location,
-            Location {
-                module: "entry".to_owned(),
-                revision: 11,
-                range: [target, target + case.length]
-            }
+            suggestions.replacement,
+            Location::new(
+                &input.modules[0].source.source,
+                Span {
+                    start: target,
+                    end: target + case.length
+                }
+            )?
         );
 
         assert_eq!(suggestions.context, case.context);
 
         let entry = suggestions
-            .entries
+            .candidates
             .iter()
             .find(|entry| entry.name == case.name)
             .expect("expected suggestion");
@@ -64,80 +80,179 @@ fn native_suggestions_preserve_context_types_and_replacement_ranges() -> io::Res
 
         assert!(
             suggestions
-                .entries
+                .candidates
                 .windows(2)
                 .all(|entries| entries[0].name < entries[1].name)
         );
     }
 
-    Ok(())
+    native.finish()
 }
 
 #[test]
 fn native_suggestions_recover_after_incomplete_member_access() -> io::Result<()> {
     let source = include_str!("fixtures/suggestions/incomplete.luau");
-    let mut frontend = Frontend::default();
-    frontend.insert("entry", source, 12, &Configuration::new()?, &[])?;
+    let mut input = request(vec![module(1, source, 12)?])?;
+    input.purpose = AnalysisPurpose::Editor;
+    let mut native = Native::default();
+    let established = native.analyze(&input, &options(Duration::from_secs(5)))?;
     let offset = source.trim_end().len();
-    let suggestions = frontend.suggest("entry", offset, &Options::new(Duration::from_secs(5)))?;
-    assert_eq!(suggestions.context, SuggestionContext::Property);
-    assert_eq!(suggestions.location.range, [offset, offset]);
-    assert_eq!(suggestions.index, Some([offset - 1, offset]));
+
+    let suggestions = native.complete(
+        &PositionInput {
+            analysis: established.modules[0]
+                .reference
+                .clone()
+                .expect("editor reference"),
+            offset,
+        },
+        &options(Duration::from_secs(5)),
+    )?;
+
+    assert_eq!(suggestions.context, CompletionContext::Property);
+
+    assert_eq!(
+        suggestions.replacement.span,
+        Span {
+            start: offset,
+            end: offset
+        }
+    );
+
+    assert_eq!(
+        suggestions.operator.map(|location| location.span),
+        Some(Span {
+            start: offset - 1,
+            end: offset
+        })
+    );
 
     assert!(
         suggestions
-            .entries
+            .candidates
             .iter()
             .any(|entry| entry.name == "value" && entry.detail == "number")
     );
 
-    Ok(())
+    native.finish()
 }
 
 #[test]
 fn native_suggestions_distinguish_require_from_shadowed_functions() -> io::Result<()> {
-    let mut frontend = Frontend::default();
-    let configuration = Configuration::new()?;
-    let options = Options::new(Duration::from_secs(5));
+    let mut native = Native::default();
 
     for (source, revision, require) in [
         (include_str!("fixtures/suggestions/import.luau"), 13, true),
         (include_str!("fixtures/suggestions/shadow.luau"), 14, false),
         (include_str!("fixtures/suggestions/nested.luau"), 16, false),
     ] {
-        frontend.insert("entry", source, revision, &configuration, &[])?;
+        let mut entry = module(1, source, revision)?;
         let start = source.find("\"./dependency\"").expect("string argument");
-        let suggestions = frontend.suggest("entry", start + 4, &options)?;
-        assert_eq!(suggestions.context, SuggestionContext::String);
+
+        if revision != 14 {
+            let call = source.find("require(").expect("require call");
+
+            let argument = if require {
+                [start, start + "\"./dependency\"".len()]
+            } else {
+                [
+                    source.find("string.format").expect("argument"),
+                    source.trim_end().len() - 1,
+                ]
+            };
+
+            entry.imports.push(ResolvedImport {
+                site: ImportSite {
+                    identity: ImportIdentity(1),
+                    call: location(&entry, [call, source.trim_end().len()])?,
+                    argument: location(&entry, argument)?,
+                    request: if require {
+                        ImportRequest::Static("./dependency".to_owned())
+                    } else {
+                        ImportRequest::Nonconstant
+                    },
+                },
+                outcome: if require {
+                    ImportOutcome::Unresolved
+                } else {
+                    ImportOutcome::Nonconstant
+                },
+            });
+        }
+
+        let mut input = request(vec![entry])?;
+        input.purpose = AnalysisPurpose::Editor;
+        let established = native.analyze(&input, &options(Duration::from_secs(5)))?;
+
+        let suggestions = native.complete(
+            &PositionInput {
+                analysis: established.modules[0]
+                    .reference
+                    .clone()
+                    .expect("editor reference"),
+                offset: start + 4,
+            },
+            &options(Duration::from_secs(5)),
+        )?;
+
+        assert_eq!(suggestions.context, CompletionContext::String);
         assert_eq!(suggestions.require, require);
         assert_eq!(suggestions.prefix.as_deref(), Some("./d"));
 
         assert_eq!(
-            &source[suggestions.location.range[0]..suggestions.location.range[1]],
+            &source[suggestions.replacement.span.start..suggestions.replacement.span.end],
             "\"./dependency\""
         );
     }
 
-    Ok(())
+    native.finish()
 }
 
 #[test]
 fn native_suggestions_preserve_unterminated_import_prefixes() -> io::Result<()> {
     let source = include_str!("fixtures/suggestions/broken.luau");
-    let mut frontend = Frontend::default();
-    frontend.insert("entry", source, 15, &Configuration::new()?, &[])?;
+    let mut entry = module(1, source, 15)?;
 
-    let suggestions =
-        frontend.suggest("entry", source.len(), &Options::new(Duration::from_secs(5)))?;
+    entry.imports.push(ResolvedImport {
+        site: ImportSite {
+            identity: ImportIdentity(1),
+            call: location(
+                &entry,
+                [source.find("require(").expect("call"), source.len()],
+            )?,
+            argument: location(
+                &entry,
+                [source.find('"').expect("broken string"), source.len()],
+            )?,
+            request: ImportRequest::Nonconstant,
+        },
+        outcome: ImportOutcome::Nonconstant,
+    });
 
-    assert_eq!(suggestions.context, SuggestionContext::String);
+    let mut input = request(vec![entry])?;
+    input.purpose = AnalysisPurpose::Editor;
+    let mut native = Native::default();
+    let established = native.analyze(&input, &options(Duration::from_secs(5)))?;
+
+    let suggestions = native.complete(
+        &PositionInput {
+            analysis: established.modules[0]
+                .reference
+                .clone()
+                .expect("editor reference"),
+            offset: source.len(),
+        },
+        &options(Duration::from_secs(5)),
+    )?;
+
+    assert_eq!(suggestions.context, CompletionContext::String);
     assert!(suggestions.require);
     assert_eq!(suggestions.prefix.as_deref(), Some("./dep"));
 
     assert_eq!(
-        &source[suggestions.location.range[0]..suggestions.location.range[1]],
+        &source[suggestions.replacement.span.start..suggestions.replacement.span.end],
         "\"./dep"
     );
 
-    Ok(())
+    native.finish()
 }

@@ -13,7 +13,7 @@ PackArguments:
   BinPack: OnePerLine
 IncludeBlocks: Regroup
 IncludeCategories:
-  - Regex: '^"(Luau/|rust/|instar-bridge/|lua\.h")'
+  - Regex: '^"(Luau/|rust/|instar-luau/|lua\.h")'
     Priority: 2
   - Regex: '^<'
     Priority: 3
