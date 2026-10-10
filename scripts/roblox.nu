@@ -562,7 +562,7 @@ def main [
     let injections = injected $source {corrections: $corrections, declarations: $declarations}
     let declared = $"($declarations)\n($injections)"
 
-    let vendor = $DATA | path dirname | path dirname | path join crates bridge vendor luau Analysis src
+    let vendor = $DATA | path dirname | path dirname | path join crates luau vendor luau Analysis src
     let embedded = open --raw ($vendor | path join EmbeddedBuiltinDefinitions.cpp)
     let builtin = open --raw ($vendor | path join BuiltinDefinitions.cpp)
     let registered = $builtin | parse --regex 'addGlobalBinding\(\s*globals,\s*"(?<name>[^"]+)"(?s:.*?)"@luau"' | get name

@@ -1,6 +1,6 @@
 Checks: "clang-analyzer-*,bugprone-*,performance-*,portability-*,readability-identifier-naming"
 WarningsAsErrors: "*"
-HeaderFilterRegex: '[/\\]crates[/\\]bridge[/\\]native[/\\]'
+HeaderFilterRegex: '[/\\]crates[/\\]luau[/\\]native[/\\]'
 CheckOptions:
   readability-identifier-naming.NamespaceCase: lower_case
   readability-identifier-naming.NamespaceIgnoredRegexp: '^Luau$'

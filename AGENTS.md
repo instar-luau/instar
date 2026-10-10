@@ -42,7 +42,7 @@ Keep corrections complete across declarations, producers, callers, consumers, te
 - Give independently consumed components a self-contained interface header and implementation. Include the implemented interface explicitly. Let the configured formatter order and group includes.
 - Keep private helpers local to their component. Align implementation order with the interface's meaningful declaration order, with constructors first and related operations together.
 - Preserve external override names. Use the configured naming rules for project-controlled declarations and plain namespace closing delimiters.
-- The private Rust `boundary` module owns CXX-generated code. Its existing `#[expect]` attributes document concrete generator constraints, including generated absolute paths. Keep these expectations on the module declaration in `crates/bridge/src/lib.rs`; CXX rejects `#[expect]` on the bridge macro's input. They do not extend to ordinary bridge implementation code.
+- The private Rust `boundary` module owns CXX-generated code. Its existing `#[expect]` attributes document concrete generator constraints, including generated absolute paths. Keep these expectations on the module declaration in `crates/luau/src/lib.rs`; CXX rejects `#[expect]` on the bridge macro's input. They do not extend to ordinary bridge implementation code.
 
 ## Formatting and enforcement
 

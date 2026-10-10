@@ -11,9 +11,9 @@ keywords = ["formatter", "linter", "lsp", "luau", "roblox"]
 categories = ["development-tools"]
 
 [workspace.dependencies]
-instar-analysis = { path = "crates/analysis" }
-instar-bridge = { path = "crates/bridge" }
-instar-core = { path = "crates/core" }
+instar-analysis = { path = "crates/shared" }
+instar-bridge = { path = "crates/luau" }
+instar-core = { path = "crates/project" }
 instar-format = { path = "crates/format" }
 instar-lint = { path = "crates/lint" }
 instar-server = { path = "crates/server" }
