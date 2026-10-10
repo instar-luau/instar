@@ -121,7 +121,8 @@ impl Metadata {
 
             for property in properties {
                 if !name(&property.class)
-                    || !name(&property.name)
+                    || property.name.is_empty()
+                    || property.name.bytes().any(|byte| byte.is_ascii_control())
                     || !seen.insert((&property.class, &property.name))
                 {
                     return Err(invalid("invalid or duplicate Roblox property capability"));

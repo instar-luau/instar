@@ -11,7 +11,7 @@ use instar_luau::{InstanceEnvironment, InstanceRecord};
 use instar_shared::{SourceSnapshot, SourceVersion, error::invalid};
 use serde::Deserialize;
 
-use crate::inputs::normalize;
+use crate::{assets, inputs::normalize};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -43,80 +43,86 @@ pub(crate) struct Map {
 
 impl Map {
     pub(crate) fn parse(path: &Path, document: &SourceSnapshot) -> io::Result<Arc<Self>> {
-        let root: Raw = serde_json::from_str(&document.text)
-            .map_err(|error| invalid(format!("{}: {error}", path.display())))?;
+        let parsed = (|| {
+            let root: Raw = serde_json::from_str(&document.text)
+                .map_err(|error| invalid(format!("{}: {error}", path.display())))?;
 
-        let directory = path
-            .parent()
-            .ok_or_else(|| invalid("sourcemap has no directory"))?;
+            let directory = path
+                .parent()
+                .ok_or_else(|| invalid("sourcemap has no directory"))?;
 
-        let mut map = Self {
-            path: path.to_path_buf(),
-            version: document.version,
-            nodes: Vec::new(),
-            sources: BTreeMap::new(),
-        };
+            let mut map = Self {
+                path: path.to_path_buf(),
+                version: document.version,
+                nodes: Vec::new(),
+                sources: BTreeMap::new(),
+            };
 
-        let mut pending: Vec<(Raw, Option<usize>)> = vec![(root, None)];
+            let mut pending: Vec<(Raw, Option<usize>)> = vec![(root, None)];
 
-        while let Some((raw, parent)) = pending.pop() {
-            if raw.class_name.is_empty() || raw.name.contains('\0') || raw.class_name.contains('\0')
-            {
-                return Err(invalid(format!(
-                    "{}: invalid instance name or class",
-                    path.display()
-                )));
-            }
-
-            let index = map.nodes.len();
-            let mut sources = Vec::new();
-
-            for source in raw.file_paths {
-                let text = source
-                    .to_str()
-                    .ok_or_else(|| invalid("sourcemap paths must be UTF-8"))?;
-
-                if text.is_empty() || text.contains('\0') {
-                    return Err(invalid("invalid sourcemap source path"));
+            while let Some((raw, parent)) = pending.pop() {
+                if raw.class_name.is_empty()
+                    || raw.name.contains('\0')
+                    || raw.class_name.contains('\0')
+                {
+                    return Err(invalid(format!(
+                        "{}: invalid instance name or class",
+                        path.display()
+                    )));
                 }
 
-                if matches!(
-                    raw.class_name.as_str(),
-                    "ModuleScript" | "Script" | "LocalScript"
-                ) && matches!(
-                    source.extension().and_then(|extension| extension.to_str()),
-                    Some("lua" | "luau")
-                ) {
-                    let source = normalize(&directory.join(text.replace('\\', "/")));
+                let index = map.nodes.len();
+                let mut sources = Vec::new();
 
-                    if !sources.contains(&source) {
-                        map.sources.entry(source.clone()).or_default().push(index);
-                        sources.push(source);
+                for source in raw.file_paths {
+                    let text = source
+                        .to_str()
+                        .ok_or_else(|| invalid("sourcemap paths must be UTF-8"))?;
+
+                    if text.is_empty() || text.contains('\0') {
+                        return Err(invalid("invalid sourcemap source path"));
+                    }
+
+                    if matches!(
+                        raw.class_name.as_str(),
+                        "ModuleScript" | "Script" | "LocalScript"
+                    ) && matches!(
+                        source.extension().and_then(|extension| extension.to_str()),
+                        Some("lua" | "luau")
+                    ) {
+                        let source = normalize(&directory.join(text.replace('\\', "/")));
+
+                        if !sources.contains(&source) {
+                            map.sources.entry(source.clone()).or_default().push(index);
+                            sources.push(source);
+                        }
                     }
                 }
+
+                if let Some(parent) = parent {
+                    map.nodes[parent].children.push(index);
+                }
+
+                map.nodes.push(Node {
+                    name: raw.name,
+                    class: raw.class_name,
+                    parent,
+                    children: Vec::new(),
+                    sources,
+                });
+
+                pending.extend(
+                    raw.children
+                        .into_iter()
+                        .rev()
+                        .map(|child| (child, Some(index))),
+                );
             }
 
-            if let Some(parent) = parent {
-                map.nodes[parent].children.push(index);
-            }
+            Ok(Arc::new(map))
+        })();
 
-            map.nodes.push(Node {
-                name: raw.name,
-                class: raw.class_name,
-                parent,
-                children: Vec::new(),
-                sources,
-            });
-
-            pending.extend(
-                raw.children
-                    .into_iter()
-                    .rev()
-                    .map(|child| (child, Some(index))),
-            );
-        }
-
-        Ok(Arc::new(map))
+        parsed.map_err(|error| assets::attributed(document, &[], "resolution.sourcemap", error))
     }
 
     pub(crate) fn placements(&self, source: &Path) -> Vec<usize> {
