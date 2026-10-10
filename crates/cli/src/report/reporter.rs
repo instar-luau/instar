@@ -18,8 +18,8 @@ use instar_project::{
 };
 
 use instar_shared::{
-    Completion, Diagnostic, Event, EventPayload, FailureKind, FindingIdentity, LogLevel,
-    OperationFailure, Severity,
+    Completion, Diagnostic, Event, EventPayload, FindingIdentity, LogLevel, OperationFailure,
+    Severity,
 };
 
 use serde_json::{Value, json};
@@ -62,20 +62,7 @@ impl CommandReport {
         };
 
         if let Some(failure) = failure {
-            return if matches!(
-                failure.completion,
-                Completion::Cancelled | Completion::TimedOut
-            ) {
-                CommandStatus::Incomplete
-            } else {
-                match failure.kind {
-                    FailureKind::InvalidInvocation => CommandStatus::InvalidInvocation,
-
-                    FailureKind::Operational | FailureKind::Busy => {
-                        CommandStatus::OperationalFailure
-                    }
-                }
-            };
+            return CommandStatus::failure(failure);
         }
 
         let failed_write = match self {
@@ -688,7 +675,11 @@ impl Reporter {
             CommandReport::Rules(rules) => json!(rules),
 
             CommandReport::Failure(failure) => {
-                json!({"error":failure.message,"kind":failure.kind,"completed_sources":failure.completed_sources,"completed_edits":failure.completed_edits,"changed":[],"skipped":[]})
+                let mut record = failure_record(failure);
+                record["changed"] = json!([]);
+                record["skipped"] = json!([]);
+
+                record
             }
         };
 
@@ -1106,6 +1097,10 @@ impl Write for LogWriter {
     fn flush(&mut self) -> io::Result<()> {
         self.0.suspend(|| io::stderr().lock().flush())
     }
+}
+
+pub(crate) fn failure_record(failure: &OperationFailure) -> Value {
+    json!({"error":failure.message,"kind":failure.kind,"diagnostics":failure.diagnostics,"completion":failure.completion,"status":CommandStatus::failure(failure).code(),"completed_sources":failure.completed_sources,"completed_edits":failure.completed_edits})
 }
 
 fn skipped(snapshot: &ProjectSnapshot, decisions: &[SelectionDecision]) -> Vec<String> {

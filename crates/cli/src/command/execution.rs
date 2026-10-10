@@ -19,8 +19,8 @@ use instar_project::{
 };
 
 use instar_shared::{
-    Completion, DiagnosticCategory, EventPayload, OperationFailure, Options, Severity, Span,
-    process,
+    Completion, DiagnosticCategory, EventPayload, FailureKind, OperationFailure, Options, Severity,
+    Span, process,
 };
 
 use serde_json::{Value, json};
@@ -54,6 +54,20 @@ pub(crate) enum CommandStatus {
 }
 
 impl CommandStatus {
+    pub(crate) fn failure(failure: &OperationFailure) -> Self {
+        if matches!(
+            failure.completion,
+            Completion::Cancelled | Completion::TimedOut
+        ) {
+            Self::Incomplete
+        } else {
+            match failure.kind {
+                FailureKind::InvalidInvocation => Self::InvalidInvocation,
+                FailureKind::Operational | FailureKind::Busy => Self::OperationalFailure,
+            }
+        }
+    }
+
     pub(crate) fn code(self) -> u8 {
         match self {
             Self::Clean => 0,

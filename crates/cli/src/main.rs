@@ -13,10 +13,13 @@ use std::{
 use clap::{ColorChoice, CommandFactory, FromArgMatches, Parser};
 use color_eyre::config::{HookBuilder, Theme};
 use instar_luau::{run_configuration_worker, run_worker};
-use instar_shared::{Completion, FailureKind, OperationFailure, Reason};
+use instar_shared::{Completion, OperationFailure, Reason};
 use tokio::runtime::Builder;
 
-use crate::command::{Arguments, ReportStyle, WorkerKind};
+use crate::{
+    command::{Arguments, CommandStatus, ReportStyle, WorkerKind},
+    report::failure_record,
+};
 
 fn main() -> ExitCode {
     let values = env::args_os().collect::<Vec<_>>();
@@ -102,17 +105,7 @@ fn main() -> ExitCode {
 
         Err(error) => {
             let code = if let Some(failure) = error.downcast_ref::<OperationFailure>() {
-                if matches!(
-                    failure.completion,
-                    Completion::Cancelled | Completion::TimedOut
-                ) {
-                    4
-                } else {
-                    match failure.kind {
-                        FailureKind::InvalidInvocation => 2,
-                        FailureKind::Operational | FailureKind::Busy => 3,
-                    }
-                }
+                CommandStatus::failure(failure).code()
             } else if let Some(error) = error.downcast_ref::<io::Error>() {
                 match error.kind() {
                     io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData => 2,
@@ -125,7 +118,10 @@ fn main() -> ExitCode {
 
             if json {
                 let record = if let Some(failure) = error.downcast_ref::<OperationFailure>() {
-                    serde_json::json!({"error":format!("{error:#}"),"status":code,"completion":failure.completion,"kind":failure.kind,"diagnostics":failure.diagnostics,"completed_sources":failure.completed_sources,"completed_edits":failure.completed_edits})
+                    let mut record = failure_record(failure);
+                    record["error"] = serde_json::json!(format!("{error:#}"));
+
+                    record
                 } else {
                     let completion = if code == 4 {
                         if error
