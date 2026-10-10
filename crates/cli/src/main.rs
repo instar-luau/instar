@@ -1,12 +1,8 @@
 //! Command-line interface for the Luau toolchain.
 
-mod arguments;
+mod command;
 mod completion;
-mod execution;
-mod inputs;
-mod reporting;
-mod server;
-mod writing;
+mod report;
 
 use std::{
     env,
@@ -16,18 +12,21 @@ use std::{
 
 use clap::{ColorChoice, CommandFactory, FromArgMatches, Parser};
 use color_eyre::config::{HookBuilder, Theme};
-use instar_bridge::worker as analysis;
-use instar_format::worker as formatting;
+use instar_luau::{run_configuration_worker, run_worker};
+use instar_shared::{Completion, FailureKind, OperationFailure, Reason};
+use tokio::runtime::Builder;
 
-use crate::arguments::{Arguments, Command, Worker};
+use crate::command::{Arguments, ReportStyle, WorkerKind};
 
 fn main() -> ExitCode {
     let values = env::args_os().collect::<Vec<_>>();
 
     if values.get(1).is_some_and(|value| value == "worker") {
-        let result = match Worker::parse_from(values.into_iter().skip(1)) {
-            Worker::Analysis => analysis::run(),
-            Worker::Format => formatting::run(),
+        let result = match WorkerKind::parse_from(values.into_iter().skip(1)) {
+            WorkerKind::Configuration => run_configuration_worker(),
+            WorkerKind::Analysis => run_worker(),
+            WorkerKind::Format => instar_format::run_worker(),
+            WorkerKind::ProjectAssets => instar_project::run_asset_worker(),
         };
 
         return match result {
@@ -36,7 +35,7 @@ fn main() -> ExitCode {
             Err(error) => {
                 eprintln!("{error}");
 
-                ExitCode::from(2)
+                ExitCode::from(3)
             }
         };
     }
@@ -65,16 +64,15 @@ fn main() -> ExitCode {
     let color = match color.as_deref() {
         Some("always") => ColorChoice::Always,
         Some("never") => ColorChoice::Never,
-
         _ if env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()) => ColorChoice::Never,
-
         _ => ColorChoice::Auto,
     };
 
     let matches = Arguments::command().color(color).get_matches_from(values);
     let arguments = Arguments::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
+    let json = arguments.reporting.json || arguments.reporting.style == ReportStyle::Json;
 
-    let theme = if !arguments.json
+    let theme = if !json
         && (color == ColorChoice::Always
             || (color == ColorChoice::Auto && io::stderr().is_terminal()))
     {
@@ -86,27 +84,73 @@ fn main() -> ExitCode {
     if let Err(error) = HookBuilder::default().theme(theme).install() {
         eprintln!("{error}");
 
-        return ExitCode::from(2);
+        return ExitCode::from(3);
     }
 
-    let result = match &arguments.command {
-        Command::Analysis(command) => execution::run(&arguments, command),
-        Command::Completions { shell } => completion::generate(shell).map(|()| true),
-        Command::Server => server::run(&arguments),
-    };
+    let result = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(eyre::Report::from)
+        .and_then(|runtime| runtime.block_on(command::run(arguments)));
 
     match result {
-        Ok(true) => ExitCode::SUCCESS,
-        Ok(false) => ExitCode::FAILURE,
+        Ok(outcome) => {
+            tracing::debug!(completion = ?outcome.completion, "Command finished");
+
+            ExitCode::from(outcome.status.code())
+        }
 
         Err(error) => {
-            if arguments.json {
-                eprintln!("{}", serde_json::json!({"error": format!("{error:#}")}));
+            let code = if let Some(failure) = error.downcast_ref::<OperationFailure>() {
+                if matches!(
+                    failure.completion,
+                    Completion::Cancelled | Completion::TimedOut
+                ) {
+                    4
+                } else {
+                    match failure.kind {
+                        FailureKind::InvalidInvocation => 2,
+                        FailureKind::Operational | FailureKind::Busy => 3,
+                    }
+                }
+            } else if let Some(error) = error.downcast_ref::<io::Error>() {
+                match error.kind() {
+                    io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData => 2,
+                    io::ErrorKind::TimedOut | io::ErrorKind::Interrupted => 4,
+                    _ => 3,
+                }
+            } else {
+                3
+            };
+
+            if json {
+                let record = if let Some(failure) = error.downcast_ref::<OperationFailure>() {
+                    serde_json::json!({"error":format!("{error:#}"),"status":code,"completion":failure.completion,"kind":failure.kind,"diagnostics":failure.diagnostics,"completed_sources":failure.completed_sources,"completed_edits":failure.completed_edits})
+                } else {
+                    let completion = if code == 4 {
+                        if error
+                            .downcast_ref::<io::Error>()
+                            .is_some_and(|error| error.kind() == io::ErrorKind::Interrupted)
+                        {
+                            Completion::Cancelled
+                        } else {
+                            Completion::TimedOut
+                        }
+                    } else if code == 3 {
+                        Completion::Incomplete(vec![Reason::FailedPrerequisite])
+                    } else {
+                        Completion::Complete
+                    };
+
+                    serde_json::json!({"error":format!("{error:#}"),"status":code,"completion":completion})
+                };
+
+                eprintln!("{record}");
             } else {
                 eprintln!("{error:?}");
             }
 
-            ExitCode::from(2)
+            ExitCode::from(code)
         }
     }
 }

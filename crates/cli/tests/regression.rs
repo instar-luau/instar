@@ -93,6 +93,7 @@ fn skipped_stdin_preserves_original_source_and_selection_counts() -> io::Result<
                 "--stdin-filepath",
                 "nested/entry.luau",
                 "format",
+                "--source",
                 "-",
             ],
             source,
@@ -106,14 +107,14 @@ fn skipped_stdin_preserves_original_source_and_selection_counts() -> io::Result<
             error["error"]
                 .as_str()
                 .expect("JSON error")
-                .contains("requires --check")
+                .contains("requires --output")
         );
 
         assert_eq!(fs::read(&path)?, original);
 
         let output = Command::new(env!("CARGO_BIN_EXE_instar"))
             .current_dir(directory.path())
-            .args(["--color", "never", "format", "nested/entry.luau"])
+            .args(["--color", "never", "format", "--write", "nested/entry.luau"])
             .output()?;
 
         assert!(output.status.success(), "{output:?}");
@@ -131,7 +132,7 @@ fn stdin_deadline_exits_without_waiting_for_pipe_eof() -> io::Result<()> {
 
     fs::write(
         directory.path().join("instar.toml"),
-        "[roblox]\nenabled=false\n",
+        "[environment]\nroblox=false\n",
     )?;
 
     for operation in ["format", "check", "lint"] {
@@ -174,7 +175,7 @@ fn stdin_deadline_exits_without_waiting_for_pipe_eof() -> io::Result<()> {
             drop(writer);
             let output = child.wait_with_output()?;
             assert!(!expired, "{operation} waited for pipe EOF: {output:?}");
-            assert_eq!(output.status.code(), Some(2), "{operation}: {output:?}");
+            assert_eq!(output.status.code(), Some(4), "{operation}: {output:?}");
             assert!(output.stdout.is_empty(), "{operation}: {output:?}");
             let error: serde_json::Value = serde_json::from_slice(&output.stderr)?;
 
@@ -182,7 +183,7 @@ fn stdin_deadline_exits_without_waiting_for_pipe_eof() -> io::Result<()> {
                 error["error"]
                     .as_str()
                     .expect("JSON error")
-                    .contains("Timeout"),
+                    .contains("deadline"),
                 "{operation}: {error}"
             );
         }
@@ -221,7 +222,7 @@ fn informational_lint_retains_severity_and_success() -> io::Result<()> {
     assert_eq!(report["completion"], "Complete");
     let diagnostics = report["diagnostics"].as_array().expect("diagnostics");
     assert_eq!(diagnostics.len(), 1, "{report}");
-    assert_eq!(diagnostics[0]["kind"], "Rule(UnusedVariable)");
+    assert_eq!(diagnostics[0]["code"], "unused_variable");
     assert_eq!(diagnostics[0]["severity"], "info");
 
     let output = Command::new(env!("CARGO_BIN_EXE_instar"))
@@ -302,18 +303,54 @@ fn mapped_lint_visits_every_target_placement_and_analyzes_dependencies() -> io::
         assert!(output.stderr.is_empty(), "{output:?}");
         let report: serde_json::Value = serde_json::from_slice(&output.stdout)?;
 
-        if let Some(previous) = &previous {
-            assert_eq!(&report, previous);
+        if let Some((previous_stdin, previous_report)) = &previous {
+            if *previous_stdin == stdin {
+                assert_eq!(&report, previous_report);
+            } else {
+                let stable_findings = |report: &serde_json::Value| {
+                    report["diagnostics"]
+                        .as_array()
+                        .expect("diagnostics")
+                        .iter()
+                        .map(|diagnostic| {
+                            let mut diagnostic = diagnostic.clone();
+                            let record = diagnostic.as_object_mut().expect("diagnostic record");
+                            drop(record.remove("identity"));
+                            drop(record.remove("source"));
+
+                            for related in record
+                                .get_mut("related")
+                                .expect("related locations")
+                                .as_array_mut()
+                                .expect("related locations")
+                            {
+                                drop(
+                                    related
+                                        .as_object_mut()
+                                        .expect("related location")
+                                        .remove("source"),
+                                );
+                            }
+
+                            diagnostic
+                        })
+                        .collect::<Vec<_>>()
+                };
+
+                assert_eq!(stable_findings(&report), stable_findings(previous_report));
+                assert_eq!(report["completion"], previous_report["completion"]);
+                assert_eq!(report["counts"], previous_report["counts"]);
+            }
         }
 
-        previous = Some(report.clone());
+        previous = Some((stdin, report.clone()));
 
         assert_eq!(report["completion"], "Complete");
         let diagnostics = report["diagnostics"].as_array().expect("diagnostics");
 
         let findings = diagnostics
             .iter()
-            .filter(|diagnostic| diagnostic["kind"] == "Rule(DivideByZero)")
+            .filter(|diagnostic| diagnostic["code"] == "divide_by_zero")
             .collect::<Vec<_>>();
 
         assert_eq!(findings.len(), 2, "{report}");
@@ -345,7 +382,7 @@ fn mapped_lint_visits_every_target_placement_and_analyzes_dependencies() -> io::
     assert_eq!(report["completion"], "Complete");
     let diagnostics = report["diagnostics"].as_array().expect("diagnostics");
     assert_eq!(diagnostics.len(), 1, "{report}");
-    assert_eq!(diagnostics[0]["kind"], "Rule(DivideByZero)");
+    assert_eq!(diagnostics[0]["code"], "divide_by_zero");
 
     assert_eq!(
         Path::new(diagnostics[0]["path"].as_str().expect("diagnostic path")).file_name(),
@@ -356,36 +393,50 @@ fn mapped_lint_visits_every_target_placement_and_analyzes_dependencies() -> io::
 }
 
 #[test]
-fn concurrency_is_not_a_command_line_setting() -> io::Result<()> {
+fn jobs_are_a_validated_command_line_setting() -> io::Result<()> {
+    let directory = tempfile::tempdir()?;
+
+    fs::write(
+        directory.path().join("instar.toml"),
+        "[environment]\nroblox=false\n",
+    )?;
+
+    fs::write(directory.path().join("entry.luau"), "return 1\n")?;
+
     for operation in ["lint", "format", "server", "check"] {
         let help = Command::new(env!("CARGO_BIN_EXE_instar"))
-            .args([operation, "--help"])
+            .args([operation, "--jobs", "1", "--help"])
             .output()?;
 
         assert!(help.status.success(), "{help:?}");
+        assert!(String::from_utf8_lossy(&help.stdout).contains("--jobs"));
 
-        assert!(!String::from_utf8_lossy(&help.stdout).contains("--jobs"));
-    }
-
-    for operation in ["lint", "format", "server", "check"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_instar"))
-            .args([operation, "--jobs", "1"])
+        let invalid = Command::new(env!("CARGO_BIN_EXE_instar"))
+            .args([operation, "--jobs", "0"])
             .output()?;
 
-        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        assert_eq!(invalid.status.code(), Some(2), "{invalid:?}");
     }
 
-    Ok(())
+    for operation in ["lint", "format", "check"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_instar"))
+            .current_dir(directory.path())
+            .args(["--json", operation, "--jobs", "1", "entry.luau"])
+            .output()?;
+
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stderr.is_empty(), "{output:?}");
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+        assert_eq!(report["completion"], "Complete");
+        assert_eq!(report["diagnostics"], serde_json::json!([]));
+    }
+
+    directory.close()
 }
 
 #[test]
 fn configuration_print_is_rejected_without_contaminating_json() -> io::Result<()> {
     let directory = tempfile::tempdir()?;
-
-    fs::write(
-        directory.path().join("instar.toml"),
-        "[roblox]\nenabled=false\n",
-    )?;
 
     fs::write(directory.path().join("entry.luau"), "return 1\n")?;
 
@@ -394,7 +445,7 @@ fn configuration_print_is_rejected_without_contaminating_json() -> io::Result<()
         "local output = print\noutput('CONFIG_STDOUT')\nreturn {}\n",
         "_G.print('CONFIG_STDOUT')\nreturn {}\n",
     ] {
-        fs::write(directory.path().join(".config.luau"), source)?;
+        fs::write(directory.path().join("instar.luau"), source)?;
 
         let output = Command::new(env!("CARGO_BIN_EXE_instar"))
             .current_dir(directory.path())
@@ -405,7 +456,7 @@ fn configuration_print_is_rejected_without_contaminating_json() -> io::Result<()
         assert!(output.stdout.is_empty(), "{output:?}");
         let error: serde_json::Value = serde_json::from_slice(&output.stderr)?;
         let message = error["error"].as_str().expect("JSON error");
-        assert!(message.contains(".config.luau"), "{error}");
+        assert!(message.contains("instar.luau"), "{error}");
         assert!(message.contains("nil value"), "{error}");
     }
 
@@ -460,7 +511,7 @@ fn configured_stdout_flags_report_validation_errors() -> io::Result<()> {
     ] {
         fs::write(
             directory.path().join("instar.toml"),
-            format!("[roblox]\nenabled=false\n[luau.flags]\n{name}=true\n{settings}"),
+            format!("[environment]\nroblox=false\n[language.flags]\n{name}=true\n{settings}"),
         )?;
 
         fs::write(directory.path().join("entry.luau"), source)?;
@@ -491,7 +542,7 @@ fn configured_stdout_flags_report_validation_errors() -> io::Result<()> {
 #[test]
 fn cli_patterns_match_configuration_selection_and_preserve_literals() -> io::Result<()> {
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
-        "../../core/tests/fixtures/selection/cases.json"
+        "../../project/tests/fixtures/selection/cases.json"
     ))?;
 
     let directory = tempfile::tempdir()?;
@@ -504,7 +555,7 @@ fn cli_patterns_match_configuration_selection_and_preserve_literals() -> io::Res
 
     fs::write(
         directory.path().join("instar.toml"),
-        "[roblox]\nenabled=false",
+        "[environment]\nroblox=false",
     )?;
 
     fs::write(directory.path().join(".ignore"), "ignored.luau\n")?;
@@ -604,7 +655,7 @@ fn cli_patterns_match_configuration_selection_and_preserve_literals() -> io::Res
 
     fs::write(
         directory.path().join("instar.toml"),
-        "exclude=['entry.luau']\n[roblox]\nenabled=false",
+        "[selection]\nexclude=['entry.luau']\n[environment]\nroblox=false",
     )?;
 
     for operation in ["check", "lint"] {

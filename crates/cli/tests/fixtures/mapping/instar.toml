@@ -1,2 +1,4 @@
-[roblox]
-enabled=true
+[environment]
+roblox=true
+[resolution]
+sourcemaps=["sourcemap.json"]

@@ -1,7 +1,7 @@
-[roblox]
-enabled = false
+[environment]
+roblox = false
 
-[[environment]]
+[[environment.groups]]
 namespace = "@hover"
 definitions = ["definitions.luau"]
 documentation = ["documentation.json"]

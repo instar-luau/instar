@@ -1,11 +1,9 @@
-use std::io::{self, Write};
-
 use clap::CommandFactory;
 use eyre::Result;
 
-use crate::arguments::Arguments;
+use crate::command::Arguments;
 
-pub(crate) fn generate(shell: &str) -> Result<()> {
+pub(crate) fn generate(shell: &str) -> Result<Vec<u8>> {
     let mut command = Arguments::command();
     let mut output = Vec::new();
 
@@ -24,7 +22,5 @@ pub(crate) fn generate(shell: &str) -> Result<()> {
         clap_complete::generate(shell, &mut command, "instar", &mut output);
     }
 
-    io::stdout().lock().write_all(&output)?;
-
-    Ok(())
+    Ok(output)
 }

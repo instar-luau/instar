@@ -1,4 +1,5 @@
+[selection]
 exclude = ['**']
 
-[roblox]
-enabled = false
+[environment]
+roblox = false

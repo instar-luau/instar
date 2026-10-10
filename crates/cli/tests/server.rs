@@ -11,7 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use instar_core::{documentation, roblox};
+use instar_project::{documentation_cache_directory, roblox_cache_directory};
 use serde_json::{Value, json};
 
 struct Client {
@@ -401,10 +401,10 @@ fn uri(path: &Path) -> String {
 }
 
 fn roblox_assets(client: &mut Client) -> io::Result<()> {
-    let cache = roblox::cache_directory()?;
+    let cache = roblox_cache_directory()?;
 
     let fixtures =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../core/tests/fixtures/assets/project");
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../project/tests/fixtures/assets/project");
 
     for entry in fs::read_dir(fixtures)? {
         let entry = entry?;
@@ -417,7 +417,7 @@ fn roblox_assets(client: &mut Client) -> io::Result<()> {
 
 fn contextual_assets(client: &mut Client) -> io::Result<()> {
     roblox_assets(client)?;
-    let cache = roblox::cache_directory()?;
+    let cache = roblox_cache_directory()?;
 
     for (name, text) in [
         (
@@ -551,7 +551,7 @@ fn range_formatting_preserves_surrounding_source_and_uses_project_configuration(
         };
 
         let mut client = Client::new(directory.path())?;
-        client.send(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"general":{"positionEncodings":[encoding]}},"rootUri":uri(directory.path())}}))?;
+        client.send(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"general":{"positionEncodings":[encoding]}},"workspaceFolders":[{"uri":uri(directory.path()),"name":"workspace"}]}}))?;
 
         assert_eq!(
             client.receive(1)["result"]["capabilities"]["documentRangeFormattingProvider"],
@@ -618,7 +618,7 @@ fn on_type_formatting_uses_complete_statements_in_incomplete_documents() -> io::
     let cases: Vec<Value> = serde_json::from_str(include_str!("fixtures/formatting/typing.json"))?;
     let document = uri(&directory.path().join("entry.luau"));
     let mut client = Client::new(directory.path())?;
-    client.send(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"rootUri":uri(directory.path())}}))?;
+    client.send(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"workspaceFolders":[{"uri":uri(directory.path()),"name":"workspace"}]}}))?;
     let response = client.receive(1);
 
     assert_eq!(
@@ -700,8 +700,8 @@ fn cancelled_configuration_does_not_delay_shutdown() -> io::Result<()> {
     fs::write(&path, include_str!("fixtures/server/document.luau"))?;
 
     fs::write(
-        directory.path().join(".config.luau"),
-        include_str!("../../bridge/tests/fixtures/timeout/.config.luau"),
+        directory.path().join("instar.luau"),
+        include_str!("../../luau/tests/fixtures/timeout/instar.luau"),
     )?;
 
     let mut client = Client::new(directory.path())?;
@@ -958,13 +958,8 @@ fn negotiated_progress_ends_when_running_analysis_is_cancelled_by_shutdown() -> 
     let directory = tempfile::tempdir()?;
 
     fs::write(
-        directory.path().join("instar.toml"),
-        include_str!("fixtures/diagnostics/instar.toml"),
-    )?;
-
-    fs::write(
-        directory.path().join(".config.luau"),
-        include_str!("../../bridge/tests/fixtures/timeout/.config.luau"),
+        directory.path().join("instar.luau"),
+        include_str!("../../luau/tests/fixtures/timeout/instar.luau"),
     )?;
 
     let document = uri(&directory.path().join("entry.luau"));
@@ -1257,7 +1252,7 @@ fn hover_resolves_builtin_documentation_from_snapshot_assets() -> io::Result<()>
         include_str!("fixtures/diagnostics/instar.toml"),
     )?;
 
-    let cache = documentation::cache_directory()?;
+    let cache = documentation_cache_directory()?;
     let mut client = Client::new(directory.path())?;
 
     client.send(
@@ -1270,18 +1265,18 @@ fn hover_resolves_builtin_documentation_from_snapshot_assets() -> io::Result<()>
     for (name, text) in [
         (
             "metadata.json",
-            include_str!("../../core/tests/fixtures/assets/documentation/metadata.json"),
+            include_str!("../../project/tests/fixtures/assets/documentation/metadata.json"),
         ),
         (
             "documentation.json",
-            include_str!("../../core/tests/fixtures/assets/documentation/documentation.json"),
+            include_str!("../../project/tests/fixtures/assets/documentation/documentation.json"),
         ),
     ] {
         client.send(&json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":uri(&cache.join(name)),"languageId":"json","version":1,"text":text}}}))?;
     }
 
     let document = uri(&directory.path().join("entry.luau"));
-    client.send(&json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":document,"languageId":"luau","version":1,"text":include_str!("../../core/tests/fixtures/environment/builtin/entry.luau")}}}))?;
+    client.send(&json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":document,"languageId":"luau","version":1,"text":include_str!("../../project/tests/fixtures/environment/builtin/entry.luau")}}}))?;
     client.send(&json!({"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":document},"position":{"line":0,"character":1}}}))?;
     let response = client.receive(2);
 
@@ -1304,10 +1299,10 @@ fn hover_resolves_roblox_documentation_from_snapshot_assets() -> io::Result<()> 
 
     fs::write(
         directory.path().join("instar.toml"),
-        include_str!("../../core/tests/fixtures/checking/roblox/instar.toml"),
+        include_str!("../../project/tests/fixtures/checking/roblox/instar.toml"),
     )?;
 
-    let cache = roblox::cache_directory()?;
+    let cache = roblox_cache_directory()?;
     let mut client = Client::new(directory.path())?;
 
     client.send(
@@ -1328,23 +1323,23 @@ fn hover_resolves_roblox_documentation_from_snapshot_assets() -> io::Result<()> 
         ),
         (
             "none.d.luau",
-            include_str!("../../core/tests/fixtures/assets/project/none.d.luau"),
+            include_str!("../../project/tests/fixtures/assets/project/none.d.luau"),
         ),
         (
             "local.d.luau",
-            include_str!("../../core/tests/fixtures/assets/project/local.d.luau"),
+            include_str!("../../project/tests/fixtures/assets/project/local.d.luau"),
         ),
         (
             "plugin.d.luau",
-            include_str!("../../core/tests/fixtures/assets/project/plugin.d.luau"),
+            include_str!("../../project/tests/fixtures/assets/project/plugin.d.luau"),
         ),
         (
             "roblox.d.luau",
-            include_str!("../../core/tests/fixtures/assets/project/roblox.d.luau"),
+            include_str!("../../project/tests/fixtures/assets/project/roblox.d.luau"),
         ),
         (
             "enumerations.d.luau",
-            include_str!("../../core/tests/fixtures/assets/project/enumerations.d.luau"),
+            include_str!("../../project/tests/fixtures/assets/project/enumerations.d.luau"),
         ),
     ] {
         client.send(&json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":uri(&cache.join(name)),"languageId":"luau","version":1,"text":text}}}))?;
@@ -1781,7 +1776,7 @@ fn completion_uses_host_import_resolution_and_aliases() -> io::Result<()> {
     )?;
 
     let document = uri(&directory.path().join("entry.luau"));
-    let source = include_str!("../../bridge/tests/fixtures/suggestions/broken.luau");
+    let source = include_str!("../../luau/tests/fixtures/suggestions/broken.luau");
     let mut client = Client::new(directory.path())?;
 
     client.send(
@@ -1832,11 +1827,11 @@ fn completion_preserves_mapped_import_contexts() -> io::Result<()> {
     for (name, text) in [
         (
             "instar.toml",
-            include_str!("../../core/tests/fixtures/checking/roblox/instar.toml"),
+            include_str!("../../project/tests/fixtures/checking/roblox/instar.toml"),
         ),
         (
             "sourcemap.json",
-            include_str!("../../core/tests/fixtures/checking/explicit/sourcemap.json"),
+            include_str!("../../project/tests/fixtures/checking/explicit/sourcemap.json"),
         ),
         (
             "number.luau",
@@ -1844,7 +1839,7 @@ fn completion_preserves_mapped_import_contexts() -> io::Result<()> {
         ),
         (
             "string.luau",
-            include_str!("../../core/tests/fixtures/checking/explicit/string.luau"),
+            include_str!("../../project/tests/fixtures/checking/explicit/string.luau"),
         ),
     ] {
         fs::write(directory.path().join(name), text)?;
@@ -1911,7 +1906,7 @@ fn completion_uses_snapshot_roblox_constructor_metadata() -> io::Result<()> {
 
     fs::write(
         directory.path().join("instar.toml"),
-        include_str!("../../core/tests/fixtures/checking/roblox/instar.toml"),
+        include_str!("../../project/tests/fixtures/checking/roblox/instar.toml"),
     )?;
 
     let source = include_str!("fixtures/completion/constructor.luau");
@@ -2762,17 +2757,17 @@ fn rename_preserves_unique_mapped_identity_and_rejects_multiple_placements() -> 
     for (name, text) in [
         (
             "instar.toml",
-            include_str!("../../core/tests/fixtures/checking/roblox/instar.toml"),
+            include_str!("../../project/tests/fixtures/checking/roblox/instar.toml"),
         ),
         (
             "sourcemap.json",
-            include_str!("../../core/tests/fixtures/checking/explicit/sourcemap.json"),
+            include_str!("../../project/tests/fixtures/checking/explicit/sourcemap.json"),
         ),
         ("number.luau", include_str!("fixtures/rename/disjoint.luau")),
         ("caller.luau", include_str!("fixtures/rename/disjoint.luau")),
         (
             "string.luau",
-            include_str!("../../core/tests/fixtures/checking/explicit/string.luau"),
+            include_str!("../../project/tests/fixtures/checking/explicit/string.luau"),
         ),
     ] {
         fs::write(directory.path().join(name), text)?;
@@ -2828,11 +2823,11 @@ fn actions_apply_only_safe_current_diagnostic_fixes() -> io::Result<()> {
     fs::write(&path, source)?;
     let document = uri(&path);
     let mut client = Client::new(directory.path())?;
-    client.send(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"workspace":{"workspaceEdit":{"documentChanges":true}}}}}))?;
+    client.send(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"workspace":{"workspaceEdit":{"documentChanges":true}},"textDocument":{"codeAction":{"codeActionLiteralSupport":{"codeActionKind":{"valueSet":["quickfix","source.fixAll.instar"]}}}}}}}))?;
 
     assert_eq!(
         client.receive(1)["result"]["capabilities"]["codeActionProvider"],
-        true
+        json!({"resolveProvider":true,"codeActionKinds":["quickfix","source.fixAll.instar","source.organizeImports","refactor.extract"]})
     );
 
     client.send(&json!({"jsonrpc":"2.0","method":"initialized","params":{}}))?;
@@ -2881,7 +2876,7 @@ fn actions_apply_only_safe_current_diagnostic_fixes() -> io::Result<()> {
 }
 
 #[test]
-fn actions_organize_imports_without_semantic_preparation_or_reordering() -> io::Result<()> {
+fn actions_organize_imports_without_semantic_preparation() -> io::Result<()> {
     let directory = tempfile::tempdir()?;
 
     fs::write(
@@ -2897,7 +2892,7 @@ fn actions_organize_imports_without_semantic_preparation_or_reordering() -> io::
     let mut client = Client::new(directory.path())?;
 
     client.send(
-        &json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}),
+        &json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"textDocument":{"codeAction":{"codeActionLiteralSupport":{"codeActionKind":{"valueSet":["source.organizeImports"]}}}}}}}),
     )?;
 
     assert!(client.receive(1).get("error").is_none());
@@ -2923,7 +2918,23 @@ fn actions_organize_imports_without_semantic_preparation_or_reordering() -> io::
     client.send(&json!({"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":document,"version":2},"contentChanges":[{"text":include_str!("fixtures/actions/reverse.luau")}]}}))?;
     client.send(&json!({"jsonrpc":"2.0","id":3,"method":"textDocument/codeAction","params":{"textDocument":{"uri":document},"range":range,"context":{"diagnostics":[],"only":["source.organizeImports"]}}}))?;
     let response = client.receive(3);
-    assert_eq!(response["result"], json!([]), "{response}");
+
+    let actions = response["result"]
+        .as_array()
+        .expect("ordered import organization");
+
+    assert_eq!(actions.len(), 1, "{response}");
+    assert_eq!(actions[0]["kind"], "source.organizeImports");
+    let edit_response = json!({"result":actions[0]["edit"]});
+    let edits = document_edits(&edit_response, &document, None, false);
+    let expected = "local first = require(\"./first\")\nlocal second = require(\"./second\")\nreturn first, second\n";
+
+    assert_eq!(
+        apply_edits(include_str!("fixtures/actions/reverse.luau"), edits),
+        expected
+    );
+
+    assert_eq!(fs::read_to_string(&path)?, source);
     client.send(&json!({"jsonrpc":"2.0","id":4,"method":"shutdown"}))?;
     assert_eq!(client.receive(4)["result"], Value::Null);
     client.send(&json!({"jsonrpc":"2.0","method":"exit"}))?;
@@ -2947,7 +2958,7 @@ fn actions_extract_literals_into_fresh_checked_bindings() -> io::Result<()> {
     fs::write(&path, source)?;
     let document = uri(&path);
     let mut client = Client::new(directory.path())?;
-    client.send(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"workspace":{"workspaceEdit":{"documentChanges":true}}}}}))?;
+    client.send(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"workspace":{"workspaceEdit":{"documentChanges":true}},"textDocument":{"codeAction":{"codeActionLiteralSupport":{"codeActionKind":{"valueSet":["refactor.extract"]}}}}}}}))?;
     assert!(client.receive(1).get("error").is_none());
     client.send(&json!({"jsonrpc":"2.0","method":"initialized","params":{}}))?;
     client.send(&json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":document,"languageId":"luau","version":1,"text":source}}}))?;
@@ -3794,11 +3805,11 @@ fn document_links_require_mapped_context_agreement() -> io::Result<()> {
     for (name, text) in [
         (
             "instar.toml",
-            include_str!("../../core/tests/fixtures/checking/roblox/instar.toml"),
+            include_str!("../../project/tests/fixtures/checking/roblox/instar.toml"),
         ),
         (
             "sourcemap.json",
-            include_str!("../../core/tests/fixtures/checking/explicit/sourcemap.json"),
+            include_str!("../../project/tests/fixtures/checking/explicit/sourcemap.json"),
         ),
         (
             "number.luau",
@@ -3806,7 +3817,7 @@ fn document_links_require_mapped_context_agreement() -> io::Result<()> {
         ),
         (
             "string.luau",
-            include_str!("../../core/tests/fixtures/checking/explicit/string.luau"),
+            include_str!("../../project/tests/fixtures/checking/explicit/string.luau"),
         ),
     ] {
         fs::write(directory.path().join(name), text)?;
@@ -4460,15 +4471,15 @@ fn diagnostics_preserve_mapped_contexts_and_follow_source_map_changes() -> io::R
     for (name, source) in [
         (
             "instar.toml",
-            include_str!("../../core/tests/fixtures/checking/roblox/instar.toml"),
+            include_str!("../../project/tests/fixtures/checking/roblox/instar.toml"),
         ),
         (
             ".luaurc",
-            include_str!("../../core/tests/fixtures/checking/imported/strict.json"),
+            include_str!("../../project/tests/fixtures/checking/imported/strict.json"),
         ),
         (
             "sourcemap.json",
-            include_str!("../../core/tests/fixtures/checking/explicit/sourcemap.json"),
+            include_str!("../../project/tests/fixtures/checking/explicit/sourcemap.json"),
         ),
         (
             "number.luau",
@@ -4476,13 +4487,13 @@ fn diagnostics_preserve_mapped_contexts_and_follow_source_map_changes() -> io::R
         ),
         (
             "string.luau",
-            include_str!("../../core/tests/fixtures/checking/explicit/string.luau"),
+            include_str!("../../project/tests/fixtures/checking/explicit/string.luau"),
         ),
     ] {
         fs::write(directory.path().join(name), source)?;
     }
 
-    let source = include_str!("../../core/tests/fixtures/checking/explicit/caller.luau");
+    let source = include_str!("../../project/tests/fixtures/checking/explicit/caller.luau");
     let document = uri(&directory.path().join("caller.luau"));
     let mut client = Client::new(directory.path())?;
     client.send(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"textDocument":{"diagnostic":{}}}}}))?;
@@ -4553,7 +4564,7 @@ fn diagnostics_preserve_mapped_contexts_and_follow_source_map_changes() -> io::R
 
     fs::write(
         &sourcemap,
-        include_str!("../../core/tests/fixtures/checking/explicit/sourcemap.json"),
+        include_str!("../../project/tests/fixtures/checking/explicit/sourcemap.json"),
     )?;
 
     client.send(&json!({"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles","params":{"changes":[{"uri":uri(&sourcemap),"type":2}]}}))?;

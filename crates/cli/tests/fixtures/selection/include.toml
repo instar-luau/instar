@@ -1,3 +1,4 @@
+[selection]
 include=['selected/**']
-[roblox]
-enabled=false
+[environment]
+roblox=false

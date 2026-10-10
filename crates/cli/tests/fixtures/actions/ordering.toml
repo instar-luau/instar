@@ -1,5 +1,5 @@
-[roblox]
-enabled = false
+[environment]
+roblox = false
 
-[format.requires]
+[formatting.requires]
 order = "alphabetical"

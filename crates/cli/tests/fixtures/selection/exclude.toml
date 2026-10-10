@@ -1,4 +1,4 @@
-[format]
+[selection.formatting]
 exclude=['nested/**']
-[roblox]
-enabled=false
+[environment]
+roblox=false

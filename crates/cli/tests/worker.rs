@@ -17,8 +17,8 @@ fn relocated_executable_runs_all_workers() -> io::Result<()> {
     fs::copy(env!("CARGO_BIN_EXE_instar"), &executable)?;
 
     fs::write(
-        directory.path().join("instar.toml"),
-        "[roblox]\nenabled=false\n",
+        directory.path().join("instar.luau"),
+        "return { environment = { roblox = false } }\n",
     )?;
 
     fs::write(directory.path().join("entry.luau"), "return 1\n")?;
@@ -80,19 +80,31 @@ fn stdout_flag_is_rejected_by_worker_before_initialization() -> io::Result<()> {
         .stderr(Stdio::piped())
         .spawn()?;
 
+    let handshake =
+        serde_json::json!({"protocol":1,"worker":"analysis","generation":1,"invocation":1});
+
     let request = serde_json::json!({
-        "sources": {},
-        "declarations": {},
-        "environments": {},
-        "entries": [],
-        "modules": [],
-        "operation": "Parse",
-        "timeout": {"secs": 5, "nanos": 0},
-        "flags": {"DebugLuauLogSolver": true},
-        "progress": false
+        "request":1,
+        "generation":1,
+        "invocation":1,
+        "payload":{
+            "request":1,
+            "generation":1,
+            "remaining_budget":{"secs":5,"nanos":0},
+            "operation":{"Analyze":{
+                "closure":1,
+                "profile":{"flags":{"DebugLuauLogSolver":true},"solver":"New","type_function_heap_bytes":1048576},
+                "purpose":"Source",
+                "roots":[],
+                "modules":[],
+                "cycles":[]
+            }}
+        }
     });
 
     let mut input = child.stdin.take().expect("piped stdin");
+    serde_json::to_writer(&mut input, &handshake)?;
+    input.write_all(b"\n")?;
     serde_json::to_writer(&mut input, &request)?;
     input.write_all(b"\n")?;
     drop(input);
@@ -100,11 +112,25 @@ fn stdout_flag_is_rejected_by_worker_before_initialization() -> io::Result<()> {
 
     assert!(output.status.success(), "{output:?}");
     assert!(output.stderr.is_empty(), "{output:?}");
-    let response: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-    assert_eq!(response["Response"]["Err"]["kind"], "InvalidData");
+
+    let responses = str::from_utf8(&output.stdout)
+        .expect("UTF-8 worker frames")
+        .lines()
+        .map(serde_json::from_str::<serde_json::Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    assert_eq!(responses.len(), 2, "{responses:?}");
+    assert_eq!(responses[0], handshake);
+    assert_eq!(responses[1]["Result"]["request"], 1);
+    assert_eq!(responses[1]["Result"]["generation"], 1);
 
     assert_eq!(
-        response["Response"]["Err"]["message"],
+        responses[1]["Result"]["result"]["Err"]["kind"],
+        "InvalidData"
+    );
+
+    assert_eq!(
+        responses[1]["Result"]["result"]["Err"]["message"],
         "Luau flag writes to stdout and is unavailable: DebugLuauLogSolver"
     );
 

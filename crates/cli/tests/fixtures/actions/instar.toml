@@ -1,5 +1,7 @@
-[roblox]
-enabled = false
+[environment]
+roblox = false
 
-[lint.parenthesized_conditions]
-level = "warn"
+[linting.rules.parenthesized_conditions]
+enabled = true
+severity = "Warning"
+settings = { rule = "parenthesized_conditions", parameters = {} }

@@ -1,7 +1,7 @@
-[roblox]
-enabled = false
+[environment]
+roblox = false
 
-[format]
+[formatting]
 indent_style = "spaces"
 indent_width = 2
 line_ending = "crlf"
