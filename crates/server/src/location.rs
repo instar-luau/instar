@@ -1,40 +1,54 @@
-use std::{io, path::Path};
+use instar_project::ProjectSnapshot;
+use instar_shared::Location;
 
-use instar_analysis::Location;
-use instar_core::{analysis::Origin, project::Project};
-
-use tower_lsp_server::gen_lsp_types::{
-    Location as ProtocolLocation, PositionEncodingKind, Range, Uri,
+use tower_lsp_server::{
+    gen_lsp_types::{Location as ProtocolLocation, Range},
+    jsonrpc::{Error, Result},
 };
 
-use crate::position;
+use crate::{
+    Server, position,
+    session::{State, failure},
+};
 
-pub(crate) fn convert(
-    location: &Location<Origin>,
-    project: &mut Project,
-    encoding: &PositionEncodingKind,
-) -> io::Result<ProtocolLocation> {
-    let uri = uri(location.module.source())?;
-
-    if location.revision == 0 && location.range == [0, 0] {
-        return Ok(ProtocolLocation {
-            uri,
-            range: Range::default(),
-        });
+impl Server {
+    pub(crate) fn location(
+        &self,
+        snapshot: &ProjectSnapshot,
+        location: Location,
+    ) -> Result<ProtocolLocation> {
+        self.state
+            .lock()
+            .expect("session state")
+            .location(snapshot, location)
     }
 
-    let document = project.source(location.module.source())?;
-
-    if document.revision != location.revision {
-        return Err(io::Error::other("source revision mismatch"));
+    pub(crate) fn range(&self, snapshot: &ProjectSnapshot, location: Location) -> Result<Range> {
+        self.location(snapshot, location)
+            .map(|location| location.range)
     }
-
-    Ok(ProtocolLocation {
-        uri,
-        range: position::range(&document.text, location.range, encoding)?,
-    })
 }
 
-pub(crate) fn uri(path: &Path) -> io::Result<Uri> {
-    Uri::from_file_path(path).map_err(|()| io::Error::other("invalid source URI"))
+impl State {
+    pub(crate) fn location(
+        &self,
+        snapshot: &ProjectSnapshot,
+        location: Location,
+    ) -> Result<ProtocolLocation> {
+        let source = snapshot
+            .source(location.source.identity)
+            .ok_or_else(Error::content_modified)?;
+
+        location.validate(source).map_err(|error| failure(&error))?;
+
+        Ok(ProtocolLocation {
+            uri: self.uri(snapshot, location.source.identity)?,
+            range: position::range(
+                &source.text,
+                [location.span.start, location.span.end],
+                &self.encoding,
+            )
+            .map_err(|error| failure(&error))?,
+        })
+    }
 }

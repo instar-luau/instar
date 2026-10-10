@@ -1,10 +1,6 @@
 use std::{
     future::{Future, ready},
     pin::Pin,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
     task::{Context, Poll, Waker},
 };
 
@@ -15,11 +11,10 @@ use tower_lsp_server::{
 
 use tower_service::Service;
 
-use crate::session::Session;
+use crate::{Server, session::Lifecycle};
 
 pub(crate) struct Dispatch {
-    pub(crate) service: LspService<Session>,
-    pub(crate) exited: Arc<AtomicBool>,
+    pub(crate) service: LspService<Server>,
 }
 
 impl Service<Request> for Dispatch {
@@ -33,9 +28,14 @@ impl Service<Request> for Dispatch {
 
     fn call(&mut self, request: Request) -> Self::Future {
         if request.method() == "exit" && request.id().is_none() {
-            self.exited.store(true, Ordering::Relaxed);
-            self.service.inner().workers.stop();
-            self.service.inner().diagnostics.stop();
+            self.service
+                .inner()
+                .state
+                .lock()
+                .expect("session state")
+                .exit_received = true;
+
+            self.service.inner().stop(Lifecycle::Exited);
         }
 
         let mut response = self.service.call(request);

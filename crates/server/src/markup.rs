@@ -1,7 +1,7 @@
-use instar_core::documentation::Entry;
+use instar_project::DocumentationEntry;
 use tower_lsp_server::gen_lsp_types::{Documentation, MarkupContent, MarkupKind};
 
-pub(crate) fn documentation(entry: Entry, kind: MarkupKind) -> Documentation {
+pub(crate) fn documentation(entry: DocumentationEntry, kind: MarkupKind) -> Documentation {
     let mut parts = Vec::new();
 
     if let Some(text) = entry.documentation {

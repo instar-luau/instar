@@ -1,127 +1,131 @@
-use std::{collections::BTreeMap, io, path::PathBuf, time::Instant};
+use std::collections::BTreeMap;
 
-use instar_analysis::{Edit, Options, error::invalid};
-use instar_core::{project::Project, snapshot::Snapshot};
+use instar_project::{ProjectSnapshot, ValidatedEdit};
+use instar_shared::TextEdit;
 
 use tower_lsp_server::{
     gen_lsp_types::{
-        OptionalVersionedTextDocumentIdentifier, PositionEncodingKind, TextDocumentEdit,
-        TextDocumentIdentifier, TextEdit, Uri, WorkspaceEdit,
+        OptionalVersionedTextDocumentIdentifier, TextDocumentEdit, TextDocumentIdentifier,
+        TextEdit as ProtocolTextEdit, Uri, WorkspaceEdit,
     },
     jsonrpc::{Error, Result},
 };
 
-use crate::{location, position, session::failure, workspace::Workspace};
+use crate::{Server, position, session::failure};
 
-pub(crate) struct Edits {
-    snapshot: Snapshot,
-    versions: BTreeMap<PathBuf, i32>,
-    locations: BTreeMap<PathBuf, Uri>,
-    versioned: bool,
-}
-
-impl Edits {
-    pub(crate) fn new(workspace: &Workspace) -> Self {
-        Self {
-            snapshot: workspace.snapshot.clone(),
-            versions: workspace.documents(),
-            locations: workspace.locations(),
-            versioned: workspace.versioned_edits,
-        }
-    }
-
-    pub(crate) fn render(
+impl Server {
+    pub(crate) fn workspace_edit(
         &self,
-        workspace: &Workspace,
-        edits: BTreeMap<PathBuf, Vec<TextEdit>>,
+        snapshot: &ProjectSnapshot,
+        validated: &ValidatedEdit,
+        require_synchronized: bool,
     ) -> Result<WorkspaceEdit> {
-        if workspace.snapshot.revision() != self.snapshot.revision() {
+        let state = self.state.lock().expect("session state");
+
+        if !state.current(&self.project, validated.inputs()) {
             return Err(Error::content_modified());
         }
 
-        let mut changes = BTreeMap::new();
-        let mut documents = Vec::new();
+        let mut edits = validated.proposal().edits.clone();
+        edits.sort_by_key(|edit| (edit.location.source, edit.location.span));
 
-        for (path, edits) in edits {
-            let uri = self
-                .locations
-                .get(&path)
-                .cloned()
-                .map_or_else(|| location::uri(&path).map_err(|error| failure(&error)), Ok)?;
-
-            workspace.editable(&uri)?;
-
-            if self.versioned {
-                documents.push(TextDocumentEdit {
-                    text_document: OptionalVersionedTextDocumentIdentifier {
-                        text_document_identifier: TextDocumentIdentifier { uri },
-                        version: self.versions.get(&path).copied(),
-                    },
-                    edits: edits.into_iter().map(Into::into).collect(),
-                });
-            } else {
-                changes.insert(uri, edits);
-            }
+        if edits.windows(2).any(|pair| {
+            pair[0].location.source == pair[1].location.source
+                && pair[0].location.span.end > pair[1].location.span.start
+        }) {
+            return Err(Error::invalid_params("workspace edits overlap"));
         }
 
-        Ok(if self.versioned {
-            WorkspaceEdit {
-                document_changes: Some(documents.into_iter().map(Into::into).collect()),
-                ..WorkspaceEdit::default()
+        let mut grouped = BTreeMap::<Uri, Vec<ProtocolTextEdit>>::new();
+        let mut versions = BTreeMap::new();
+
+        for edit in edits {
+            let source = snapshot
+                .source(edit.location.source.identity)
+                .ok_or_else(Error::content_modified)?;
+
+            edit.location
+                .validate(source)
+                .map_err(|error| failure(&error))?;
+
+            let current = self.project.snapshot();
+
+            if current
+                .source(source.version.identity)
+                .is_none_or(|current| current.version != source.version)
+            {
+                return Err(Error::content_modified());
             }
+
+            let uri = state.uri(snapshot, source.version.identity)?;
+            state.editable(&uri)?;
+            let document = state.documents.get(&uri);
+
+            if require_synchronized && document.is_none() {
+                return Err(Error::invalid_params(
+                    "standard workspace/applyEdit cannot protect closed files from external changes; open the affected files or use the protected project writer",
+                ));
+            }
+
+            versions.insert(uri.clone(), document.map(|document| document.version));
+
+            grouped.entry(uri).or_default().push(ProtocolTextEdit {
+                range: position::range(
+                    &source.text,
+                    [edit.location.span.start, edit.location.span.end],
+                    &state.encoding,
+                )
+                .map_err(|error| failure(&error))?,
+                new_text: edit.replacement,
+            });
+        }
+
+        if state
+            .capabilities
+            .supports("/workspace/workspaceEdit/documentChanges")
+        {
+            Ok(WorkspaceEdit {
+                document_changes: Some(
+                    grouped
+                        .into_iter()
+                        .map(|(uri, edits)| {
+                            TextDocumentEdit {
+                                text_document: OptionalVersionedTextDocumentIdentifier {
+                                    text_document_identifier: TextDocumentIdentifier {
+                                        uri: uri.clone(),
+                                    },
+                                    version: versions[&uri],
+                                },
+                                edits: edits.into_iter().map(Into::into).collect(),
+                            }
+                            .into()
+                        })
+                        .collect(),
+                ),
+                ..WorkspaceEdit::default()
+            })
         } else {
-            WorkspaceEdit {
-                changes: Some(changes.into_iter().collect()),
-                ..WorkspaceEdit::default()
+            if require_synchronized && !grouped.is_empty() {
+                return Err(Error::invalid_params(
+                    "client must support versioned document edits for guarded application",
+                ));
             }
+
+            Ok(WorkspaceEdit {
+                changes: Some(grouped.into_iter().collect()),
+                ..WorkspaceEdit::default()
+            })
+        }
+    }
+
+    pub(crate) fn text_edit(
+        &self,
+        snapshot: &ProjectSnapshot,
+        edit: &TextEdit,
+    ) -> Result<ProtocolTextEdit> {
+        Ok(ProtocolTextEdit {
+            range: self.range(snapshot, edit.location)?,
+            new_text: edit.replacement.clone(),
         })
     }
-}
-
-pub(crate) fn convert(
-    mut edits: Vec<Edit<PathBuf>>,
-    project: &mut Project,
-    encoding: &PositionEncodingKind,
-    options: &Options,
-    started: Instant,
-) -> io::Result<BTreeMap<PathBuf, Vec<TextEdit>>> {
-    edits.sort_by(|left, right| {
-        left.location
-            .module
-            .cmp(&right.location.module)
-            .then_with(|| left.location.range.cmp(&right.location.range))
-    });
-
-    if edits.windows(2).any(|pair| {
-        pair[0].location.module == pair[1].location.module
-            && pair[0].location.range[1] > pair[1].location.range[0]
-    }) {
-        return Err(invalid("workspace edits overlap"));
-    }
-
-    let mut rendered = BTreeMap::<PathBuf, Vec<TextEdit>>::new();
-
-    for edit in edits {
-        options.check(started)?;
-        let source = project.source(&edit.location.module)?;
-
-        if source.revision != edit.location.revision
-            || source
-                .text
-                .get(edit.location.range[0]..edit.location.range[1])
-                .is_none()
-        {
-            return Err(invalid("workspace edit source revision mismatch"));
-        }
-
-        rendered
-            .entry(edit.location.module)
-            .or_default()
-            .push(TextEdit {
-                range: position::range(&source.text, edit.location.range, encoding)?,
-                new_text: edit.text,
-            });
-    }
-
-    Ok(rendered)
 }
