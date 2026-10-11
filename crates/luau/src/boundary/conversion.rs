@@ -2623,6 +2623,17 @@ pub(crate) fn lint_result(
             _ => Vec::new(),
         };
 
+        let related = warning
+            .related
+            .iter()
+            .map(|related| {
+                Ok(RelatedLocation {
+                    location: captured.location(&related.location)?,
+                    message: related.message.clone(),
+                })
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+
         Ok(UpstreamFinding {
             warning: identity.clone(),
             diagnostic: Diagnostic {
@@ -2637,7 +2648,7 @@ pub(crate) fn lint_result(
                 severity: Severity::Warning,
                 message: warning.message,
                 primary,
-                related: Vec::new(),
+                related,
                 tags,
             },
         })

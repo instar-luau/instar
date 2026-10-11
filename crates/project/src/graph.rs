@@ -837,7 +837,7 @@ fn closure_module(
     }
 }
 
-fn source_mode(node: &ModuleNode, options: &Options) -> CheckingMode {
+pub(crate) fn source_mode(node: &ModuleNode, options: &Options) -> CheckingMode {
     if node
         .effective
         .origins

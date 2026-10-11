@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io, iter, mem, slice,
+    io, mem, slice,
     sync::Arc,
 };
 
@@ -28,13 +28,15 @@ use crate::{
     capture::Capture,
     change::{ChangeBatch, ProjectChange, SourceChange},
     checking,
-    configuration::{CheckOverrides, DiagnosticPolicy, EffectiveSettings, OperationOverrides},
+    configuration::{
+        CheckOverrides, CheckingMode, DiagnosticPolicy, EffectiveSettings, OperationOverrides,
+    },
     editing::{
         ApplyRequest, EditGuarantee, ValidatedEdit, WriteAuthorization, WriteOutcome, preview,
     },
     environments,
     execution::{Runtime, Work, WorkOutput},
-    graph::{ClosureRecipe, DependencyGraph, ModuleNode, syntax_settings},
+    graph::{ClosureRecipe, DependencyGraph, ModuleNode, source_mode, syntax_settings},
     inputs::{ProjectSnapshot, SourceOrigin},
     report::{Counts, DiagnosticRecord, LintReport, ModuleDiagnostic},
     request::{CheckRequest, FixMode, Input, Invocation, LintRequest},
@@ -937,11 +939,6 @@ fn lint_syntax(context: &LintContext, state: &mut LintState, options: &Options) 
             .suppressions
             .insert(node.source.version, directives.directives.clone());
 
-        if !context.graph.roots.contains(&node.identity) {
-            progress(options, index + 1, context.graph.modules.len());
-            continue;
-        }
-
         let imports = dependencies(&node.imports);
         let mut settings = node.effective.settings.linting.clone();
 
@@ -1249,7 +1246,11 @@ fn lint_work(
                     module: identity,
                     warnings: UpstreamWarningSettings {
                         enabled,
-                        language_mode: LanguageMode::NoCheck,
+                        language_mode: match source_mode(node, options) {
+                            CheckingMode::Strict => LanguageMode::Strict,
+                            CheckingMode::Nonstrict => LanguageMode::Nonstrict,
+                            CheckingMode::Nocheck => LanguageMode::NoCheck,
+                        },
                     },
                 });
 
@@ -1528,10 +1529,6 @@ fn lint_modules(context: &LintContext, state: &mut LintState, options: &Options)
             result
                 .findings
                 .iter()
-                .filter(|finding| {
-                    context.graph.roots.contains(&node.identity)
-                        || finding.category != DiagnosticCategory::Lint
-                })
                 .cloned()
                 .map(|diagnostic| DiagnosticRecord {
                     module: Some(node.identity),
@@ -2331,15 +2328,6 @@ fn reporting(
                 || policy.warnings_as_errors && finding.severity == Severity::Warning;
 
             displayed(finding, policy)
-        })
-        .flat_map(|finding| {
-            let placements = graph
-                .roots
-                .iter()
-                .filter(|module| module.source == finding.primary.source.identity)
-                .count();
-
-            iter::repeat_n(finding, placements.max(1))
         })
         .collect::<Vec<_>>();
 

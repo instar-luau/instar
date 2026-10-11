@@ -1706,7 +1706,7 @@ namespace instar::native {
                 const auto checked = state.frontend.moduleResolver.getModule(name);
                 const auto *source = state.frontend.getSourceModule(name);
 
-                if (!checked || !source || !source->root || !checked->errors.empty() || !source->parseErrors.empty()) {
+                if (!checked || !source || !source->root || !source->parseErrors.empty()) {
                     return false;
                 }
 

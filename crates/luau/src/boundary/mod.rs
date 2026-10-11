@@ -381,6 +381,7 @@ pub(crate) mod native {
         code: i32,
         name: String,
         message: String,
+        related: Vec<NativeRelated>,
     }
 
     struct NativeWarningAvailability {
