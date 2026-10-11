@@ -14,33 +14,28 @@ pub(crate) fn hierarchy(
 ) -> Result<HierarchyOutput, Reason> {
     let selected = if let Some(identity) = &request.identity {
         vec![identity.clone()]
-    } else if let Some(position) = &request.position {
-        if matches!(request.kind, HierarchyQueryKind::PrepareTypes) {
-            let inspection = inspection.ok_or(Reason::FailedPrerequisite)?;
-
-            match &inspection.occurrence {
-                Some(occurrence) => match &occurrence.hierarchy {
-                    Knowledge::Known(identities) => identities.clone(),
-                    Knowledge::Unavailable(reason) => return Err(*reason),
-                },
-
-                None if inspection.completion == Completion::Complete
-                    && inspection
-                        .availability
-                        .categories
-                        .get(&SemanticCategory::Nominals)
-                        == Some(&Availability::Available) =>
-                {
-                    Vec::new()
-                }
-
-                None => return Err(Reason::UnavailableSemantics),
+    } else if request.position.is_some() {
+        let inspection = inspection.ok_or(Reason::FailedPrerequisite)?;
+        let category = match request.kind {
+            HierarchyQueryKind::PrepareTypes
+            | HierarchyQueryKind::Supertypes
+            | HierarchyQueryKind::Subtypes => SemanticCategory::Nominals,
+            HierarchyQueryKind::PrepareCalls
+            | HierarchyQueryKind::IncomingCalls
+            | HierarchyQueryKind::OutgoingCalls => SemanticCategory::Functions,
+        };
+        match &inspection.occurrence {
+            Some(occurrence) => match &occurrence.hierarchy {
+                Knowledge::Known(identities) => identities.clone(),
+                Knowledge::Unavailable(reason) => return Err(*reason),
+            },
+            None if inspection.completion == Completion::Complete
+                && inspection.availability.categories.get(&category)
+                    == Some(&Availability::Available) =>
+            {
+                Vec::new()
             }
-        } else {
-            index
-                .targets(position.source, position.offset)
-                .ok_or(Reason::UnavailableSemantics)?
-                .to_vec()
+            None => return Err(Reason::UnavailableSemantics),
         }
     } else {
         return Err(Reason::FailedPrerequisite);

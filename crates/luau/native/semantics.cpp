@@ -299,6 +299,33 @@ namespace instar::native {
             const AnalysisState &state, const Luau::Module &module, const Luau::SourceModule &source,
             const Luau::Position &position
         ) {
+            const auto ancestry = Luau::findAstAncestryOfPosition(source, position, true);
+
+            for (auto node = ancestry.rbegin(); node != ancestry.rend(); ++node) {
+                if (const auto *annotation = (*node)->asType()) {
+                    if (const auto *type = module.astResolvedTypes.find(annotation)) {
+                        return *type;
+                    }
+
+                    if (const auto *reference = annotation->as<Luau::AstTypeReference>();
+                        reference && reference->nameLocation.contains(position) && reference->parameters.size == 0) {
+                        const auto scope = Luau::findScopeAtPosition(module, position);
+
+                        if (scope) {
+                            const auto binding = reference->prefix
+                                ? scope->lookupImportedType(reference->prefix->value, reference->name.value)
+                                : scope->lookupType(reference->name.value);
+
+                            if (binding && binding->typeParams.empty() && binding->typePackParams.empty()) {
+                                return binding->type;
+                            }
+                        }
+                    }
+
+                    return std::nullopt;
+                }
+            }
+
             auto expression = Luau::findExprOrLocalAtPosition(source, position);
 
             if (auto *local = expression.getLocal()) {
@@ -447,6 +474,18 @@ namespace instar::native {
                 if (const auto *member = value->as<Luau::AstExprIndexName>();
                     member && member->indexLocation.contains(position)) {
                     range = member->indexLocation;
+                }
+            }
+
+            const auto ancestry = Luau::findAstAncestryOfPosition(*source, position, true);
+
+            for (auto node = ancestry.rbegin(); node != ancestry.rend(); ++node) {
+                if (const auto *annotation = (*node)->asType()) {
+                    const auto *reference = annotation->as<Luau::AstTypeReference>();
+                    range = reference && reference->nameLocation.contains(position)
+                        ? reference->nameLocation
+                        : annotation->location;
+                    break;
                 }
             }
 
@@ -1456,13 +1495,20 @@ namespace instar::native {
                             const auto index = result.items.size();
                             found = identities.emplace(identity, index).first;
                             const auto selection = range.start;
+                            const auto selection_end = selection + external->name.size();
+                            const auto &source = document(module);
+
+                            if (selection_end > range.end || selection_end > source.text.size() ||
+                                std::string(source.text.data() + selection, external->name.size()) != external->name) {
+                                throw std::runtime_error("nominal declaration name disagrees with captured source");
+                            }
 
                             result.items.push_back(
                                 NativeHierarchyItem{rust::String(external->name),
                                     static_cast<uint8_t>(Kind::Class),
                                     std::move(range),
                                     selection,
-                                    selection,
+                                    selection_end,
                                     selection,
                                     selection}
                             );

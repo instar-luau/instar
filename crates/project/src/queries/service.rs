@@ -1239,9 +1239,7 @@ impl Runtime {
 
         state.include_capture(&captured);
 
-        let inspection = if matches!(request.kind, HierarchyQueryKind::PrepareTypes)
-            && let Some(position) = &request.position
-        {
+        let inspection = if let Some(position) = &request.position {
             let (closure, module) = selected_recipe(&captured, position.module)?;
 
             let WorkOutput::Inspection(inspection) = self.workers.execute(

@@ -1,10 +1,8 @@
 use std::collections::BTreeMap;
 
-use instar_luau::{
-    AnalysisIdentity, FactsResult, OccurrenceFact, SemanticCategory, SemanticIdentity,
-};
+use instar_luau::{AnalysisIdentity, FactsResult, OccurrenceFact, SemanticCategory};
 
-use instar_shared::{Availability, Knowledge, SourceVersion};
+use instar_shared::{Availability, SourceVersion};
 
 #[derive(Default)]
 pub(crate) struct Index {
@@ -46,16 +44,5 @@ impl Index {
                             && occurrence.location.span.end == offset
                     })
             })
-    }
-
-    pub(crate) fn targets(
-        &self,
-        source: SourceVersion,
-        offset: usize,
-    ) -> Option<&[SemanticIdentity]> {
-        match &self.selected(source, offset)?.targets {
-            Knowledge::Known(targets) => Some(targets),
-            Knowledge::Unavailable(_) => None,
-        }
     }
 }
