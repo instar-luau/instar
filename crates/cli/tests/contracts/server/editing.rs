@@ -10,18 +10,18 @@ fn rename() {
     let fixture = Fixture::new("cli", "project");
     let source = "local original = 1\nlocal occupied = 2\ndo\n    local original = 3\n    print(original)\nend\nreturn original, occupied\n";
     fixture.write("protocol.luau", source);
-    let mut session = connect(&fixture, capabilities());
+    let mut session = connect(&fixture, &capabilities());
     open(&mut session, &fixture, "protocol.luau");
     let address = fixture.uri("protocol.luau");
     let position = json!({"textDocument":{"uri":address},"position":{"line":6,"character":9}});
-    let prepared = session.request("textDocument/prepareRename", position.clone());
+    let prepared = session.request("textDocument/prepareRename", &position);
     assert_eq!(
         prepared,
         json!({"start":{"line":6,"character":7},"end":{"line":6,"character":15}})
     );
     let mut parameters = position.clone();
     parameters["newName"] = json!("renamed");
-    let renamed = session.request("textDocument/rename", parameters.clone());
+    let renamed = session.request("textDocument/rename", &parameters);
     let changes = renamed["documentChanges"]
         .as_array()
         .expect("versioned rename");
@@ -38,7 +38,7 @@ fn rename() {
         apply(source, &changes[0]["edits"], "utf-16"),
         "local renamed = 1\nlocal occupied = 2\ndo\n    local original = 3\n    print(original)\nend\nreturn renamed, occupied\n"
     );
-    let linked = session.request("textDocument/linkedEditingRange", position);
+    let linked = session.request("textDocument/linkedEditingRange", &position);
     assert_eq!(
         linked["ranges"],
         json!([
@@ -48,7 +48,7 @@ fn rename() {
     );
     for name in ["occupied", "end", "invalid-name"] {
         parameters["newName"] = json!(name);
-        let rejected = session.response("textDocument/rename", parameters.clone());
+        let rejected = session.response("textDocument/rename", &parameters);
         let code = rejected["error"]["code"]
             .as_i64()
             .expect("rename rejection code");
@@ -77,10 +77,10 @@ fn fixes() {
     let fixture = Fixture::new("cli", "actions");
     let source = "local value = 1\nif(value > 0)then\n    value = value + 1\nend\nreturn value\n";
     fixture.write("input.luau", source);
-    let mut session = connect(&fixture, capabilities());
+    let mut session = connect(&fixture, &capabilities());
     open(&mut session, &fixture, "input.luau");
     let address = fixture.uri("input.luau");
-    let actions = session.request("textDocument/codeAction", json!({"textDocument":{"uri":address},"range":{"start":{"line":0,"character":0},"end":{"line":5,"character":0}},"context":{"diagnostics":[],"only":["quickfix","source.fixAll.instar"]}}));
+    let actions = session.request("textDocument/codeAction", &json!({"textDocument":{"uri":address},"range":{"start":{"line":0,"character":0},"end":{"line":5,"character":0}},"context":{"diagnostics":[],"only":["quickfix","source.fixAll.instar"]}}));
     let entries = actions.as_array().expect("rule actions");
     for kind in ["quickfix", "source.fixAll.instar"] {
         let action = entries
@@ -88,7 +88,7 @@ fn fixes() {
             .find(|action| action["kind"] == kind)
             .expect("selected action kind");
         assert!(action.get("edit").is_none());
-        let resolved = session.request("codeAction/resolve", action.clone());
+        let resolved = session.request("codeAction/resolve", action);
         assert_eq!(resolved["data"], action["data"]);
         assert_eq!(resolved["kind"], kind);
         let edit = &resolved["edit"]["documentChanges"][0];
@@ -109,9 +109,9 @@ fn fixes() {
             .iter()
             .any(|diagnostic| diagnostic["code"] == "parenthesized_conditions")
     );
-    session.notify("textDocument/didChange", json!({"textDocument":{"uri":address,"version":2},"contentChanges":[{"text":"return 1\n"}]}));
+    session.notify("textDocument/didChange", &json!({"textDocument":{"uri":address,"version":2},"contentChanges":[{"text":"return 1\n"}]}));
     assert_eq!(
-        session.response("codeAction/resolve", quick.clone())["error"]["code"],
+        session.response("codeAction/resolve", quick)["error"]["code"],
         -32801
     );
     assert_eq!(fixture.read("input.luau"), source);
@@ -125,15 +125,15 @@ fn refactoring() {
     fixture.write("first.luau", "return 1\n");
     fixture.write("second.luau", "return 2\n");
     fixture.write("imports.luau", "local second=require(\"./second\")\nlocal first=require(\"./first\")\nreturn first,second\n");
-    let mut session = connect(&fixture, capabilities());
+    let mut session = connect(&fixture, &capabilities());
     let imports = open(&mut session, &fixture, "imports.luau");
-    let actions = session.request("textDocument/codeAction", json!({"textDocument":{"uri":fixture.uri("imports.luau")},"range":{"start":{"line":0,"character":0},"end":{"line":3,"character":0}},"context":{"diagnostics":[],"only":["source.organizeImports"]}}));
+    let actions = session.request("textDocument/codeAction", &json!({"textDocument":{"uri":fixture.uri("imports.luau")},"range":{"start":{"line":0,"character":0},"end":{"line":3,"character":0}},"context":{"diagnostics":[],"only":["source.organizeImports"]}}));
     assert_eq!(
         actions.as_array().expect("organize imports action").len(),
         1
     );
     assert_eq!(actions[0]["kind"], "source.organizeImports");
-    let organized = session.request("codeAction/resolve", actions[0].clone());
+    let organized = session.request("codeAction/resolve", &actions[0]);
     let changes = &organized["edit"]["documentChanges"][0];
     assert_eq!(changes["textDocument"]["version"], 1);
     assert_eq!(
@@ -141,10 +141,10 @@ fn refactoring() {
         "local first = require(\"./first\")\nlocal second = require(\"./second\")\nreturn first,second\n"
     );
     let literal = open(&mut session, &fixture, "literal.luau");
-    let extraction = session.request("textDocument/codeAction", json!({"textDocument":{"uri":fixture.uri("literal.luau")},"range":{"start":{"line":2,"character":14},"end":{"line":2,"character":16}},"context":{"diagnostics":[],"only":["refactor.extract"]}}));
+    let extraction = session.request("textDocument/codeAction", &json!({"textDocument":{"uri":fixture.uri("literal.luau")},"range":{"start":{"line":2,"character":14},"end":{"line":2,"character":16}},"context":{"diagnostics":[],"only":["refactor.extract"]}}));
     assert_eq!(extraction.as_array().expect("literal extraction").len(), 1);
     assert_eq!(extraction[0]["kind"], "refactor.extract");
-    let extracted = session.request("codeAction/resolve", extraction[0].clone());
+    let extracted = session.request("codeAction/resolve", &extraction[0]);
     assert_eq!(
         apply(
             &literal,
@@ -173,17 +173,17 @@ fn application() {
         .as_object_mut()
         .expect("document capabilities")
         .remove("codeAction");
-    let mut session = connect(&fixture, supported);
+    let mut session = connect(&fixture, &supported);
     open(&mut session, &fixture, "input.luau");
     let address = fixture.uri("input.luau");
-    let commands = session.request("textDocument/codeAction", json!({"textDocument":{"uri":address},"range":{"start":{"line":0,"character":0},"end":{"line":5,"character":0}},"context":{"diagnostics":[],"only":["quickfix"]}}));
+    let commands = session.request("textDocument/codeAction", &json!({"textDocument":{"uri":address},"range":{"start":{"line":0,"character":0},"end":{"line":5,"character":0}},"context":{"diagnostics":[],"only":["quickfix"]}}));
     let command = commands
         .as_array()
         .expect("command fallback")
         .iter()
         .find(|command| command["command"] == "instar.applyFix")
         .expect("explicit apply-fix intent");
-    let rejected = session.request("workspace/executeCommand", command.clone());
+    let rejected = session.request("workspace/executeCommand", command);
     assert_eq!(
         rejected,
         json!({"applied":false,"failureReason":"contract client declined edit"})
@@ -196,7 +196,7 @@ fn application() {
     );
     assert_eq!(fixture.read("input.luau"), source);
     session.hold("workspace/applyEdit");
-    let identifier = session.start("workspace/executeCommand", command.clone());
+    let identifier = session.start("workspace/executeCommand", command);
     let request = session.message("workspace/applyEdit");
     let edits = &request["params"]["edit"]["documentChanges"][0]["edits"];
     let applied = apply(source, edits, "utf-16");
@@ -207,19 +207,19 @@ fn application() {
     fixture.write("input.luau", &applied);
     session.notify(
         "textDocument/didChange",
-        json!({"textDocument":{"uri":address,"version":2},"contentChanges":[{"text":applied}]}),
+        &json!({"textDocument":{"uri":address,"version":2},"contentChanges":[{"text":applied}]}),
     );
-    session.respond(request["id"].clone(), json!({"applied":true}));
+    session.respond(&request["id"], &json!({"applied":true}));
     assert_eq!(
         session.receive(identifier)["result"],
         json!({"applied":true})
     );
     assert_eq!(
-        session.response("workspace/executeCommand", command.clone())["error"]["code"],
+        session.response("workspace/executeCommand", command)["error"]["code"],
         -32801
     );
     assert_eq!(
-        session.request("workspace/textDocumentContent", json!({"uri":address}))["text"],
+        session.request("workspace/textDocumentContent", &json!({"uri":address}))["text"],
         applied
     );
     snapshot(
@@ -242,29 +242,29 @@ fn closed() {
         .as_object_mut()
         .expect("document capabilities")
         .remove("codeAction");
-    let mut session = connect(&fixture, supported);
+    let mut session = connect(&fixture, &supported);
     open(&mut session, &fixture, "protocol.luau");
     let address = fixture.uri("protocol.luau");
-    let actions = session.request("textDocument/codeAction", json!({"textDocument":{"uri":address},"range":{"start":{"line":0,"character":0},"end":{"line":3,"character":0}},"context":{"diagnostics":[],"only":["source.organizeImports"]}}));
+    let actions = session.request("textDocument/codeAction", &json!({"textDocument":{"uri":address},"range":{"start":{"line":0,"character":0},"end":{"line":3,"character":0}},"context":{"diagnostics":[],"only":["source.organizeImports"]}}));
     assert_eq!(actions.as_array().expect("guarded import command").len(), 1);
     assert_eq!(actions[0]["command"], "instar.organizeImports");
     session.notify(
         "textDocument/didClose",
-        json!({"textDocument":{"uri":address}}),
+        &json!({"textDocument":{"uri":address}}),
     );
     fixture.write("protocol.luau", "return \"externally changed\"\n");
     assert_eq!(
-        session.response("workspace/executeCommand", actions[0].clone())["error"]["code"],
+        session.response("workspace/executeCommand", &actions[0])["error"]["code"],
         -32801
     );
     let unknown = session.response(
         "workspace/executeCommand",
-        json!({"command":"instar.unknown","arguments":[]}),
+        &json!({"command":"instar.unknown","arguments":[]}),
     );
     assert_eq!(unknown["error"]["code"], -32602);
     let unguarded = session.response(
         "workspace/executeCommand",
-        json!({"command":"instar.format","arguments":[{"source":1}]}),
+        &json!({"command":"instar.format","arguments":[{"source":1}]}),
     );
     assert_eq!(unguarded["error"]["code"], -32602);
     assert_eq!(

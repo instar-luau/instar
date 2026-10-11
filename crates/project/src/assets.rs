@@ -1,8 +1,8 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fmt::{Display, Write as FormattingWrite},
+    fmt::{Display, Write as _},
     fs,
-    io::{self, Read, Write},
+    io::{self, Read as _, Write as _},
     path::{Path, PathBuf},
     sync::{Arc, PoisonError},
 };
@@ -17,7 +17,7 @@ use instar_shared::{
 
 use serde::Deserialize;
 use serde_json::Deserializer;
-use sha2::{Digest, Sha256};
+use sha2::{Digest as _, Sha256};
 
 use crate::{
     acquisition,
@@ -759,7 +759,7 @@ fn read_file(path: &Path, remaining: &mut usize, options: &Options) -> io::Resul
 
     options.check()?;
 
-    String::from_utf8(bytes).map_err(|_| invalid("asset cache is not UTF-8"))
+    String::from_utf8(bytes).map_err(|error| invalid(format!("asset cache is not UTF-8: {error}")))
 }
 
 fn validate_directory(directory: &Path) -> io::Result<()> {

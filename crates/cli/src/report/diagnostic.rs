@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, io};
+use std::{collections::BTreeMap, io, iter::once};
 
 use codespan_reporting::{
     diagnostic::{Diagnostic as RenderedDiagnostic, Label},
@@ -45,7 +45,7 @@ impl Diagnostics {
     }
 
     pub(super) fn available(&self, diagnostic: &Diagnostic) -> bool {
-        std::iter::once(&diagnostic.primary)
+        once(&diagnostic.primary)
             .chain(diagnostic.related.iter().map(|related| &related.location))
             .all(|location| {
                 location.source.revision == 0 || self.sources.contains_key(&location.source)

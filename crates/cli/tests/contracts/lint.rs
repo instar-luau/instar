@@ -74,17 +74,13 @@ fn retained_pairs_preserve_inventory_ranges_and_negative_cases() {
         let finding = diagnostic(&report, rule, "positive.luau", range);
         assert_eq!(finding["severity"], "warning");
         assert_eq!(finding["category"], "Lint");
-        let findings: Vec<_> = report["diagnostics"]
+        let count = report["diagnostics"]
             .as_array()
             .expect("diagnostic array")
             .iter()
             .filter(|finding| finding["code"] == rule)
-            .collect();
-        assert_eq!(
-            findings.len(),
-            1,
-            "negative case must not diagnose: {scenario}"
-        );
+            .count();
+        assert_eq!(count, 1, "negative case must not diagnose: {scenario}");
         assert_eq!(fixture.bytes("positive.luau"), original);
         if scenario == "arguments" || scenario == "escapes" || scenario == "invariance" {
             let negative = fixture.run(&["lint", "negative.luau", "--json", "--rule", rule]);
@@ -146,7 +142,7 @@ fn native_warning_programs_have_attributed_positive_and_negative_findings() {
         let finding = diagnostic(&report, rule, "positive.luau", [start, start + length]);
         assert_eq!(finding["severity"], "warning");
         assert_eq!(finding["category"], "Lint");
-        assert!(!finding["message"].as_str().expect("explanation").is_empty());
+        assert_ne!(finding["message"].as_str().expect("explanation"), "");
         let negative = fixture.run(&["lint", "negative.luau", "--json", "--rule", rule]);
         assert_eq!(negative.status, 0, "{rule}: {}", negative.stderr);
         assert_eq!(negative.json()["diagnostics"], json!([]), "{rule}");
@@ -353,11 +349,12 @@ fn recovery_and_missing_prerequisites_retain_useful_findings() {
                 .as_str()
                 .is_some_and(|path| path.ends_with("invalid.luau")))
     );
-    assert!(
-        !report["availability"]
+    assert_ne!(
+        report["availability"]
             .as_array()
             .expect("coverage")
-            .is_empty()
+            .as_slice(),
+        [] as [Value; 0]
     );
 }
 
@@ -584,7 +581,7 @@ fn explicit_preview_write_and_scoped_fixes_use_final_source_outcomes() {
             .len(),
         1
     );
-    assert!(!report["previews"][0].as_str().expect("patch").is_empty());
+    assert_ne!(report["previews"][0].as_str().expect("patch"), "");
     let mut write_arguments = arguments.to_vec();
     write_arguments.extend(["--fix", "--fix-rule", "self_assignment"]);
     let scoped = fixture.run(&write_arguments);
@@ -1023,11 +1020,9 @@ fn sandbox_and_type_function_resource_limits_never_report_clean_completion() {
             );
             assert_eq!(finding["category"], "Configuration");
             assert_eq!(finding["severity"], "error");
-            assert!(
-                !finding["message"]
-                    .as_str()
-                    .expect("sandbox explanation")
-                    .is_empty()
+            assert_ne!(
+                finding["message"].as_str().expect("sandbox explanation"),
+                ""
             );
             Some(json!({
                 "code": finding["code"], "category": finding["category"],
@@ -1324,7 +1319,7 @@ fn unchanged_inputs_reuse_identities_and_environment_changes_invalidate_inferenc
     let changed =
         complete(project.lint(request, options())).expect("changed environment inference");
     assert_eq!(changed.completion, Completion::Complete);
-    assert!(changed.final_findings.is_empty());
+    assert_eq!(changed.final_findings, []);
     assert_ne!(first.inputs, changed.inputs);
     assert!(!project.current(&first.inputs));
     assert!(project.current(&changed.inputs));
@@ -1358,16 +1353,16 @@ fn watch_relints_changed_source_rules_and_declaration_inputs() {
     let source =
         complete(project.watch(request.clone(), options())).expect("source-triggered watch");
     assert_eq!(source.iterations.len(), 1);
-    assert!(!source.iterations[0].changed.is_empty());
+    assert_ne!(source.iterations[0].changed, []);
     let WatchCommandReport::Lint(changed) = &source.iterations[0].report else {
         panic!("watch must return lint report");
     };
-    assert!(changed.final_findings.is_empty());
+    assert_eq!(changed.final_findings, []);
     fixture.write("instar.toml", "[linting]\nselected = ['implicit_any_parameter']\n[[environment.groups]]\nnamespace = '@project'\ndefinitions = ['declaration.luau']\n");
     let rules =
         complete(project.watch(request.clone(), options())).expect("configuration-triggered watch");
     assert_eq!(rules.iterations.len(), 1);
-    assert!(!rules.iterations[0].changed.is_empty());
+    assert_ne!(rules.iterations[0].changed, []);
     let WatchCommandReport::Lint(changed) = &rules.iterations[0].report else {
         panic!("watch must return lint report");
     };
@@ -1378,7 +1373,7 @@ fn watch_relints_changed_source_rules_and_declaration_inputs() {
         complete(project.watch(request, options())).expect("environment-triggered watch");
     assert_ne!(environment.completion, Completion::Complete);
     assert_eq!(environment.iterations.len(), 1);
-    assert!(!environment.iterations[0].changed.is_empty());
+    assert_ne!(environment.iterations[0].changed, []);
     complete(project.finish()).expect("worker cleanup");
 }
 
@@ -1478,7 +1473,7 @@ fn validated_fixes_reject_external_changes_and_identify_write_failures() {
             panic!("write failure cannot be a successful or unapplied fix");
         };
         assert_eq!(*failed, source);
-        assert!(!message.is_empty());
+        assert_ne!(message.as_str(), "");
         if directory {
             assert!(fixture.path("fixing.luau").is_dir());
         } else {
@@ -1656,7 +1651,7 @@ fn operational_logging_is_separate_from_the_machine_readable_report() {
         .lines()
         .map(|line| serde_json::from_str(line).expect("operational JSON log"))
         .collect();
-    assert!(!logs.is_empty());
+    assert_ne!(logs, [] as [Value; 0]);
     assert!(
         logs.iter()
             .all(|record| record.get("diagnostics").is_none())
@@ -1719,13 +1714,13 @@ fn declared_globals_and_warning_modes_follow_source_policy() {
             report["diagnostics"].as_array().expect("warnings").len(),
             unknown + implicit
         );
-        let findings: Vec<_> = report["diagnostics"]
+        let count = report["diagnostics"]
             .as_array()
             .expect("warnings")
             .iter()
             .filter(|finding| finding["code"] == "UnknownGlobal")
-            .collect();
-        assert_eq!(findings.len(), unknown, "{mode}");
+            .count();
+        assert_eq!(count, unknown, "{mode}");
         if unknown > 0 {
             let start = source.find("missing").expect("unknown reference");
             diagnostic(

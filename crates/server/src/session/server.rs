@@ -20,7 +20,7 @@ use instar_shared::{
 };
 
 use serde_json::to_value;
-use tokio::task::JoinHandle;
+use tokio::{sync::Mutex as AsyncMutex, task::JoinHandle};
 
 use tower_lsp_server::{
     Client,
@@ -45,7 +45,7 @@ pub struct Server {
     pub(crate) state: Arc<Mutex<State>>,
     pub(crate) publication: Mutex<Option<(JoinHandle<()>, Cancellation)>>,
     pub(crate) progress: Arc<Mutex<HashMap<ProgressToken, ProgressRecord>>>,
-    pub(crate) refreshing: tokio::sync::Mutex<()>,
+    pub(crate) refreshing: AsyncMutex<()>,
 }
 
 impl Server {
@@ -61,7 +61,7 @@ impl Server {
             state: Arc::new(Mutex::new(state)),
             publication: Mutex::new(None),
             progress: Arc::new(Mutex::new(HashMap::new())),
-            refreshing: tokio::sync::Mutex::new(()),
+            refreshing: AsyncMutex::new(()),
         }
     }
 
@@ -170,7 +170,7 @@ impl Server {
                 kind: FailureKind::Operational,
                 message: report.completion.error().to_string(),
                 completion: report.completion.clone(),
-                diagnostics: report.diagnostics.clone(),
+                diagnostics: report.diagnostics,
                 completed_sources: Vec::new(),
                 completed_edits: Vec::new(),
             };
@@ -254,7 +254,7 @@ impl Server {
         self.state.lock().expect("session state").lifecycle = lifecycle;
     }
 
-    pub(crate) async fn cancel_progress(&self, parameters: WorkDoneProgressCancelParams) {
+    pub(crate) fn cancel_progress(&self, parameters: &WorkDoneProgressCancelParams) {
         if let Some(record) = self
             .progress
             .lock()

@@ -39,7 +39,7 @@ pub(super) fn capabilities() -> Value {
     })
 }
 
-pub(super) fn connect(fixture: &Fixture, capabilities: Value) -> Session {
+pub(super) fn connect(fixture: &Fixture, capabilities: &Value) -> Session {
     let mut session = Session::new(fixture);
     session.reply(
         "workspace/workspaceFolders",
@@ -47,7 +47,7 @@ pub(super) fn connect(fixture: &Fixture, capabilities: Value) -> Session {
     );
     let initialized = session.request(
         "initialize",
-        json!({
+        &json!({
             "processId":null,
             "rootUri":fixture.uri(""),
             "workspaceFolders":[{"uri":fixture.uri(""),"name":"contract"}],
@@ -55,7 +55,7 @@ pub(super) fn connect(fixture: &Fixture, capabilities: Value) -> Session {
         }),
     );
     assert_eq!(initialized["serverInfo"]["name"], "Instar");
-    session.notify("initialized", json!({}));
+    session.notify("initialized", &json!({}));
     session
 }
 
@@ -64,10 +64,10 @@ pub(super) fn open(session: &mut Session, fixture: &Fixture, name: &str) -> Stri
     let address = fixture.uri(name);
     session.notify(
         "textDocument/didOpen",
-        json!({"textDocument":{"uri":address,"languageId":"luau","version":1,"text":text}}),
+        &json!({"textDocument":{"uri":address,"languageId":"luau","version":1,"text":text}}),
     );
     assert_eq!(
-        session.request("workspace/textDocumentContent", json!({"uri":address}))["text"],
+        session.request("workspace/textDocumentContent", &json!({"uri":address}))["text"],
         text
     );
     text

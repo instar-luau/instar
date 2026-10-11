@@ -26,7 +26,7 @@ use super::{assistance::lazy, editing::edit};
 
 use crate::{
     Server,
-    session::{RetainedResult, failure, path},
+    session::{COMMANDS, RetainedResult, failure, path},
 };
 
 pub(crate) async fn folders(server: &Server, parameters: DidChangeWorkspaceFoldersParams) {
@@ -302,7 +302,7 @@ pub(crate) async fn execute(
     server: &Server,
     parameters: ExecuteCommandParams,
 ) -> Result<Option<LspAny>> {
-    if !crate::session::COMMANDS.contains(&parameters.command.as_str()) {
+    if !COMMANDS.contains(&parameters.command.as_str()) {
         return Err(Error::invalid_params("unknown command"));
     }
 
@@ -330,7 +330,10 @@ pub(crate) async fn execute(
 
             return serde_json::to_value(server.apply_edit(parameters.command, edit).await?)
                 .map(Some)
-                .map_err(|_| Error::internal_error());
+                .map_err(|error| Error {
+                    message: error.to_string().into(),
+                    ..Error::internal_error()
+                });
         }
     }
 
@@ -466,7 +469,10 @@ pub(crate) async fn execute(
                 .settings
                 .iter()
                 .map(|settings| {
-                    serde_json::to_value(&settings.settings).map_err(|_| Error::internal_error())
+                    serde_json::to_value(&settings.settings).map_err(|error| Error {
+                        message: error.to_string().into(),
+                        ..Error::internal_error()
+                    })
                 })
                 .collect::<Result<Vec<_>>>()?;
 
@@ -520,9 +526,12 @@ pub(crate) async fn execute(
                 }
             }
 
-            Ok(Some(
-                serde_json::to_value(result).map_err(|_| Error::internal_error())?,
-            ))
+            Ok(Some(serde_json::to_value(result).map_err(|error| {
+                Error {
+                    message: error.to_string().into(),
+                    ..Error::internal_error()
+                }
+            })?))
         }
 
         "instar.organizeImports" | "instar.extractLiteral" => {
@@ -736,7 +745,10 @@ async fn apply_report(server: &Server, report: EditReport, label: String) -> Res
 
     serde_json::to_value(result)
         .map(Some)
-        .map_err(|_| Error::internal_error())
+        .map_err(|error| Error {
+            message: error.to_string().into(),
+            ..Error::internal_error()
+        })
 }
 
 async fn reveal_findings(

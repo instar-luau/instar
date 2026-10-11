@@ -1,7 +1,7 @@
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
-    fmt::{Display, Write},
+    fmt::{Display, Write as _},
     io, iter,
     sync::Arc,
 };
@@ -705,20 +705,23 @@ pub(crate) fn import_site(input: &ResolvedImport) -> native::NativeSite {
                     InstanceStep::Parent => value.push_str("/parent"),
 
                     InstanceStep::Field(name) => {
-                        let _ = write!(value, "/field:{}:{name}", name.len());
+                        write!(value, "/field:{}:{name}", name.len())
+                            .expect("formatting a String cannot fail");
                     }
 
                     InstanceStep::Service(name) => {
-                        let _ = write!(value, "/service:{}:{name}", name.len());
+                        write!(value, "/service:{}:{name}", name.len())
+                            .expect("formatting a String cannot fail");
                     }
 
                     InstanceStep::Child { name, recursive } => {
-                        let _ = write!(
+                        write!(
                             value,
                             "/child:{}:{}:{name}",
                             u8::from(*recursive),
                             name.len()
-                        );
+                        )
+                        .expect("formatting a String cannot fail");
                     }
                 }
             }

@@ -9,21 +9,17 @@ use super::{
 fn bindings() {
     let fixture = Fixture::new("cli", "project");
     fixture.write("protocol.luau", "local value: number = 1\nvalue += 2\nlocal function double(input: number): number\n    return input * 2\nend\nreturn double(value)\n");
-    let mut session = connect(&fixture, capabilities());
+    let mut session = connect(&fixture, &capabilities());
     open(&mut session, &fixture, "protocol.luau");
     let address = fixture.uri("protocol.luau");
     let position = json!({"textDocument":{"uri":address},"position":{"line":5,"character":14}});
     let target = json!([{"uri":address,"range":{"start":{"line":0,"character":6},"end":{"line":0,"character":11}}}]);
     for method in ["textDocument/declaration", "textDocument/definition"] {
-        assert_eq!(
-            session.request(method, position.clone()),
-            target,
-            "{method}"
-        );
+        assert_eq!(session.request(method, &position), target, "{method}");
     }
     let implementation = session.request(
         "textDocument/implementation",
-        json!({"textDocument":{"uri":address},"position":{"line":5,"character":8}}),
+        &json!({"textDocument":{"uri":address},"position":{"line":5,"character":8}}),
     );
     assert_eq!(
         implementation,
@@ -31,7 +27,7 @@ fn bindings() {
     );
     let mut references = position.clone();
     references["context"] = json!({"includeDeclaration":true});
-    let declared = session.request("textDocument/references", references.clone());
+    let declared = session.request("textDocument/references", &references);
     assert_eq!(
         declared,
         json!([
@@ -41,17 +37,17 @@ fn bindings() {
         ])
     );
     references["context"]["includeDeclaration"] = json!(false);
-    let used = session.request("textDocument/references", references.clone());
+    let used = session.request("textDocument/references", &references);
     assert_eq!(used, json!([declared[1], declared[2]]));
     references["partialResultToken"] = json!("references");
     assert_eq!(
-        session.request("textDocument/references", references),
+        session.request("textDocument/references", &references),
         json!([])
     );
     let partial = session.message("$/progress")["params"].clone();
     assert_eq!(partial["token"], "references");
     assert_eq!(partial["value"], used);
-    let highlights = session.request("textDocument/documentHighlight", position);
+    let highlights = session.request("textDocument/documentHighlight", &position);
     assert_eq!(
         highlights,
         json!([
@@ -66,9 +62,9 @@ fn bindings() {
 #[test]
 fn types() {
     let fixture = Fixture::new("cli", "navigation");
-    let mut session = connect(&fixture, capabilities());
+    let mut session = connect(&fixture, &capabilities());
     open(&mut session, &fixture, "input.luau");
-    let definition = session.request("textDocument/typeDefinition", json!({"textDocument":{"uri":fixture.uri("input.luau")},"position":{"line":2,"character":8}}));
+    let definition = session.request("textDocument/typeDefinition", &json!({"textDocument":{"uri":fixture.uri("input.luau")},"position":{"line":2,"character":8}}));
     assert_eq!(definition.as_array().expect("type definitions").len(), 1);
     assert_eq!(definition[0]["uri"], fixture.uri("dependency.luau"));
     assert!(
@@ -85,12 +81,12 @@ fn types() {
 fn symbols() {
     let fixture = Fixture::new("cli", "project");
     fixture.write("protocol.luau", "local function outer()\n    local function inner()\n        return 1\n    end\n    return inner()\nend\nreturn outer()\n");
-    let mut session = connect(&fixture, capabilities());
+    let mut session = connect(&fixture, &capabilities());
     open(&mut session, &fixture, "protocol.luau");
     let address = fixture.uri("protocol.luau");
     let symbols = session.request(
         "textDocument/documentSymbol",
-        json!({"textDocument":{"uri":address}}),
+        &json!({"textDocument":{"uri":address}}),
     );
     let outer = symbols
         .as_array()
@@ -112,7 +108,7 @@ fn symbols() {
         inner["selectionRange"],
         json!({"start":{"line":1,"character":19},"end":{"line":1,"character":24}})
     );
-    let searched = session.request("workspace/symbol", json!({"query":"outer"}));
+    let searched = session.request("workspace/symbol", &json!({"query":"outer"}));
     let selected = searched
         .as_array()
         .expect("workspace symbols")
@@ -120,16 +116,16 @@ fn symbols() {
         .find(|symbol| symbol["name"] == "outer" && symbol["location"]["uri"] == address)
         .expect("workspace outer");
     assert!(selected["location"].get("range").is_none());
-    let resolved = session.request("workspaceSymbol/resolve", selected.clone());
+    let resolved = session.request("workspaceSymbol/resolve", selected);
     assert_eq!(resolved["data"], selected["data"]);
     assert_eq!(resolved["location"]["range"], outer["selectionRange"]);
-    session.notify("textDocument/didChange", json!({"textDocument":{"uri":address,"version":2},"contentChanges":[{"text":"return 1\n"}]}));
+    session.notify("textDocument/didChange", &json!({"textDocument":{"uri":address,"version":2},"contentChanges":[{"text":"return 1\n"}]}));
     assert_eq!(
-        session.response("workspaceSymbol/resolve", selected.clone())["error"]["code"],
+        session.response("workspaceSymbol/resolve", selected)["error"]["code"],
         -32801
     );
     assert_eq!(
-        session.request("workspace/symbol", json!({"query":"outer"})),
+        session.request("workspace/symbol", &json!({"query":"outer"})),
         json!([])
     );
     snapshot(
@@ -149,12 +145,12 @@ fn links() {
         ".luaurc",
         "{\"languageMode\":\"strict\",\"lint\":{\"*\":false},\"aliases\":{\"modules\":\".\"}}",
     );
-    let mut session = connect(&fixture, capabilities());
+    let mut session = connect(&fixture, &capabilities());
     open(&mut session, &fixture, "input.luau");
     let address = fixture.uri("input.luau");
     let links = session.request(
         "textDocument/documentLink",
-        json!({"textDocument":{"uri":address}}),
+        &json!({"textDocument":{"uri":address}}),
     );
     let entries = links.as_array().expect("document links");
     let imports = entries
@@ -178,13 +174,13 @@ fn links() {
             .any(|link| link["range"]["start"]["line"] == 5)
     );
     let link = imports[0];
-    let resolved = session.request("documentLink/resolve", link.clone());
+    let resolved = session.request("documentLink/resolve", link);
     assert_eq!(resolved["target"], fixture.uri("module.luau"));
     assert_eq!(resolved["data"], link["data"]);
     assert_eq!(resolved["range"], link["range"]);
-    session.notify("textDocument/didChange", json!({"textDocument":{"uri":address,"version":2},"contentChanges":[{"text":"return 1\n"}]}));
+    session.notify("textDocument/didChange", &json!({"textDocument":{"uri":address,"version":2},"contentChanges":[{"text":"return 1\n"}]}));
     assert_eq!(
-        session.response("documentLink/resolve", link.clone())["error"]["code"],
+        session.response("documentLink/resolve", link)["error"]["code"],
         -32801
     );
     snapshot(

@@ -143,10 +143,9 @@ async fn formatted(
 
     let scope = scope(&source, &encoding)?;
 
-    let width = NonZeroUsize::new(
-        usize::try_from(formatting.tab_size)
-            .map_err(|_| Error::invalid_params("tab size exceeds supported width"))?,
-    )
+    let width = NonZeroUsize::new(usize::try_from(formatting.tab_size).map_err(|error| {
+        Error::invalid_params(format!("tab size exceeds supported width: {error}"))
+    })?)
     .ok_or_else(|| Error::invalid_params("tab size must be positive"))?;
 
     let whole = matches!(scope, FormatScope::Whole);

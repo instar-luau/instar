@@ -10,60 +10,6 @@ use crate::{
     rules::{assignments, bindings, calls, control, expressions, roblox},
 };
 
-const SYNTAX: Prerequisites = Prerequisites {
-    syntax: true,
-    bindings: false,
-    environment: false,
-    semantics: &[],
-};
-
-const LEXICAL: Prerequisites = Prerequisites {
-    syntax: true,
-    bindings: true,
-    environment: false,
-    semantics: &[],
-};
-
-const ENVIRONMENT: Prerequisites = Prerequisites {
-    syntax: true,
-    bindings: true,
-    environment: true,
-    semantics: &[],
-};
-
-const INFERRED: Prerequisites = Prerequisites {
-    syntax: true,
-    bindings: false,
-    environment: true,
-    semantics: &[SemanticCategory::Types],
-};
-
-const CALLS: Prerequisites = Prerequisites {
-    syntax: true,
-    bindings: true,
-    environment: true,
-    semantics: &[SemanticCategory::Calls],
-};
-
-const TYPES: Prerequisites = Prerequisites {
-    syntax: true,
-    bindings: true,
-    environment: true,
-    semantics: &[SemanticCategory::Bindings, SemanticCategory::Types],
-};
-
-const EFFECTS: Prerequisites = Prerequisites {
-    syntax: true,
-    bindings: true,
-    environment: true,
-    semantics: &[
-        SemanticCategory::Calls,
-        SemanticCategory::Effects,
-        SemanticCategory::Dependencies,
-        SemanticCategory::Occurrences,
-    ],
-};
-
 macro_rules! inventory {
     ($consumer:ident) => {
         $consumer! {
@@ -278,8 +224,6 @@ macro_rules! inventory {
     };
 }
 
-pub(crate) use inventory;
-
 macro_rules! define_catalog {
     ($(
         $identity:ident, $name:literal, $parameters:ty, $schema:ident,
@@ -330,6 +274,60 @@ macro_rules! define_catalog {
         RuleProducer::Upstream(UpstreamWarningIdentity { name: $name.to_owned() })
     };
 }
+
+const SYNTAX: Prerequisites = Prerequisites {
+    syntax: true,
+    bindings: false,
+    environment: false,
+    semantics: &[],
+};
+
+const LEXICAL: Prerequisites = Prerequisites {
+    syntax: true,
+    bindings: true,
+    environment: false,
+    semantics: &[],
+};
+
+const ENVIRONMENT: Prerequisites = Prerequisites {
+    syntax: true,
+    bindings: true,
+    environment: true,
+    semantics: &[],
+};
+
+const INFERRED: Prerequisites = Prerequisites {
+    syntax: true,
+    bindings: false,
+    environment: true,
+    semantics: &[SemanticCategory::Types],
+};
+
+const CALLS: Prerequisites = Prerequisites {
+    syntax: true,
+    bindings: true,
+    environment: true,
+    semantics: &[SemanticCategory::Calls],
+};
+
+const TYPES: Prerequisites = Prerequisites {
+    syntax: true,
+    bindings: true,
+    environment: true,
+    semantics: &[SemanticCategory::Bindings, SemanticCategory::Types],
+};
+
+const EFFECTS: Prerequisites = Prerequisites {
+    syntax: true,
+    bindings: true,
+    environment: true,
+    semantics: &[
+        SemanticCategory::Calls,
+        SemanticCategory::Effects,
+        SemanticCategory::Dependencies,
+        SemanticCategory::Occurrences,
+    ],
+};
 
 inventory!(define_catalog);
 

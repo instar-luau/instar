@@ -179,7 +179,9 @@ impl Runtime {
     ) -> io::Result<Vec<SelectedSource>> {
         let mut selected = self.editor_targets(None, true, capture, None, options)?;
 
-        for source in capture.snapshot.sources().cloned().collect::<Vec<_>>() {
+        let snapshot = capture.snapshot.clone();
+
+        for source in snapshot.sources().cloned() {
             if !module(&capture.snapshot, source.version.identity) {
                 continue;
             }
@@ -247,7 +249,7 @@ impl Runtime {
     }
 
     fn file_proposal(
-        &mut self,
+        &self,
         before: &DependencyGraph,
         intermediate: &DependencyGraph,
         original: &ProjectSnapshot,

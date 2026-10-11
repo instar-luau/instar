@@ -772,7 +772,7 @@ impl Capture {
                     .changes
                     .push(ProjectChange::Source(SourceChange::Remove {
                         expected: previous.version,
-                    }))
+                    }));
             }
 
             (None, None) => {}

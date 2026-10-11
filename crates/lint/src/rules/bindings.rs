@@ -325,11 +325,11 @@ pub(crate) fn evaluate(
         }
 
         RuleSettings::ImplicitAnyLocal(_) | RuleSettings::ImplicitAnyParameter(_) => {
-            context.implicit(options)
+            context.implicit(options);
         }
 
         RuleSettings::Deprecated(_) => context.walk(options, |context, node, ancestors| {
-            context.deprecated(node, ancestors)
+            context.deprecated(node, ancestors);
         }),
 
         RuleSettings::GlobalUsage(_) => context.walk(options, |context, node, _| {

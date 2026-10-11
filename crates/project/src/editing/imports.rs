@@ -54,7 +54,7 @@ impl Runtime {
             ));
         }
 
-        let mut settings = target.effective.settings.formatting.clone();
+        let mut settings = target.effective.settings.formatting;
         settings.requires.order = Order::Alphabetical;
         let recognized = imports(&parsed.tree, options);
         let tree = parsed.tree.syntax();

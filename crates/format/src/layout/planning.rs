@@ -274,9 +274,7 @@ impl Builder<'_, '_> {
             })
             .unwrap_or(self.configuration.requires.groups.len())
     }
-}
 
-impl Builder<'_, '_> {
     pub(super) fn node(&self, index: NodeIndex) -> Vec<Document> {
         if self.interrupted() {
             return Vec::new();
@@ -860,9 +858,7 @@ impl Builder<'_, '_> {
             ],
         }]
     }
-}
 
-impl Builder<'_, '_> {
     pub(super) fn prepare_spacing(&mut self) -> Result<(), Reason> {
         let tree = self.tree;
 

@@ -18,7 +18,7 @@ use crate::{
     capture::Capture,
     configuration::{DiagnosticPolicy, OperationOverrides, worker_options},
     environments,
-    execution::{Runtime, Work, WorkOutput, failure},
+    execution::{BatchOutcome, Runtime, Work, WorkOutput, failure},
     graph::{ClosureRecipe, DependencyGraph},
     inputs::ProjectSnapshot,
     report::{CheckReport, Counts, DiagnosticRecord, ModuleDiagnostic},
@@ -253,10 +253,7 @@ impl Runtime {
         recipes: &[ClosureRecipe],
         options: &Options,
         following: &(impl Fn(usize, &AnalysisResult) -> Vec<(ModuleIdentity, Work)> + Sync),
-    ) -> Vec<(
-        io::Result<Arc<AnalysisResult>>,
-        Vec<(ModuleIdentity, io::Result<WorkOutput>)>,
-    )> {
+    ) -> Vec<BatchOutcome<Arc<AnalysisResult>>> {
         let epoch = self.host.worker_epoch.load(Ordering::Acquire);
 
         if epoch != self.epoch {

@@ -1,5 +1,6 @@
 //! Catalog-driven Luau lint rules over caller-supplied snapshots and evidence.
 
+#[macro_use]
 mod catalog;
 mod fixes;
 mod request;

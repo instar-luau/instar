@@ -222,10 +222,9 @@ impl<Response> Emitter<Response> {
             ));
         }
 
-        let mut output = self
-            .output
-            .lock()
-            .map_err(|_| io::Error::other("worker output lock is poisoned"))?;
+        let mut output = self.output.lock().map_err(|error| {
+            io::Error::other(format!("worker output lock is poisoned: {error}"))
+        })?;
 
         if !self.active.load(Ordering::Acquire) {
             return Err(io::Error::new(
@@ -288,9 +287,9 @@ where
     }
 
     {
-        let mut output = output
-            .lock()
-            .map_err(|_| io::Error::other("worker output lock is poisoned"))?;
+        let mut output = output.lock().map_err(|error| {
+            io::Error::other(format!("worker output lock is poisoned: {error}"))
+        })?;
 
         write_frame(&mut *output, &handshake)?;
     }
@@ -332,9 +331,9 @@ where
         };
 
         {
-            let mut output = output
-                .lock()
-                .map_err(|_| io::Error::other("worker output lock is poisoned"))?;
+            let mut output = output.lock().map_err(|error| {
+                io::Error::other(format!("worker output lock is poisoned: {error}"))
+            })?;
 
             emitter.active.store(false, Ordering::Release);
             write_frame(&mut *output, &message)?;

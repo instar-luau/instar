@@ -115,7 +115,7 @@ impl EnvironmentRecipe {
 
 impl Runtime {
     pub(crate) fn environment(
-        &mut self,
+        &self,
         effective: &EffectiveSettings,
         map: Option<&(Arc<Map>, usize)>,
         capture: &mut Capture,

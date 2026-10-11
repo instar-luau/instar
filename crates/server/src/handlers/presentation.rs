@@ -175,7 +175,9 @@ pub(crate) async fn folds(
         .range_limit
         .map(usize::try_from)
         .transpose()
-        .map_err(|_| Error::invalid_params("fold range limit exceeds supported size"))?
+        .map_err(|error| {
+            Error::invalid_params(format!("fold range limit exceeds supported size: {error}"))
+        })?
         .unwrap_or(usize::MAX);
 
     let mut result = Vec::new();
@@ -333,7 +335,10 @@ pub(crate) async fn colors(
                     "blue": color.rgba[2],
                     "alpha": color.rgba[3],
                 }))
-                .map_err(|_| Error::internal_error())?,
+                .map_err(|error| Error {
+                    message: error.to_string().into(),
+                    ..Error::internal_error()
+                })?,
             })
         })
         .collect()
@@ -516,7 +521,10 @@ fn render(
                         .any(|modifier| modifier_name(*modifier) == name);
 
                     let bit = 1_u32
-                        .checked_shl(u32::try_from(index).map_err(|_| Error::internal_error())?)
+                        .checked_shl(u32::try_from(index).map_err(|error| Error {
+                            message: error.to_string().into(),
+                            ..Error::internal_error()
+                        })?)
                         .ok_or_else(Error::internal_error)?;
 
                     Ok::<_, Error>(if present { mask | bit } else { mask })
@@ -544,7 +552,10 @@ fn render(
                         current.character
                     },
                     length: width,
-                    token_type: u32::try_from(kind).map_err(|_| Error::internal_error())?,
+                    token_type: u32::try_from(kind).map_err(|error| Error {
+                        message: error.to_string().into(),
+                        ..Error::internal_error()
+                    })?,
                     token_modifiers_bitset: modifiers,
                 });
 

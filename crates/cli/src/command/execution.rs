@@ -1,8 +1,10 @@
 use std::{
     collections::BTreeSet,
     env, fs,
-    io::{self, Read},
+    io::{self, Read as _},
+    mem::take,
     path::{self, Path, PathBuf},
+    result,
     sync::{Arc, Mutex, mpsc},
     thread,
     time::{Duration, Instant},
@@ -24,6 +26,7 @@ use instar_shared::{
 };
 
 use serde_json::{Value, json};
+use tokio::{signal::ctrl_c, time::sleep};
 use tracing::Level;
 use tracing_subscriber::fmt;
 
@@ -94,7 +97,7 @@ pub(crate) async fn run(arguments: Arguments) -> Result<CommandOutcome> {
     let signal_project = Arc::clone(&project);
 
     let signal = tokio::spawn(async move {
-        match tokio::signal::ctrl_c().await {
+        match ctrl_c().await {
             Ok(()) => {
                 cancellation.cancel();
                 signal_project.stop();
@@ -141,7 +144,7 @@ async fn execute(
 
     let json_output = reporting.json || reporting.style == ReportStyle::Json;
     let report_destination = reporting.destination.is_some();
-    let reporter = Arc::new(Mutex::new(Reporter::new(reporting)?));
+    let reporter = Arc::new(Mutex::new(Reporter::new(&reporting)?));
 
     if execution.verbose {
         reporter.lock().expect("reporter lock").trace()?;
@@ -191,21 +194,21 @@ async fn execute(
                 .iter()
                 .any(|path| path == Path::new("-"));
 
-            let mode = if arguments.write {
+            let mode = if arguments.output.write {
                 FormatMode::Write
             } else if arguments.preview {
                 FormatMode::Preview
-            } else if arguments.source || (stdin && !arguments.check && !json_output) {
+            } else if arguments.output.source || (stdin && !arguments.check && !json_output) {
                 FormatMode::Source
             } else {
                 FormatMode::Check
             };
 
-            if arguments.source && arguments.write && !stdin {
+            if arguments.output.source && arguments.output.write && !stdin {
                 return Err(invalid("combined --source and --write requires stdin").into());
             }
 
-            if (matches!(mode, FormatMode::Source) || (stdin && arguments.write))
+            if (matches!(mode, FormatMode::Source) || (stdin && arguments.output.write))
                 && json_output
                 && !report_destination
             {
@@ -215,7 +218,8 @@ async fn execute(
                 .into());
             }
 
-            if execution.watch && (matches!(mode, FormatMode::Source) || (stdin && arguments.write))
+            if execution.watch
+                && (matches!(mode, FormatMode::Source) || (stdin && arguments.output.write))
             {
                 return Err(
                     invalid("watch cannot be combined with formatted-source output").into(),
@@ -252,8 +256,10 @@ async fn execute(
                 return Err(invalid("--fix-stdin requires '-' as an input").into());
             }
 
-            if !arguments.fix_rules.is_empty()
-                && !(arguments.fix || arguments.fix_preview || arguments.fix_stdin)
+            if !(arguments.fix_rules.is_empty()
+                || arguments.fix
+                || arguments.fix_preview
+                || arguments.fix_stdin)
             {
                 return Err(invalid("--fix-rule requires a fix mode").into());
             }
@@ -327,7 +333,7 @@ async fn execute(
         reporter.lock().expect("reporter lock").check_output()?;
 
         return match report {
-            Ok(report) => finish(&reporter, report),
+            Ok(report) => finish(&reporter, &report),
 
             Err(failure)
                 if !failure.diagnostics.is_empty()
@@ -339,10 +345,10 @@ async fn execute(
                     .expect("reporter lock")
                     .capture(&project.snapshot());
 
-                finish(&reporter, CommandReport::Failure(failure))
+                finish(&reporter, &CommandReport::Failure(*failure))
             }
 
-            Err(failure) => Err(failure.into()),
+            Err(failure) => Err((*failure).into()),
         };
     }
 
@@ -380,7 +386,7 @@ async fn execute(
                     .expect("reporter lock")
                     .capture(&project.snapshot());
 
-                let terminal = finish(&reporter, CommandReport::Failure(failure))?;
+                let terminal = finish(&reporter, &CommandReport::Failure(failure))?;
                 outcome.status = precedence(outcome.status, terminal.status);
                 outcome.completion = outcome.completion.combine(terminal.completion);
 
@@ -393,13 +399,13 @@ async fn execute(
         reporter
             .lock()
             .expect("reporter lock")
-            .events(std::mem::take(&mut watched.events));
+            .events(take(&mut watched.events));
 
-        for iteration in std::mem::take(&mut watched.historical) {
+        for iteration in take(&mut watched.historical) {
             reporter.lock().expect("reporter lock").historical(
                 &iteration.snapshot,
-                iteration.changed,
-                watch_report(iteration.report, &request),
+                &iteration.changed,
+                &watch_report(iteration.report, &request),
             )?;
 
             published = true;
@@ -409,8 +415,8 @@ async fn execute(
             if !project.current(iteration.report.inputs()) {
                 reporter.lock().expect("reporter lock").historical(
                     &iteration.snapshot,
-                    iteration.changed,
-                    watch_report(iteration.report, &request),
+                    &iteration.changed,
+                    &watch_report(iteration.report, &request),
                 )?;
 
                 published = true;
@@ -423,7 +429,7 @@ async fn execute(
                 .watch(&iteration.snapshot, iteration.changed)?;
 
             let report = watch_report(iteration.report, &request);
-            let iteration = finish(&reporter, report)?;
+            let iteration = finish(&reporter, &report)?;
             outcome.status = precedence(outcome.status, iteration.status);
             outcome.completion = outcome.completion.combine(iteration.completion);
             published = true;
@@ -433,7 +439,7 @@ async fn execute(
 
         if watched.failure.is_some() || outcome.completion != Completion::Complete {
             watched.completion = outcome.completion.clone();
-            let terminal = finish(&reporter, CommandReport::Watch(watched))?;
+            let terminal = finish(&reporter, &CommandReport::Watch(watched))?;
             outcome.status = precedence(outcome.status, terminal.status);
 
             return Ok(outcome);
@@ -445,7 +451,7 @@ async fn operation_report(
     project: &Project,
     request: WatchOperation,
     options: Options,
-) -> std::result::Result<CommandReport, OperationFailure> {
+) -> result::Result<CommandReport, Box<OperationFailure>> {
     match request {
         WatchOperation::Check(request) => project
             .check(request, options)
@@ -470,6 +476,7 @@ async fn operation_report(
                 .map(|report| CommandReport::Lint(report, fixes))
         }
     }
+    .map_err(Box::new)
 }
 
 fn watch_report(report: WatchCommandReport, request: &WatchOperation) -> CommandReport {
@@ -494,11 +501,11 @@ fn watch_report(report: WatchCommandReport, request: &WatchOperation) -> Command
     }
 }
 
-fn finish(reporter: &Mutex<Reporter>, report: CommandReport) -> Result<CommandOutcome> {
+fn finish(reporter: &Mutex<Reporter>, report: &CommandReport) -> Result<CommandOutcome> {
     let status = report.status();
     let completion = report.completion().clone();
     let mut reporter = reporter.lock().expect("reporter lock");
-    reporter.finish(&report)?;
+    reporter.finish(report)?;
     reporter.publish()?;
 
     Ok(CommandOutcome { status, completion })
@@ -631,7 +638,7 @@ async fn invocation(
 
                 let pattern = input
                     .strip_prefix(&base)
-                    .map_err(|_| invalid("absolute pattern has no selection base"))?
+                    .map_err(|_error| invalid("absolute pattern has no selection base"))?
                     .to_path_buf();
 
                 (base, pattern)
@@ -664,9 +671,9 @@ async fn invocation(
             .map(path::absolute)
             .transpose()?,
         explanations: ExplanationSelection {
-            selection: arguments.explain_selection,
-            settings: arguments.explain_settings,
-            dependencies: arguments.explain_dependencies,
+            selection: arguments.explanations.explain_selection,
+            settings: arguments.explanations.explain_settings,
+            dependencies: arguments.explanations.explain_dependencies,
         },
     })
 }
@@ -714,13 +721,13 @@ async fn stdin(options: &Options) -> io::Result<String> {
             }
 
             Err(mpsc::TryRecvError::Empty) => {
-                tokio::time::sleep(
+                sleep(
                     options
                         .remaining()
                         .unwrap_or(Duration::from_millis(10))
                         .min(Duration::from_millis(10)),
                 )
-                .await
+                .await;
             }
 
             Err(mpsc::TryRecvError::Disconnected) => {
@@ -738,7 +745,7 @@ fn overrides(arguments: &InputArguments) -> io::Result<Value> {
             .split_once('=')
             .ok_or_else(|| invalid("--set requires FIELD=JSON"))?;
 
-        let patch: Value = serde_json::from_str(text).map_err(invalid_json)?;
+        let patch: Value = serde_json::from_str(text).map_err(|error| invalid_json(&error))?;
         set(&mut value, field, patch)?;
     }
 
@@ -774,7 +781,7 @@ fn check_overrides(arguments: &CheckArguments) -> io::Result<CheckOverrides> {
 
     diagnostic_overrides(&mut value, &arguments.diagnostics)?;
 
-    serde_json::from_value(value).map_err(invalid_json)
+    serde_json::from_value(value).map_err(|error| invalid_json(&error))
 }
 
 fn format_overrides(arguments: &FormatArguments) -> io::Result<FormatOverrides> {
@@ -839,7 +846,7 @@ fn format_overrides(arguments: &FormatArguments) -> io::Result<FormatOverrides> 
         set(&mut value, "formatting.final_newline", json!(newline))?;
     }
 
-    serde_json::from_value(value).map_err(invalid_json)
+    serde_json::from_value(value).map_err(|error| invalid_json(&error))
 }
 
 fn lint_overrides(arguments: &LintArguments) -> io::Result<LintOverrides> {
@@ -861,7 +868,7 @@ fn lint_overrides(arguments: &LintArguments) -> io::Result<LintOverrides> {
 
     diagnostic_overrides(&mut value, &arguments.diagnostics)?;
 
-    serde_json::from_value(value).map_err(invalid_json)
+    serde_json::from_value(value).map_err(|error| invalid_json(&error))
 }
 
 fn diagnostic_overrides(value: &mut Value, arguments: &DiagnosticArguments) -> io::Result<()> {
@@ -923,7 +930,7 @@ fn format_scope(arguments: &FormatArguments) -> io::Result<FormatScope> {
 
         let offset = position
             .parse()
-            .map_err(|_| invalid("on-type offset must be a byte position"))?;
+            .map_err(|_error| invalid("on-type offset must be a byte position"))?;
 
         let mut characters = trigger.chars();
 
@@ -952,11 +959,11 @@ fn format_scope(arguments: &FormatArguments) -> io::Result<FormatScope> {
 
             let start = start
                 .parse()
-                .map_err(|_| invalid("range start must be a byte position"))?;
+                .map_err(|_error| invalid("range start must be a byte position"))?;
 
             let end = end
                 .parse()
-                .map_err(|_| invalid("range end must be a byte position"))?;
+                .map_err(|_error| invalid("range end must be a byte position"))?;
 
             if start > end {
                 return Err(invalid("range start exceeds range end"));
@@ -1011,6 +1018,6 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.into())
 }
 
-fn invalid_json(error: serde_json::Error) -> io::Error {
+fn invalid_json(error: &serde_json::Error) -> io::Error {
     invalid(error.to_string())
 }

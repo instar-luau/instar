@@ -1,3 +1,5 @@
+use std::io;
+
 use instar_shared::{Completion, Options, Reason, SourceSnapshot};
 use unicode_width::UnicodeWidthStr;
 
@@ -261,8 +263,14 @@ pub(crate) fn emit(
                     let mut source = emitter.finish().into_owned();
                     source.extend_from_slice(quote);
 
-                    SourceSnapshot::from_bytes(snapshot.snapshot().version, &source)
-                        .map_err(|_| Completion::Incomplete(vec![Reason::UnsupportedSyntax]))
+                    SourceSnapshot::from_bytes(snapshot.snapshot().version, &source).map_err(
+                        |error| {
+                            Completion::Incomplete(vec![match error.kind() {
+                                io::ErrorKind::InvalidData => Reason::UnsupportedSyntax,
+                                _ => Reason::FailedPrerequisite,
+                            }])
+                        },
+                    )
                 })
                 .transpose()?,
         );

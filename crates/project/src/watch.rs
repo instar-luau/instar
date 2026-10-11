@@ -14,7 +14,7 @@ use instar_shared::{
 
 use notify::{
     Error as NotificationError, ErrorKind as NotificationErrorKind, Event as NotificationEvent,
-    EventKind, RecommendedWatcher, RecursiveMode, Result as NotificationResult, Watcher,
+    EventKind, RecommendedWatcher, RecursiveMode, Result as NotificationResult, Watcher as _,
     recommended_watcher,
 };
 

@@ -1,3 +1,8 @@
+#![expect(
+    clippy::inline_modules,
+    reason = "CXX bridge declarations require an inline module"
+)]
+
 pub(crate) use self::native::{
     Engine, NativeDiagnostic, NativeDocument, NativeFlag, NativeModule, NativeSource, apply_flags,
     create_engine, evaluate_configuration, normalize_flags,

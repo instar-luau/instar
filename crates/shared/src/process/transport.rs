@@ -2,7 +2,7 @@ use std::{
     env::{self, consts::EXE_SUFFIX},
     error::Error,
     fmt::{self, Display},
-    io::{self, BufRead, BufReader, BufWriter, Read, Write},
+    io::{self, BufRead, BufReader, BufWriter, Read as _, Write},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
@@ -543,7 +543,9 @@ impl<Request, Response> Transport<Request, Response> {
 
                         outgoing
                             .send(Ok(TransportMessage::Ready))
-                            .map_err(|_| io::Error::other("worker receiver stopped"))?;
+                            .map_err(|error| {
+                                io::Error::other(format!("worker receiver stopped: {error}"))
+                            })?;
 
                         Ok(())
                     })();
@@ -672,10 +674,13 @@ impl<Request, Response> Transport<Request, Response> {
 /// # Errors
 /// Returns path resolution failures or already-exists when a host was selected previously.
 pub fn set_host(path: &Path) -> io::Result<()> {
-    HOST.set(path.canonicalize()?).map_err(|_| {
+    HOST.set(path.canonicalize()?).map_err(|host| {
         io::Error::new(
             io::ErrorKind::AlreadyExists,
-            "worker host is already selected",
+            format!(
+                "worker host is already selected; cannot select {}",
+                host.display()
+            ),
         )
     })?;
 
@@ -731,7 +736,7 @@ where
 
         outgoing
             .send(Ok(TransportMessage::Response(Box::new(message))))
-            .map_err(|_| io::Error::other("worker receiver stopped"))?;
+            .map_err(|error| io::Error::other(format!("worker receiver stopped: {error}")))?;
 
         if finished {
             return Ok(());

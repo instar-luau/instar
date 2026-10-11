@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io,
+    io, mem,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -130,7 +130,7 @@ fn handle_request(
             }
         }
         Operation::Analyze(input) => {
-            let snapshots = std::mem::take(snapshots);
+            let snapshots = mem::take(snapshots);
             let input = input.unpack(&snapshots)?;
 
             analyze_request(&input, session, emitter, request.remaining_budget, started)?

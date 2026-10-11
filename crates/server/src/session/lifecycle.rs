@@ -12,6 +12,7 @@ use tower_lsp_server::{
 };
 
 use super::{Server, capabilities::Capabilities, failure, path, state::Lifecycle};
+use crate::handlers::configuration_overlays;
 
 impl Server {
     pub(crate) fn initialize(&self, parameters: InitializeParams) -> Result<InitializeResult> {
@@ -159,7 +160,7 @@ impl Server {
 
             match self.client_request(self.client.configuration(items)).await {
                 Ok(values) if self.project.snapshot().identity == captured.identity => {
-                    let result = crate::handlers::configuration_overlays(self, &roots, values);
+                    let result = configuration_overlays(self, &roots, values);
                     self.report(result).await;
                 }
 

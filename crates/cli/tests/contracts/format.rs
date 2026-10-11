@@ -429,7 +429,7 @@ fn recovered_source_formats_only_well_formed_selected_regions() {
     assert!(unavailable["sources"][0]["proposal"].is_null());
     let whole = fixture.run(&["format", "--source", "input.luau"]);
     assert_eq!(whole.status, 5);
-    assert!(whole.stdout.is_empty());
+    assert_eq!(whole.stdout, "");
     assert_eq!(fixture.bytes("input.luau"), original);
 }
 
@@ -793,7 +793,7 @@ fn source_output_is_isolated_and_stdin_never_authorizes_context_writes() {
     let quiet = fixture.run(&["format", "--source", "--quiet", "input.luau"]);
     assert_eq!(quiet.status, 0);
     assert_eq!(quiet.stdout.as_bytes(), expected);
-    assert!(quiet.stderr.is_empty());
+    assert_eq!(quiet.stderr, "");
 }
 
 #[test]
@@ -858,7 +858,7 @@ fn report_destinations_cannot_replace_sources_or_stdin_context() {
         &fixture.read("input.luau"),
     );
     assert_eq!(stdin.status, 2);
-    assert!(stdin.stdout.is_empty());
+    assert_eq!(stdin.stdout, "");
     assert_eq!(fixture.bytes("input.luau"), original);
 }
 
@@ -927,25 +927,26 @@ fn invalid_invocations_and_empty_selections_are_explicit() {
     ] {
         let output = fixture.run(&arguments);
         assert_eq!(output.status, 2, "{arguments:?}: {}", output.stderr);
-        assert!(output.stdout.is_empty(), "{arguments:?}");
-        assert!(!output.stderr.is_empty(), "{arguments:?}");
+        assert_eq!(output.stdout, "", "{arguments:?}");
+        assert_ne!(output.stderr, "", "{arguments:?}");
         assert_eq!(fixture.bytes("input.luau"), original);
     }
     let missing = fixture.run(&["format", "--json", "--check", "missing.luau"]);
     assert_ne!(missing.status, 0);
     let missing_report = missing.json();
     assert_eq!(missing_report["status"], missing.status);
-    assert!(
-        !missing_report["error"]
+    assert_ne!(
+        missing_report["error"]
             .as_str()
-            .expect("missing source failure")
-            .is_empty()
+            .expect("missing source failure"),
+        ""
     );
-    assert!(
+    assert_eq!(
         missing_report["completed_sources"]
             .as_array()
             .expect("completed sources")
-            .is_empty()
+            .as_slice(),
+        [] as [Value; 0]
     );
     let operational = fixture.run(&[
         "format",
@@ -958,7 +959,7 @@ fn invalid_invocations_and_empty_selections_are_explicit() {
     assert_eq!(operational.status, 3);
     assert_eq!(operational.json()["status"], 3);
     assert_ne!(operational.json()["completion"], "Complete");
-    assert!(operational.stdout.is_empty());
+    assert_eq!(operational.stdout, "");
     assert_eq!(fixture.bytes("input.luau"), original);
     let empty = Fixture::empty().run(&["format", "--json", "--check"]);
     assert_eq!(empty.status, 2);
@@ -998,7 +999,7 @@ fn unsupported_encoding_and_utf8_range_boundaries_never_produce_output() {
         "input.luau",
     ]);
     assert_eq!(boundary.status, 2);
-    assert!(boundary.stdout.is_empty());
+    assert_eq!(boundary.stdout, "");
     assert!(
         boundary.json()["error"]
             .as_str()
@@ -1018,7 +1019,7 @@ fn unsupported_encoding_and_utf8_range_boundaries_never_produce_output() {
         fixture.write(name, &bytes);
         let output = fixture.run(&["format", "--json", "--write", name]);
         assert_eq!(output.status, 2);
-        assert!(output.stdout.is_empty());
+        assert_eq!(output.stdout, "");
         assert!(
             output.json()["error"]
                 .as_str()
@@ -1179,8 +1180,8 @@ fn retained_snapshots_keep_proposals_on_the_analyzed_revision() {
         ),
     )
     .expect_err("changed project revision must reject application");
-    assert!(!stale.message.is_empty());
-    assert!(stale.completed_edits.is_empty());
+    assert_ne!(stale.message, "");
+    assert_eq!(stale.completed_edits, []);
     assert_eq!(fixture.bytes("input.luau"), original.text.as_bytes());
     complete(project.finish()).expect("project cleanup");
 }
@@ -1228,7 +1229,7 @@ fn stale_sources_and_unauthorized_destinations_refuse_application() {
         matches!(&applied.writes[..], [WriteOutcome::Failed { source: failed, message }]
         if *failed == source && message.contains("source changed"))
     );
-    assert!(applied.revisions.is_empty());
+    assert_eq!(applied.revisions, []);
     assert_eq!(fixture.bytes("input.luau"), external);
     assert_eq!(
         fixture.bytes("expected.luau"),
@@ -1253,7 +1254,9 @@ fn conflicting_and_stale_proposals_fail_validation() {
     let validated = report.results[0].proposal.as_ref().expect("proposal");
     let mut conflicting = validated.proposal().clone();
     let sources = report.snapshot.sources().cloned().collect::<Vec<_>>();
-    assert!(conflicting.validate(&sources).is_ok());
+    conflicting
+        .validate(&sources)
+        .expect("valid original proposal");
     conflicting.edits.push(conflicting.edits[0].clone());
     assert!(
         conflicting
@@ -1309,16 +1312,16 @@ fn cancellation_and_expired_budgets_never_expose_partial_source() {
         }
         Err(failure) => {
             assert_eq!(failure.completion, Completion::Cancelled);
-            assert!(failure.completed_sources.is_empty());
-            assert!(failure.completed_edits.is_empty());
+            assert_eq!(failure.completed_sources, []);
+            assert_eq!(failure.completed_edits, []);
         }
     }
     let mut expired = options();
     expired.deadline = Some(Instant::now());
     let failure = complete(project.format(request(&fixture), expired)).expect_err("expired budget");
     assert_eq!(failure.completion, Completion::TimedOut);
-    assert!(failure.completed_sources.is_empty());
-    assert!(failure.completed_edits.is_empty());
+    assert_eq!(failure.completed_sources, []);
+    assert_eq!(failure.completed_edits, []);
     assert_eq!(fixture.bytes("input.luau"), original);
     complete(project.finish()).expect("project cleanup");
 }
@@ -1349,7 +1352,7 @@ fn interrupted_batch_retains_completed_source_outcomes() {
         failure.completed_sources[0].completion,
         Completion::Complete
     );
-    assert!(failure.completed_edits.is_empty());
+    assert_eq!(failure.completed_edits, []);
     assert_eq!(fixture.bytes("input.luau"), fixture.bytes("other.luau"));
     complete(project.finish()).expect("project cleanup");
 }
@@ -1471,7 +1474,7 @@ fn watch_reprocesses_source_and_effective_settings_changes() {
         complete(project.watch(watched.clone(), options())).expect("source-triggered watch report");
     assert_eq!(second.completion, Completion::Complete);
     assert_eq!(second.iterations.len(), 1);
-    assert!(!second.iterations[0].changed.is_empty());
+    assert_ne!(second.iterations[0].changed, []);
     let WatchCommandReport::Format(second_format) = &second.iterations[0].report else {
         panic!("source change must retain formatting report");
     };
@@ -1492,7 +1495,7 @@ fn watch_reprocesses_source_and_effective_settings_changes() {
         complete(project.watch(watched, options())).expect("settings-triggered watch report");
     assert_eq!(third.completion, Completion::Complete);
     assert_eq!(third.iterations.len(), 1);
-    assert!(!third.iterations[0].changed.is_empty());
+    assert_ne!(third.iterations[0].changed, []);
     let WatchCommandReport::Format(third_format) = &third.iterations[0].report else {
         panic!("settings change must retain formatting report");
     };
@@ -1672,7 +1675,7 @@ fn nonregular_destinations_report_failed_writes_without_revisions() {
         matches!(&applied.writes[..], [WriteOutcome::Failed { source: failed, message }]
         if *failed == source && message.contains("nonregular"))
     );
-    assert!(applied.revisions.is_empty());
+    assert_eq!(applied.revisions, []);
     assert!(fixture.path("input.luau").is_dir());
     assert_eq!(
         fixture.read("expected.luau"),

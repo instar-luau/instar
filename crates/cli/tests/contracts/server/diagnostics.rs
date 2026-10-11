@@ -11,12 +11,12 @@ fn fidelity() {
     fixture.write(".luaurc", "{\"languageMode\":\"strict\"}\n");
     let source = "local marker = \"😀\"; local value: string = 12\nreturn marker, value\n";
     fixture.write("protocol.luau", source);
-    let mut session = connect(&fixture, capabilities());
+    let mut session = connect(&fixture, &capabilities());
     open(&mut session, &fixture, "protocol.luau");
     let address = fixture.uri("protocol.luau");
     let diagnostics = session.request(
         "textDocument/diagnostic",
-        json!({"textDocument":{"uri":address}}),
+        &json!({"textDocument":{"uri":address}}),
     );
     assert_eq!(diagnostics["kind"], "full");
     let diagnostic = diagnostics["items"]
@@ -45,14 +45,14 @@ fn fidelity() {
     );
     let unchanged = session.request(
         "textDocument/diagnostic",
-        json!({"textDocument":{"uri":address},"previousResultId":diagnostics["resultId"]}),
+        &json!({"textDocument":{"uri":address},"previousResultId":diagnostics["resultId"]}),
     );
     assert_eq!(unchanged["kind"], "unchanged");
     assert_eq!(unchanged["resultId"], diagnostics["resultId"]);
-    session.notify("textDocument/didChange", json!({"textDocument":{"uri":address,"version":2},"contentChanges":[{"text":source.replace("= 12", "= \"twelve\"")}]}));
+    session.notify("textDocument/didChange", &json!({"textDocument":{"uri":address,"version":2},"contentChanges":[{"text":source.replace("= 12", "= \"twelve\"")}]}));
     let corrected = session.request(
         "textDocument/diagnostic",
-        json!({"textDocument":{"uri":address},"previousResultId":diagnostics["resultId"]}),
+        &json!({"textDocument":{"uri":address},"previousResultId":diagnostics["resultId"]}),
     );
     assert_eq!(corrected["kind"], "full");
     assert!(
@@ -65,7 +65,7 @@ fn fidelity() {
     assert_ne!(corrected["resultId"], diagnostics["resultId"]);
     let unknown = session.response(
         "textDocument/diagnostic",
-        json!({"textDocument":{"uri":address},"identifier":"unknown"}),
+        &json!({"textDocument":{"uri":address},"identifier":"unknown"}),
     );
     assert_eq!(unknown["error"]["code"], -32602);
     snapshot(
@@ -87,7 +87,7 @@ fn publication() {
         .as_object_mut()
         .expect("document capabilities")
         .remove("diagnostic");
-    let mut session = connect(&fixture, supported);
+    let mut session = connect(&fixture, &supported);
     open(&mut session, &fixture, "protocol.luau");
     let address = fixture.uri("protocol.luau");
     let initial = loop {
@@ -103,7 +103,7 @@ fn publication() {
             .iter()
             .any(|diagnostic| diagnostic["severity"] == 1 && diagnostic["source"] == "Luau")
     );
-    session.notify("textDocument/didChange", json!({"textDocument":{"uri":address,"version":2},"contentChanges":[{"text":"local value: string = \"valid\"\nreturn value\n"}]}));
+    session.notify("textDocument/didChange", &json!({"textDocument":{"uri":address,"version":2},"contentChanges":[{"text":"local value: string = \"valid\"\nreturn value\n"}]}));
     let updated = loop {
         let publication = session.message("textDocument/publishDiagnostics")["params"].clone();
         if publication["uri"] == address && publication["version"] == 2 {
@@ -117,7 +117,7 @@ fn publication() {
     );
     session.notify(
         "textDocument/didClose",
-        json!({"textDocument":{"uri":address}}),
+        &json!({"textDocument":{"uri":address}}),
     );
     let closed = loop {
         let publication = session.message("textDocument/publishDiagnostics")["params"].clone();
@@ -140,10 +140,10 @@ fn workspace() {
     let fixture = Fixture::new("cli", "project");
     fixture.write(".luaurc", "{\"languageMode\":\"strict\"}\n");
     fixture.write("protocol.luau", "local value: string = 12\nreturn value\n");
-    let mut session = connect(&fixture, capabilities());
+    let mut session = connect(&fixture, &capabilities());
     open(&mut session, &fixture, "protocol.luau");
     let address = fixture.uri("protocol.luau");
-    let complete = session.request("workspace/diagnostic", json!({"previousResultIds":[]}));
+    let complete = session.request("workspace/diagnostic", &json!({"previousResultIds":[]}));
     let document = complete["items"]
         .as_array()
         .expect("workspace diagnostics")
@@ -161,7 +161,7 @@ fn workspace() {
     );
     let partial = session.request(
         "workspace/diagnostic",
-        json!({"previousResultIds":[],"partialResultToken":"diagnostics"}),
+        &json!({"previousResultIds":[],"partialResultToken":"diagnostics"}),
     );
     assert_eq!(partial["items"], json!([]));
     let progress = session.message("$/progress")["params"].clone();
@@ -176,7 +176,7 @@ fn workspace() {
     assert_eq!(delivered["version"], 1);
     let unknown = session.response(
         "workspace/diagnostic",
-        json!({"identifier":"unknown","previousResultIds":[]}),
+        &json!({"identifier":"unknown","previousResultIds":[]}),
     );
     assert_eq!(unknown["error"]["code"], -32602);
     snapshot(
@@ -193,9 +193,9 @@ fn prerequisites() {
     let fixture = Fixture::new("cli", "project");
     fixture.write("instar.toml", "[environment]\nroblox = false\n[[environment.groups]]\nnamespace = \"@missing\"\ndefinitions = [\"missing.luau\"]\n");
     fixture.write("protocol.luau", "local value = 1\nreturn value\n");
-    let mut session = connect(&fixture, capabilities());
+    let mut session = connect(&fixture, &capabilities());
     open(&mut session, &fixture, "protocol.luau");
-    let unavailable = session.response("textDocument/hover", json!({"textDocument":{"uri":fixture.uri("protocol.luau")},"position":{"line":1,"character":7}}));
+    let unavailable = session.response("textDocument/hover", &json!({"textDocument":{"uri":fixture.uri("protocol.luau")},"position":{"line":1,"character":7}}));
     assert!(
         unavailable["error"]["code"]
             .as_i64()

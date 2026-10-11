@@ -1,6 +1,6 @@
 use std::{
     fs,
-    io::{self, Write},
+    io::{self, Write as _},
     path::{Component, Path, PathBuf},
     process::{Command, Stdio},
     sync::{Arc, Once},

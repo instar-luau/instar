@@ -361,7 +361,7 @@ impl BindingResult {
         }
     }
 
-    fn function(&mut self, tree: &Tree<'_>, node: NodeIndex) {
+    fn function(&mut self, tree: &Tree<'_>, node: NodeIndex, exported: bool) {
         let NodeKind::Function {
             prefix,
             name,
@@ -408,14 +408,22 @@ impl BindingResult {
             self.visit(tree, *returns);
         }
 
-        let local = prefix.is_some_and(|prefix| {
-            tree.token(prefix).kind == TokenKind::Keyword(Keyword::Local)
-                || tree.token(prefix).bytes(tree.source) == b"const"
-        });
+        let local = exported
+            || prefix.is_some_and(|prefix| {
+                tree.token(prefix).kind == TokenKind::Keyword(Keyword::Local)
+                    || tree.token(prefix).bytes(tree.source) == b"const"
+            });
 
         if !type_function && let Some(name) = name {
             if local {
                 self.bind_name(tree, *name, Category::Function, Some(node));
+
+                if exported {
+                    self.declarations
+                        .get_mut(&name.get())
+                        .expect("exported function")
+                        .read = true;
+                }
             } else if let NodeKind::FunctionName { path, method, .. } = &tree.node(*name).kind {
                 if let Some(first) = tree.list(path).first() {
                     if tree.list(path).len() == 1 && method.is_none() {
@@ -536,7 +544,16 @@ impl BindingResult {
                 self.write(tree, *target, true);
             }
 
-            NodeKind::Function { .. } => self.function(tree, node),
+            NodeKind::Function { .. } => self.function(tree, node, false),
+
+            NodeKind::Export { declaration, .. }
+                if matches!(tree.node(*declaration).kind, NodeKind::Function { .. }) =>
+            {
+                self.execution
+                    .insert(declaration.get(), self.execution_scope);
+                self.function(tree, *declaration, true);
+            }
+
             NodeKind::If { .. } | NodeKind::Conditional { .. } => self.branch(tree, node),
 
             NodeKind::While { .. }

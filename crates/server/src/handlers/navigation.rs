@@ -332,10 +332,7 @@ pub(crate) async fn search(
     }
 }
 
-pub(crate) async fn symbol_resolve(
-    server: &Server,
-    symbol: WorkspaceSymbol,
-) -> Result<WorkspaceSymbol> {
+pub(crate) fn symbol_resolve(server: &Server, symbol: WorkspaceSymbol) -> Result<WorkspaceSymbol> {
     let record = lazy(server, symbol.data.as_ref(), "symbol")?;
 
     let RetainedResult::Symbol { mut item, location } = record.result else {
@@ -391,9 +388,9 @@ pub(crate) async fn links(
                     .uri(&report.snapshot, identity)?,
             )
         } else if let Some(address) = &link.address {
-            let address = address
-                .parse::<Uri>()
-                .map_err(|_| Error::invalid_params("invalid document link address"))?;
+            let address = address.parse::<Uri>().map_err(|error| {
+                Error::invalid_params(format!("invalid document link address: {error}"))
+            })?;
 
             if !matches!(address.scheme(), "http" | "https") || address.host_str().is_none() {
                 return Err(Error::invalid_params(
@@ -429,7 +426,7 @@ pub(crate) async fn links(
     Ok(Some(result))
 }
 
-pub(crate) async fn link_resolve(server: &Server, link: DocumentLink) -> Result<DocumentLink> {
+pub(crate) fn link_resolve(server: &Server, link: DocumentLink) -> Result<DocumentLink> {
     let record = lazy(server, link.data.as_ref(), "link")?;
 
     let RetainedResult::Link(mut result) = record.result else {

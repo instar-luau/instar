@@ -10,17 +10,17 @@ fn formatting() {
     let fixture = Fixture::new("cli", "server");
     let source = "local first={1,2}\nlocal second={3,4}\nreturn first,second\n";
     fixture.write("document.luau", source);
-    let mut session = connect(&fixture, capabilities());
+    let mut session = connect(&fixture, &capabilities());
     open(&mut session, &fixture, "document.luau");
     let address = fixture.uri("document.luau");
     let options = json!({"tabSize":2,"insertSpaces":true});
     let parameters = json!({"textDocument":{"uri":address},"options":options});
-    let whole = session.request("textDocument/formatting", parameters.clone());
+    let whole = session.request("textDocument/formatting", &parameters);
     let formatted = "local first = { 1, 2 }\nlocal second = { 3, 4 }\nreturn first, second\n";
     assert_eq!(apply(source, &whole, "utf-16"), formatted);
     let mut selected = parameters.clone();
     selected["range"] = json!({"start":{"line":0,"character":12},"end":{"line":0,"character":15}});
-    let ranged = session.request("textDocument/rangeFormatting", selected);
+    let ranged = session.request("textDocument/rangeFormatting", &selected);
     assert_eq!(
         apply(source, &ranged, "utf-16"),
         "local first = { 1, 2 }\nlocal second={3,4}\nreturn first,second\n"
@@ -30,35 +30,35 @@ fn formatting() {
         {"start":{"line":0,"character":0},"end":{"line":0,"character":16}},
         {"start":{"line":1,"character":0},"end":{"line":1,"character":17}}
     ]);
-    let ranges = session.request("textDocument/rangesFormatting", multiple);
+    let regions = session.request("textDocument/rangesFormatting", &multiple);
     assert_eq!(
-        apply(source, &ranges, "utf-16"),
+        apply(source, &regions, "utf-16"),
         "local first = { 1, 2 }\nlocal second = { 3, 4 }\nreturn first,second\n"
     );
-    let typed = session.request("textDocument/onTypeFormatting", json!({"textDocument":{"uri":address},"position":{"line":1,"character":0},"ch":"\n","options":options}));
+    let typed = session.request("textDocument/onTypeFormatting", &json!({"textDocument":{"uri":address},"position":{"line":1,"character":0},"ch":"\n","options":options}));
     assert_eq!(
         apply(source, &typed, "utf-16"),
         "local first = { 1, 2 }\nlocal second={3,4}\nreturn first,second\n"
     );
-    let unsupported = session.response("textDocument/onTypeFormatting", json!({"textDocument":{"uri":address},"position":{"line":1,"character":0},"ch":"x","options":options}));
+    let unsupported = session.response("textDocument/onTypeFormatting", &json!({"textDocument":{"uri":address},"position":{"line":1,"character":0},"ch":"x","options":options}));
     assert_eq!(unsupported["error"]["code"], -32602);
     let mut invalid = parameters.clone();
     invalid["options"]["tabSize"] = json!(0);
     assert_eq!(
-        session.response("textDocument/formatting", invalid)["error"]["code"],
+        session.response("textDocument/formatting", &invalid)["error"]["code"],
         -32602
     );
     assert_eq!(fixture.read("document.luau"), source);
     session.notify(
         "textDocument/didChange",
-        json!({"textDocument":{"uri":address,"version":2},"contentChanges":[{"text":formatted}]}),
+        &json!({"textDocument":{"uri":address,"version":2},"contentChanges":[{"text":formatted}]}),
     );
     assert_eq!(
-        session.request("textDocument/formatting", parameters.clone()),
+        session.request("textDocument/formatting", &parameters),
         Value::Null
     );
-    session.notify("textDocument/didChange", json!({"textDocument":{"uri":address,"version":3},"contentChanges":[{"text":"local first = {\nreturn first\n"}]}));
-    let malformed = session.response("textDocument/formatting", parameters);
+    session.notify("textDocument/didChange", &json!({"textDocument":{"uri":address,"version":3},"contentChanges":[{"text":"local first = {\nreturn first\n"}]}));
+    let malformed = session.response("textDocument/formatting", &parameters);
     assert_eq!(malformed["error"]["code"], -32602);
     assert!(malformed.get("result").is_none());
     assert_eq!(fixture.read("document.luau"), source);
@@ -73,12 +73,12 @@ fn tokens() {
     fixture.write("protocol.luau", source);
     let supported = capabilities();
     let legend = supported["textDocument"]["semanticTokens"]["tokenTypes"].clone();
-    let mut session = connect(&fixture, supported);
+    let mut session = connect(&fixture, &supported);
     open(&mut session, &fixture, "protocol.luau");
     let address = fixture.uri("protocol.luau");
     let full = session.request(
         "textDocument/semanticTokens/full",
-        json!({"textDocument":{"uri":address}}),
+        &json!({"textDocument":{"uri":address}}),
     );
     let decoded = decode(source, &full["data"], &legend);
     assert!(
@@ -99,24 +99,24 @@ fn tokens() {
     }));
     let unchanged = session.request(
         "textDocument/semanticTokens/full/delta",
-        json!({"textDocument":{"uri":address},"previousResultId":full["resultId"]}),
+        &json!({"textDocument":{"uri":address},"previousResultId":full["resultId"]}),
     );
     assert_eq!(unchanged["edits"], json!([]));
     let updated = source.replace("count", "totalcount");
     session.notify(
         "textDocument/didChange",
-        json!({"textDocument":{"uri":address,"version":2},"contentChanges":[{"text":updated}]}),
+        &json!({"textDocument":{"uri":address,"version":2},"contentChanges":[{"text":updated}]}),
     );
     let delta = session.request(
         "textDocument/semanticTokens/full/delta",
-        json!({"textDocument":{"uri":address},"previousResultId":full["resultId"]}),
+        &json!({"textDocument":{"uri":address},"previousResultId":full["resultId"]}),
     );
     let mut reconstructed = full["data"]
         .as_array()
         .expect("full relative tokens")
         .clone();
     let edits = delta["edits"].as_array().expect("token delta edits");
-    assert!(!edits.is_empty());
+    assert_ne!(edits.as_slice(), [] as [Value; 0]);
     for edit in edits.iter().rev() {
         let start = usize::try_from(edit["start"].as_u64().expect("delta start"))
             .expect("bounded delta start");
@@ -127,15 +127,15 @@ fn tokens() {
     }
     let current = session.request(
         "textDocument/semanticTokens/full",
-        json!({"textDocument":{"uri":address}}),
+        &json!({"textDocument":{"uri":address}}),
     );
     assert_eq!(json!(reconstructed), current["data"]);
     let recovered = session.request(
         "textDocument/semanticTokens/full/delta",
-        json!({"textDocument":{"uri":address},"previousResultId":"foreign"}),
+        &json!({"textDocument":{"uri":address},"previousResultId":"foreign"}),
     );
     assert_eq!(recovered["data"], current["data"]);
-    let ranged = session.request("textDocument/semanticTokens/range", json!({"textDocument":{"uri":address},"range":{"start":{"line":1,"character":0},"end":{"line":1,"character":26}}}));
+    let ranged = session.request("textDocument/semanticTokens/range", &json!({"textDocument":{"uri":address},"range":{"start":{"line":1,"character":0},"end":{"line":1,"character":26}}}));
     let selected = decode(&updated, &ranged["data"], &legend);
     assert!(selected.iter().all(|token| token["line"] == 1));
     assert!(selected.iter().any(|token| token["text"] == "totalcount"));
@@ -152,12 +152,12 @@ fn tokens() {
 #[test]
 fn structure() {
     let fixture = Fixture::new("cli", "structure");
-    let mut session = connect(&fixture, capabilities());
+    let mut session = connect(&fixture, &capabilities());
     open(&mut session, &fixture, "input.luau");
     let address = fixture.uri("input.luau");
     let folds = session.request(
         "textDocument/foldingRange",
-        json!({"textDocument":{"uri":address}}),
+        &json!({"textDocument":{"uri":address}}),
     );
     assert!(
         folds
@@ -181,7 +181,7 @@ fn structure() {
             && fold["startLine"].as_u64().expect("fold start")
                 < fold["endLine"].as_u64().expect("fold end")
     }));
-    let selections = session.request("textDocument/selectionRange", json!({"textDocument":{"uri":address},"positions":[{"line":10,"character":17},{"line":3,"character":5}]}));
+    let selections = session.request("textDocument/selectionRange", &json!({"textDocument":{"uri":address},"positions":[{"line":10,"character":17},{"line":3,"character":5}]}));
     assert_eq!(selections.as_array().expect("selection chains").len(), 2);
     assert_eq!(
         selections[0]["range"],
@@ -228,12 +228,12 @@ fn colors() {
     fixture.write("instar.toml", "[environment]\nroblox = true\n");
     let source = "local first = Color3.fromRGB(255, 0, 128)\nlocal ignored = Color3.fromRGB(256, 0, 0)\ndo\n    local Color3 = { fromRGB = function(...) return nil end }\n    local shadowed = Color3.fromRGB(255, 0, 0)\nend\nreturn first, ignored\n";
     fixture.write("document.luau", source);
-    let mut session = connect(&fixture, capabilities());
+    let mut session = connect(&fixture, &capabilities());
     open(&mut session, &fixture, "document.luau");
     let address = fixture.uri("document.luau");
     let colors = session.request(
         "textDocument/documentColor",
-        json!({"textDocument":{"uri":address}}),
+        &json!({"textDocument":{"uri":address}}),
     );
     assert_eq!(
         colors
@@ -260,7 +260,7 @@ fn colors() {
         colors[0]["range"],
         json!({"start":{"line":0,"character":14},"end":{"line":0,"character":41}})
     );
-    let representations = session.request("textDocument/colorPresentation", json!({"textDocument":{"uri":address},"range":colors[0]["range"],"color":{"red":0,"green":1,"blue":0,"alpha":1}}));
+    let representations = session.request("textDocument/colorPresentation", &json!({"textDocument":{"uri":address},"range":colors[0]["range"],"color":{"red":0,"green":1,"blue":0,"alpha":1}}));
     let entries = representations.as_array().expect("color representations");
     assert_eq!(entries.len(), 2);
     for label in ["Color3.new(0, 1, 0)", "Color3.fromRGB(0, 255, 0)"] {
@@ -273,7 +273,7 @@ fn colors() {
             source.replace("Color3.fromRGB(255, 0, 128)", label)
         );
     }
-    let invalid = session.response("textDocument/colorPresentation", json!({"textDocument":{"uri":address},"range":colors[0]["range"],"color":{"red":2,"green":1,"blue":0,"alpha":1}}));
+    let invalid = session.response("textDocument/colorPresentation", &json!({"textDocument":{"uri":address},"range":colors[0]["range"],"color":{"red":2,"green":1,"blue":0,"alpha":1}}));
     assert_eq!(invalid["error"]["code"], -32602);
     assert_eq!(fixture.read("document.luau"), source);
     assert_eq!(session.finish(), 0);
@@ -285,7 +285,7 @@ fn decode(source: &str, data: &Value, legend: &Value) -> Vec<Value> {
     let mut line = 0;
     let mut character = 0;
     let mut previous = (0, 0);
-    data.chunks_exact(5).map(|token| {
+    data.as_chunks::<5>().0.iter().map(|token| {
         let next = usize::try_from(token[0].as_u64().expect("token line delta")).expect("bounded token line");
         line += next;
         if next != 0 {

@@ -48,6 +48,7 @@ use crate::{
     symbols,
 };
 
+#[derive(Clone, Copy)]
 pub(crate) enum QueryEvidence<'categories> {
     Position(&'categories [SemanticCategory]),
     Inventory(&'categories [SemanticCategory]),

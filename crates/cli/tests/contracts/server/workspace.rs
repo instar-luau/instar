@@ -1,4 +1,4 @@
-use std::{fmt::Write, fs};
+use std::{fmt::Write as _, fs};
 
 use serde_json::{Value, json};
 
@@ -13,11 +13,11 @@ fn invalidation() {
     fixture.write(".luaurc", "{\"languageMode\":\"strict\"}\n");
     fixture.write("dependency.luau", "return {value = 1}\n");
     fixture.write("protocol.luau", "local dependency = require(\"./dependency\")\nlocal value: number = dependency.value\nreturn value\n");
-    let mut session = connect(&fixture, capabilities());
+    let mut session = connect(&fixture, &capabilities());
     open(&mut session, &fixture, "protocol.luau");
     let address = fixture.uri("protocol.luau");
     let position = json!({"textDocument":{"uri":address},"position":{"line":1,"character":35}});
-    let numeric = session.request("textDocument/hover", position.clone());
+    let numeric = session.request("textDocument/hover", &position);
     assert!(
         numeric["contents"]["value"]
             .as_str()
@@ -26,7 +26,7 @@ fn invalidation() {
     );
     let links = session.request(
         "textDocument/documentLink",
-        json!({"textDocument":{"uri":address}}),
+        &json!({"textDocument":{"uri":address}}),
     );
     let link = links
         .as_array()
@@ -37,9 +37,9 @@ fn invalidation() {
     fixture.write("dependency.luau", "return {value = \"changed\"}\n");
     session.notify(
         "workspace/didChangeWatchedFiles",
-        json!({"changes":[{"uri":fixture.uri("dependency.luau"),"type":2}]}),
+        &json!({"changes":[{"uri":fixture.uri("dependency.luau"),"type":2}]}),
     );
-    let changed = session.request("textDocument/hover", position);
+    let changed = session.request("textDocument/hover", &position);
     assert!(
         changed["contents"]["value"]
             .as_str()
@@ -47,12 +47,12 @@ fn invalidation() {
             .contains("string")
     );
     assert_eq!(
-        session.response("documentLink/resolve", link.clone())["error"]["code"],
+        session.response("documentLink/resolve", link)["error"]["code"],
         -32801
     );
     let initial = session.request(
         "textDocument/diagnostic",
-        json!({"textDocument":{"uri":address}}),
+        &json!({"textDocument":{"uri":address}}),
     );
     assert!(
         initial["items"]
@@ -66,11 +66,11 @@ fn invalidation() {
     );
     session.notify(
         "workspace/didChangeConfiguration",
-        json!({"settings":{"instar":{"checking":{"type_errors":false}}}}),
+        &json!({"settings":{"instar":{"checking":{"type_errors":false}}}}),
     );
     let disabled = session.request(
         "textDocument/diagnostic",
-        json!({"textDocument":{"uri":address},"previousResultId":initial["resultId"]}),
+        &json!({"textDocument":{"uri":address},"previousResultId":initial["resultId"]}),
     );
     assert_eq!(disabled["kind"], "full");
     assert!(
@@ -82,11 +82,11 @@ fn invalidation() {
     );
     session.notify(
         "workspace/didChangeConfiguration",
-        json!({"settings":{"instar":{"checking":{"type_errors":true}}}}),
+        &json!({"settings":{"instar":{"checking":{"type_errors":true}}}}),
     );
     let restored = session.request(
         "textDocument/diagnostic",
-        json!({"textDocument":{"uri":address},"previousResultId":disabled["resultId"]}),
+        &json!({"textDocument":{"uri":address},"previousResultId":disabled["resultId"]}),
     );
     assert_eq!(restored["kind"], "full");
     assert_eq!(restored["items"], initial["items"]);
@@ -105,22 +105,22 @@ fn files() {
     for name in ["capture.luau", "expected.luau", "moved.luau"] {
         fs::remove_file(fixture.path(name)).expect("remove separate rejection and golden inputs");
     }
-    let mut session = connect(&fixture, capabilities());
+    let mut session = connect(&fixture, &capabilities());
     let main = open(&mut session, &fixture, "main.luau");
     let consumer = open(&mut session, &fixture, "consumer.luau");
     open(&mut session, &fixture, "dependency.luau");
     let creation = session.request(
         "workspace/willCreateFiles",
-        json!({"files":[{"uri":fixture.uri("created.lua") }]}),
+        &json!({"files":[{"uri":fixture.uri("created.lua") }]}),
     );
     assert_eq!(creation["documentChanges"], json!([]));
     assert!(!fixture.path("created.lua").exists());
     fixture.write("created.lua", "local created = 1\nreturn created\n");
     session.notify(
         "workspace/didCreateFiles",
-        json!({"files":[{"uri":fixture.uri("created.lua")}]}),
+        &json!({"files":[{"uri":fixture.uri("created.lua")}]}),
     );
-    let created = session.request("workspace/symbol", json!({"query":"created"}));
+    let created = session.request("workspace/symbol", &json!({"query":"created"}));
     assert!(
         created
             .as_array()
@@ -131,7 +131,7 @@ fn files() {
                     && symbol["name"] == "created"
             )
     );
-    let preflight = session.request("workspace/willRenameFiles", json!({"files":[{"oldUri":fixture.uri("dependency.luau"),"newUri":fixture.uri("provider.luau")}]}));
+    let preflight = session.request("workspace/willRenameFiles", &json!({"files":[{"oldUri":fixture.uri("dependency.luau"),"newUri":fixture.uri("provider.luau")}]}));
     let changes = preflight["documentChanges"]
         .as_array()
         .expect("guarded import movement edits");
@@ -148,24 +148,24 @@ fn files() {
         assert_eq!(updated, source.replace("/dependency", "/provider"));
         assert_eq!(fixture.read(name), *source);
         fixture.write(name, &updated);
-        session.notify("textDocument/didChange", json!({"textDocument":{"uri":fixture.uri(name),"version":2},"contentChanges":[{"text":updated}]}));
+        session.notify("textDocument/didChange", &json!({"textDocument":{"uri":fixture.uri(name),"version":2},"contentChanges":[{"text":updated}]}));
     }
     fs::rename(
         fixture.path("dependency.luau"),
         fixture.path("provider.luau"),
     )
     .expect("perform fixture file movement");
-    session.notify("workspace/didRenameFiles", json!({"files":[{"oldUri":fixture.uri("dependency.luau"),"newUri":fixture.uri("provider.luau")}]}));
+    session.notify("workspace/didRenameFiles", &json!({"files":[{"oldUri":fixture.uri("dependency.luau"),"newUri":fixture.uri("provider.luau")}]}));
     assert_eq!(
         session.request(
             "workspace/textDocumentContent",
-            json!({"uri":fixture.uri("provider.luau")})
+            &json!({"uri":fixture.uri("provider.luau")})
         )["text"],
         fixture.read("provider.luau")
     );
     let diagnostics = session.request(
         "textDocument/diagnostic",
-        json!({"textDocument":{"uri":fixture.uri("main.luau")}}),
+        &json!({"textDocument":{"uri":fixture.uri("main.luau")}}),
     );
     assert!(
         !diagnostics["items"]
@@ -176,18 +176,18 @@ fn files() {
     );
     let deletion = session.request(
         "workspace/willDeleteFiles",
-        json!({"files":[{"uri":fixture.uri("created.lua")}]}),
+        &json!({"files":[{"uri":fixture.uri("created.lua")}]}),
     );
     assert_eq!(deletion["documentChanges"], json!([]));
     assert!(fixture.path("created.lua").exists());
     fs::remove_file(fixture.path("created.lua")).expect("perform fixture file deletion");
     session.notify(
         "workspace/didDeleteFiles",
-        json!({"files":[{"uri":fixture.uri("created.lua")}]}),
+        &json!({"files":[{"uri":fixture.uri("created.lua")}]}),
     );
     assert!(
         !session
-            .request("workspace/symbol", json!({"query":"created"}))
+            .request("workspace/symbol", &json!({"query":"created"}))
             .as_array()
             .expect("deleted symbol index")
             .iter()
@@ -195,7 +195,7 @@ fn files() {
     );
     let protected = session.response(
         "workspace/willDeleteFiles",
-        json!({"files":[{"uri":fixture.uri("provider.luau")}]}),
+        &json!({"files":[{"uri":fixture.uri("provider.luau")}]}),
     );
     assert!(protected.get("error").is_some());
     assert!(
@@ -208,7 +208,7 @@ fn files() {
     assert_eq!(
         session.response(
             "workspace/willCreateFiles",
-            json!({"files":[{"uri":fixture.uri("provider.luau")}]})
+            &json!({"files":[{"uri":fixture.uri("provider.luau")}]})
         )["error"]["code"],
         -32602
     );
@@ -228,8 +228,8 @@ fn folders() {
         "external/entry.luau",
         "local externalmarker = 1\nreturn externalmarker\n",
     );
-    let mut session = connect(&fixture, capabilities());
-    let initial = session.request("workspace/symbol", json!({"query":"double"}));
+    let mut session = connect(&fixture, &capabilities());
+    let initial = session.request("workspace/symbol", &json!({"query":"double"}));
     assert!(
         initial
             .as_array()
@@ -238,12 +238,12 @@ fn folders() {
             .any(|symbol| symbol["name"] == "double"
                 && symbol["location"]["uri"] == fixture.uri("library.luau"))
     );
-    session.notify("workspace/didChangeWorkspaceFolders", json!({"event":{"removed":[{"uri":fixture.uri(""),"name":"contract"}],"added":[{"uri":fixture.uri("external"),"name":"external"}]}}));
+    session.notify("workspace/didChangeWorkspaceFolders", &json!({"event":{"removed":[{"uri":fixture.uri(""),"name":"contract"}],"added":[{"uri":fixture.uri("external"),"name":"external"}]}}));
     assert_eq!(
-        session.request("workspace/symbol", json!({"query":"double"})),
+        session.request("workspace/symbol", &json!({"query":"double"})),
         json!([])
     );
-    let external = session.request("workspace/symbol", json!({"query":"externalmarker"}));
+    let external = session.request("workspace/symbol", &json!({"query":"externalmarker"}));
     assert!(
         external
             .as_array()
@@ -254,10 +254,10 @@ fn folders() {
     );
     session.notify(
         "workspace/didChangeWorkspaceFolders",
-        json!({"event":{"removed":[{"uri":fixture.uri("external"),"name":"external"}],"added":[]}}),
+        &json!({"event":{"removed":[{"uri":fixture.uri("external"),"name":"external"}],"added":[]}}),
     );
     assert_eq!(
-        session.request("workspace/symbol", json!({"query":"externalmarker"})),
+        session.request("workspace/symbol", &json!({"query":"externalmarker"})),
         json!([])
     );
     snapshot(
@@ -292,7 +292,7 @@ fn integration() {
         supported["workspace"][capability] = json!({"refreshSupport":true});
     }
     supported["window"] = json!({"showDocument":{"support":true}});
-    let mut session = connect(&fixture, supported);
+    let mut session = connect(&fixture, &supported);
     let registration = session.message("client/registerCapability");
     assert_eq!(
         registration["params"]["registrations"][0]["method"],
@@ -327,11 +327,11 @@ fn integration() {
             "parameterless refresh: {refresh}"
         );
     }
-    session.notify("textDocument/didOpen", json!({"textDocument":{"uri":"untitled:protocol","languageId":"luau","version":1,"text":"local value = 1\nreturn value\n"}}));
+    session.notify("textDocument/didOpen", &json!({"textDocument":{"uri":"untitled:protocol","languageId":"luau","version":1,"text":"local value = 1\nreturn value\n"}}));
     assert_eq!(
         session.request(
             "workspace/textDocumentContent",
-            json!({"uri":"untitled:protocol"})
+            &json!({"uri":"untitled:protocol"})
         )["text"],
         "local value = 1\nreturn value\n"
     );
@@ -339,7 +339,7 @@ fn integration() {
     assert_eq!(content["params"]["uri"], "untitled:protocol");
     session.notify(
         "textDocument/didSave",
-        json!({"textDocument":{"uri":"untitled:protocol"}}),
+        &json!({"textDocument":{"uri":"untitled:protocol"}}),
     );
     let log = session.message("window/logMessage");
     let shown = session.message("window/showMessage");
@@ -355,10 +355,10 @@ fn integration() {
     session.reply("window/showMessageRequest", json!({"title":"Show source"}));
     let lenses = session.request(
         "textDocument/codeLens",
-        json!({"textDocument":{"uri":fixture.uri("protocol.luau")}}),
+        &json!({"textDocument":{"uri":fixture.uri("protocol.luau")}}),
     );
-    let resolved = session.request("codeLens/resolve", lenses[0].clone());
-    let checked = session.request("workspace/executeCommand", resolved["command"].clone());
+    let resolved = session.request("codeLens/resolve", &lenses[0]);
+    let checked = session.request("workspace/executeCommand", &resolved["command"]);
     assert_eq!(checked["failed"], true);
     assert!(
         checked["findings"]
@@ -376,7 +376,7 @@ fn integration() {
     assert_eq!(revealed["params"]["uri"], fixture.uri("protocol.luau"));
     assert_eq!(revealed["params"]["takeFocus"], true);
     assert_eq!(revealed["params"]["external"], false);
-    assert_eq!(session.request("shutdown", Value::Null), Value::Null);
+    assert_eq!(session.request("shutdown", &Value::Null), Value::Null);
     let unregistration = session.message("client/unregisterCapability");
     let entries = unregistration["params"]["unregisterations"]
         .as_array()
@@ -388,7 +388,7 @@ fn integration() {
     );
     assert_eq!(entries[0]["method"], "workspace/didChangeWatchedFiles");
     assert_eq!(
-        session.response("workspace/symbol", json!({"query":"problem"}))["error"]["code"],
+        session.response("workspace/symbol", &json!({"query":"problem"}))["error"]["code"],
         -32600
     );
     snapshot(
@@ -410,27 +410,27 @@ fn current() {
     );
     let mut supported = capabilities();
     supported["window"] = json!({"showDocument":{"support":true}});
-    let mut session = connect(&fixture, supported);
+    let mut session = connect(&fixture, &supported);
     open(&mut session, &fixture, "protocol.luau");
     let address = fixture.uri("protocol.luau");
     let lenses = session.request(
         "textDocument/codeLens",
-        json!({"textDocument":{"uri":address}}),
+        &json!({"textDocument":{"uri":address}}),
     );
-    let resolved = session.request("codeLens/resolve", lenses[0].clone());
+    let resolved = session.request("codeLens/resolve", &lenses[0]);
     session.hold("window/showMessageRequest");
-    let identifier = session.start("workspace/executeCommand", json!({"command":resolved["command"]["command"],"arguments":resolved["command"]["arguments"]}));
+    let identifier = session.start("workspace/executeCommand", &json!({"command":resolved["command"]["command"],"arguments":resolved["command"]["arguments"]}));
     let choice = session.message("window/showMessageRequest");
     assert_eq!(
         choice["params"]["actions"],
         json!([{"title":"Show source"}])
     );
-    session.notify("textDocument/didChange", json!({"textDocument":{"uri":address,"version":2},"contentChanges":[{"text":"local total = true\nreturn total\n"}]}));
+    session.notify("textDocument/didChange", &json!({"textDocument":{"uri":address,"version":2},"contentChanges":[{"text":"local total = true\nreturn total\n"}]}));
     assert_eq!(
-        session.request("workspace/textDocumentContent", json!({"uri":address}))["text"],
+        session.request("workspace/textDocumentContent", &json!({"uri":address}))["text"],
         "local total = true\nreturn total\n"
     );
-    session.respond(choice["id"].clone(), json!({"title":"Show source"}));
+    session.respond(&choice["id"], &json!({"title":"Show source"}));
     let stale = session.receive(identifier);
     assert_eq!(stale["error"]["code"], -32801);
     assert!(stale.get("result").is_none());
@@ -462,9 +462,9 @@ fn progress() {
     fixture.write("protocol.luau", workload());
     let mut supported = capabilities();
     supported["window"] = json!({"workDoneProgress":true});
-    let mut session = connect(&fixture, supported);
+    let mut session = connect(&fixture, &supported);
     open(&mut session, &fixture, "protocol.luau");
-    let identifier = session.start("textDocument/hover", json!({"textDocument":{"uri":fixture.uri("protocol.luau")},"position":{"line":8001,"character":7},"workDoneToken":"analysis"}));
+    let identifier = session.start("textDocument/hover", &json!({"textDocument":{"uri":fixture.uri("protocol.luau")},"position":{"line":8001,"character":7},"workDoneToken":"analysis"}));
     let begin = loop {
         let progress = session.message("$/progress");
         if progress["params"]["token"] == "analysis" {

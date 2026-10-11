@@ -109,6 +109,15 @@ pub(crate) struct InputArguments {
     #[arg(long)]
     pub(crate) override_exclusions: bool,
 
+    #[command(flatten)]
+    pub(crate) explanations: ExplanationArguments,
+
+    #[arg(long = "set", value_name = "FIELD=JSON", action = clap::ArgAction::Append)]
+    pub(crate) settings: Vec<String>,
+}
+
+#[derive(Args, Clone)]
+pub(crate) struct ExplanationArguments {
     #[arg(long)]
     pub(crate) explain_selection: bool,
 
@@ -117,9 +126,6 @@ pub(crate) struct InputArguments {
 
     #[arg(long)]
     pub(crate) explain_dependencies: bool,
-
-    #[arg(long = "set", value_name = "FIELD=JSON", action = clap::ArgAction::Append)]
-    pub(crate) settings: Vec<String>,
 }
 
 #[derive(Args, Clone)]
@@ -178,11 +184,8 @@ pub(crate) struct FormatArguments {
     #[arg(long, conflicts_with_all = ["check", "source", "write"])]
     pub(crate) preview: bool,
 
-    #[arg(long, conflicts_with_all = ["check", "preview"])]
-    pub(crate) source: bool,
-
-    #[arg(long, conflicts_with_all = ["check", "preview"], help = "Authorize protected writes to selected disk sources")]
-    pub(crate) write: bool,
+    #[command(flatten)]
+    pub(crate) output: FormatOutputArguments,
 
     #[arg(long = "range", value_name = "START:END", action = clap::ArgAction::Append, conflicts_with = "on_type")]
     pub(crate) ranges: Vec<String>,
@@ -210,6 +213,15 @@ pub(crate) struct FormatArguments {
 
     #[arg(long, action = clap::ArgAction::Set)]
     pub(crate) final_newline: Option<bool>,
+}
+
+#[derive(Args, Clone)]
+pub(crate) struct FormatOutputArguments {
+    #[arg(long, conflicts_with_all = ["check", "preview"])]
+    pub(crate) source: bool,
+
+    #[arg(long, conflicts_with_all = ["check", "preview"], help = "Authorize protected writes to selected disk sources")]
+    pub(crate) write: bool,
 }
 
 #[derive(Clone, Copy, ValueEnum)]

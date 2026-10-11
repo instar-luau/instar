@@ -9,7 +9,7 @@ use std::{
 
 use instar_shared::{Cancellation, Completion, Options};
 use serde_json::json;
-use tokio::runtime::Handle;
+use tokio::{runtime::Handle, time::timeout_at};
 
 use tower_lsp_server::{
     Client,
@@ -45,9 +45,14 @@ impl ProgressGuard {
             let request = self.client.create_work_done_progress(self.token.clone());
 
             match options.deadline {
-                Some(deadline) => tokio::time::timeout_at(deadline.into(), request)
-                    .await
-                    .map_err(|_| failure(&Completion::TimedOut.error()))??,
+                Some(deadline) => {
+                    timeout_at(deadline.into(), request)
+                        .await
+                        .map_err(|error| Error {
+                            message: format!("{}: {error}", Completion::TimedOut.error()).into(),
+                            ..failure(&Completion::TimedOut.error())
+                        })??;
+                }
 
                 None => request.await?,
             }
@@ -107,9 +112,12 @@ impl Server {
         self.options.check().map_err(|error| failure(&error))?;
 
         match self.options.deadline {
-            Some(deadline) => tokio::time::timeout_at(deadline.into(), request)
+            Some(deadline) => timeout_at(deadline.into(), request)
                 .await
-                .map_err(|_| failure(&Completion::TimedOut.error()))?,
+                .map_err(|error| Error {
+                    message: format!("{}: {error}", Completion::TimedOut.error()).into(),
+                    ..failure(&Completion::TimedOut.error())
+                })?,
 
             None => request.await,
         }
@@ -215,13 +223,13 @@ impl Server {
         label: String,
         edit: WorkspaceEdit,
     ) -> Result<ApplyWorkspaceEditResult> {
-        if !self
+        if self
             .state
             .lock()
             .expect("session state")
             .capabilities
             .workspace()
-            .is_some_and(|workspace| workspace.apply_edit == Some(true))
+            .is_none_or(|workspace| workspace.apply_edit != Some(true))
         {
             return Err(Error::invalid_params(
                 "client does not support workspace edits",

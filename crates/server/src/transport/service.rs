@@ -1,4 +1,4 @@
-use std::{io, sync::Arc};
+use std::{future::ready, io, sync::Arc};
 
 use instar_project::Project;
 use instar_shared::Options;
@@ -50,7 +50,13 @@ where
 
     let (service, socket) =
         LspService::build(|client| Server::new(client, Arc::clone(&project), options))
-            .custom_method("window/workDoneProgress/cancel", Server::cancel_progress)
+            .custom_method(
+                "window/workDoneProgress/cancel",
+                |server: &Server, parameters| {
+                    server.cancel_progress(&parameters);
+                    ready(())
+                },
+            )
             .finish();
 
     let state = Arc::clone(&service.inner().state);

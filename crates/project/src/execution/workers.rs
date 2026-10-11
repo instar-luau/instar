@@ -90,6 +90,11 @@ pub(crate) enum WorkOutput {
     Format(FormatResult),
 }
 
+pub(crate) type BatchOutcome<Output> = (
+    io::Result<Output>,
+    Vec<(ModuleIdentity, io::Result<WorkOutput>)>,
+);
+
 #[derive(Default)]
 struct BudgetState {
     running: usize,
@@ -348,10 +353,7 @@ impl Workers {
         work: Vec<Work>,
         options: &Options,
         following: &(impl Fn(usize, &WorkOutput) -> Vec<(ModuleIdentity, Work)> + Sync),
-    ) -> Vec<(
-        io::Result<WorkOutput>,
-        Vec<(ModuleIdentity, io::Result<WorkOutput>)>,
-    )> {
+    ) -> Vec<BatchOutcome<WorkOutput>> {
         let count = work.len();
 
         if count == 0 {

@@ -1,6 +1,6 @@
 //! Luau literal decoding and interpolation boundaries.
 
-use std::{fmt::Write, str};
+use std::{fmt::Write as _, str};
 
 use instar_shared::Span;
 

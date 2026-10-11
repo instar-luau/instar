@@ -268,7 +268,7 @@ impl State {
     }
 
     pub(crate) fn save(
-        &mut self,
+        &self,
         project: &Project,
         parameters: DidSaveTextDocumentParams,
         options: &Options,
@@ -321,9 +321,10 @@ impl State {
                 .collect::<Vec<_>>();
 
             for (uri, mut document, source) in moved {
-                let relative = source
-                    .strip_prefix(old)
-                    .map_err(|_| Error::internal_error())?;
+                let relative = source.strip_prefix(old).map_err(|error| Error {
+                    message: error.to_string().into(),
+                    ..Error::internal_error()
+                })?;
 
                 let target = if relative.as_os_str().is_empty() {
                     new.clone()
@@ -338,11 +339,12 @@ impl State {
                     return Err(Error::invalid_params("rename target is already open"));
                 }
 
-                let contents = snapshot
-                    .source(document.source)
-                    .ok_or_else(Error::content_modified)?
-                    .text
-                    .clone();
+                let contents = Arc::clone(
+                    &snapshot
+                        .source(document.source)
+                        .ok_or_else(Error::content_modified)?
+                        .text,
+                );
 
                 retired.push(document.revision);
 

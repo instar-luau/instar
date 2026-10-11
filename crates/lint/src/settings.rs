@@ -8,19 +8,12 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Preset, RuleDefinition, RuleIdentity, RuleProducer,
-    catalog::inventory,
-    rules,
+    Preset, RuleDefinition, RuleIdentity, RuleProducer, rules,
     rules::{
         bindings::{DeprecatedSymbols, ImmutableBindings, RestrictedGlobals, UnusedBindings},
         calls::RestrictedImports,
     },
 };
-
-/// Parameterless rule settings.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct BasicSettings {}
 
 macro_rules! define_settings {
     ($(
@@ -54,6 +47,11 @@ macro_rules! define_settings {
         }
     };
 }
+
+/// Parameterless rule settings.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BasicSettings {}
 
 inventory!(define_settings);
 

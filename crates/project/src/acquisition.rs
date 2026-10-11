@@ -1,5 +1,5 @@
 use std::{
-    io::{self, Read},
+    io::{self, Read as _},
     time::{Duration, Instant},
 };
 
@@ -145,8 +145,8 @@ fn download(request: DownloadRequest, _: &Emitter<DownloadResult>) -> io::Result
 
     options.check()?;
 
-    let contents =
-        String::from_utf8(bytes).map_err(|_| invalid("downloaded assets are not UTF-8"))?;
+    let contents = String::from_utf8(bytes)
+        .map_err(|error| invalid(&format!("downloaded assets are not UTF-8: {error}")))?;
 
     assets::verify(&contents, &request.expected_digest)?;
     options.check()?;
@@ -176,9 +176,11 @@ pub(crate) fn validate(selection: &str, digest: &str) -> io::Result<()> {
         ));
     }
 
-    let identity: Uri = selection
-        .parse()
-        .map_err(|_| invalid("asset selection requires a valid HTTPS identity"))?;
+    let identity: Uri = selection.parse().map_err(|error| {
+        invalid(&format!(
+            "asset selection requires a valid HTTPS identity: {error}"
+        ))
+    })?;
 
     if identity.scheme_str() != Some("https") || identity.host().is_none_or(str::is_empty) {
         return Err(invalid("asset selection requires a valid HTTPS identity"));

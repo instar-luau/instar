@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    io::{BufRead, BufReader, Read, Write},
+    io::{BufRead, BufReader, Read as _, Write as _},
     process::{Child, Command, Stdio},
     sync::{Arc, Mutex, mpsc},
     thread::{self, JoinHandle},
@@ -41,14 +41,14 @@ impl Session {
         let input = child.stdin.take().expect("server stdin");
         let output = child.stdout.take().expect("server stdout");
         let mut error = child.stderr.take().expect("server stderr");
-        let (writer, writes) = mpsc::channel::<WriteRequest>();
+        let (writer, outgoing) = mpsc::channel::<WriteRequest>();
         let (sender, messages) = mpsc::channel();
         let errors = Arc::new(Mutex::new(String::new()));
         let captured = Arc::clone(&errors);
         let threads = vec![
             thread::spawn(move || {
                 let mut input = input;
-                for (value, completion) in writes {
+                for (value, completion) in outgoing {
                     let bytes = serde_json::to_vec(&value).expect("serialize client frame");
                     let result = write!(input, "Content-Length: {}\r\n\r\n", bytes.len())
                         .and_then(|()| input.write_all(&bytes))
@@ -97,13 +97,13 @@ impl Session {
         }
     }
 
-    pub(in crate::contracts) fn request(&mut self, method: &str, parameters: Value) -> Value {
+    pub(in crate::contracts) fn request(&mut self, method: &str, parameters: &Value) -> Value {
         let response = self.response(method, parameters);
         assert!(response.get("error").is_none(), "{method}: {response}");
         response.get("result").expect("request result").clone()
     }
 
-    pub(in crate::contracts) fn response(&mut self, method: &str, parameters: Value) -> Value {
+    pub(in crate::contracts) fn response(&mut self, method: &str, parameters: &Value) -> Value {
         let identifier = self.start(method, parameters);
         let response = self.receive(identifier);
         if method == "shutdown" && response.get("error").is_none() {
@@ -112,7 +112,7 @@ impl Session {
         response
     }
 
-    pub(in crate::contracts) fn start(&mut self, method: &str, parameters: Value) -> u64 {
+    pub(in crate::contracts) fn start(&mut self, method: &str, parameters: &Value) -> u64 {
         self.identifier += 1;
         let identifier = self.identifier;
         self.send(json!({"jsonrpc":"2.0", "id":identifier, "method":method, "params":parameters}));
@@ -133,7 +133,7 @@ impl Session {
         }
     }
 
-    pub(in crate::contracts) fn notify(&mut self, method: &str, parameters: Value) {
+    pub(in crate::contracts) fn notify(&self, method: &str, parameters: &Value) {
         self.send(json!({"jsonrpc":"2.0", "method":method, "params":parameters}));
     }
 
@@ -160,15 +160,15 @@ impl Session {
         self.held.insert(method.to_owned());
     }
 
-    pub(in crate::contracts) fn respond(&mut self, identifier: Value, result: Value) {
+    pub(in crate::contracts) fn respond(&self, identifier: &Value, result: &Value) {
         self.send(json!({"jsonrpc":"2.0", "id":identifier, "result":result}));
     }
 
     pub(in crate::contracts) fn finish(mut self) -> i32 {
         if !self.shutdown {
-            assert_eq!(self.request("shutdown", Value::Null), Value::Null);
+            assert_eq!(self.request("shutdown", &Value::Null), Value::Null);
         }
-        self.notify("exit", Value::Null);
+        self.notify("exit", &Value::Null);
         let deadline = Instant::now() + DEADLINE;
         loop {
             if let Some(status) = self.child.try_wait().expect("server process status") {
@@ -209,40 +209,40 @@ impl Session {
             })
             .expect("valid server frame");
         assert_eq!(message["jsonrpc"], "2.0");
-        if let (Some(method), Some(identifier)) = (message["method"].as_str(), message.get("id")) {
-            if !self.held.remove(method) {
-                let result = self
-                    .replies
-                    .get(method)
-                    .cloned()
-                    .unwrap_or_else(|| match method {
-                        "workspace/configuration" => json!(vec![
-                            Value::Null;
-                            message["params"]["items"]
-                                .as_array()
-                                .expect("configuration scopes")
-                                .len()
-                        ]),
-                        "workspace/workspaceFolders" => Value::Null,
-                        "workspace/applyEdit" => {
-                            json!({"applied":false,"failureReason":"contract client declined edit"})
-                        }
-                        "window/showMessageRequest" => Value::Null,
-                        "window/showDocument" => json!({"success":true}),
-                        "client/registerCapability"
-                        | "client/unregisterCapability"
-                        | "window/workDoneProgress/create"
-                        | "workspace/diagnostic/refresh"
-                        | "workspace/semanticTokens/refresh"
-                        | "workspace/inlayHint/refresh"
-                        | "workspace/codeLens/refresh"
-                        | "workspace/inlineValue/refresh"
-                        | "workspace/foldingRange/refresh"
-                        | "workspace/textDocumentContent/refresh" => Value::Null,
-                        _ => panic!("unexpected server request: {message}"),
-                    });
-                self.respond(identifier.clone(), result);
-            }
+        if let (Some(method), Some(identifier)) = (message["method"].as_str(), message.get("id"))
+            && !self.held.remove(method)
+        {
+            let result = self
+                .replies
+                .get(method)
+                .cloned()
+                .unwrap_or_else(|| match method {
+                    "workspace/configuration" => json!(vec![
+                        Value::Null;
+                        message["params"]["items"]
+                            .as_array()
+                            .expect("configuration scopes")
+                            .len()
+                    ]),
+                    "workspace/applyEdit" => {
+                        json!({"applied":false,"failureReason":"contract client declined edit"})
+                    }
+                    "window/showDocument" => json!({"success":true}),
+                    "workspace/workspaceFolders"
+                    | "window/showMessageRequest"
+                    | "client/registerCapability"
+                    | "client/unregisterCapability"
+                    | "window/workDoneProgress/create"
+                    | "workspace/diagnostic/refresh"
+                    | "workspace/semanticTokens/refresh"
+                    | "workspace/inlayHint/refresh"
+                    | "workspace/codeLens/refresh"
+                    | "workspace/inlineValue/refresh"
+                    | "workspace/foldingRange/refresh"
+                    | "workspace/textDocumentContent/refresh" => Value::Null,
+                    _ => panic!("unexpected server request: {message}"),
+                });
+            self.respond(identifier, &result);
         }
         self.retained.push(message);
     }

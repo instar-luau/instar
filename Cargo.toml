@@ -74,7 +74,6 @@ fallible_impl_from = "deny"
 inline_modules = "deny"
 let_underscore_must_use = "deny"
 map_err_ignore = "deny"
-multiple_inherent_impl = "deny"
 needless_collect = "deny"
 needless_pass_by_ref_mut = "deny"
 redundant_clone = "deny"
@@ -87,6 +86,8 @@ unused_result_ok = "deny"
 unused_trait_names = "deny"
 use_self = "deny"
 verbose_file_reads = "deny"
+
+too_many_lines = "allow"
 
 [workspace.lints.rust]
 deprecated_safe = { level = "deny", priority = -1 }

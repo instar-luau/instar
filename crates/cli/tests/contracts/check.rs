@@ -393,8 +393,8 @@ fn destination() {
     let output = fixture.run(&["check", "probe.luau", "--json", "--output", "report.json"]);
     let report: Value = serde_json::from_str(&fixture.read("report.json")).expect("report file");
     assert_eq!(output.status, 1);
-    assert!(output.stdout.is_empty());
-    assert!(output.stderr.is_empty());
+    assert_eq!(output.stdout, "");
+    assert_eq!(output.stderr, "");
     assert_eq!(report["status"], 1);
     assert_eq!(report["diagnostics"][0]["category"], "Type");
 
@@ -858,7 +858,7 @@ fn operations() {
         let findings = report["diagnostics"]
             .as_array()
             .expect("invalid operations");
-        assert!(!findings.is_empty());
+        assert_ne!(findings.as_slice(), [] as [Value; 0]);
         assert!(findings.iter().all(|finding| finding["category"] == "Type"
             && finding["path"] == json!(fixture.path("probe.luau"))));
         assert!(findings.iter().any(|finding| {

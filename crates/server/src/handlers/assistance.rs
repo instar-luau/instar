@@ -15,8 +15,8 @@ use tower_lsp_server::{
         CompletionItemTag, CompletionList, CompletionParams, CompletionResponse, Documentation,
         Hover, HoverParams, InlayHint, InlayHintKind, InlayHintParams, InlineCompletionParams,
         InlineCompletionResponse, InlineValue, InlineValueParams, InsertTextFormat, MarkupContent,
-        ParameterInformation, ParameterInformationLabel, SignatureHelp, SignatureHelpParams,
-        SignatureInformation, TextEdit as ProtocolTextEdit,
+        ParameterInformation, ParameterInformationLabel, Position, SignatureHelp,
+        SignatureHelpParams, SignatureInformation, TextEdit as ProtocolTextEdit,
     },
     jsonrpc::{Error, Result},
 };
@@ -340,13 +340,13 @@ pub(crate) async fn inline_completion(
     server: &Server,
     parameters: InlineCompletionParams,
 ) -> Result<Option<InlineCompletionResponse>> {
-    if !server
+    if server
         .state
         .lock()
         .expect("session state")
         .capabilities
         .text_document()
-        .is_some_and(|document| document.inline_completion.is_some())
+        .is_none_or(|document| document.inline_completion.is_none())
     {
         return Err(Error::invalid_params(
             "inline completion was not negotiated",
@@ -415,7 +415,10 @@ pub(crate) async fn inline_completion(
 
     serde_json::from_value(json!({"items":items}))
         .map(Some)
-        .map_err(|_| Error::internal_error())
+        .map_err(|error| Error {
+            message: error.to_string().into(),
+            ..Error::internal_error()
+        })
 }
 
 pub(crate) async fn signatures(
@@ -490,11 +493,14 @@ pub(crate) async fn signatures(
         let active = active
             .map(|active| u32::try_from(active).map(ActiveParameter::Int))
             .transpose()
-            .map_err(|_| Error::internal_error())?
+            .map_err(|error| Error {
+                message: error.to_string().into(),
+                ..Error::internal_error()
+            })?
             .or_else(|| no_active.then_some(ActiveParameter::Null));
 
         if index == occurrence.active_signature.unwrap_or(0) {
-            active_parameter = active.clone();
+            active_parameter = active;
         }
 
         let parameters = signature
@@ -510,10 +516,18 @@ pub(crate) async fn signatures(
 
                 let label = if offsets {
                     ParameterInformationLabel::Tuple((
-                        u32::try_from(signature.label[..start].encode_utf16().count())
-                            .map_err(|_| Error::internal_error())?,
-                        u32::try_from(signature.label[..end].encode_utf16().count())
-                            .map_err(|_| Error::internal_error())?,
+                        u32::try_from(signature.label[..start].encode_utf16().count()).map_err(
+                            |error| Error {
+                                message: error.to_string().into(),
+                                ..Error::internal_error()
+                            },
+                        )?,
+                        u32::try_from(signature.label[..end].encode_utf16().count()).map_err(
+                            |error| Error {
+                                message: error.to_string().into(),
+                                ..Error::internal_error()
+                            },
+                        )?,
                     ))
                 } else {
                     ParameterInformationLabel::String(label.to_owned())
@@ -558,7 +572,10 @@ pub(crate) async fn signatures(
             .active_signature
             .map(u32::try_from)
             .transpose()
-            .map_err(|_| Error::internal_error())?,
+            .map_err(|error| Error {
+                message: error.to_string().into(),
+                ..Error::internal_error()
+            })?,
         active_parameter,
     }))
 }
@@ -708,7 +725,7 @@ pub(crate) async fn lenses(
 
     let (snapshot, position) = server.position(
         &parameters.text_document.uri,
-        Default::default(),
+        Position::default(),
         PositionQueryKind::Lenses,
         &options,
     )?;
@@ -768,7 +785,7 @@ pub(crate) async fn lenses(
     Ok(Some(result))
 }
 
-pub(crate) async fn lens_resolve(server: &Server, lens: CodeLens) -> Result<CodeLens> {
+pub(crate) fn lens_resolve(server: &Server, lens: CodeLens) -> Result<CodeLens> {
     let record = lazy(server, lens.data.as_ref(), "lens")?;
 
     let RetainedResult::Lens {
@@ -829,7 +846,10 @@ pub(crate) async fn inline_values(
             return Err(Error::internal_error());
         };
 
-        result.push(serde_json::from_value(item).map_err(|_| Error::internal_error())?);
+        result.push(serde_json::from_value(item).map_err(|error| Error {
+            message: error.to_string().into(),
+            ..Error::internal_error()
+        })?);
     }
 
     Ok(Some(result))

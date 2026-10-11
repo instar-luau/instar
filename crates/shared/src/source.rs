@@ -1,6 +1,6 @@
 use std::{io, str, sync::Arc};
 
-use serde::{Deserialize, Deserializer, Serialize, de::Error};
+use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 
 use crate::{Span, error::invalid};
 

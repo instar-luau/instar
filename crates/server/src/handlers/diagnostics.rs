@@ -33,6 +33,229 @@ use crate::{
     session::{LazyRecord, RetainedResult, failure, path},
 };
 
+impl Server {
+    pub(crate) fn schedule_diagnostics(&self) {
+        let mut publication = self.publication.lock().expect("diagnostic publication");
+
+        if let Some((operation, cancellation)) = publication.take() {
+            cancellation.cancel();
+            operation.abort();
+        }
+
+        let pull = self
+            .state
+            .lock()
+            .expect("session state")
+            .capabilities
+            .pull_diagnostics();
+
+        if pull {
+            return;
+        }
+
+        let project = Arc::clone(&self.project);
+        let state = Arc::clone(&self.state);
+        let client = self.client.clone();
+        let snapshot = project.snapshot();
+        let options = self.options.child();
+        let cancellation = options.cancellation.clone();
+        let inputs = inputs(self);
+
+        let progress = if inputs.iter().any(|input| matches!(input, Input::Source(_))) {
+            self.prepare_progress(None, &options.cancellation)
+        } else {
+            Ok(None)
+        };
+
+        let task = project.query(
+            QueryRequest {
+                snapshot: snapshot.clone(),
+                operation: Query::Diagnostics(DiagnosticQuery {
+                    inputs,
+                    lint: true,
+                    checking: true,
+                }),
+            },
+            options.clone(),
+        );
+
+        let operation = task::spawn(async move {
+            let mut operation = Box::pin(task);
+
+            let progress = match progress {
+                Ok(progress) => progress,
+
+                Err(error) => {
+                    client
+                        .log_message(MessageType::Error, error.to_string())
+                        .await;
+
+                    return;
+                }
+            };
+
+            let (result, _progress) = tokio::select! {
+                result = &mut operation => (result, None),
+                progress = async {
+                    match progress {
+                        Some(progress) => progress.begin("Analyzing Luau workspace", &options).await.map(Some),
+                        None => Ok(None),
+                    }
+                } => match progress {
+                    Ok(progress) => (operation.await, progress),
+                    Err(error) => {
+                        client.log_message(MessageType::Error, error.to_string()).await;
+                        return;
+                    }
+                },
+            };
+
+            let (snapshot, publication_inputs, findings, complete) = match result {
+                Ok(report) => {
+                    if report.completion != Completion::Complete {
+                        client
+                            .log_message(
+                                MessageType::Warning,
+                                report.completion.error().to_string(),
+                            )
+                            .await;
+                    }
+
+                    let findings = match findings(&report) {
+                        Ok(findings) => findings,
+
+                        Err(error) => {
+                            client
+                                .log_message(MessageType::Error, error.to_string())
+                                .await;
+
+                            return;
+                        }
+                    };
+
+                    (
+                        report.snapshot,
+                        report.inputs,
+                        findings,
+                        report.completion == Completion::Complete,
+                    )
+                }
+
+                Err(error) => {
+                    if matches!(
+                        &error.completion,
+                        Completion::Incomplete(reasons) if reasons.contains(&Reason::StaleQuery)
+                    ) {
+                        return;
+                    }
+
+                    if error.kind != FailureKind::InvalidInvocation
+                        || !error
+                            .diagnostics
+                            .iter()
+                            .any(|finding| finding.code == "resolution.sourcemap")
+                    {
+                        client
+                            .log_message(MessageType::Error, error.to_string())
+                            .await;
+                    }
+
+                    if error.diagnostics.is_empty()
+                        || matches!(
+                            error.completion,
+                            Completion::Cancelled | Completion::TimedOut
+                        )
+                    {
+                        return;
+                    }
+
+                    let current = project.snapshot();
+
+                    let Ok(inputs) = failure_inputs(&snapshot, &current, &error.diagnostics) else {
+                        return;
+                    };
+
+                    (current, inputs, error.diagnostics, false)
+                }
+            };
+
+            let mut grouped = BTreeMap::<Uri, Vec<Diagnostic>>::new();
+
+            let conversion = (|| {
+                let mut state = state.lock().expect("session state");
+
+                if !state.current(&project, &publication_inputs) {
+                    return Err(Error::content_modified());
+                }
+
+                if complete {
+                    let sources = state
+                        .documents
+                        .values()
+                        .filter(|document| document.synchronized)
+                        .map(|document| document.source)
+                        .collect::<Vec<_>>();
+
+                    for source in sources {
+                        grouped.entry(state.uri(&snapshot, source)?).or_default();
+                    }
+                }
+
+                for finding in findings {
+                    let uri = state.uri(&snapshot, finding.primary.source.identity)?;
+
+                    grouped
+                        .entry(uri)
+                        .or_default()
+                        .push(convert_with(finding, |location| {
+                            state.location(&snapshot, location)
+                        })?);
+                }
+
+                if complete {
+                    for uri in &state.published {
+                        grouped.entry(uri.clone()).or_default();
+                    }
+                }
+
+                Ok(())
+            })();
+
+            if let Err(error) = conversion {
+                if error.code != ErrorCode::ContentModified {
+                    client
+                        .log_message(MessageType::Error, error.to_string())
+                        .await;
+                }
+
+                return;
+            }
+
+            for (uri, items) in grouped {
+                let version = {
+                    let mut state = state.lock().expect("session state");
+
+                    if !state.current(&project, &publication_inputs) {
+                        return;
+                    }
+
+                    if items.is_empty() {
+                        state.published.remove(&uri);
+                    } else {
+                        state.published.insert(uri.clone());
+                    }
+
+                    state.documents.get(&uri).map(|document| document.version)
+                };
+
+                client.publish_diagnostics(uri, items, version).await;
+            }
+        });
+
+        *publication = Some((operation, cancellation));
+    }
+}
+
 pub(crate) async fn document(
     server: &Server,
     parameters: DocumentDiagnosticParams,
@@ -306,8 +529,11 @@ fn convert_with(
         code_description: if native && finding.category == DiagnosticCategory::Lint {
             Some(CodeDescription {
                 href: "https://luau.org/lint/"
-                    .parse()
-                    .map_err(|_| Error::internal_error())?,
+                    .parse::<Uri>()
+                    .map_err(|error| Error {
+                        message: error.to_string().into(),
+                        ..Error::internal_error()
+                    })?,
             })
         } else {
             None
@@ -474,227 +700,4 @@ fn failure_inputs(
     }
 
     Ok(inputs)
-}
-
-impl Server {
-    pub(crate) fn schedule_diagnostics(&self) {
-        let mut publication = self.publication.lock().expect("diagnostic publication");
-
-        if let Some((operation, cancellation)) = publication.take() {
-            cancellation.cancel();
-            operation.abort();
-        }
-
-        let pull = self
-            .state
-            .lock()
-            .expect("session state")
-            .capabilities
-            .pull_diagnostics();
-
-        if pull {
-            return;
-        }
-
-        let project = Arc::clone(&self.project);
-        let state = Arc::clone(&self.state);
-        let client = self.client.clone();
-        let snapshot = project.snapshot();
-        let options = self.options.child();
-        let cancellation = options.cancellation.clone();
-        let inputs = inputs(self);
-
-        let progress = if inputs.iter().any(|input| matches!(input, Input::Source(_))) {
-            self.prepare_progress(None, &options.cancellation)
-        } else {
-            Ok(None)
-        };
-
-        let task = project.query(
-            QueryRequest {
-                snapshot: snapshot.clone(),
-                operation: Query::Diagnostics(DiagnosticQuery {
-                    inputs,
-                    lint: true,
-                    checking: true,
-                }),
-            },
-            options.clone(),
-        );
-
-        let operation = task::spawn(async move {
-            let mut operation = Box::pin(task);
-
-            let progress = match progress {
-                Ok(progress) => progress,
-
-                Err(error) => {
-                    client
-                        .log_message(MessageType::Error, error.to_string())
-                        .await;
-
-                    return;
-                }
-            };
-
-            let (result, _progress) = tokio::select! {
-                result = &mut operation => (result, None),
-                progress = async {
-                    match progress {
-                        Some(progress) => progress.begin("Analyzing Luau workspace", &options).await.map(Some),
-                        None => Ok(None),
-                    }
-                } => match progress {
-                    Ok(progress) => (operation.await, progress),
-                    Err(error) => {
-                        client.log_message(MessageType::Error, error.to_string()).await;
-                        return;
-                    }
-                },
-            };
-
-            let (snapshot, publication_inputs, findings, complete) = match result {
-                Ok(report) => {
-                    if report.completion != Completion::Complete {
-                        client
-                            .log_message(
-                                MessageType::Warning,
-                                report.completion.error().to_string(),
-                            )
-                            .await;
-                    }
-
-                    let findings = match findings(&report) {
-                        Ok(findings) => findings,
-
-                        Err(error) => {
-                            client
-                                .log_message(MessageType::Error, error.to_string())
-                                .await;
-
-                            return;
-                        }
-                    };
-
-                    (
-                        report.snapshot,
-                        report.inputs,
-                        findings,
-                        report.completion == Completion::Complete,
-                    )
-                }
-
-                Err(error) => {
-                    if matches!(
-                        &error.completion,
-                        Completion::Incomplete(reasons) if reasons.contains(&Reason::StaleQuery)
-                    ) {
-                        return;
-                    }
-
-                    if error.kind != FailureKind::InvalidInvocation
-                        || !error
-                            .diagnostics
-                            .iter()
-                            .any(|finding| finding.code == "resolution.sourcemap")
-                    {
-                        client
-                            .log_message(MessageType::Error, error.to_string())
-                            .await;
-                    }
-
-                    if error.diagnostics.is_empty()
-                        || matches!(
-                            error.completion,
-                            Completion::Cancelled | Completion::TimedOut
-                        )
-                    {
-                        return;
-                    }
-
-                    let current = project.snapshot();
-
-                    let Ok(inputs) = failure_inputs(&snapshot, &current, &error.diagnostics) else {
-                        return;
-                    };
-
-                    (current, inputs, error.diagnostics, false)
-                }
-            };
-
-            let mut grouped = BTreeMap::<Uri, Vec<Diagnostic>>::new();
-
-            let conversion = (|| {
-                let mut state = state.lock().expect("session state");
-
-                if !state.current(&project, &publication_inputs) {
-                    return Err(Error::content_modified());
-                }
-
-                if complete {
-                    let sources = state
-                        .documents
-                        .values()
-                        .filter(|document| document.synchronized)
-                        .map(|document| document.source)
-                        .collect::<Vec<_>>();
-
-                    for source in sources {
-                        grouped.entry(state.uri(&snapshot, source)?).or_default();
-                    }
-                }
-
-                for finding in findings {
-                    let uri = state.uri(&snapshot, finding.primary.source.identity)?;
-
-                    grouped
-                        .entry(uri)
-                        .or_default()
-                        .push(convert_with(finding, |location| {
-                            state.location(&snapshot, location)
-                        })?);
-                }
-
-                if complete {
-                    for uri in &state.published {
-                        grouped.entry(uri.clone()).or_default();
-                    }
-                }
-
-                Ok(())
-            })();
-
-            if let Err(error) = conversion {
-                if error.code != ErrorCode::ContentModified {
-                    client
-                        .log_message(MessageType::Error, error.to_string())
-                        .await;
-                }
-
-                return;
-            }
-
-            for (uri, items) in grouped {
-                let version = {
-                    let mut state = state.lock().expect("session state");
-
-                    if !state.current(&project, &publication_inputs) {
-                        return;
-                    }
-
-                    if items.is_empty() {
-                        state.published.remove(&uri);
-                    } else {
-                        state.published.insert(uri.clone());
-                    }
-
-                    state.documents.get(&uri).map(|document| document.version)
-                };
-
-                client.publish_diagnostics(uri, items, version).await;
-            }
-        });
-
-        *publication = Some((operation, cancellation));
-    }
 }

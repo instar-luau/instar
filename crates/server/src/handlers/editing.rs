@@ -293,7 +293,7 @@ pub(crate) async fn actions(
     Ok(Some(result))
 }
 
-pub(crate) async fn resolve(server: &Server, action: CodeAction) -> Result<CodeAction> {
+pub(crate) fn resolve(server: &Server, action: CodeAction) -> Result<CodeAction> {
     let record = lazy(server, action.data.as_ref(), "action")?;
 
     let RetainedResult::Action(mut result) = record.result else {

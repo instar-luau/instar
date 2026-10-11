@@ -5,11 +5,11 @@ mod report;
 
 use std::{
     env,
-    io::{self, IsTerminal},
+    io::{self, IsTerminal as _},
     process::ExitCode,
 };
 
-use clap::{ColorChoice, CommandFactory, FromArgMatches, Parser};
+use clap::{ColorChoice, CommandFactory as _, FromArgMatches as _, Parser as _};
 use color_eyre::config::{HookBuilder, Theme};
 use instar_luau::{run_configuration_worker, run_worker};
 use instar_shared::{Completion, OperationFailure, Reason};

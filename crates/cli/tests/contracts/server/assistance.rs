@@ -8,9 +8,9 @@ use super::{
 #[test]
 fn documentation() {
     let fixture = Fixture::new("cli", "hover");
-    let mut session = connect(&fixture, capabilities());
+    let mut session = connect(&fixture, &capabilities());
     open(&mut session, &fixture, "documented.luau");
-    let hover = session.request("textDocument/hover", json!({"textDocument":{"uri":fixture.uri("documented.luau")},"position":{"line":0,"character":9}}));
+    let hover = session.request("textDocument/hover", &json!({"textDocument":{"uri":fixture.uri("documented.luau")},"position":{"line":0,"character":9}}));
     assert_eq!(hover["contents"]["kind"], "markdown");
     let contents = hover["contents"]["value"]
         .as_str()
@@ -39,11 +39,11 @@ fn documentation() {
 #[test]
 fn completion() {
     let fixture = Fixture::new("cli", "completion");
-    let mut session = connect(&fixture, capabilities());
+    let mut session = connect(&fixture, &capabilities());
     let source = open(&mut session, &fixture, "member.luau");
     let address = fixture.uri("member.luau");
     let position = source.trim_end_matches(['\r', '\n']).encode_utf16().count();
-    let completion = session.request("textDocument/completion", json!({"textDocument":{"uri":address},"position":{"line":0,"character":position},"context":{"triggerKind":1}}));
+    let completion = session.request("textDocument/completion", &json!({"textDocument":{"uri":address},"position":{"line":0,"character":position},"context":{"triggerKind":1}}));
     assert!(completion["isIncomplete"].is_boolean());
     let candidates = completion["items"].as_array().expect("member candidates");
     let value = candidates
@@ -62,11 +62,11 @@ fn completion() {
         .expect("quoted property");
     let edited = apply(&source, &json!([odd["textEdit"]]), "utf-16");
     assert!(edited.trim_end().ends_with("record[\"odd key\"]"));
-    let resolved = session.request("completionItem/resolve", odd.clone());
+    let resolved = session.request("completionItem/resolve", odd);
     assert_eq!(resolved["data"], odd["data"]);
     assert_eq!(resolved["label"], odd["label"]);
     assert_eq!(resolved["textEdit"], odd["textEdit"]);
-    let inline = session.request("textDocument/inlineCompletion", json!({"textDocument":{"uri":address},"position":{"line":0,"character":position},"context":{"triggerKind":1}}));
+    let inline = session.request("textDocument/inlineCompletion", &json!({"textDocument":{"uri":address},"position":{"line":0,"character":position},"context":{"triggerKind":1}}));
     assert!(
         inline["items"]
             .as_array()
@@ -74,8 +74,8 @@ fn completion() {
             .iter()
             .any(|item| item["insertText"] == "[\"odd key\"]")
     );
-    session.notify("textDocument/didChange", json!({"textDocument":{"uri":address,"version":2},"contentChanges":[{"text":"local record = {other = true}\nreturn record\n"}]}));
-    let stale = session.response("completionItem/resolve", odd.clone());
+    session.notify("textDocument/didChange", &json!({"textDocument":{"uri":address,"version":2},"contentChanges":[{"text":"local record = {other = true}\nreturn record\n"}]}));
+    let stale = session.response("completionItem/resolve", odd);
     assert_eq!(stale["error"]["code"], -32801);
     snapshot(
         &fixture,
@@ -89,12 +89,12 @@ fn completion() {
 #[test]
 fn signatures() {
     let fixture = Fixture::new("cli", "signatures");
-    let mut session = connect(&fixture, capabilities());
+    let mut session = connect(&fixture, &capabilities());
     let source = open(&mut session, &fixture, "input.luau");
     let line = source.lines().nth(11).expect("variadic call");
     let argument = line.find(", 2").expect("second argument") + 2;
     let character = line[..argument].encode_utf16().count();
-    let signatures = session.request("textDocument/signatureHelp", json!({"textDocument":{"uri":fixture.uri("input.luau")},"position":{"line":11,"character":character},"context":{"triggerKind":1,"isRetrigger":false}}));
+    let signatures = session.request("textDocument/signatureHelp", &json!({"textDocument":{"uri":fixture.uri("input.luau")},"position":{"line":11,"character":character},"context":{"triggerKind":1,"isRetrigger":false}}));
     assert_eq!(signatures["activeParameter"], 1);
     let signature = &signatures["signatures"][0];
     assert_eq!(signature["activeParameter"], 1);
@@ -120,10 +120,10 @@ fn signatures() {
 #[test]
 fn annotations() {
     let fixture = Fixture::new("cli", "hints");
-    let mut session = connect(&fixture, capabilities());
+    let mut session = connect(&fixture, &capabilities());
     let source = open(&mut session, &fixture, "input.luau");
     let address = fixture.uri("input.luau");
-    let hints = session.request("textDocument/inlayHint", json!({"textDocument":{"uri":address},"range":{"start":{"line":0,"character":0},"end":{"line":7,"character":0}}}));
+    let hints = session.request("textDocument/inlayHint", &json!({"textDocument":{"uri":address},"range":{"start":{"line":0,"character":0},"end":{"line":7,"character":0}}}));
     let count = source
         .lines()
         .next()
@@ -147,11 +147,11 @@ fn annotations() {
             .iter()
             .any(|hint| hint["position"]["line"] == 1)
     );
-    let resolved = session.request("inlayHint/resolve", hint.clone());
+    let resolved = session.request("inlayHint/resolve", hint);
     assert_eq!(resolved["tooltip"], "count: number");
     assert_eq!(resolved["data"], hint["data"]);
     assert_eq!(resolved["position"], hint["position"]);
-    let values = session.request("textDocument/inlineValue", json!({"textDocument":{"uri":address},"range":{"start":{"line":0,"character":0},"end":{"line":7,"character":0}},"context":{"frameId":1,"stoppedLocation":{"start":{"line":6,"character":0},"end":{"line":6,"character":30}}}}));
+    let values = session.request("textDocument/inlineValue", &json!({"textDocument":{"uri":address},"range":{"start":{"line":0,"character":0},"end":{"line":7,"character":0}},"context":{"frameId":1,"stoppedLocation":{"start":{"line":6,"character":0},"end":{"line":6,"character":30}}}}));
     assert!(
         values
             .as_array()
@@ -166,11 +166,11 @@ fn annotations() {
             .iter()
             .all(|value| value.get("text").is_none() && value.get("value").is_none())
     );
-    let crossed = session.response("codeLens/resolve", json!({"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}},"data":hint["data"]}));
+    let crossed = session.response("codeLens/resolve", &json!({"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}},"data":hint["data"]}));
     assert_eq!(crossed["error"]["code"], -32602);
-    session.notify("textDocument/didChange", json!({"textDocument":{"uri":address,"version":2},"contentChanges":[{"text":"return 1\n"}]}));
+    session.notify("textDocument/didChange", &json!({"textDocument":{"uri":address,"version":2},"contentChanges":[{"text":"return 1\n"}]}));
     assert_eq!(
-        session.response("inlayHint/resolve", hint.clone())["error"]["code"],
+        session.response("inlayHint/resolve", hint)["error"]["code"],
         -32801
     );
     snapshot(
@@ -185,12 +185,12 @@ fn annotations() {
 #[test]
 fn lenses() {
     let fixture = Fixture::new("cli", "hierarchy");
-    let mut session = connect(&fixture, capabilities());
+    let mut session = connect(&fixture, &capabilities());
     open(&mut session, &fixture, "input.luau");
     let address = fixture.uri("input.luau");
     let lenses = session.request(
         "textDocument/codeLens",
-        json!({"textDocument":{"uri":address}}),
+        &json!({"textDocument":{"uri":address}}),
     );
     let lens = lenses
         .as_array()
@@ -203,23 +203,23 @@ fn lenses() {
         json!({"start":{"line":3,"character":15},"end":{"line":3,"character":21}})
     );
     assert!(lens.get("command").is_none());
-    let resolved = session.request("codeLens/resolve", lens.clone());
+    let resolved = session.request("codeLens/resolve", lens);
     assert_eq!(resolved["range"], lens["range"]);
     assert_eq!(resolved["data"], lens["data"]);
     assert_eq!(resolved["command"]["title"], "2 references");
     assert_eq!(resolved["command"]["command"], "instar.check");
-    let checked = session.request("workspace/executeCommand", json!({"command":resolved["command"]["command"],"arguments":resolved["command"]["arguments"]}));
+    let checked = session.request("workspace/executeCommand", &json!({"command":resolved["command"]["command"],"arguments":resolved["command"]["arguments"]}));
     assert_eq!(checked["failed"], false);
     assert_eq!(checked["completion"], "Complete");
     let mut altered = resolved["command"].clone();
     altered["command"] = json!("instar.format");
     assert_eq!(
-        session.response("workspace/executeCommand", altered)["error"]["code"],
+        session.response("workspace/executeCommand", &altered)["error"]["code"],
         -32602
     );
-    session.notify("textDocument/didChange", json!({"textDocument":{"uri":address,"version":2},"contentChanges":[{"text":"return 1\n"}]}));
+    session.notify("textDocument/didChange", &json!({"textDocument":{"uri":address,"version":2},"contentChanges":[{"text":"return 1\n"}]}));
     assert_eq!(
-        session.response("codeLens/resolve", lens.clone())["error"]["code"],
+        session.response("codeLens/resolve", lens)["error"]["code"],
         -32801
     );
     snapshot(
@@ -235,9 +235,9 @@ fn lenses() {
 fn imports() {
     let fixture = Fixture::new("cli", "completion");
     fixture.write("require.luau", "return require(\"./dep");
-    let mut session = connect(&fixture, capabilities());
+    let mut session = connect(&fixture, &capabilities());
     let source = open(&mut session, &fixture, "require.luau");
-    let completion = session.request("textDocument/completion", json!({"textDocument":{"uri":fixture.uri("require.luau")},"position":{"line":0,"character":source.len()},"context":{"triggerKind":1}}));
+    let completion = session.request("textDocument/completion", &json!({"textDocument":{"uri":fixture.uri("require.luau")},"position":{"line":0,"character":source.len()},"context":{"triggerKind":1}}));
     assert_eq!(completion["isIncomplete"], true);
     let candidate = completion["items"]
         .as_array()

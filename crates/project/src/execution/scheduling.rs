@@ -667,7 +667,15 @@ fn join(
     for worker in handles {
         let finished = worker
             .join()
-            .map_err(|_| io::Error::other("project executor panicked"))
+            .map_err(|error| {
+                let message = error
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| error.downcast_ref::<&str>().copied())
+                    .unwrap_or("non-string panic payload");
+
+                io::Error::other(format!("project executor panicked: {message}"))
+            })
             .and_then(|result| result);
 
         if result.is_ok() {

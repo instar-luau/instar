@@ -9,7 +9,7 @@ use instar_shared::{
     SourceIdentity, SourceOutcome, SourceVersion,
 };
 
-use serde::{Serialize, Serializer, ser::SerializeStruct};
+use serde::{Serialize, Serializer, ser::SerializeStruct as _};
 
 use crate::{
     configuration::{EffectiveSettings, Operation},

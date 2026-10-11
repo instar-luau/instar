@@ -873,7 +873,7 @@ fn configuration_location(
         return Err(invalid("source is outside the selected project root"));
     }
 
-    let base = root.clone().unwrap_or_else(|| directory.clone());
+    let base = root.unwrap_or_else(|| directory.clone());
 
     Ok(ConfigurationLocation {
         context,

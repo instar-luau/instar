@@ -1,4 +1,4 @@
-use std::{fmt::Write, io, time::Duration};
+use std::{fmt::Write as _, io, time::Duration};
 
 use instar_shared::Options;
 use similar::{ChangeTag, TextDiff};

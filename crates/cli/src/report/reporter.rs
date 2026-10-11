@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env,
     fs::{self, File},
-    io::{self, BufWriter, IsTerminal, Seek, Write},
+    io::{self, BufWriter, IsTerminal as _, Seek as _, Write},
     path::{self, Component, Path, PathBuf},
     time::Duration,
 };
@@ -13,8 +13,8 @@ use instar_format::FormatOutcome;
 
 use instar_project::{
     CheckReport, Counts, ExplanationSelection, FixMode, FormatMode, FormatReport, InputIdentity,
-    InputVersion, LintReport, ProjectSnapshot, SelectionDecision, SourceOrigin, WatchReport,
-    WriteOutcome,
+    InputVersion, LintReport, ProjectSnapshot, SelectionDecision, SourceOrigin, ValidatedEdit,
+    WatchReport, WriteOutcome,
 };
 
 use instar_shared::{
@@ -24,7 +24,9 @@ use instar_shared::{
 use serde_json::{Value, json};
 use tempfile::{NamedTempFile, TempPath};
 use tracing::Level as TraceLevel;
-use tracing_subscriber::{filter::Targets, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{
+    filter::Targets, fmt, layer::SubscriberExt as _, util::SubscriberInitExt as _,
+};
 
 use super::{diagnostic::Diagnostics, difference};
 use crate::command::{Color, CommandStatus, ReportStyle, ReportingArguments};
@@ -162,7 +164,6 @@ pub(crate) struct Reporter {
     temporary: Option<TempPath>,
     explanations: ExplanationSelection,
     json: bool,
-    error_output: bool,
     quiet: bool,
     streaming: bool,
     color: ColorChoice,
@@ -177,7 +178,7 @@ pub(crate) struct Reporter {
 }
 
 impl Reporter {
-    pub(crate) fn new(arguments: ReportingArguments) -> io::Result<Self> {
+    pub(crate) fn new(arguments: &ReportingArguments) -> io::Result<Self> {
         let json = arguments.json || arguments.style == ReportStyle::Json;
         let progress = ProgressBar::new_spinner().with_finish(ProgressFinish::AndClear);
 
@@ -186,7 +187,6 @@ impl Reporter {
         }
 
         let color = match arguments.color {
-            Color::Always => ColorChoice::Always,
             Color::Never => ColorChoice::Never,
 
             Color::Auto
@@ -197,7 +197,7 @@ impl Reporter {
                 ColorChoice::Never
             }
 
-            Color::Auto => ColorChoice::Always,
+            Color::Always | Color::Auto => ColorChoice::Always,
         };
 
         let destination_path = arguments.destination.as_deref().map(resolve).transpose()?;
@@ -227,7 +227,6 @@ impl Reporter {
             temporary,
             explanations: ExplanationSelection::default(),
             json,
-            error_output: false,
             quiet: arguments.quiet,
             streaming: arguments.streaming,
             color,
@@ -349,7 +348,7 @@ impl Reporter {
         self.changed_inputs = changed;
 
         if self.streaming && self.json {
-            self.record(&json!({"event":"iteration","iteration":self.iteration,"snapshot":self.watch_snapshot,"changed":self.changed_inputs}))?;
+            self.record(&json!({"event":"iteration","iteration":self.iteration,"snapshot":self.watch_snapshot,"changed":self.changed_inputs}), CommandStatus::Clean)?;
         } else if !self.json && !self.quiet {
             self.write_report(
                 format!(
@@ -367,11 +366,11 @@ impl Reporter {
     pub(crate) fn historical(
         &mut self,
         snapshot: &ProjectSnapshot,
-        changed: Vec<InputVersion>,
-        report: CommandReport,
+        changed: &[InputVersion],
+        report: &CommandReport,
     ) -> io::Result<()> {
         self.capture(snapshot);
-        self.capture_report(&report);
+        self.capture_report(report);
         self.check_output()?;
 
         if !self.json {
@@ -393,7 +392,7 @@ impl Reporter {
             }
         }
 
-        let mut record = self.projection(&report);
+        let mut record = self.projection(report);
         record["current"] = json!(false);
         record["snapshot"] = json!(snapshot.identity);
         record["invalidations"] = json!(changed);
@@ -486,7 +485,7 @@ impl Reporter {
                     && self.emitted.insert(diagnostic.identity.clone())
                 {
                     if self.json {
-                        self.record(&json!({"event":"diagnostic","invocation":event.invocation,"operation":event.operation,"iteration":self.iteration,"diagnostic":self.diagnostics.record(diagnostic)}))?;
+                        self.record(&json!({"event":"diagnostic","invocation":event.invocation,"operation":event.operation,"iteration":self.iteration,"diagnostic":self.diagnostics.record(diagnostic)}), CommandStatus::Clean)?;
                     } else {
                         let output = self.diagnostics.render(diagnostic, self.color)?;
                         self.write_report(&output)?;
@@ -496,7 +495,10 @@ impl Reporter {
 
             EventPayload::SourceOutcome(_) | EventPayload::EditOutcome(_) => {
                 if self.streaming && self.json {
-                    self.record(&json!({"event":event,"iteration":self.iteration}))?;
+                    self.record(
+                        &json!({"event":event,"iteration":self.iteration}),
+                        CommandStatus::Clean,
+                    )?;
                 }
             }
 
@@ -513,7 +515,6 @@ impl Reporter {
     }
 
     pub(crate) fn finish(&mut self, report: &CommandReport) -> io::Result<()> {
-        self.error_output = matches!(report.status(), CommandStatus::InvalidInvocation);
         self.progress.finish_and_clear();
         self.check_output()?;
         self.capture_report(report);
@@ -540,13 +541,16 @@ impl Reporter {
             record["invalidations"] = json!(self.changed_inputs);
         }
 
-        let source = self.source(report)?;
+        let source = Self::source(report)?;
 
         if self.json {
             if self.streaming {
-                self.record(&json!({"event":"report","iteration":self.iteration,"report":record}))?;
+                self.record(
+                    &json!({"event":"report","iteration":self.iteration,"report":record}),
+                    report.status(),
+                )?;
             } else {
-                self.record(&record)?;
+                self.record(&record, report.status())?;
             }
         } else {
             for diagnostic in findings {
@@ -610,14 +614,14 @@ impl Reporter {
                         FormatOutcome::Unavailable { reason, selections, preservation } => json!({"state":"unavailable","reason":reason,"selections":selections,"preservation":preservation}),
                     };
 
-                    json!({"source":source.result.source,"path":self.diagnostics.name(source.result.source),"outcome":outcome,"diagnostics":source.result.diagnostics,"completion":source.result.completion,"proposal":source.proposal.as_ref().map(|proposal| proposal.proposal()),"preview":source.preview,"write":source.write})
+                    json!({"source":source.result.source,"path":self.diagnostics.name(source.result.source),"outcome":outcome,"diagnostics":source.result.diagnostics,"completion":source.result.completion,"proposal":source.proposal.as_ref().map(ValidatedEdit::proposal),"preview":source.preview,"write":source.write})
                 }).collect::<Vec<_>>();
 
                 json!({"operation":"format","mode":format!("{mode:?}"),"sources":sources,"selection":report.selection,"settings":report.settings,"counts":report.counts,"failed":report.failed,"changed":changed,"skipped":skipped(&report.snapshot,&report.selection)})
             }
 
             CommandReport::Lint(report, mode) => {
-                json!({"operation":"lint","mode":format!("{mode:?}"),"sources":report.sources,"modules":report.modules,"module_findings":report.module_findings,"imports":report.imports,"outcomes":report.outcomes,"findings":report.findings.iter().map(|finding|self.diagnostics.record(finding)).collect::<Vec<_>>(),"final_findings":diagnostics,"availability":report.availability,"fixes":report.fixes,"proposals":report.proposals.iter().map(|proposal|proposal.proposal()).collect::<Vec<_>>(),"previews":report.previews,"writes":report.writes,"selection":report.selection,"settings":report.settings,"dependencies":report.dependencies,"counts":report.counts,"failed":report.failed,"changed":[],"skipped":skipped(&report.snapshot,&report.selection)})
+                json!({"operation":"lint","mode":format!("{mode:?}"),"sources":report.sources,"modules":report.modules,"module_findings":report.module_findings,"imports":report.imports,"outcomes":report.outcomes,"findings":report.findings.iter().map(|finding|self.diagnostics.record(finding)).collect::<Vec<_>>(),"final_findings":diagnostics,"availability":report.availability,"fixes":report.fixes,"proposals":report.proposals.iter().map(ValidatedEdit::proposal).collect::<Vec<_>>(),"previews":report.previews,"writes":report.writes,"selection":report.selection,"settings":report.settings,"dependencies":report.dependencies,"counts":report.counts,"failed":report.failed,"changed":[],"skipped":skipped(&report.snapshot,&report.selection)})
             }
 
             CommandReport::Watch(report) => {
@@ -647,7 +651,7 @@ impl Reporter {
         record
     }
 
-    fn source(&self, report: &CommandReport) -> io::Result<Option<String>> {
+    fn source(report: &CommandReport) -> io::Result<Option<String>> {
         match report {
             CommandReport::Format(report, mode)
                 if matches!(mode, FormatMode::Source | FormatMode::Write) =>
@@ -714,9 +718,7 @@ impl Reporter {
                 Ok(None)
             }
 
-            CommandReport::Lint(report, mode)
-                if matches!(mode, FixMode::Stdin | FixMode::Write) =>
-            {
+            CommandReport::Lint(report, FixMode::Stdin | FixMode::Write) => {
                 let stdin = report
                     .snapshot
                     .sources()
@@ -998,11 +1000,22 @@ impl Reporter {
         self.write_report(format!("{operation} {state}: {files} file{}{details}; {} diagnostics; {} dependencies; {} written; {} fixes; completion {completion:?}\n",if files == 1 { "" } else { "s" },counts.findings,counts.dependencies,counts.written,counts.fixes).as_bytes())
     }
 
-    fn record(&mut self, value: &Value) -> io::Result<()> {
+    fn record(&mut self, value: &Value, status: CommandStatus) -> io::Result<()> {
         let mut bytes = serde_json::to_vec(value).map_err(io::Error::other)?;
         bytes.push(b'\n');
 
-        self.write_report(&bytes)
+        if self.output_failure.is_some() {
+            return Ok(());
+        }
+
+        if self.destination.is_some() || matches!(status, CommandStatus::InvalidInvocation) {
+            self.write_report(&bytes)
+        } else {
+            let mut output = io::stdout().lock();
+            output.write_all(&bytes)?;
+
+            output.flush()
+        }
     }
 
     fn protect(&mut self, path: PathBuf) -> io::Result<()> {
@@ -1059,11 +1072,6 @@ impl Reporter {
             destination.write_all(bytes)?;
 
             destination.flush()
-        } else if self.json && !self.error_output {
-            let mut output = io::stdout().lock();
-            output.write_all(bytes)?;
-
-            output.flush()
         } else {
             self.progress.suspend(|| {
                 let mut output = io::stderr().lock();

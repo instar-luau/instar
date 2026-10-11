@@ -297,7 +297,7 @@ impl Runtime {
             let reachable = self.graph(
                 &[SelectedSource {
                     identity: target.identity,
-                    effective: target.effective.clone(),
+                    effective: target.effective,
                 }],
                 &Invocation::default(),
                 &OperationOverrides::Check(CheckOverrides::default()),

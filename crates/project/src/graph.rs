@@ -30,7 +30,7 @@ use crate::{
     capture::Capture,
     configuration::{CheckingMode, EffectiveSettings, OperationOverrides, TYPE_FUNCTION_MEMORY},
     environments::{self, EnvironmentRecipe},
-    execution::Runtime,
+    execution::{Runtime, failure},
     extract::extract,
     inputs::{InputVersion, SourceOrigin},
     report::{DiagnosticRecord, ImportExplanation, ImportFailure},
@@ -158,7 +158,7 @@ impl Runtime {
     }
 
     fn graph_roots(
-        &mut self,
+        &self,
         selected: &[SelectedSource],
         request: &GraphRequest<'_>,
         build: &mut GraphBuild,
@@ -268,7 +268,7 @@ impl Runtime {
     }
 
     fn graph_node(
-        &mut self,
+        &self,
         module: PendingModule,
         request: &GraphRequest<'_>,
         graph: &mut DependencyGraph,
@@ -299,7 +299,18 @@ impl Runtime {
                     }),
             );
 
-        let sites = extract(&syntax.tree, options)?;
+        let sites = extract(&syntax.tree, options).map_err(|error| {
+            let mut failure = failure(&error, options, &self.events);
+            failure.completion = failure.completion.combine(graph.completion.clone());
+
+            for finding in &graph.findings {
+                if !failure.diagnostics.contains(&finding.diagnostic) {
+                    failure.diagnostics.push(finding.diagnostic.clone());
+                }
+            }
+
+            io::Error::from(failure)
+        })?;
         let member_precedence = sites.iter().any(|site| matches!(&site.request, ImportRequest::Instance(path) if path.steps.iter().any(|step| matches!(step, InstanceStep::Field(_)))));
 
         let requested = if matches!(request.overrides, OperationOverrides::Lint(_)) {
@@ -460,7 +471,7 @@ impl Runtime {
     }
 
     fn graph_lint_environment(
-        &mut self,
+        &self,
         graph: &mut DependencyGraph,
         capture: &mut Capture,
         options: &Options,
@@ -530,7 +541,7 @@ impl Runtime {
     }
 
     pub(crate) fn module_contexts(
-        &mut self,
+        &self,
         source: &SourceSnapshot,
         effective: &EffectiveSettings,
         capture: &mut Capture,
@@ -586,7 +597,7 @@ impl Runtime {
     }
 
     pub(crate) fn closures(
-        &mut self,
+        &self,
         graph: &DependencyGraph,
         purpose: AnalysisPurpose,
         semantic: &[SemanticCategory],
