@@ -44,6 +44,7 @@ impl Project {
             next_invocation: AtomicU64::new(1),
             worker_epoch: AtomicU64::new(0),
             module_contexts: Mutex::default(),
+            formats: Mutex::default(),
         });
 
         Self {

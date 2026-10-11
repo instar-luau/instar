@@ -12,6 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use instar_format::{FormatInput, FormatResult};
 use instar_shared::{
     Cancellation, Completion, ContextIdentity, Event, EventPayload, FailureKind, OperationFailure,
     Options, Progress, Reason, SourceIdentity, SourceVersion,
@@ -39,6 +40,7 @@ pub(crate) struct Host {
     pub(crate) next_invocation: AtomicU64,
     pub(crate) worker_epoch: AtomicU64,
     pub(crate) module_contexts: Mutex<Contexts>,
+    pub(crate) formats: Mutex<BTreeMap<SourceIdentity, (FormatInput, FormatResult)>>,
 }
 
 impl Host {

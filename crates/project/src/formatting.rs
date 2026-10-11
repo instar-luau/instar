@@ -1,7 +1,10 @@
-use std::{io, sync::Arc};
+use std::{
+    io,
+    sync::{Arc, PoisonError},
+};
 
 use instar_format::{FormatInput, FormatOutcome, FormatResult};
-use instar_shared::{Event, EventPayload, Options, SourceOutcome, SourceVersion};
+use instar_shared::{Completion, Event, EventPayload, Options, SourceOutcome, SourceVersion};
 
 use crate::{
     capture::Capture,
@@ -50,6 +53,7 @@ impl Runtime {
 
         let inputs = capture.guards();
         let mut work = Vec::new();
+        let mut prepared = Vec::new();
 
         for target in &selection.targets {
             let source = capture
@@ -58,15 +62,30 @@ impl Runtime {
                 .cloned()
                 .ok_or_else(|| io::Error::other("selected format source is absent"))?;
 
-            work.push(Work::Format(FormatInput {
+            let input = FormatInput {
                 source,
                 settings: target.effective.settings.formatting.clone(),
                 syntax: syntax_settings(&target.effective),
                 scope: request.scope.clone(),
-            }));
+            };
+            let cached = self
+                .host
+                .formats
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&input.source.version.identity)
+                .filter(|(previous, _)| previous == &input)
+                .map(|(_, result)| result.clone());
+            if cached.is_none() {
+                work.push(Work::Format(input.clone()));
+            }
+            prepared.push((input, cached));
         }
 
-        let outcomes = self.workers.batch(work, &worker_options(options));
+        let mut outcomes = self
+            .workers
+            .batch(work, &worker_options(options))
+            .into_iter();
 
         let mut report = FormatReport {
             snapshot: capture.snapshot.clone(),
@@ -88,21 +107,32 @@ impl Runtime {
             failed: false,
         };
 
-        for outcome in outcomes {
-            let result = match outcome {
-                Ok(WorkOutput::Format(result)) => result,
-                Ok(_) => return Err(io::Error::other("format lane returned wrong outcome")),
-
-                Err(error) => {
-                    if let Some(completion) = options.interrupted() {
-                        report.completion = report.completion.combine(completion);
-                        break;
+        for (input, cached) in prepared {
+            let result = if let Some(result) = cached {
+                result
+            } else {
+                match outcomes
+                    .next()
+                    .ok_or_else(|| io::Error::other("format work outcome is absent"))?
+                {
+                    Ok(WorkOutput::Format(result)) => result,
+                    Ok(_) => return Err(io::Error::other("format lane returned wrong outcome")),
+                    Err(error) => {
+                        if let Some(completion) = options.interrupted() {
+                            report.completion = report.completion.combine(completion);
+                            break;
+                        }
+                        return Err(error);
                     }
-
-                    return Err(error);
                 }
             };
-
+            if result.completion == Completion::Complete {
+                self.host
+                    .formats
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .insert(input.source.version.identity, (input, result.clone()));
+            }
             self.format_result(request, result, &mut report, options)?;
         }
 
