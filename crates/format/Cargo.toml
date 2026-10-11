@@ -17,8 +17,5 @@ schemars.workspace = true
 serde.workspace = true
 unicode-width.workspace = true
 
-[dev-dependencies]
-toml.workspace = true
-
 [lints]
 workspace = true

@@ -125,7 +125,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6bb31b46c14244e20ee9984b11bf5c992b91fb6939fea616e3512c8baecdbe5f"
 dependencies = [
  "memchr",
- "regex-automata",
  "serde_core",
 ]
 
@@ -904,7 +903,6 @@ dependencies = [
  "instar-syntax",
  "schemars",
  "serde",
- "toml",
  "unicode-width",
 ]
 
@@ -918,7 +916,6 @@ dependencies = [
  "regex",
  "schemars",
  "serde",
- "toml",
 ]
 
 [[package]]
@@ -953,7 +950,6 @@ dependencies = [
  "serde_path_to_error",
  "sha2",
  "similar",
- "similar-asserts",
  "tempfile",
  "toml",
  "tracing",
@@ -970,9 +966,7 @@ dependencies = [
  "instar-project",
  "instar-shared",
  "instar-syntax",
- "serde",
  "serde_json",
- "tempfile",
  "tokio",
  "tower-lsp-server",
  "tower-service",
@@ -1590,17 +1584,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4f66ca1f7aca2474dc10c942eb22feffc897735f54cd1db90138c2fddb490987"
 dependencies = [
  "bstr",
- "unicode-segmentation",
-]
-
-[[package]]
-name = "similar-asserts"
-version = "2.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "997e6ca38e97437973fc9f7f50a50d1274cacd874341a4960fea90067291038c"
-dependencies = [
- "console",
- "similar",
 ]
 
 [[package]]
@@ -1937,12 +1920,6 @@ name = "unicode-ident"
 version = "1.0.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d245f478577f809a851594d02313b640fb437e0bb33866753cff937863096954"
-
-[[package]]
-name = "unicode-segmentation"
-version = "1.13.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8"
 
 [[package]]
 name = "unicode-width"

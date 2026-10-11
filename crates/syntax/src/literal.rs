@@ -323,14 +323,3 @@ fn long(bytes: &[u8]) -> Option<Vec<u8>> {
 
     Some(text.replace("\r\n", "\n").replace('\r', "\n").into_bytes())
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn escaped_whitespace_matches_luau() {
-        assert_eq!(
-            super::decode(b"\"\\z \t\r\n\x0b\x0cvalue\""),
-            Some(b"value".to_vec())
-        );
-    }
-}

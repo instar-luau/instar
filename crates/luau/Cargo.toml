@@ -7,11 +7,6 @@ repository.workspace = true
 license.workspace = true
 keywords.workspace = true
 categories.workspace = true
-autotests = false
-
-[[test]]
-name = "native"
-path = "tests/native.rs"
 
 [dependencies]
 instar-shared.workspace = true

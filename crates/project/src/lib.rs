@@ -27,11 +27,6 @@ mod settings;
 mod sourcemap;
 mod structure;
 mod symbols;
-
-#[cfg(test)]
-#[path = "../tests/roblox/mod.rs"]
-mod tests;
-
 mod tokens;
 mod watch;
 

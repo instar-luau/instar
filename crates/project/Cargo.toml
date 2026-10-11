@@ -32,8 +32,5 @@ tracing.workspace = true
 ureq.workspace = true
 vermis.workspace = true
 
-[dev-dependencies]
-similar-asserts.workspace = true
-
 [lints]
 workspace = true
