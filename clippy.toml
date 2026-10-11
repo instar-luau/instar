@@ -3,6 +3,7 @@ allowed-duplicate-crates = [
   "getrandom",
   "hashbrown",
   "miniz_oxide",
+  "similar",
   "syn",
   "windows-sys",
 ]
