@@ -1,1 +1,0 @@
-if #list > 0 then print(1) end

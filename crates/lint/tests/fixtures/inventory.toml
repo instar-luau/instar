@@ -1,6 +1,6 @@
 [swapping]
 rule = "almost_swapped"
-range = [18, 21]
+range = [21, 24]
 
 [escapes]
 rule = "bad_string_escape"
@@ -8,111 +8,111 @@ range = [7, 11]
 
 [number]
 rule = "compare_nan"
-range = [7, 15]
+range = [10, 18]
 
 [condition]
 rule = "constant_condition"
-range = [3, 7]
+range = [6, 10]
 
 [comparison]
 rule = "constant_table_comparison"
-range = [7, 18]
+range = [10, 21]
 
 [length]
 rule = "length_as_condition"
-range = [3, 8]
+range = [6, 11]
 
 [arguments]
 rule = "mismatched_argument_count"
-range = [44, 48]
+range = [60, 64]
 
 [result]
 rule = "must_use"
-range = [0, 12]
+range = [3, 15]
 
 [step]
 rule = "zero_step_loop"
-range = [11, 12]
+range = [14, 15]
 
 [division]
 rule = "divide_by_zero"
-range = [9, 13]
+range = [12, 16]
 
 [assignment]
 rule = "self_assignment"
-range = [14, 19]
+range = [17, 22]
 
 [branch]
 rule = "empty_if"
-range = [0, 12]
+range = [3, 15]
 
 [loop]
 rule = "empty_loop"
-range = [0, 13]
+range = [3, 16]
 
 [branches]
 rule = "if_same_then_else"
-range = [0, 39]
+range = [3, 42]
 
 [protection]
 rule = "ignored_pcall_result"
-range = [0, 14]
+range = [3, 17]
 
 [tables]
 rule = "mixed_table"
-range = [7, 16]
+range = [10, 19]
 
 [globals]
 rule = "unscoped_variables"
-range = [0, 7]
+range = [3, 10]
 
 [color]
 rule = "roblox_incorrect_color3_new_bounds"
-range = [7, 26]
+range = [10, 29]
 
 [scale]
 rule = "roblox_manual_fromscale_or_fromoffset"
-range = [7, 29]
+range = [10, 32]
 
 [players]
 rule = "roblox_prefer_get_players"
-range = [48, 69]
+range = [51, 72]
 
 [dimensions]
 rule = "roblox_suspicious_udim2_new"
-range = [7, 21]
+range = [10, 24]
 
 [conditional]
 rule = "and_or_conditional"
-range = [7, 22]
+range = [10, 25]
 
 [nesting]
 rule = "collapsible_if"
-range = [0, 36]
+range = [3, 39]
 
 [return]
 rule = "else_after_return"
-range = [39, 52]
+range = [42, 55]
 
 [expression]
 rule = "if_expression_assignment"
-range = [8, 37]
+range = [11, 40]
 
 [negation]
 rule = "negated_condition"
-range = [3, 11]
+range = [6, 14]
 
 [parentheses]
 rule = "parenthesized_conditions"
-range = [3, 9]
+range = [6, 12]
 
 [usage]
 rule = "global_usage"
-range = [7, 15]
+range = [10, 18]
 
 [types]
 rule = "type_check_inside_call"
-range = [7, 19]
+range = [10, 22]
 
 [invariance]
 rule = "loop_invariant_call"
@@ -120,24 +120,24 @@ range = [38, 49]
 
 [cloning]
 rule = "manual_table_clone"
-range = [14, 52]
+range = [17, 55]
 
 [concatenation]
 rule = "string_concat_in_loop"
-range = [30, 36]
+range = [33, 39]
 
 [bindings]
 rule = "unused_variable"
-range = [6, 12]
+range = [9, 15]
 
 [constants]
 rule = "prefer_const"
-range = [6, 11]
+range = [9, 14]
 
 [deprecation]
 rule = "deprecated"
-range = [0, 7]
+range = [3, 10]
 
 [restrictions]
 rule = "restricted_globals"
-range = [0, 5]
+range = [3, 8]

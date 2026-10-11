@@ -1,1 +1,0 @@
-return {key=1,other=2}

@@ -1,4 +1,20 @@
+do
 local zeta=require("./zeta")
 local external=require("external")
 local alias=require("@app/alias")
 local alpha=require("./alpha")
+end
+
+do
+local zeta=require("./zeta")
+local alpha=require("./alpha")
+boot()
+local omega=require("./omega")
+local beta=require("./beta")
+local configured=configure()
+local delta=require("./delta")
+local charlie=require("./charlie")
+local dynamic=require(path)
+local hotel=require("./hotel")
+local golf=require("./golf")
+end

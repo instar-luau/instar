@@ -1,1 +1,0 @@
-return flag and false or 2

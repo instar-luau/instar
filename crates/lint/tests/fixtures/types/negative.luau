@@ -1,1 +1,0 @@
-return type(1) == 'number'
