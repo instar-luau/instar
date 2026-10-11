@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fmt::Display,
+    fmt::{Display, Write as FormattingWrite},
     fs,
     io::{self, Read, Write},
     path::{Path, PathBuf},
@@ -477,7 +477,13 @@ pub(crate) fn parse<'source, Output: Deserialize<'source>>(
 }
 
 pub(crate) fn verify(source: &str, expected: &str) -> io::Result<()> {
-    if format!("{:x}", Sha256::digest(source.as_bytes())) != expected {
+    let mut actual = String::new();
+
+    for byte in Sha256::digest(source.as_bytes()) {
+        write!(&mut actual, "{byte:02x}").map_err(io::Error::other)?;
+    }
+
+    if actual != expected {
         return Err(invalid("assets do not match their metadata"));
     }
 

@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeMap,
+    fmt::Write,
     fs,
     future::Future,
     io,
@@ -206,9 +207,13 @@ fn assets(project: &Project) -> io::Result<()> {
                     .get(profile)
                     .ok_or_else(|| io::Error::other("fixture profile digest is missing"))?;
 
-                if digest.as_str()
-                    != Some(format!("{:x}", Sha256::digest(declarations.as_bytes())).as_str())
-                {
+                let mut actual = String::new();
+
+                for byte in Sha256::digest(declarations.as_bytes()) {
+                    write!(&mut actual, "{byte:02x}").map_err(io::Error::other)?;
+                }
+
+                if digest.as_str() != Some(actual.as_str()) {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         "fixture declarations do not match their metadata",

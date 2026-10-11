@@ -1,4 +1,4 @@
-use std::{io, path::Path};
+use std::{fmt::Write, io, path::Path};
 
 use instar_luau::ModuleIdentity;
 
@@ -510,10 +510,15 @@ fn installed_builtin_documentation_rejects_corrupt_bundles() -> io::Result<()> {
     );
 
     let invalid_namespace = r#"{"@custom/global/print":{"documentation":"invalid namespace"}}"#;
+    let mut digest = String::new();
+
+    for byte in Sha256::digest(invalid_namespace.as_bytes()) {
+        write!(&mut digest, "{byte:02x}").map_err(io::Error::other)?;
+    }
 
     let metadata = json!({
         "revision": "0123456789012345678901234567890123456789",
-        "documentation": format!("{:x}", Sha256::digest(invalid_namespace.as_bytes())),
+        "documentation": digest,
     });
 
     replace(&project, &metadata_path, &metadata.to_string())?;
