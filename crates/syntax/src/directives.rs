@@ -1,4 +1,7 @@
-use instar_shared::{Completion, Diagnostic, DiagnosticCategory, Options, SourceVersion, Span};
+use instar_shared::{
+    Completion, Diagnostic, DiagnosticCategory, Location, Options, RelatedLocation, SourceVersion,
+    Span,
+};
 use serde::{Deserialize, Serialize};
 use vermis::{token::TokenKind, tree::NodeKind};
 
@@ -162,14 +165,22 @@ fn format(
 ) {
     match command.trim() {
         "off" | "ignore start" => {
-            if region.is_some() {
-                result.diagnostics.push(diagnostic(
+            if let Some(opening) = *region {
+                let mut finding = diagnostic(
                     tree.snapshot(),
                     location,
                     "format.directive",
                     "nested formatting region",
                     DiagnosticCategory::Formatting,
-                ));
+                );
+                finding.related.push(RelatedLocation {
+                    location: Location {
+                        source: tree.snapshot().version,
+                        span: opening,
+                    },
+                    message: "formatting region starts here".to_owned(),
+                });
+                result.diagnostics.push(finding);
             } else {
                 *region = Some(location);
             }
