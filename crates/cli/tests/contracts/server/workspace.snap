@@ -1,0 +1,63 @@
+---
+source: crates/cli/tests/contracts/support/snapshots.rs
+assertion_line: 17
+---
+{
+  "complete": {
+    "items": [
+      {
+        "items": [
+          {
+            "code": 1000,
+            "message": "Expected this to be 'string', but got 'number'",
+            "range": {
+              "end": {
+                "character": 24,
+                "line": 0
+              },
+              "start": {
+                "character": 22,
+                "line": 0
+              }
+            },
+            "severity": 1,
+            "source": "Luau"
+          }
+        ],
+        "kind": "full",
+        "uri": "$ROOT/protocol.luau",
+        "version": 1
+      }
+    ]
+  },
+  "partial": {
+    "token": "diagnostics",
+    "value": {
+      "items": [
+        {
+          "items": [
+            {
+              "code": 1000,
+              "message": "Expected this to be 'string', but got 'number'",
+              "range": {
+                "end": {
+                  "character": 24,
+                  "line": 0
+                },
+                "start": {
+                  "character": 22,
+                  "line": 0
+                }
+              },
+              "severity": 1,
+              "source": "Luau"
+            }
+          ],
+          "kind": "full",
+          "uri": "$ROOT/protocol.luau",
+          "version": 1
+        }
+      ]
+    }
+  }
+}

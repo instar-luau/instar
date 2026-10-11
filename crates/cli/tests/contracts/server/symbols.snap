@@ -1,0 +1,84 @@
+---
+source: crates/cli/tests/contracts/support/snapshots.rs
+assertion_line: 17
+---
+{
+  "outline": [
+    {
+      "children": [
+        {
+          "kind": 12,
+          "name": "inner",
+          "range": {
+            "end": {
+              "character": 7,
+              "line": 3
+            },
+            "start": {
+              "character": 4,
+              "line": 1
+            }
+          },
+          "selectionRange": {
+            "end": {
+              "character": 24,
+              "line": 1
+            },
+            "start": {
+              "character": 19,
+              "line": 1
+            }
+          }
+        }
+      ],
+      "kind": 12,
+      "name": "outer",
+      "range": {
+        "end": {
+          "character": 3,
+          "line": 5
+        },
+        "start": {
+          "character": 0,
+          "line": 0
+        }
+      },
+      "selectionRange": {
+        "end": {
+          "character": 20,
+          "line": 0
+        },
+        "start": {
+          "character": 15,
+          "line": 0
+        }
+      }
+    }
+  ],
+  "resolved": {
+    "kind": 12,
+    "location": {
+      "range": {
+        "end": {
+          "character": 20,
+          "line": 0
+        },
+        "start": {
+          "character": 15,
+          "line": 0
+        }
+      },
+      "uri": "$ROOT/protocol.luau"
+    },
+    "name": "outer"
+  },
+  "workspace": [
+    {
+      "kind": 12,
+      "location": {
+        "uri": "$ROOT/protocol.luau"
+      },
+      "name": "outer"
+    }
+  ]
+}

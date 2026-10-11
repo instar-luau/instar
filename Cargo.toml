@@ -31,6 +31,7 @@ eyre = "0.6"
 globset = "0.4"
 ignore = "0.4"
 indicatif = "0.18"
+insta = { version = "1", features = ["json"] }
 notify = "8"
 petgraph = { version = "0.8", default-features = false, features = ["graphmap", "std"] }
 regex = "1"

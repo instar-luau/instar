@@ -1,0 +1,64 @@
+---
+source: crates/cli/tests/contracts/support/snapshots.rs
+assertion_line: 17
+---
+{
+  "inherited": {
+    "globals": [
+      "child"
+    ],
+    "mode": "nocheck",
+    "origin": {
+      "base": "$ROOT/nested",
+      "field": "checking.mode",
+      "input": 3,
+      "location": {
+        "source": {},
+        "span": {
+          "end": 26,
+          "start": 0
+        }
+      },
+      "precedence": 3
+    }
+  },
+  "override": {
+    "diagnostics": [
+      {
+        "category": "Type",
+        "code": "1000",
+        "identity": {
+          "code": "1000",
+          "inputs": [
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 24,
+              "start": 22
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "Expected this to be 'string', but got 'number'",
+        "path": "$ROOT/nested/input.luau",
+        "range": [
+          22,
+          24
+        ],
+        "related": [],
+        "severity": "error",
+        "source": {},
+        "tags": []
+      }
+    ],
+    "origin": {
+      "base": "$ROOT",
+      "field": "checking.mode",
+      "input": null,
+      "location": null,
+      "precedence": 18446744073709551615
+    }
+  }
+}

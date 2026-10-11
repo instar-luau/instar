@@ -1,0 +1,78 @@
+---
+source: crates/cli/tests/contracts/support/snapshots.rs
+assertion_line: 17
+---
+{
+  "findings": [
+    {
+      "diagnostic": {
+        "category": "Type",
+        "code": "1000",
+        "identity": {
+          "code": "1000",
+          "inputs": [
+            {},
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 34,
+              "start": 32
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "Expected this to be 'string', but got 'number'",
+        "path": "$ROOT/probe.luau",
+        "range": [
+          32,
+          34
+        ],
+        "related": [],
+        "severity": "error",
+        "source": {},
+        "tags": []
+      },
+      "event": "diagnostic",
+      "invocation": 1,
+      "iteration": 0,
+      "operation": 1
+    }
+  ],
+  "terminal": {
+    "completion": "Complete",
+    "diagnostics": [
+      {
+        "category": "Type",
+        "code": "1000",
+        "identity": {
+          "code": "1000",
+          "inputs": [
+            {},
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 34,
+              "start": 32
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "Expected this to be 'string', but got 'number'",
+        "path": "$ROOT/probe.luau",
+        "range": [
+          32,
+          34
+        ],
+        "related": [],
+        "severity": "error",
+        "source": {},
+        "tags": []
+      }
+    ],
+    "status": 1
+  }
+}

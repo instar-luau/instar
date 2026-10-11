@@ -1,0 +1,3 @@
+[[environment.groups]]
+namespace = "@contract"
+definitions = ["types.luau"]

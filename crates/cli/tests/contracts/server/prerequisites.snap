@@ -1,0 +1,63 @@
+---
+source: crates/cli/tests/contracts/support/snapshots.rs
+assertion_line: 17
+---
+{
+  "error": {
+    "code": -32602,
+    "data": {
+      "completed_edits": [],
+      "completed_sources": [
+        {
+          "completion": {
+            "Incomplete": [
+              "UnavailableEnvironment"
+            ]
+          },
+          "source": {}
+        }
+      ],
+      "completion": {
+        "Incomplete": [
+          "FailedPrerequisite",
+          "UnavailableEnvironment"
+        ]
+      },
+      "diagnostics": [
+        {
+          "category": "Analysis",
+          "code": "environment.unavailable",
+          "identity": {
+            "code": "environment.unavailable",
+            "inputs": [
+              {}
+            ],
+            "location": {
+              "source": {},
+              "span": {
+                "end": 0,
+                "start": 0
+              }
+            },
+            "producer": "project"
+          },
+          "message": "source not found: $ROOT\\missing.luau",
+          "primary": {
+            "source": {},
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          },
+          "related": [],
+          "severity": "Error",
+          "tags": []
+        }
+      ],
+      "kind": "InvalidInvocation",
+      "message": "requested native inference is unavailable"
+    },
+    "message": "requested native inference is unavailable; source not found: $ROOT\\missing.luau"
+  },
+  "jsonrpc": "2.0"
+}

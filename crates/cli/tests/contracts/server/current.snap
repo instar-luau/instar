@@ -1,0 +1,22 @@
+---
+source: crates/cli/tests/contracts/support/snapshots.rs
+assertion_line: 17
+---
+{
+  "choice": {
+    "actions": [
+      {
+        "title": "Show source"
+      }
+    ],
+    "message": "Checking found source errors",
+    "type": 2
+  },
+  "stale": {
+    "error": {
+      "code": -32801,
+      "message": "Content modified"
+    },
+    "jsonrpc": "2.0"
+  }
+}

@@ -1,0 +1,23 @@
+---
+source: crates/cli/tests/contracts/support/snapshots.rs
+assertion_line: 17
+---
+{
+  "completion": "Complete",
+  "contexts": [
+    {
+      "globals": [
+        "first"
+      ]
+    },
+    {
+      "globals": [
+        "second"
+      ]
+    }
+  ],
+  "modules": [
+    {},
+    {}
+  ]
+}

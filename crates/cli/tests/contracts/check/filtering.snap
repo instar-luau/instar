@@ -1,0 +1,99 @@
+---
+source: crates/cli/tests/contracts/support/snapshots.rs
+assertion_line: 17
+---
+{
+  "diagnostics": [
+    {
+      "category": "Type",
+      "code": "1000",
+      "identity": {
+        "code": "1000",
+        "inputs": [
+          {},
+          {}
+        ],
+        "location": {
+          "source": {},
+          "span": {
+            "end": 34,
+            "start": 32
+          }
+        },
+        "producer": "luau"
+      },
+      "message": "Expected this to be 'string', but got 'number'",
+      "path": "$ROOT/probe.luau",
+      "range": [
+        32,
+        34
+      ],
+      "related": [],
+      "severity": "error",
+      "source": {},
+      "tags": []
+    }
+  ],
+  "filtered": [
+    {
+      "completion": "Complete",
+      "counts": {
+        "changed": 0,
+        "dependencies": 0,
+        "excluded": 0,
+        "findings": 0,
+        "fixes": 0,
+        "selected": 1,
+        "unchanged": 0,
+        "unsuccessful": 0,
+        "written": 0
+      },
+      "failed": true,
+      "filter": [
+        "--diagnostic-code",
+        "absent"
+      ],
+      "status": 1
+    },
+    {
+      "completion": "Complete",
+      "counts": {
+        "changed": 0,
+        "dependencies": 0,
+        "excluded": 0,
+        "findings": 0,
+        "fixes": 0,
+        "selected": 1,
+        "unchanged": 0,
+        "unsuccessful": 0,
+        "written": 0
+      },
+      "failed": true,
+      "filter": [
+        "--diagnostic-category",
+        "syntax"
+      ],
+      "status": 1
+    },
+    {
+      "completion": "Complete",
+      "counts": {
+        "changed": 0,
+        "dependencies": 0,
+        "excluded": 0,
+        "findings": 0,
+        "fixes": 0,
+        "selected": 1,
+        "unchanged": 0,
+        "unsuccessful": 0,
+        "written": 0
+      },
+      "failed": true,
+      "filter": [
+        "--diagnostic-severity",
+        "warning"
+      ],
+      "status": 1
+    }
+  ]
+}

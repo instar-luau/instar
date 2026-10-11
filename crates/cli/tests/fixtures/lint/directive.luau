@@ -1,0 +1,2 @@
+--!strictt
+return 1

@@ -1,0 +1,39 @@
+---
+source: crates/cli/tests/contracts/support/snapshots.rs
+assertion_line: 17
+---
+{
+  "checked": {
+    "completion": "Complete",
+    "failed": false,
+    "findings": 0
+  },
+  "lens": {
+    "range": {
+      "end": {
+        "character": 21,
+        "line": 3
+      },
+      "start": {
+        "character": 15,
+        "line": 3
+      }
+    }
+  },
+  "resolved": {
+    "command": {
+      "command": "instar.check",
+      "title": "2 references"
+    },
+    "range": {
+      "end": {
+        "character": 21,
+        "line": 3
+      },
+      "start": {
+        "character": 15,
+        "line": 3
+      }
+    }
+  }
+}

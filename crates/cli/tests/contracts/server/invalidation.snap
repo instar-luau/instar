@@ -1,0 +1,84 @@
+---
+source: crates/cli/tests/contracts/support/snapshots.rs
+assertion_line: 17
+---
+{
+  "changed": {
+    "contents": {
+      "kind": "markdown",
+      "value": "```luau\nstring\n```"
+    },
+    "range": {
+      "end": {
+        "character": 38,
+        "line": 1
+      },
+      "start": {
+        "character": 33,
+        "line": 1
+      }
+    }
+  },
+  "disabled": {
+    "items": [],
+    "kind": "full"
+  },
+  "initial": {
+    "items": [
+      {
+        "code": 1000,
+        "message": "Expected this to be 'number', but got 'string'",
+        "range": {
+          "end": {
+            "character": 38,
+            "line": 1
+          },
+          "start": {
+            "character": 22,
+            "line": 1
+          }
+        },
+        "severity": 1,
+        "source": "Luau"
+      }
+    ],
+    "kind": "full"
+  },
+  "numeric": {
+    "contents": {
+      "kind": "markdown",
+      "value": "```luau\nnumber\n```"
+    },
+    "range": {
+      "end": {
+        "character": 38,
+        "line": 1
+      },
+      "start": {
+        "character": 33,
+        "line": 1
+      }
+    }
+  },
+  "restored": {
+    "items": [
+      {
+        "code": 1000,
+        "message": "Expected this to be 'number', but got 'string'",
+        "range": {
+          "end": {
+            "character": 38,
+            "line": 1
+          },
+          "start": {
+            "character": 22,
+            "line": 1
+          }
+        },
+        "severity": 1,
+        "source": "Luau"
+      }
+    ],
+    "kind": "full"
+  }
+}

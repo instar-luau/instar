@@ -1,0 +1,220 @@
+---
+source: crates/cli/tests/contracts/support/snapshots.rs
+assertion_line: 17
+---
+{
+  "folds": [
+    {
+      "endLine": 1,
+      "kind": "comment",
+      "startLine": 0
+    },
+    {
+      "endLine": 6,
+      "startLine": 2
+    },
+    {
+      "endLine": 5,
+      "startLine": 4
+    },
+    {
+      "endLine": 12,
+      "startLine": 8
+    },
+    {
+      "endLine": 10,
+      "startLine": 9
+    },
+    {
+      "endLine": 15,
+      "startLine": 14
+    },
+    {
+      "endLine": 18,
+      "kind": "comment",
+      "startLine": 16
+    }
+  ],
+  "selections": [
+    {
+      "parent": {
+        "parent": {
+          "parent": {
+            "parent": {
+              "parent": {
+                "parent": {
+                  "parent": {
+                    "parent": {
+                      "range": {
+                        "end": {
+                          "character": 0,
+                          "line": 20
+                        },
+                        "start": {
+                          "character": 0,
+                          "line": 0
+                        }
+                      }
+                    },
+                    "range": {
+                      "end": {
+                        "character": 33,
+                        "line": 19
+                      },
+                      "start": {
+                        "character": 0,
+                        "line": 2
+                      }
+                    }
+                  },
+                  "range": {
+                    "end": {
+                      "character": 3,
+                      "line": 13
+                    },
+                    "start": {
+                      "character": 0,
+                      "line": 8
+                    }
+                  }
+                },
+                "range": {
+                  "end": {
+                    "character": 17,
+                    "line": 12
+                  },
+                  "start": {
+                    "character": 4,
+                    "line": 9
+                  }
+                }
+              },
+              "range": {
+                "end": {
+                  "character": 7,
+                  "line": 11
+                },
+                "start": {
+                  "character": 4,
+                  "line": 9
+                }
+              }
+            },
+            "range": {
+              "end": {
+                "character": 28,
+                "line": 10
+              },
+              "start": {
+                "character": 4,
+                "line": 9
+              }
+            }
+          },
+          "range": {
+            "end": {
+              "character": 28,
+              "line": 10
+            },
+            "start": {
+              "character": 8,
+              "line": 10
+            }
+          }
+        },
+        "range": {
+          "end": {
+            "character": 28,
+            "line": 10
+          },
+          "start": {
+            "character": 15,
+            "line": 10
+          }
+        }
+      },
+      "range": {
+        "end": {
+          "character": 21,
+          "line": 10
+        },
+        "start": {
+          "character": 15,
+          "line": 10
+        }
+      }
+    },
+    {
+      "parent": {
+        "parent": {
+          "parent": {
+            "parent": {
+              "parent": {
+                "range": {
+                  "end": {
+                    "character": 0,
+                    "line": 20
+                  },
+                  "start": {
+                    "character": 0,
+                    "line": 0
+                  }
+                }
+              },
+              "range": {
+                "end": {
+                  "character": 33,
+                  "line": 19
+                },
+                "start": {
+                  "character": 0,
+                  "line": 2
+                }
+              }
+            },
+            "range": {
+              "end": {
+                "character": 1,
+                "line": 7
+              },
+              "start": {
+                "character": 21,
+                "line": 2
+              }
+            }
+          },
+          "range": {
+            "end": {
+              "character": 1,
+              "line": 7
+            },
+            "start": {
+              "character": 36,
+              "line": 2
+            }
+          }
+        },
+        "range": {
+          "end": {
+            "character": 13,
+            "line": 3
+          },
+          "start": {
+            "character": 4,
+            "line": 3
+          }
+        }
+      },
+      "range": {
+        "end": {
+          "character": 9,
+          "line": 3
+        },
+        "start": {
+          "character": 4,
+          "line": 3
+        }
+      }
+    }
+  ]
+}

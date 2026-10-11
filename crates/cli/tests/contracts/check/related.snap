@@ -1,0 +1,49 @@
+---
+source: crates/cli/tests/contracts/support/snapshots.rs
+assertion_line: 17
+---
+{
+  "completion": "Complete",
+  "diagnostics": [
+    {
+      "category": "Type",
+      "code": "1007",
+      "identity": {
+        "code": "1007",
+        "inputs": [
+          {},
+          {}
+        ],
+        "location": {
+          "source": {},
+          "span": {
+            "end": 57,
+            "start": 34
+          }
+        },
+        "producer": "luau"
+      },
+      "message": "Redefinition of type 'Duplicate', previously defined at line 2",
+      "path": "$ROOT/probe.luau",
+      "range": [
+        34,
+        57
+      ],
+      "related": [
+        {
+          "message": "Previous type definition",
+          "path": "$ROOT/probe.luau",
+          "range": [
+            10,
+            33
+          ],
+          "source": {}
+        }
+      ],
+      "severity": "error",
+      "source": {},
+      "tags": []
+    }
+  ],
+  "status": 1
+}

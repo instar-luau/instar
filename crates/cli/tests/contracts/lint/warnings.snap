@@ -1,0 +1,1831 @@
+---
+source: crates/cli/tests/contracts/support/snapshots.rs
+assertion_line: 17
+---
+[
+  {
+    "availability": [
+      {
+        "rule": "UnknownGlobal",
+        "status": "Available"
+      },
+      {
+        "rule": "UnknownGlobal",
+        "status": "Available"
+      }
+    ],
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 1,
+      "excluded": 0,
+      "findings": 1,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "diagnostics": [
+      {
+        "category": "Lint",
+        "code": "UnknownGlobal",
+        "identity": {
+          "code": "1",
+          "inputs": [
+            {},
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 20,
+              "start": 13
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "Unknown global 'missing'; consider assigning to it first",
+        "path": "$ROOT/positive.luau",
+        "range": [
+          13,
+          20
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      }
+    ],
+    "rule": "UnknownGlobal",
+    "sources": [
+      {},
+      {}
+    ],
+    "status": 0
+  },
+  {
+    "availability": [
+      {
+        "rule": "GlobalUsedAsLocal",
+        "status": "Available"
+      },
+      {
+        "rule": "GlobalUsedAsLocal",
+        "status": "Available"
+      }
+    ],
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 1,
+      "excluded": 0,
+      "findings": 1,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "diagnostics": [
+      {
+        "category": "Lint",
+        "code": "GlobalUsedAsLocal",
+        "identity": {
+          "code": "3",
+          "inputs": [
+            {},
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 99,
+              "start": 92
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "Global 'created' is only used in the enclosing function 'create'; consider changing it to local",
+        "path": "$ROOT/positive.luau",
+        "range": [
+          92,
+          99
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      }
+    ],
+    "rule": "GlobalUsedAsLocal",
+    "sources": [
+      {},
+      {}
+    ],
+    "status": 0
+  },
+  {
+    "availability": [
+      {
+        "rule": "LocalShadow",
+        "status": "Available"
+      },
+      {
+        "rule": "LocalShadow",
+        "status": "Available"
+      }
+    ],
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 1,
+      "excluded": 0,
+      "findings": 2,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "diagnostics": [
+      {
+        "category": "Lint",
+        "code": "LocalShadow",
+        "identity": {
+          "code": "4",
+          "inputs": [
+            {},
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 203,
+              "start": 197
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "Variable 'shadow' shadows previous declaration at line 15",
+        "path": "$ROOT/positive.luau",
+        "range": [
+          197,
+          203
+        ],
+        "related": [
+          {
+            "message": "previous declaration",
+            "path": "$ROOT/positive.luau",
+            "range": [
+              165,
+              171
+            ],
+            "source": {}
+          }
+        ],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      },
+      {
+        "category": "Lint",
+        "code": "LocalShadow",
+        "identity": {
+          "code": "4",
+          "inputs": [
+            {},
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 942,
+              "start": 933
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "Variable 'duplicate' shadows previous declaration at line 69",
+        "path": "$ROOT/positive.luau",
+        "range": [
+          933,
+          942
+        ],
+        "related": [
+          {
+            "message": "previous declaration",
+            "path": "$ROOT/positive.luau",
+            "range": [
+              922,
+              931
+            ],
+            "source": {}
+          }
+        ],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      }
+    ],
+    "rule": "LocalShadow",
+    "sources": [
+      {},
+      {}
+    ],
+    "status": 0
+  },
+  {
+    "availability": [
+      {
+        "rule": "SameLineStatement",
+        "status": "Available"
+      },
+      {
+        "rule": "SameLineStatement",
+        "status": "Available"
+      }
+    ],
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 1,
+      "excluded": 0,
+      "findings": 1,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "diagnostics": [
+      {
+        "category": "Lint",
+        "code": "SameLineStatement",
+        "identity": {
+          "code": "5",
+          "inputs": [
+            {},
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 284,
+              "start": 276
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "A new statement is on the same line; add semi-colon on previous statement to silence",
+        "path": "$ROOT/positive.luau",
+        "range": [
+          276,
+          284
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      }
+    ],
+    "rule": "SameLineStatement",
+    "sources": [
+      {},
+      {}
+    ],
+    "status": 0
+  },
+  {
+    "availability": [
+      {
+        "rule": "MultiLineStatement",
+        "status": "Available"
+      },
+      {
+        "rule": "MultiLineStatement",
+        "status": "Available"
+      }
+    ],
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 1,
+      "excluded": 0,
+      "findings": 1,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "diagnostics": [
+      {
+        "category": "Lint",
+        "code": "MultiLineStatement",
+        "identity": {
+          "code": "6",
+          "inputs": [
+            {},
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 315,
+              "start": 314
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "Statement spans multiple lines; use indentation to silence",
+        "path": "$ROOT/positive.luau",
+        "range": [
+          314,
+          315
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      }
+    ],
+    "rule": "MultiLineStatement",
+    "sources": [
+      {},
+      {}
+    ],
+    "status": 0
+  },
+  {
+    "availability": [
+      {
+        "rule": "LocalUnused",
+        "status": "Available"
+      },
+      {
+        "rule": "LocalUnused",
+        "status": "Available"
+      }
+    ],
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 1,
+      "excluded": 0,
+      "findings": 2,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "diagnostics": [
+      {
+        "category": "Lint",
+        "code": "LocalUnused",
+        "identity": {
+          "code": "7",
+          "inputs": [
+            {},
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 360,
+              "start": 354
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "Variable 'unused' is never used; prefix with '_' to silence",
+        "path": "$ROOT/positive.luau",
+        "range": [
+          354,
+          360
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": [
+          "Unnecessary"
+        ]
+      },
+      {
+        "category": "Lint",
+        "code": "LocalUnused",
+        "identity": {
+          "code": "7",
+          "inputs": [
+            {},
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 931,
+              "start": 922
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "Variable 'duplicate' is never used; prefix with '_' to silence",
+        "path": "$ROOT/positive.luau",
+        "range": [
+          922,
+          931
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": [
+          "Unnecessary"
+        ]
+      }
+    ],
+    "rule": "LocalUnused",
+    "sources": [
+      {},
+      {}
+    ],
+    "status": 0
+  },
+  {
+    "availability": [
+      {
+        "rule": "FunctionUnused",
+        "status": "Available"
+      },
+      {
+        "rule": "FunctionUnused",
+        "status": "Available"
+      }
+    ],
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 1,
+      "excluded": 0,
+      "findings": 1,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "diagnostics": [
+      {
+        "category": "Lint",
+        "code": "FunctionUnused",
+        "identity": {
+          "code": "8",
+          "inputs": [
+            {},
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 405,
+              "start": 391
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "Function 'unusedfunction' is never used; prefix with '_' to silence",
+        "path": "$ROOT/positive.luau",
+        "range": [
+          391,
+          405
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": [
+          "Unnecessary"
+        ]
+      }
+    ],
+    "rule": "FunctionUnused",
+    "sources": [
+      {},
+      {}
+    ],
+    "status": 0
+  },
+  {
+    "availability": [
+      {
+        "rule": "ImportUnused",
+        "status": "Available"
+      },
+      {
+        "rule": "ImportUnused",
+        "status": "Available"
+      }
+    ],
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 1,
+      "excluded": 0,
+      "findings": 1,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "diagnostics": [
+      {
+        "category": "Lint",
+        "code": "ImportUnused",
+        "identity": {
+          "code": "9",
+          "inputs": [
+            {},
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 444,
+              "start": 438
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "Import 'module' is never used; prefix with '_' to silence",
+        "path": "$ROOT/positive.luau",
+        "range": [
+          438,
+          444
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": [
+          "Unnecessary"
+        ]
+      }
+    ],
+    "rule": "ImportUnused",
+    "sources": [
+      {},
+      {}
+    ],
+    "status": 0
+  },
+  {
+    "availability": [
+      {
+        "rule": "BuiltinGlobalWrite",
+        "status": "Available"
+      },
+      {
+        "rule": "BuiltinGlobalWrite",
+        "status": "Available"
+      }
+    ],
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 1,
+      "excluded": 0,
+      "findings": 1,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "diagnostics": [
+      {
+        "category": "Lint",
+        "code": "BuiltinGlobalWrite",
+        "identity": {
+          "code": "10",
+          "inputs": [
+            {},
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 482,
+              "start": 478
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "Built-in global 'math' is overwritten here; consider using a local or changing the name",
+        "path": "$ROOT/positive.luau",
+        "range": [
+          478,
+          482
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      }
+    ],
+    "rule": "BuiltinGlobalWrite",
+    "sources": [
+      {},
+      {}
+    ],
+    "status": 0
+  },
+  {
+    "availability": [
+      {
+        "rule": "PlaceholderRead",
+        "status": "Available"
+      },
+      {
+        "rule": "PlaceholderRead",
+        "status": "Available"
+      }
+    ],
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 1,
+      "excluded": 0,
+      "findings": 1,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "diagnostics": [
+      {
+        "category": "Lint",
+        "code": "PlaceholderRead",
+        "identity": {
+          "code": "11",
+          "inputs": [
+            {},
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 522,
+              "start": 521
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "Placeholder value '_' is read here; consider using a named variable",
+        "path": "$ROOT/positive.luau",
+        "range": [
+          521,
+          522
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      }
+    ],
+    "rule": "PlaceholderRead",
+    "sources": [
+      {},
+      {}
+    ],
+    "status": 0
+  },
+  {
+    "availability": [
+      {
+        "rule": "UnreachableCode",
+        "status": "Available"
+      },
+      {
+        "rule": "UnreachableCode",
+        "status": "Available"
+      }
+    ],
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 1,
+      "excluded": 0,
+      "findings": 1,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "diagnostics": [
+      {
+        "category": "Lint",
+        "code": "UnreachableCode",
+        "identity": {
+          "code": "12",
+          "inputs": [
+            {},
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 619,
+              "start": 599
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "Unreachable code (previous statement always breaks)",
+        "path": "$ROOT/positive.luau",
+        "range": [
+          599,
+          619
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": [
+          "Unnecessary"
+        ]
+      }
+    ],
+    "rule": "UnreachableCode",
+    "sources": [
+      {},
+      {}
+    ],
+    "status": 0
+  },
+  {
+    "availability": [
+      {
+        "rule": "UnknownType",
+        "status": "Available"
+      },
+      {
+        "rule": "UnknownType",
+        "status": "Available"
+      }
+    ],
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 1,
+      "excluded": 0,
+      "findings": 1,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "diagnostics": [
+      {
+        "category": "Lint",
+        "code": "UnknownType",
+        "identity": {
+          "code": "13",
+          "inputs": [
+            {},
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 662,
+              "start": 653
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "Unknown type 'integer'",
+        "path": "$ROOT/positive.luau",
+        "range": [
+          653,
+          662
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      }
+    ],
+    "rule": "UnknownType",
+    "sources": [
+      {},
+      {}
+    ],
+    "status": 0
+  },
+  {
+    "availability": [
+      {
+        "rule": "ForRange",
+        "status": "Available"
+      },
+      {
+        "rule": "ForRange",
+        "status": "Available"
+      }
+    ],
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 1,
+      "excluded": 0,
+      "findings": 1,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "diagnostics": [
+      {
+        "category": "Lint",
+        "code": "ForRange",
+        "identity": {
+          "code": "14",
+          "inputs": [
+            {},
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 708,
+              "start": 704
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "For loop should iterate backwards; did you forget to specify -1 as step?",
+        "path": "$ROOT/positive.luau",
+        "range": [
+          704,
+          708
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      }
+    ],
+    "rule": "ForRange",
+    "sources": [
+      {},
+      {}
+    ],
+    "status": 0
+  },
+  {
+    "availability": [
+      {
+        "rule": "UnbalancedAssignment",
+        "status": "Available"
+      },
+      {
+        "rule": "UnbalancedAssignment",
+        "status": "Available"
+      }
+    ],
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 1,
+      "excluded": 0,
+      "findings": 1,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "diagnostics": [
+      {
+        "category": "Lint",
+        "code": "UnbalancedAssignment",
+        "identity": {
+          "code": "15",
+          "inputs": [
+            {},
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 763,
+              "start": 740
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "Assigning 1 values to 2 variables initializes extra variables with nil; add 'nil' to value list to silence",
+        "path": "$ROOT/positive.luau",
+        "range": [
+          740,
+          763
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      }
+    ],
+    "rule": "UnbalancedAssignment",
+    "sources": [
+      {},
+      {}
+    ],
+    "status": 0
+  },
+  {
+    "availability": [
+      {
+        "rule": "ImplicitReturn",
+        "status": "Available"
+      },
+      {
+        "rule": "ImplicitReturn",
+        "status": "Available"
+      }
+    ],
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 1,
+      "excluded": 0,
+      "findings": 1,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "diagnostics": [
+      {
+        "category": "Lint",
+        "code": "ImplicitReturn",
+        "identity": {
+          "code": "16",
+          "inputs": [
+            {},
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 871,
+              "start": 846
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "Function 'partial' can implicitly return no values even though there's an explicit return at line 64; add explicit return to silence",
+        "path": "$ROOT/positive.luau",
+        "range": [
+          846,
+          871
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      }
+    ],
+    "rule": "ImplicitReturn",
+    "sources": [
+      {},
+      {}
+    ],
+    "status": 0
+  },
+  {
+    "availability": [
+      {
+        "rule": "DuplicateLocal",
+        "status": "Available"
+      },
+      {
+        "rule": "DuplicateLocal",
+        "status": "Available"
+      }
+    ],
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 1,
+      "excluded": 0,
+      "findings": 1,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "diagnostics": [
+      {
+        "category": "Lint",
+        "code": "DuplicateLocal",
+        "identity": {
+          "code": "17",
+          "inputs": [
+            {},
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 942,
+              "start": 933
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "Variable 'duplicate' already defined on column 11",
+        "path": "$ROOT/positive.luau",
+        "range": [
+          933,
+          942
+        ],
+        "related": [
+          {
+            "message": "previous declaration",
+            "path": "$ROOT/positive.luau",
+            "range": [
+              922,
+              931
+            ],
+            "source": {}
+          }
+        ],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      }
+    ],
+    "rule": "DuplicateLocal",
+    "sources": [
+      {},
+      {}
+    ],
+    "status": 0
+  },
+  {
+    "availability": [
+      {
+        "rule": "FormatString",
+        "status": "Available"
+      },
+      {
+        "rule": "FormatString",
+        "status": "Available"
+      }
+    ],
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 1,
+      "excluded": 0,
+      "findings": 1,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "diagnostics": [
+      {
+        "category": "Lint",
+        "code": "FormatString",
+        "identity": {
+          "code": "18",
+          "inputs": [
+            {},
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 1008,
+              "start": 1002
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "Invalid format string: unfinished format specifier",
+        "path": "$ROOT/positive.luau",
+        "range": [
+          1002,
+          1008
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      }
+    ],
+    "rule": "FormatString",
+    "sources": [
+      {},
+      {}
+    ],
+    "status": 0
+  },
+  {
+    "availability": [
+      {
+        "rule": "TableLiteral",
+        "status": "Available"
+      },
+      {
+        "rule": "TableLiteral",
+        "status": "Available"
+      }
+    ],
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 1,
+      "excluded": 0,
+      "findings": 1,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "diagnostics": [
+      {
+        "category": "Lint",
+        "code": "TableLiteral",
+        "identity": {
+          "code": "19",
+          "inputs": [
+            {},
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 1041,
+              "start": 1038
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "Table field 'key' is a duplicate; previously defined at line 76",
+        "path": "$ROOT/positive.luau",
+        "range": [
+          1038,
+          1041
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      }
+    ],
+    "rule": "TableLiteral",
+    "sources": [
+      {},
+      {}
+    ],
+    "status": 0
+  },
+  {
+    "availability": [
+      {
+        "rule": "UninitializedLocal",
+        "status": "Available"
+      },
+      {
+        "rule": "UninitializedLocal",
+        "status": "Available"
+      }
+    ],
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 1,
+      "excluded": 0,
+      "findings": 2,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "diagnostics": [
+      {
+        "category": "Lint",
+        "code": "UninitializedLocal",
+        "identity": {
+          "code": "20",
+          "inputs": [
+            {},
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 787,
+              "start": 781
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "Variable 'second' defined at line 59 is never initialized or assigned; initialize with 'nil' to silence",
+        "path": "$ROOT/positive.luau",
+        "range": [
+          781,
+          787
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      },
+      {
+        "category": "Lint",
+        "code": "UninitializedLocal",
+        "identity": {
+          "code": "20",
+          "inputs": [
+            {},
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 1102,
+              "start": 1089
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "Variable 'uninitialized' defined at line 79 is never initialized or assigned; initialize with 'nil' to silence",
+        "path": "$ROOT/positive.luau",
+        "range": [
+          1089,
+          1102
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      }
+    ],
+    "rule": "UninitializedLocal",
+    "sources": [
+      {},
+      {}
+    ],
+    "status": 0
+  },
+  {
+    "availability": [
+      {
+        "rule": "DuplicateFunction",
+        "status": "Available"
+      },
+      {
+        "rule": "DuplicateFunction",
+        "status": "Available"
+      }
+    ],
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 1,
+      "excluded": 0,
+      "findings": 1,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "diagnostics": [
+      {
+        "category": "Lint",
+        "code": "DuplicateFunction",
+        "identity": {
+          "code": "21",
+          "inputs": [
+            {},
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 1201,
+              "start": 1188
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "Duplicate function definition: 'object.method' also defined on line 84",
+        "path": "$ROOT/positive.luau",
+        "range": [
+          1188,
+          1201
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      }
+    ],
+    "rule": "DuplicateFunction",
+    "sources": [
+      {},
+      {}
+    ],
+    "status": 0
+  },
+  {
+    "availability": [
+      {
+        "rule": "DeprecatedApi",
+        "status": "Available"
+      },
+      {
+        "rule": "DeprecatedApi",
+        "status": "Available"
+      }
+    ],
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 1,
+      "excluded": 0,
+      "findings": 1,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "diagnostics": [
+      {
+        "category": "Lint",
+        "code": "DeprecatedApi",
+        "identity": {
+          "code": "22",
+          "inputs": [
+            {},
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 1271,
+              "start": 1261
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "Function 'getfenv' is deprecated; consider using 'debug.info' instead",
+        "path": "$ROOT/positive.luau",
+        "range": [
+          1261,
+          1271
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": [
+          "Deprecated"
+        ]
+      }
+    ],
+    "rule": "DeprecatedApi",
+    "sources": [
+      {},
+      {}
+    ],
+    "status": 0
+  },
+  {
+    "availability": [
+      {
+        "rule": "TableOperations",
+        "status": "Available"
+      },
+      {
+        "rule": "TableOperations",
+        "status": "Available"
+      }
+    ],
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 1,
+      "excluded": 0,
+      "findings": 1,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "diagnostics": [
+      {
+        "category": "Lint",
+        "code": "TableOperations",
+        "identity": {
+          "code": "23",
+          "inputs": [
+            {},
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 1330,
+              "start": 1329
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "table.insert uses index 0 but arrays are 1-based; did you mean 1 instead?",
+        "path": "$ROOT/positive.luau",
+        "range": [
+          1329,
+          1330
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      }
+    ],
+    "rule": "TableOperations",
+    "sources": [
+      {},
+      {}
+    ],
+    "status": 0
+  },
+  {
+    "availability": [
+      {
+        "rule": "DuplicateCondition",
+        "status": "Available"
+      },
+      {
+        "rule": "DuplicateCondition",
+        "status": "Available"
+      }
+    ],
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 1,
+      "excluded": 0,
+      "findings": 1,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "diagnostics": [
+      {
+        "category": "Lint",
+        "code": "DuplicateCondition",
+        "identity": {
+          "code": "24",
+          "inputs": [
+            {},
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 1418,
+              "start": 1414
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "Condition has already been checked on column 8",
+        "path": "$ROOT/positive.luau",
+        "range": [
+          1414,
+          1418
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      }
+    ],
+    "rule": "DuplicateCondition",
+    "sources": [
+      {},
+      {}
+    ],
+    "status": 0
+  },
+  {
+    "availability": [
+      {
+        "rule": "MisleadingAndOr",
+        "status": "Available"
+      },
+      {
+        "rule": "MisleadingAndOr",
+        "status": "Available"
+      }
+    ],
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 1,
+      "excluded": 0,
+      "findings": 1,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "diagnostics": [
+      {
+        "category": "Lint",
+        "code": "MisleadingAndOr",
+        "identity": {
+          "code": "25",
+          "inputs": [
+            {},
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 1495,
+              "start": 1476
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "The and-or expression always evaluates to the second alternative because the first alternative is false; consider using if-then-else expression instead",
+        "path": "$ROOT/positive.luau",
+        "range": [
+          1476,
+          1495
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      }
+    ],
+    "rule": "MisleadingAndOr",
+    "sources": [
+      {},
+      {}
+    ],
+    "status": 0
+  },
+  {
+    "availability": [
+      {
+        "rule": "IntegerParsing",
+        "status": "Available"
+      },
+      {
+        "rule": "IntegerParsing",
+        "status": "Available"
+      }
+    ],
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 1,
+      "excluded": 0,
+      "findings": 1,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "diagnostics": [
+      {
+        "category": "Lint",
+        "code": "IntegerParsing",
+        "identity": {
+          "code": "27",
+          "inputs": [
+            {},
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 1530,
+              "start": 1514
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "Number literal exceeded available precision and was truncated to closest representable number",
+        "path": "$ROOT/positive.luau",
+        "range": [
+          1514,
+          1530
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      }
+    ],
+    "rule": "IntegerParsing",
+    "sources": [
+      {},
+      {}
+    ],
+    "status": 0
+  },
+  {
+    "availability": [
+      {
+        "rule": "ComparisonPrecedence",
+        "status": "Available"
+      },
+      {
+        "rule": "ComparisonPrecedence",
+        "status": "Available"
+      }
+    ],
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 1,
+      "excluded": 0,
+      "findings": 1,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "diagnostics": [
+      {
+        "category": "Lint",
+        "code": "ComparisonPrecedence",
+        "identity": {
+          "code": "28",
+          "inputs": [
+            {},
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 1599,
+              "start": 1580
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "not X == Y is equivalent to (not X) == Y; consider using X ~= Y, or add parentheses to silence",
+        "path": "$ROOT/positive.luau",
+        "range": [
+          1580,
+          1599
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      }
+    ],
+    "rule": "ComparisonPrecedence",
+    "sources": [
+      {},
+      {}
+    ],
+    "status": 0
+  },
+  {
+    "availability": [
+      {
+        "rule": "CommentDirective",
+        "status": "Available"
+      }
+    ],
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 0,
+      "excluded": 0,
+      "findings": 1,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "diagnostics": [
+      {
+        "category": "Lint",
+        "code": "CommentDirective",
+        "identity": {
+          "code": "26",
+          "inputs": [
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 10,
+              "start": 0
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "Unknown comment directive 'strictt'; did you mean 'strict'?",
+        "path": "$ROOT/directive.luau",
+        "range": [
+          0,
+          10
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      }
+    ],
+    "rule": "CommentDirective",
+    "sources": [
+      {}
+    ],
+    "status": 0
+  },
+  {
+    "availability": [
+      {
+        "rule": "RedundantNativeAttribute",
+        "status": "Available"
+      }
+    ],
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 0,
+      "excluded": 0,
+      "findings": 1,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "diagnostics": [
+      {
+        "category": "Lint",
+        "code": "RedundantNativeAttribute",
+        "identity": {
+          "code": "29",
+          "inputs": [
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 17,
+              "start": 10
+            }
+          },
+          "producer": "luau"
+        },
+        "message": "native attribute on a function is redundant in a native module; consider removing it",
+        "path": "$ROOT/native.luau",
+        "range": [
+          10,
+          17
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      }
+    ],
+    "rule": "RedundantNativeAttribute",
+    "sources": [
+      {}
+    ],
+    "status": 0
+  }
+]

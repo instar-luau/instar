@@ -1,0 +1,41 @@
+---
+source: crates/cli/tests/contracts/support/snapshots.rs
+assertion_line: 17
+---
+{
+  "completion": "Complete",
+  "diagnostics": [
+    {
+      "category": "Type",
+      "code": "1000",
+      "identity": {
+        "code": "1000",
+        "inputs": [
+          {}
+        ],
+        "location": {
+          "source": {},
+          "span": {
+            "end": 56,
+            "start": 54
+          }
+        },
+        "producer": "luau"
+      },
+      "message": "Expected this to be 'string', but got 'number'",
+      "path": "$ROOT/unicode.luau",
+      "range": [
+        54,
+        56
+      ],
+      "related": [],
+      "severity": "error",
+      "source": {},
+      "tags": []
+    }
+  ],
+  "sources": [
+    {}
+  ],
+  "status": 1
+}

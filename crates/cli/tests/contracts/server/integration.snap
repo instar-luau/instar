@@ -1,0 +1,56 @@
+---
+source: crates/cli/tests/contracts/support/snapshots.rs
+assertion_line: 17
+---
+{
+  "choice": {
+    "actions": [
+      {
+        "title": "Show source"
+      }
+    ],
+    "message": "Checking found source errors",
+    "type": 2
+  },
+  "configuration": {
+    "items": [
+      {
+        "scopeUri": "$ROOT",
+        "section": "instar"
+      }
+    ]
+  },
+  "content": {
+    "uri": "untitled:protocol"
+  },
+  "log": {
+    "message": "Invalid params: document cannot be saved",
+    "type": 1
+  },
+  "registration": {
+    "registrations": [
+      {
+        "method": "workspace/didChangeWatchedFiles",
+        "registerOptions": {
+          "watchers": [
+            {
+              "globPattern": "**/*"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "reveal": {
+    "external": false,
+    "takeFocus": true,
+    "uri": "$ROOT/protocol.luau"
+  },
+  "unregistration": {
+    "unregisterations": [
+      {
+        "method": "workspace/didChangeWatchedFiles"
+      }
+    ]
+  }
+}

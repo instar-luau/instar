@@ -1,0 +1,77 @@
+---
+source: crates/cli/tests/contracts/support/snapshots.rs
+assertion_line: 17
+---
+{
+  "imports": {
+    "edit": {
+      "documentChanges": [
+        {
+          "edits": [
+            {
+              "newText": "local first = require(\"./first\")\nlocal second = require(\"./second\")\nreturn first,second\n",
+              "range": {
+                "end": {
+                  "character": 0,
+                  "line": 3
+                },
+                "start": {
+                  "character": 0,
+                  "line": 0
+                }
+              }
+            }
+          ],
+          "textDocument": {
+            "uri": "$ROOT/imports.luau",
+            "version": 1
+          }
+        }
+      ]
+    },
+    "kind": "source.organizeImports",
+    "title": "Organize imports"
+  },
+  "literal": {
+    "edit": {
+      "documentChanges": [
+        {
+          "edits": [
+            {
+              "newText": "local extracted1 = 42\n",
+              "range": {
+                "end": {
+                  "character": 0,
+                  "line": 2
+                },
+                "start": {
+                  "character": 0,
+                  "line": 2
+                }
+              }
+            },
+            {
+              "newText": "extracted1",
+              "range": {
+                "end": {
+                  "character": 16,
+                  "line": 2
+                },
+                "start": {
+                  "character": 14,
+                  "line": 2
+                }
+              }
+            }
+          ],
+          "textDocument": {
+            "uri": "$ROOT/literal.luau",
+            "version": 1
+          }
+        }
+      ]
+    },
+    "kind": "refactor.extract",
+    "title": "Extract literal"
+  }
+}

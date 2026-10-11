@@ -1,0 +1,522 @@
+---
+source: crates/cli/tests/contracts/support/snapshots.rs
+assertion_line: 17
+---
+[
+  {
+    "availability": [
+      {
+        "rule": "mismatched_argument_count",
+        "status": "Available"
+      },
+      {
+        "rule": "mismatched_argument_count",
+        "status": "Available"
+      }
+    ],
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 1,
+      "excluded": 0,
+      "findings": 5,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "diagnostics": [
+      {
+        "category": "Lint",
+        "code": "mismatched_argument_count",
+        "identity": {
+          "code": "mismatched_argument_count",
+          "inputs": [
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 191,
+              "start": 180
+            }
+          },
+          "producer": "instar"
+        },
+        "message": "call argument count is incompatible with every established signature",
+        "path": "$ROOT/calls.luau",
+        "range": [
+          180,
+          191
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      },
+      {
+        "category": "Lint",
+        "code": "mismatched_argument_count",
+        "identity": {
+          "code": "mismatched_argument_count",
+          "inputs": [
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 214,
+              "start": 197
+            }
+          },
+          "producer": "instar"
+        },
+        "message": "call argument count is incompatible with every established signature",
+        "path": "$ROOT/calls.luau",
+        "range": [
+          197,
+          214
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      },
+      {
+        "category": "Lint",
+        "code": "mismatched_argument_count",
+        "identity": {
+          "code": "mismatched_argument_count",
+          "inputs": [
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 230,
+              "start": 220
+            }
+          },
+          "producer": "instar"
+        },
+        "message": "call argument count is incompatible with every established signature",
+        "path": "$ROOT/calls.luau",
+        "range": [
+          220,
+          230
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      },
+      {
+        "category": "Lint",
+        "code": "mismatched_argument_count",
+        "identity": {
+          "code": "mismatched_argument_count",
+          "inputs": [
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 251,
+              "start": 236
+            }
+          },
+          "producer": "instar"
+        },
+        "message": "call argument count is incompatible with every established signature",
+        "path": "$ROOT/calls.luau",
+        "range": [
+          236,
+          251
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      },
+      {
+        "category": "Lint",
+        "code": "mismatched_argument_count",
+        "identity": {
+          "code": "mismatched_argument_count",
+          "inputs": [
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 281,
+              "start": 257
+            }
+          },
+          "producer": "instar"
+        },
+        "message": "call argument count is incompatible with every established signature",
+        "path": "$ROOT/calls.luau",
+        "range": [
+          257,
+          281
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      }
+    ],
+    "mode": "strict",
+    "sources": [
+      {},
+      {}
+    ],
+    "status": 0
+  },
+  {
+    "availability": [
+      {
+        "rule": "mismatched_argument_count",
+        "status": "Available"
+      },
+      {
+        "rule": "mismatched_argument_count",
+        "status": "Available"
+      }
+    ],
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 1,
+      "excluded": 0,
+      "findings": 5,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "diagnostics": [
+      {
+        "category": "Lint",
+        "code": "mismatched_argument_count",
+        "identity": {
+          "code": "mismatched_argument_count",
+          "inputs": [
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 191,
+              "start": 180
+            }
+          },
+          "producer": "instar"
+        },
+        "message": "call argument count is incompatible with every established signature",
+        "path": "$ROOT/calls.luau",
+        "range": [
+          180,
+          191
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      },
+      {
+        "category": "Lint",
+        "code": "mismatched_argument_count",
+        "identity": {
+          "code": "mismatched_argument_count",
+          "inputs": [
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 214,
+              "start": 197
+            }
+          },
+          "producer": "instar"
+        },
+        "message": "call argument count is incompatible with every established signature",
+        "path": "$ROOT/calls.luau",
+        "range": [
+          197,
+          214
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      },
+      {
+        "category": "Lint",
+        "code": "mismatched_argument_count",
+        "identity": {
+          "code": "mismatched_argument_count",
+          "inputs": [
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 230,
+              "start": 220
+            }
+          },
+          "producer": "instar"
+        },
+        "message": "call argument count is incompatible with every established signature",
+        "path": "$ROOT/calls.luau",
+        "range": [
+          220,
+          230
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      },
+      {
+        "category": "Lint",
+        "code": "mismatched_argument_count",
+        "identity": {
+          "code": "mismatched_argument_count",
+          "inputs": [
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 251,
+              "start": 236
+            }
+          },
+          "producer": "instar"
+        },
+        "message": "call argument count is incompatible with every established signature",
+        "path": "$ROOT/calls.luau",
+        "range": [
+          236,
+          251
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      },
+      {
+        "category": "Lint",
+        "code": "mismatched_argument_count",
+        "identity": {
+          "code": "mismatched_argument_count",
+          "inputs": [
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 281,
+              "start": 257
+            }
+          },
+          "producer": "instar"
+        },
+        "message": "call argument count is incompatible with every established signature",
+        "path": "$ROOT/calls.luau",
+        "range": [
+          257,
+          281
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      }
+    ],
+    "mode": "nonstrict",
+    "sources": [
+      {},
+      {}
+    ],
+    "status": 0
+  },
+  {
+    "availability": [
+      {
+        "rule": "mismatched_argument_count",
+        "status": "Available"
+      },
+      {
+        "rule": "mismatched_argument_count",
+        "status": "Available"
+      }
+    ],
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 1,
+      "excluded": 0,
+      "findings": 5,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "diagnostics": [
+      {
+        "category": "Lint",
+        "code": "mismatched_argument_count",
+        "identity": {
+          "code": "mismatched_argument_count",
+          "inputs": [
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 191,
+              "start": 180
+            }
+          },
+          "producer": "instar"
+        },
+        "message": "call argument count is incompatible with every established signature",
+        "path": "$ROOT/calls.luau",
+        "range": [
+          180,
+          191
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      },
+      {
+        "category": "Lint",
+        "code": "mismatched_argument_count",
+        "identity": {
+          "code": "mismatched_argument_count",
+          "inputs": [
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 214,
+              "start": 197
+            }
+          },
+          "producer": "instar"
+        },
+        "message": "call argument count is incompatible with every established signature",
+        "path": "$ROOT/calls.luau",
+        "range": [
+          197,
+          214
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      },
+      {
+        "category": "Lint",
+        "code": "mismatched_argument_count",
+        "identity": {
+          "code": "mismatched_argument_count",
+          "inputs": [
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 230,
+              "start": 220
+            }
+          },
+          "producer": "instar"
+        },
+        "message": "call argument count is incompatible with every established signature",
+        "path": "$ROOT/calls.luau",
+        "range": [
+          220,
+          230
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      },
+      {
+        "category": "Lint",
+        "code": "mismatched_argument_count",
+        "identity": {
+          "code": "mismatched_argument_count",
+          "inputs": [
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 251,
+              "start": 236
+            }
+          },
+          "producer": "instar"
+        },
+        "message": "call argument count is incompatible with every established signature",
+        "path": "$ROOT/calls.luau",
+        "range": [
+          236,
+          251
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      },
+      {
+        "category": "Lint",
+        "code": "mismatched_argument_count",
+        "identity": {
+          "code": "mismatched_argument_count",
+          "inputs": [
+            {}
+          ],
+          "location": {
+            "source": {},
+            "span": {
+              "end": 281,
+              "start": 257
+            }
+          },
+          "producer": "instar"
+        },
+        "message": "call argument count is incompatible with every established signature",
+        "path": "$ROOT/calls.luau",
+        "range": [
+          257,
+          281
+        ],
+        "related": [],
+        "severity": "warning",
+        "source": {},
+        "tags": []
+      }
+    ],
+    "mode": "nocheck",
+    "sources": [
+      {},
+      {}
+    ],
+    "status": 0
+  }
+]

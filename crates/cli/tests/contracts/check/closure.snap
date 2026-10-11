@@ -1,0 +1,100 @@
+---
+source: crates/cli/tests/contracts/support/snapshots.rs
+assertion_line: 17
+---
+{
+  "completion": "Complete",
+  "counts": {
+    "changed": 0,
+    "dependencies": 2,
+    "excluded": 0,
+    "findings": 0,
+    "fixes": 0,
+    "selected": 1,
+    "unchanged": 0,
+    "unsuccessful": 0,
+    "written": 0
+  },
+  "dependencies": [
+    {
+      "importer": {},
+      "site": {
+        "argument": {
+          "source": {},
+          "span": {
+            "end": 46,
+            "start": 35
+          }
+        },
+        "call": {
+          "source": {},
+          "span": {
+            "end": 47,
+            "start": 27
+          }
+        },
+        "request": {
+          "Static": "./library"
+        }
+      },
+      "target": {}
+    },
+    {
+      "importer": {},
+      "site": {
+        "argument": {
+          "source": {},
+          "span": {
+            "end": 79,
+            "start": 70
+          }
+        },
+        "call": {
+          "source": {},
+          "span": {
+            "end": 80,
+            "start": 62
+          }
+        },
+        "request": {
+          "Static": "./input"
+        }
+      },
+      "target": {}
+    },
+    {
+      "importer": {},
+      "site": {
+        "argument": {
+          "source": {},
+          "span": {
+            "end": 46,
+            "start": 35
+          }
+        },
+        "call": {
+          "source": {},
+          "span": {
+            "end": 47,
+            "start": 27
+          }
+        },
+        "request": {
+          "Static": "./library"
+        }
+      },
+      "target": {}
+    }
+  ],
+  "modules": [
+    {},
+    {},
+    {}
+  ],
+  "sources": [
+    {},
+    {},
+    {}
+  ],
+  "status": 0
+}

@@ -1,0 +1,187 @@
+---
+source: crates/cli/tests/contracts/support/snapshots.rs
+assertion_line: 17
+---
+{
+  "capabilities": [
+    {
+      "category": "Type",
+      "code": "1045",
+      "identity": {
+        "code": "1045",
+        "inputs": [
+          {},
+          {},
+          {}
+        ],
+        "location": {
+          "source": {},
+          "span": {
+            "end": 49,
+            "start": 40
+          }
+        },
+        "producer": "luau"
+      },
+      "message": "Property Name of type 'Part' is read-only",
+      "path": "$ROOT/input.luau",
+      "range": [
+        40,
+        49
+      ],
+      "related": [],
+      "severity": "error",
+      "source": {},
+      "tags": []
+    },
+    {
+      "category": "Type",
+      "code": "1018",
+      "identity": {
+        "code": "1018",
+        "inputs": [
+          {},
+          {},
+          {}
+        ],
+        "location": {
+          "source": {},
+          "span": {
+            "end": 102,
+            "start": 91
+          }
+        },
+        "producer": "luau"
+      },
+      "message": "Instance.new does not support class 'DataModel'",
+      "path": "$ROOT/input.luau",
+      "range": [
+        91,
+        102
+      ],
+      "related": [],
+      "severity": "error",
+      "source": {},
+      "tags": []
+    }
+  ],
+  "mapping": {
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 1,
+      "excluded": 0,
+      "findings": 0,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "dependencies": [
+      {
+        "importer": {},
+        "site": {
+          "argument": {
+            "source": {},
+            "span": {
+              "end": 43,
+              "start": 23
+            }
+          },
+          "call": {
+            "source": {},
+            "span": {
+              "end": 44,
+              "start": 15
+            }
+          },
+          "request": {
+            "Instance": {
+              "root": "Script",
+              "steps": [
+                "Parent",
+                {
+                  "Field": "Target"
+                }
+              ]
+            }
+          }
+        },
+        "target": {}
+      }
+    ]
+  },
+  "plain": [
+    {
+      "category": "Type",
+      "code": "1001",
+      "identity": {
+        "code": "1001",
+        "inputs": [
+          {}
+        ],
+        "location": {
+          "source": {},
+          "span": {
+            "end": 16,
+            "start": 12
+          }
+        },
+        "producer": "luau"
+      },
+      "message": "Unknown type 'Part'",
+      "path": "$ROOT/plain/input.luau",
+      "range": [
+        12,
+        16
+      ],
+      "related": [],
+      "severity": "error",
+      "source": {},
+      "tags": []
+    },
+    {
+      "category": "Type",
+      "code": "1001",
+      "identity": {
+        "code": "1001",
+        "inputs": [
+          {}
+        ],
+        "location": {
+          "source": {},
+          "span": {
+            "end": 27,
+            "start": 19
+          }
+        },
+        "producer": "luau"
+      },
+      "message": "Unknown global 'Instance'; consider assigning to it first",
+      "path": "$ROOT/plain/input.luau",
+      "range": [
+        19,
+        27
+      ],
+      "related": [],
+      "severity": "error",
+      "source": {},
+      "tags": []
+    }
+  ],
+  "supported": {
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 0,
+      "excluded": 0,
+      "findings": 0,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    }
+  }
+}

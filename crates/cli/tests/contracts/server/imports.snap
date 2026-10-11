@@ -1,0 +1,29 @@
+---
+source: crates/cli/tests/contracts/support/snapshots.rs
+assertion_line: 17
+---
+{
+  "isIncomplete": true,
+  "items": [
+    {
+      "detail": "Import path",
+      "filterText": "\"./dependency",
+      "kind": 17,
+      "label": "./dependency",
+      "sortText": "1./dependency",
+      "textEdit": {
+        "newText": "\"./dependency\"",
+        "range": {
+          "end": {
+            "character": 21,
+            "line": 0
+          },
+          "start": {
+            "character": 15,
+            "line": 0
+          }
+        }
+      }
+    }
+  ]
+}

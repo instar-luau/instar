@@ -1,0 +1,32 @@
+---
+source: crates/cli/tests/contracts/support/snapshots.rs
+assertion_line: 17
+---
+[
+  {
+    "case": "sandbox.luau",
+    "failed": true,
+    "incomplete": true,
+    "sandbox": {
+      "category": "Configuration",
+      "code": "configuration",
+      "path": "$ROOT/sandbox.luau",
+      "range": [
+        0,
+        71
+      ],
+      "severity": "error"
+    }
+  },
+  {
+    "case": "budget.luau",
+    "failed": true,
+    "incomplete": true,
+    "sandbox": null
+  },
+  {
+    "case": "functions",
+    "failed": true,
+    "incomplete": true
+  }
+]

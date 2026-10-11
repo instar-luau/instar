@@ -1,0 +1,31 @@
+---
+source: crates/cli/tests/contracts/support/snapshots.rs
+assertion_line: 17
+---
+{
+  "external": [
+    {
+      "kind": 13,
+      "location": {
+        "uri": "$ROOT/external/entry.luau"
+      },
+      "name": "externalmarker"
+    }
+  ],
+  "initial": [
+    {
+      "kind": 12,
+      "location": {
+        "uri": "$ROOT/library.luau"
+      },
+      "name": "double"
+    },
+    {
+      "kind": 8,
+      "location": {
+        "uri": "$ROOT/library.luau"
+      },
+      "name": "double"
+    }
+  ]
+}

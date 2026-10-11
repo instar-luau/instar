@@ -1,0 +1,32 @@
+---
+source: crates/cli/tests/contracts/support/snapshots.rs
+assertion_line: 17
+---
+[
+  {
+    "diagnostics": [
+      {
+        "code": "parenthesized_conditions",
+        "message": "unnecessary parentheses around condition",
+        "range": {
+          "end": {
+            "character": 13,
+            "line": 1
+          },
+          "start": {
+            "character": 2,
+            "line": 1
+          }
+        },
+        "severity": 2,
+        "source": "Instar"
+      }
+    ],
+    "kind": "quickfix",
+    "title": "Fix parenthesized_conditions"
+  },
+  {
+    "kind": "source.fixAll.instar",
+    "title": "Fix all Instar findings"
+  }
+]

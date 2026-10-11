@@ -1,0 +1,34 @@
+---
+source: crates/cli/tests/contracts/support/snapshots.rs
+assertion_line: 17
+---
+{
+  "activeParameter": 1,
+  "activeSignature": 0,
+  "signatures": [
+    {
+      "activeParameter": 1,
+      "label": "combine(text: string, count: number, ...: boolean): string",
+      "parameters": [
+        {
+          "label": [
+            8,
+            20
+          ]
+        },
+        {
+          "label": [
+            22,
+            35
+          ]
+        },
+        {
+          "label": [
+            37,
+            49
+          ]
+        }
+      ]
+    }
+  ]
+}

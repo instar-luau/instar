@@ -1,0 +1,151 @@
+---
+source: crates/cli/tests/contracts/support/snapshots.rs
+assertion_line: 17
+---
+[
+  {
+    "case": "file",
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 0,
+      "excluded": 0,
+      "findings": 0,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "selection": [
+      {
+        "input": "$ROOT/source/first.luau",
+        "origin": "$ROOT",
+        "reason": "selected",
+        "selected": true
+      }
+    ]
+  },
+  {
+    "case": "directory",
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 0,
+      "excluded": 0,
+      "findings": 0,
+      "fixes": 0,
+      "selected": 2,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "selection": [
+      {
+        "input": "$ROOT/source/first.luau",
+        "origin": "$ROOT",
+        "reason": "selected",
+        "selected": true
+      },
+      {
+        "input": "$ROOT/source/nested/second.lua",
+        "origin": "$ROOT",
+        "reason": "selected",
+        "selected": true
+      }
+    ]
+  },
+  {
+    "case": "pattern",
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 0,
+      "excluded": 0,
+      "findings": 0,
+      "fixes": 0,
+      "selected": 1,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "selection": [
+      {
+        "input": "$ROOT/source/nested/second.lua",
+        "origin": "$ROOT",
+        "reason": "selected",
+        "selected": true
+      }
+    ]
+  },
+  {
+    "case": "multiple",
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 0,
+      "excluded": 0,
+      "findings": 0,
+      "fixes": 0,
+      "selected": 3,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "selection": [
+      {
+        "input": "$ROOT/source/first.luau",
+        "origin": "$ROOT",
+        "reason": "selected",
+        "selected": true
+      },
+      {
+        "input": "$ROOT/source/nested/second.lua",
+        "origin": "$ROOT",
+        "reason": "selected",
+        "selected": true
+      },
+      {
+        "input": "$ROOT/third.luau",
+        "origin": "$ROOT",
+        "reason": "selected",
+        "selected": true
+      }
+    ]
+  },
+  {
+    "case": "default",
+    "completion": "Complete",
+    "counts": {
+      "changed": 0,
+      "dependencies": 0,
+      "excluded": 0,
+      "findings": 0,
+      "fixes": 0,
+      "selected": 3,
+      "unchanged": 0,
+      "unsuccessful": 0,
+      "written": 0
+    },
+    "selection": [
+      {
+        "input": "$ROOT/source/first.luau",
+        "origin": "$ROOT",
+        "reason": "selected",
+        "selected": true
+      },
+      {
+        "input": "$ROOT/source/nested/second.lua",
+        "origin": "$ROOT",
+        "reason": "selected",
+        "selected": true
+      },
+      {
+        "input": "$ROOT/third.luau",
+        "origin": "$ROOT",
+        "reason": "selected",
+        "selected": true
+      }
+    ]
+  }
+]

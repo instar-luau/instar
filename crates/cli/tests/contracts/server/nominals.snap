@@ -1,0 +1,111 @@
+---
+source: crates/cli/tests/contracts/support/snapshots.rs
+assertion_line: 17
+---
+{
+  "children": [
+    {
+      "kind": 5,
+      "name": "Child",
+      "range": {
+        "end": {
+          "character": 3,
+          "line": 6
+        },
+        "start": {
+          "character": 20,
+          "line": 4
+        }
+      },
+      "selectionRange": {
+        "end": {
+          "character": 25,
+          "line": 4
+        },
+        "start": {
+          "character": 20,
+          "line": 4
+        }
+      }
+    }
+  ],
+  "descendants": [
+    {
+      "kind": 5,
+      "name": "Grandchild",
+      "range": {
+        "end": {
+          "character": 3,
+          "line": 10
+        },
+        "start": {
+          "character": 20,
+          "line": 8
+        }
+      },
+      "selectionRange": {
+        "end": {
+          "character": 30,
+          "line": 8
+        },
+        "start": {
+          "character": 20,
+          "line": 8
+        }
+      }
+    }
+  ],
+  "parents": [
+    {
+      "kind": 5,
+      "name": "Base",
+      "range": {
+        "end": {
+          "character": 3,
+          "line": 2
+        },
+        "start": {
+          "character": 20,
+          "line": 0
+        }
+      },
+      "selectionRange": {
+        "end": {
+          "character": 24,
+          "line": 0
+        },
+        "start": {
+          "character": 20,
+          "line": 0
+        }
+      }
+    }
+  ],
+  "prepared": [
+    {
+      "kind": 5,
+      "name": "Base",
+      "range": {
+        "end": {
+          "character": 3,
+          "line": 2
+        },
+        "start": {
+          "character": 20,
+          "line": 0
+        }
+      },
+      "selectionRange": {
+        "end": {
+          "character": 24,
+          "line": 0
+        },
+        "start": {
+          "character": 20,
+          "line": 0
+        }
+      }
+    }
+  ],
+  "structural": []
+}

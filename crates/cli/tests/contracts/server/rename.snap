@@ -1,0 +1,79 @@
+---
+source: crates/cli/tests/contracts/support/snapshots.rs
+assertion_line: 17
+---
+{
+  "linked": {
+    "ranges": [
+      {
+        "end": {
+          "character": 14,
+          "line": 0
+        },
+        "start": {
+          "character": 6,
+          "line": 0
+        }
+      },
+      {
+        "end": {
+          "character": 15,
+          "line": 6
+        },
+        "start": {
+          "character": 7,
+          "line": 6
+        }
+      }
+    ],
+    "wordPattern": "[A-Za-z_][A-Za-z_0-9]*"
+  },
+  "prepared": {
+    "end": {
+      "character": 15,
+      "line": 6
+    },
+    "start": {
+      "character": 7,
+      "line": 6
+    }
+  },
+  "rename": {
+    "documentChanges": [
+      {
+        "edits": [
+          {
+            "newText": "renamed",
+            "range": {
+              "end": {
+                "character": 14,
+                "line": 0
+              },
+              "start": {
+                "character": 6,
+                "line": 0
+              }
+            }
+          },
+          {
+            "newText": "renamed",
+            "range": {
+              "end": {
+                "character": 15,
+                "line": 6
+              },
+              "start": {
+                "character": 7,
+                "line": 6
+              }
+            }
+          }
+        ],
+        "textDocument": {
+          "uri": "$ROOT/protocol.luau",
+          "version": 1
+        }
+      }
+    ]
+  }
+}
