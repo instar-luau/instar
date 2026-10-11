@@ -688,6 +688,7 @@ pub(crate) fn reporting(
 
         retained.push(finding);
     }
+    options.check()?;
 
     Ok((retained, failed))
 }

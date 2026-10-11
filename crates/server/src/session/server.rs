@@ -209,7 +209,13 @@ impl Server {
         let progress = self.prepare_progress(token, &options.cancellation)?;
 
         let progress = tokio::select! {
-            result = &mut task => return result.map_err(convert),
+            result = &mut task => {
+                if result.is_ok() {
+                    options.check().map_err(|error| failure(&error))?;
+                }
+
+                return result.map_err(convert);
+            },
             progress = async {
                 match progress {
                     Some(progress) => progress.begin(title, options).await.map(Some),
@@ -219,6 +225,11 @@ impl Server {
         };
 
         let result = task.await.map_err(convert);
+
+        if result.is_ok() {
+            options.check().map_err(|error| failure(&error))?;
+        }
+
         drop(progress);
 
         result

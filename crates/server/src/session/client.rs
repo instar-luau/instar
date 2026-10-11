@@ -53,6 +53,8 @@ impl ProgressGuard {
             }
         }
 
+        options.check().map_err(|error| failure(&error))?;
+
         drop(
             self.client
                 .progress(self.token.clone(), title)
@@ -62,6 +64,7 @@ impl ProgressGuard {
         );
 
         self.started = true;
+        options.check().map_err(|error| failure(&error))?;
 
         Ok(self)
     }
