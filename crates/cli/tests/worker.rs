@@ -76,7 +76,8 @@ fn stdout_flag_is_rejected_by_worker_before_initialization() -> io::Result<()> {
                 "purpose":"Source",
                 "roots":[],
                 "modules":[],
-                "cycles":[]
+                "cycles":[],
+                "snapshots":[]
             }}
         }
     });

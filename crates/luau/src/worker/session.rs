@@ -106,7 +106,9 @@ fn handle_request(
 
     let outcome = match &request.operation {
         Operation::Analyze(input) => {
-            analyze_request(input, session, emitter, request.remaining_budget, started)?
+            let input = input.unpack()?;
+
+            analyze_request(&input, session, emitter, request.remaining_budget, started)?
         }
 
         operation => query_request(
