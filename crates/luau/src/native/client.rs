@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, io, sync::Arc};
 
 use instar_shared::{
-    Availability, Completion, Location, Options, Reason, Span,
+    Availability, Completion, Location, Options, Reason, SourceSnapshot, Span,
     process::{Outcome, Process},
 };
 
@@ -66,11 +66,18 @@ impl Native {
 
         self.profile = Some(input.profile.clone());
 
-        let request = WireAnalysisRequest::new(&captured)?;
+        let (request, snapshots) = WireAnalysisRequest::new(&captured)?;
+
+        if let Some(completion) = self.capture(snapshots, options)? {
+            return Ok(interrupted_analysis(input, completion));
+        }
 
         let output = match self.exchange(Operation::Analyze(request), options)? {
             Outcome::Response(response) => match response.outcome {
-                ResponseOutcome::Analyzed(output) => output,
+                ResponseOutcome::Analyzed(output) => match output.unpack(&captured) {
+                    Ok(output) => output,
+                    Err(error) => return self.reject(error),
+                },
 
                 _ => {
                     return self.reject(conversion::invalid(
@@ -444,6 +451,33 @@ impl Native {
         self.process.finish()
     }
 
+    fn capture(
+        &mut self,
+        snapshots: Vec<SourceSnapshot>,
+        options: &Options,
+    ) -> io::Result<Option<Completion>> {
+        for (index, snapshot) in snapshots.into_iter().enumerate() {
+            let version = snapshot.version;
+
+            match self.exchange(Operation::Capture { index, snapshot }, options)? {
+                Outcome::Response(response) => match response.outcome {
+                    ResponseOutcome::Captured {
+                        index: captured,
+                        source,
+                    } if captured == index && source == version => {}
+                    _ => {
+                        return self.reject(conversion::invalid(
+                            "native snapshot acknowledgement disagrees with its capture",
+                        ));
+                    }
+                },
+                Outcome::Interrupted(completion) => return Ok(Some(completion)),
+            }
+        }
+
+        Ok(None)
+    }
+
     fn validate_captured(&self, captured: &Captured) -> io::Result<()> {
         if let Some(previous) = &self.established {
             for source in captured.documents.values() {
@@ -545,14 +579,18 @@ impl Native {
             }
 
             let completion = match &response.outcome {
-                ResponseOutcome::Analyzed(output) => &output.completion,
-                ResponseOutcome::Facts(output) => &output.completion,
-                ResponseOutcome::Linted(output) => &output.completion,
-                ResponseOutcome::Inspected(output) => &output.completion,
-                ResponseOutcome::Completed(output) => &output.completion,
+                ResponseOutcome::Captured { .. } => None,
+                ResponseOutcome::Analyzed(output) => Some(&output.completion),
+                ResponseOutcome::Facts(output) => Some(&output.completion),
+                ResponseOutcome::Linted(output) => Some(&output.completion),
+                ResponseOutcome::Inspected(output) => Some(&output.completion),
+                ResponseOutcome::Completed(output) => Some(&output.completion),
             };
 
-            if matches!(completion, Completion::Cancelled | Completion::TimedOut) {
+            if matches!(
+                completion,
+                Some(Completion::Cancelled | Completion::TimedOut)
+            ) {
                 self.established = None;
                 self.process.discard()?;
             }

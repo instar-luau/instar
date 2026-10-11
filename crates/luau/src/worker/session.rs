@@ -8,15 +8,15 @@ use std::{
 use cxx::UniquePtr;
 
 use instar_shared::{
-    EventPayload, SourceOutcome,
+    EventPayload, SourceOutcome, SourceSnapshot,
     process::{self, Emitter},
 };
 
 use super::{
     operation::NativeOperation,
     protocol::{
-        Operation, Request, Response, ResponseOutcome, WireFactsInput, WireLintInput,
-        WirePositionInput, WireReference,
+        Operation, PackedAnalysisResult, Request, Response, ResponseOutcome, WireFactsInput,
+        WireLintInput, WirePositionInput, WireReference,
     },
 };
 
@@ -81,11 +81,12 @@ impl Session {
 /// Returns startup agreement, framing, native allocation, callback and transport failures.
 pub fn run_worker() -> io::Result<()> {
     let mut session: Option<Session> = None;
+    let mut snapshots = Vec::new();
 
     process::serve(
         "analysis",
         |request: Request, emitter: &Emitter<Response>| {
-            handle_request(&request, emitter, &mut session)
+            handle_request(&request, emitter, &mut session, &mut snapshots)
         },
     )
 }
@@ -94,6 +95,7 @@ fn handle_request(
     request: &Request,
     emitter: &Emitter<Response>,
     session: &mut Option<Session>,
+    snapshots: &mut Vec<SourceSnapshot>,
 ) -> io::Result<Response> {
     let started = Instant::now();
     let identities = emitter.identities();
@@ -105,19 +107,48 @@ fn handle_request(
     }
 
     let outcome = match &request.operation {
+        Operation::Capture { index, snapshot } => {
+            if *index == 0 {
+                snapshots.clear();
+            }
+
+            if *index != snapshots.len()
+                || snapshots
+                    .iter()
+                    .any(|captured| captured.version.identity == snapshot.version.identity)
+            {
+                return Err(conversion::invalid(
+                    "native snapshot capture is out of order or duplicated",
+                ));
+            }
+
+            snapshot.validate()?;
+            snapshots.push(snapshot.clone());
+            ResponseOutcome::Captured {
+                index: *index,
+                source: snapshot.version,
+            }
+        }
         Operation::Analyze(input) => {
-            let input = input.unpack()?;
+            let snapshots = std::mem::take(snapshots);
+            let input = input.unpack(&snapshots)?;
 
             analyze_request(&input, session, emitter, request.remaining_budget, started)?
         }
 
-        operation => query_request(
-            operation,
-            session,
-            emitter,
-            request.remaining_budget,
-            started,
-        )?,
+        operation => {
+            if !snapshots.is_empty() {
+                return Err(conversion::invalid("native snapshot capture is incomplete"));
+            }
+
+            query_request(
+                operation,
+                session,
+                emitter,
+                request.remaining_budget,
+                started,
+            )?
+        }
     };
 
     Ok(Response {
@@ -205,7 +236,10 @@ fn analyze_request(
         }))?;
     }
 
-    Ok(ResponseOutcome::Analyzed(result))
+    Ok(ResponseOutcome::Analyzed(PackedAnalysisResult::new(
+        &result,
+        &active.captured,
+    )?))
 }
 
 fn query_request(
@@ -236,7 +270,9 @@ fn query_request(
         Operation::Lint(input) => lint_request(active, input, &operation_context, emitter),
         Operation::Inspect(input) => inspection_request(active, input, &operation_context),
         Operation::Complete(input) => completion_request(active, input, &operation_context),
-        Operation::Analyze(_) => Err(conversion::invalid("invalid native operation dispatch")),
+        Operation::Capture { .. } | Operation::Analyze(_) => {
+            Err(conversion::invalid("invalid native operation dispatch"))
+        }
     }
 }
 

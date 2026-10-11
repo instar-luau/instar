@@ -5,18 +5,19 @@ use std::{
 };
 
 use instar_shared::{Availability, Completion, Diagnostic, SourceSnapshot, SourceVersion};
-use serde::{Deserialize, Serialize, Serializer, ser::Error};
+use serde::{Deserialize, Serialize};
 
 use crate::{
-    conversion,
+    conversion::{self, Captured},
     flags::LanguageProfile,
     native::{
         AnalysisIdentity, AnalysisPurpose, AnalysisRequest, Capabilities, ClosureIdentity,
         Completions, CyclePath, DeclarationGroup, Definition, EnvironmentIdentity,
         EnvironmentInput, EnvironmentMetadata, FactsResult, ImportSite, InferenceSettings,
-        InspectionResult, InstanceEnvironment, LanguageFeatures, LintResult, ModuleIdentity,
-        ModuleInput, ParsedMetadata, ReportingSettings, ResolvedImport, SemanticAvailability,
-        SemanticCategory, SourceDirective, SourceInput, UpstreamWarningSettings,
+        InspectionResult, InstanceEnvironment, InstanceRecord, LanguageFeatures, LintResult,
+        ModuleIdentity, ModuleInput, ParsedMetadata, ReportingSettings, ResolvedImport,
+        SemanticAvailability, SemanticCategory, SourceDirective, SourceInput,
+        UpstreamWarningSettings,
     },
 };
 
@@ -30,6 +31,10 @@ pub(crate) struct Request {
 
 #[derive(Deserialize, Serialize)]
 pub(crate) enum Operation {
+    Capture {
+        index: usize,
+        snapshot: SourceSnapshot,
+    },
     Analyze(WireAnalysisRequest),
     Facts(WireFactsInput),
     Lint(WireLintInput),
@@ -45,11 +50,13 @@ pub(crate) struct WireAnalysisRequest {
     pub roots: Vec<ModuleIdentity>,
     pub modules: Vec<WireModuleInput>,
     pub cycles: Vec<CyclePath>,
-    pub snapshots: Vec<SourceSnapshot>,
+    pub snapshots: Vec<SourceVersion>,
+    pub capabilities: Vec<Capabilities>,
+    pub instance_trees: Vec<Vec<InstanceRecord>>,
 }
 
 impl WireAnalysisRequest {
-    pub(crate) fn new(captured: &conversion::Captured) -> io::Result<Self> {
+    pub(crate) fn new(captured: &Captured) -> io::Result<(Self, Vec<SourceSnapshot>)> {
         let input = captured
             .analysis
             .as_ref()
@@ -57,18 +64,25 @@ impl WireAnalysisRequest {
 
         let mut snapshots = Vec::new();
         let mut indices = BTreeMap::new();
+        let mut capabilities = Vec::new();
+        let mut instance_trees = Vec::new();
 
         let modules = input
             .modules
             .iter()
             .map(|module| {
                 let source = WireSourceInput::new(&module.source, &mut snapshots, &mut indices)?;
-
                 let environment = module
                     .environment
                     .as_ref()
                     .map(|environment| {
-                        WireEnvironmentInput::new(environment, &mut snapshots, &mut indices)
+                        WireEnvironmentInput::new(
+                            environment,
+                            &mut snapshots,
+                            &mut indices,
+                            &mut capabilities,
+                            &mut instance_trees,
+                        )
                     })
                     .transpose()?;
 
@@ -83,31 +97,57 @@ impl WireAnalysisRequest {
             })
             .collect::<io::Result<Vec<_>>>()?;
 
-        Ok(Self {
+        let request = Self {
             closure: input.closure,
             profile: input.profile.clone(),
             purpose: input.purpose,
             roots: input.roots.clone(),
             modules,
             cycles: input.cycles.clone(),
-            snapshots,
-        })
+            snapshots: snapshots.iter().map(|snapshot| snapshot.version).collect(),
+            capabilities,
+            instance_trees,
+        };
+
+        Ok((request, snapshots))
     }
 
-    pub(crate) fn unpack(&self) -> io::Result<AnalysisRequest> {
-        validate_snapshots(&self.snapshots)?;
+    pub(crate) fn unpack(&self, snapshots: &[SourceSnapshot]) -> io::Result<AnalysisRequest> {
+        validate_snapshots(snapshots)?;
+
+        if self.snapshots
+            != snapshots
+                .iter()
+                .map(|snapshot| snapshot.version)
+                .collect::<Vec<_>>()
+        {
+            return Err(conversion::invalid(
+                "native capture does not match its snapshot table",
+            ));
+        }
+
         let mut used = BTreeSet::new();
+        let mut used_capabilities = BTreeSet::new();
+        let mut used_instance_trees = BTreeSet::new();
 
         let modules = self
             .modules
             .iter()
             .map(|module| {
-                let source = module.source.unpack(&self.snapshots, &mut used)?;
-
+                let source = module.source.unpack(snapshots, &mut used)?;
                 let environment = module
                     .environment
                     .as_ref()
-                    .map(|environment| environment.unpack(&self.snapshots, &mut used))
+                    .map(|environment| {
+                        environment.unpack(
+                            snapshots,
+                            &mut used,
+                            &self.capabilities,
+                            &mut used_capabilities,
+                            &self.instance_trees,
+                            &mut used_instance_trees,
+                        )
+                    })
                     .transpose()?;
 
                 Ok(ModuleInput {
@@ -121,7 +161,9 @@ impl WireAnalysisRequest {
             })
             .collect::<io::Result<Vec<_>>>()?;
 
-        validate_snapshot_usage(&self.snapshots, &used)?;
+        validate_usage(snapshots.len(), &used)?;
+        validate_usage(self.capabilities.len(), &used_capabilities)?;
+        validate_usage(self.instance_trees.len(), &used_instance_trees)?;
 
         Ok(AnalysisRequest {
             closure: self.closure,
@@ -171,7 +213,7 @@ impl WireSourceInput {
     ) -> io::Result<SourceInput> {
         Ok(SourceInput {
             module: self.module,
-            source: snapshot(snapshots, self.source, used)?,
+            source: row(snapshots, self.source, used)?.clone(),
             language: self.language.clone(),
         })
     }
@@ -183,8 +225,8 @@ pub(crate) struct WireEnvironmentInput {
     pub language: LanguageFeatures,
     pub globals: Vec<String>,
     pub declarations: Vec<WireDeclarationGroup>,
-    pub capabilities: Capabilities,
-    pub instances: Option<InstanceEnvironment>,
+    pub capabilities: usize,
+    pub instances: Option<WireInstanceEnvironment>,
 }
 
 impl WireEnvironmentInput {
@@ -192,6 +234,8 @@ impl WireEnvironmentInput {
         input: &EnvironmentInput,
         snapshots: &mut Vec<SourceSnapshot>,
         indices: &mut BTreeMap<SourceVersion, usize>,
+        capabilities: &mut Vec<Capabilities>,
+        instance_trees: &mut Vec<Vec<InstanceRecord>>,
     ) -> io::Result<Self> {
         let declarations = input
             .declarations
@@ -212,13 +256,22 @@ impl WireEnvironmentInput {
             })
             .collect::<io::Result<Vec<_>>>()?;
 
+        let instances = input
+            .instances
+            .as_ref()
+            .map(|instances| WireInstanceEnvironment {
+                root: instances.root.clone(),
+                script: instances.script.clone(),
+                instances: table_index(&instances.instances, instance_trees),
+            });
+
         Ok(Self {
             identity: input.identity,
             language: input.language.clone(),
             globals: input.globals.clone(),
             declarations,
-            capabilities: input.capabilities.clone(),
-            instances: input.instances.clone(),
+            capabilities: table_index(&input.capabilities, capabilities),
+            instances,
         })
     }
 
@@ -226,6 +279,10 @@ impl WireEnvironmentInput {
         &self,
         snapshots: &[SourceSnapshot],
         used: &mut BTreeSet<usize>,
+        capabilities: &[Capabilities],
+        used_capabilities: &mut BTreeSet<usize>,
+        instance_trees: &[Vec<InstanceRecord>],
+        used_instance_trees: &mut BTreeSet<usize>,
     ) -> io::Result<EnvironmentInput> {
         let declarations = self
             .declarations
@@ -236,7 +293,7 @@ impl WireEnvironmentInput {
                     .iter()
                     .map(|definition| {
                         Ok(Definition {
-                            source: snapshot(snapshots, definition.source, used)?,
+                            source: row(snapshots, definition.source, used)?.clone(),
                             namespace: definition.namespace.clone(),
                         })
                     })
@@ -246,15 +303,35 @@ impl WireEnvironmentInput {
             })
             .collect::<io::Result<Vec<_>>>()?;
 
+        let instances = self
+            .instances
+            .as_ref()
+            .map(|instances| -> io::Result<_> {
+                Ok(InstanceEnvironment {
+                    root: instances.root.clone(),
+                    script: instances.script.clone(),
+                    instances: row(instance_trees, instances.instances, used_instance_trees)?
+                        .clone(),
+                })
+            })
+            .transpose()?;
+
         Ok(EnvironmentInput {
             identity: self.identity,
             language: self.language.clone(),
             globals: self.globals.clone(),
             declarations,
-            capabilities: self.capabilities.clone(),
-            instances: self.instances.clone(),
+            capabilities: row(capabilities, self.capabilities, used_capabilities)?.clone(),
+            instances,
         })
     }
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct WireInstanceEnvironment {
+    pub root: String,
+    pub script: String,
+    pub instances: usize,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -302,8 +379,6 @@ pub(crate) struct WireModuleAnalysis {
     pub completion: Completion,
 }
 
-#[derive(Deserialize)]
-#[serde(try_from = "PackedAnalysisResult")]
 pub(crate) struct WireAnalysisResult {
     pub closure: ClosureIdentity,
     pub frontend_revision: u64,
@@ -311,139 +386,113 @@ pub(crate) struct WireAnalysisResult {
     pub completion: Completion,
 }
 
-impl Serialize for WireAnalysisResult {
-    fn serialize<Output>(&self, serializer: Output) -> Result<Output::Ok, Output::Error>
-    where
-        Output: Serializer,
-    {
-        PackedAnalysisResult::new(self)
-            .map_err(Output::Error::custom)?
-            .serialize(serializer)
-    }
-}
-
-impl TryFrom<PackedAnalysisResult> for WireAnalysisResult {
-    type Error = io::Error;
-
-    fn try_from(input: PackedAnalysisResult) -> io::Result<Self> {
-        validate_snapshots(&input.snapshots)?;
-        let mut used = BTreeSet::new();
-
-        let modules = input
-            .modules
-            .into_iter()
-            .map(|module| {
-                let parsed = ParsedMetadata {
-                    input: module.parsed.input.unpack(&input.snapshots, &mut used)?,
-                    diagnostics: module.parsed.diagnostics,
-                    directives: module.parsed.directives,
-                    imports: module.parsed.imports,
-                    recovered_syntax: module.parsed.recovered_syntax,
-                    completion: module.parsed.completion,
-                };
-
-                let environment = module
-                    .environment
-                    .map(|environment| -> io::Result<_> {
-                        Ok(EnvironmentMetadata {
-                            input: environment.input.unpack(&input.snapshots, &mut used)?,
-                            diagnostics: environment.diagnostics,
-                            availability: environment.availability,
-                            completion: environment.completion,
-                        })
-                    })
-                    .transpose()?;
-
-                Ok(WireModuleAnalysis {
-                    analysis: module.analysis,
-                    parsed,
-                    environment,
-                    diagnostics: module.diagnostics,
-                    availability: module.availability,
-                    completion: module.completion,
-                })
-            })
-            .collect::<io::Result<Vec<_>>>()?;
-
-        validate_snapshot_usage(&input.snapshots, &used)?;
-
-        Ok(Self {
-            closure: input.closure,
-            frontend_revision: input.frontend_revision,
-            modules,
-            completion: input.completion,
-        })
-    }
-}
-
 #[derive(Deserialize, Serialize)]
-struct PackedAnalysisResult {
-    closure: ClosureIdentity,
-    frontend_revision: u64,
+pub(crate) struct PackedAnalysisResult {
+    pub closure: ClosureIdentity,
+    pub frontend_revision: u64,
     modules: Vec<PackedModuleAnalysis>,
-    completion: Completion,
-    snapshots: Vec<SourceSnapshot>,
+    pub completion: Completion,
 }
 
 impl PackedAnalysisResult {
-    fn new(input: &WireAnalysisResult) -> io::Result<Self> {
-        let mut snapshots = Vec::new();
-        let mut indices = BTreeMap::new();
+    pub(crate) fn new(input: &WireAnalysisResult, captured: &Captured) -> io::Result<Self> {
+        let request = captured
+            .analysis
+            .as_ref()
+            .ok_or_else(|| conversion::invalid("native captured analysis input is missing"))?;
+        conversion::validate_analysis_result(input, request, captured)?;
 
         let modules = input
             .modules
             .iter()
-            .map(|module| {
-                let parsed = PackedParsedMetadata {
-                    input: WireSourceInput::new(
-                        &module.parsed.input,
-                        &mut snapshots,
-                        &mut indices,
-                    )?,
+            .map(|module| PackedModuleAnalysis {
+                analysis: module.analysis,
+                parsed: PackedParsedMetadata {
+                    source: module.parsed.input.source.version,
+                    language: module.parsed.input.language.clone(),
                     diagnostics: module.parsed.diagnostics.clone(),
                     directives: module.parsed.directives.clone(),
                     imports: module.parsed.imports.clone(),
                     recovered_syntax: module.parsed.recovered_syntax,
                     completion: module.parsed.completion.clone(),
-                };
-
-                let environment = module
-                    .environment
-                    .as_ref()
-                    .map(|environment| -> io::Result<_> {
-                        Ok(PackedEnvironmentMetadata {
-                            input: WireEnvironmentInput::new(
-                                &environment.input,
-                                &mut snapshots,
-                                &mut indices,
-                            )?,
-                            diagnostics: environment.diagnostics.clone(),
-                            availability: environment.availability,
-                            completion: environment.completion.clone(),
-                        })
-                    })
-                    .transpose()?;
-
-                Ok(PackedModuleAnalysis {
-                    analysis: module.analysis,
-                    parsed,
-                    environment,
-                    diagnostics: module.diagnostics.clone(),
-                    availability: module.availability.clone(),
-                    completion: module.completion.clone(),
-                })
+                },
+                environment: module.environment.as_ref().map(|environment| {
+                    PackedEnvironmentMetadata {
+                        identity: environment.input.identity,
+                        diagnostics: environment.diagnostics.clone(),
+                        availability: environment.availability,
+                        completion: environment.completion.clone(),
+                    }
+                }),
+                diagnostics: module.diagnostics.clone(),
+                availability: module.availability.clone(),
+                completion: module.completion.clone(),
             })
-            .collect::<io::Result<Vec<_>>>()?;
-
-        validate_snapshots(&snapshots)?;
+            .collect();
 
         Ok(Self {
             closure: input.closure,
             frontend_revision: input.frontend_revision,
             modules,
             completion: input.completion.clone(),
-            snapshots,
         })
+    }
+
+    pub(crate) fn unpack(self, captured: &Captured) -> io::Result<WireAnalysisResult> {
+        let modules = self.modules.into_iter().map(|module| {
+            let input = captured.module(module.analysis)?;
+
+            if module.parsed.source != input.source.source.version {
+                return Err(conversion::invalid("native parsed source reference disagrees with its captured input"));
+            }
+
+            let environment = module.environment.map(|environment| -> io::Result<_> {
+                let input = input.environment.as_ref()
+                    .filter(|input| input.identity == environment.identity)
+                    .ok_or_else(|| conversion::invalid("native environment reference disagrees with its captured input"))?;
+
+                Ok(EnvironmentMetadata {
+                    input: input.clone(),
+                    diagnostics: environment.diagnostics,
+                    availability: environment.availability,
+                    completion: environment.completion,
+                })
+            }).transpose()?;
+
+            let mut source = input.source.clone();
+            source.language = module.parsed.language;
+
+            Ok(WireModuleAnalysis {
+                analysis: module.analysis,
+                parsed: ParsedMetadata {
+                    input: source,
+                    diagnostics: module.parsed.diagnostics,
+                    directives: module.parsed.directives,
+                    imports: module.parsed.imports,
+                    recovered_syntax: module.parsed.recovered_syntax,
+                    completion: module.parsed.completion,
+                },
+                environment,
+                diagnostics: module.diagnostics,
+                availability: module.availability,
+                completion: module.completion,
+            })
+        }).collect::<io::Result<Vec<_>>>()?;
+
+        let output = WireAnalysisResult {
+            closure: self.closure,
+            frontend_revision: self.frontend_revision,
+            modules,
+            completion: self.completion,
+        };
+
+        let input = captured
+            .analysis
+            .as_ref()
+            .ok_or_else(|| conversion::invalid("native captured analysis input is missing"))?;
+        conversion::validate_analysis_result(&output, input, captured)?;
+
+        Ok(output)
     }
 }
 
@@ -459,7 +508,8 @@ struct PackedModuleAnalysis {
 
 #[derive(Deserialize, Serialize)]
 struct PackedParsedMetadata {
-    input: WireSourceInput,
+    source: SourceVersion,
+    language: LanguageFeatures,
     diagnostics: Vec<Diagnostic>,
     directives: Vec<SourceDirective>,
     imports: Vec<ImportSite>,
@@ -469,7 +519,7 @@ struct PackedParsedMetadata {
 
 #[derive(Deserialize, Serialize)]
 struct PackedEnvironmentMetadata {
-    input: WireEnvironmentInput,
+    identity: EnvironmentIdentity,
     diagnostics: Vec<Diagnostic>,
     availability: Availability,
     completion: Completion,
@@ -484,7 +534,8 @@ pub(crate) struct Response {
 
 #[derive(Deserialize, Serialize)]
 pub(crate) enum ResponseOutcome {
-    Analyzed(WireAnalysisResult),
+    Captured { index: usize, source: SourceVersion },
+    Analyzed(PackedAnalysisResult),
     Facts(FactsResult),
     Linted(LintResult),
     Inspected(InspectionResult),
@@ -507,26 +558,34 @@ fn validate_snapshots(snapshots: &[SourceSnapshot]) -> io::Result<()> {
     Ok(())
 }
 
-fn validate_snapshot_usage(snapshots: &[SourceSnapshot], used: &BTreeSet<usize>) -> io::Result<()> {
-    if used.len() != snapshots.len() {
-        return Err(conversion::invalid("native snapshot table has unused rows"));
+fn validate_usage(length: usize, used: &BTreeSet<usize>) -> io::Result<()> {
+    if used.len() != length {
+        return Err(conversion::invalid("native input table has unused rows"));
     }
 
     Ok(())
 }
 
-fn snapshot(
-    snapshots: &[SourceSnapshot],
+fn row<'table, Value>(
+    table: &'table [Value],
     index: usize,
     used: &mut BTreeSet<usize>,
-) -> io::Result<SourceSnapshot> {
-    let snapshot = snapshots
+) -> io::Result<&'table Value> {
+    let value = table
         .get(index)
-        .ok_or_else(|| conversion::invalid("native snapshot reference is out of range"))?;
-
+        .ok_or_else(|| conversion::invalid("native input reference is out of range"))?;
     used.insert(index);
+    Ok(value)
+}
 
-    Ok(snapshot.clone())
+fn table_index<Value: Clone + PartialEq>(value: &Value, table: &mut Vec<Value>) -> usize {
+    if let Some(index) = table.iter().position(|entry| entry == value) {
+        return index;
+    }
+
+    let index = table.len();
+    table.push(value.clone());
+    index
 }
 
 fn snapshot_index(
