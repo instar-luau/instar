@@ -326,7 +326,29 @@ impl Runtime {
                 module_path(target)
             };
 
-            let replacement = literal::quote(&relative(&parent, &target)?);
+            let destination = if let Some(alias) = requested.strip_prefix('@') {
+                let (name, _) = alias.split_once(['/', '\\']).unwrap_or((alias, ""));
+                let node = intermediate
+                    .modules
+                    .get(&edge.importer)
+                    .ok_or_else(|| unavailable("file importer lost its semantic context"))?;
+                let root = node
+                    .effective
+                    .settings
+                    .resolution
+                    .alias(name, &module_path(importer))?;
+
+                if root == target {
+                    format!("@{name}")
+                } else {
+                    let suffix = relative(&root, &target)?;
+                    format!("@{name}/{}", suffix.strip_prefix("./").unwrap_or(&suffix))
+                }
+            } else {
+                relative(&parent, &target)?
+            };
+
+            let replacement = literal::quote(&destination);
             let key = (edge.site.argument.source, edge.site.argument.span);
 
             if edits
