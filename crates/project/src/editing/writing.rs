@@ -1,17 +1,20 @@
 use std::{
     collections::BTreeMap,
     fs::{self, OpenOptions},
-    io::{self, Read},
+    io::{self, Read as _, Write as _},
     path::{Path, PathBuf},
+    sync::{Arc, PoisonError},
 };
 
 use instar_shared::{
-    Completion, EditOutcome, Event, EventPayload, Options, Reason, SourceSnapshot, SourceVersion,
+    Completion, EditOutcome, Event, EventPayload, Options, Progress, Reason, SourceSnapshot,
+    SourceVersion,
 };
 
 use super::request::{ApplyRequest, WriteAuthorization, WriteOutcome};
 
 use crate::{
+    change::{ChangeBatch, ProjectChange, SourceChange},
     execution::Runtime,
     inputs::{SourceOrigin, absolute},
     report::ApplyReport,
@@ -19,40 +22,20 @@ use crate::{
 
 impl Runtime {
     pub(crate) fn apply(
-        &mut self,
+        &self,
         request: ApplyRequest,
         options: &Options,
     ) -> io::Result<ApplyReport> {
         let mut destinations = destinations(request.destinations, &request.edit.proposal.guards)?;
 
-        let snapshot = self.host.snapshot();
-
-        if !snapshot.current(&request.edit.inputs) {
-            return Err(instar_shared::Reason::StaleQuery.error());
-        }
-
-        let mut writes = Vec::new();
-        let mut completion = Completion::Complete;
+        let mut prepared = Vec::new();
 
         for version in &request.edit.proposal.guards {
-            let destination = destinations.remove(version);
-
-            if let Some(interrupted) = options.interrupted() {
-                writes.push(WriteOutcome::Unapplied {
-                    source: *version,
-                    reason: interrupted.error().to_string(),
-                });
-
-                completion = completion.combine(interrupted);
-                continue;
-            }
-
             let original = request
                 .edit
                 .original
                 .source(version.identity)
                 .ok_or_else(|| invalid("proposal source is absent"))?;
-
             let proposed = request
                 .edit
                 .proposed
@@ -63,54 +46,127 @@ impl Runtime {
                 return Err(invalid("proposal source guard mismatch"));
             }
 
-            if original.text == proposed.text {
-                writes.push(WriteOutcome::Unchanged);
-                continue;
-            }
+            let destination = destinations.remove(version);
 
-            let Some(destination) = destination else {
-                writes.push(WriteOutcome::NotRequested);
-                continue;
-            };
-
-            let origin = request
-                .edit
-                .original
-                .origin(version.identity)
-                .ok_or_else(|| invalid("proposal source origin is absent"))?;
-
-            if matches!(
-                origin,
-                SourceOrigin::Stdin { .. } | SourceOrigin::Virtual { .. }
-            ) || origin.path() != Some(destination.as_path())
+            if original.text != proposed.text
+                && let Some(destination) = &destination
             {
-                return Err(invalid(
-                    "write destination is not authorized by this source origin",
-                ));
+                let origin = request
+                    .edit
+                    .original
+                    .origin(version.identity)
+                    .ok_or_else(|| invalid("proposal source origin is absent"))?;
+
+                if matches!(
+                    origin,
+                    SourceOrigin::Stdin { .. } | SourceOrigin::Virtual { .. }
+                ) || origin.path() != Some(destination.as_path())
+                {
+                    return Err(invalid(
+                        "write destination is not authorized by this source origin",
+                    ));
+                }
             }
 
-            let outcome = compare(&destination, original, options);
+            prepared.push((original, proposed, destination));
+        }
 
-            match outcome {
-                Ok(outcome) => {
-                    completion = completion
-                        .combine(Completion::Incomplete(vec![Reason::UnsupportedFeature]));
+        let mut writes = Vec::new();
+        let mut revisions = Vec::new();
+        let mut completion = Completion::Complete;
 
-                    writes.push(outcome);
-                }
+        let snapshot = {
+            let mut snapshot = self
+                .host
+                .snapshot
+                .write()
+                .unwrap_or_else(PoisonError::into_inner);
 
-                Err(error) => {
-                    completion = completion.combine(
-                        options
-                            .interrupted()
-                            .unwrap_or(Completion::Incomplete(vec![Reason::FailedPrerequisite])),
-                    );
+            if !snapshot.current(&request.edit.inputs) {
+                return Err(Reason::StaleQuery.error());
+            }
 
-                    writes.push(WriteOutcome::Failed {
-                        source: *version,
-                        message: error.to_string(),
+            for (original, proposed, destination) in prepared {
+                if let Some(interrupted) = options.interrupted() {
+                    writes.push(WriteOutcome::Unapplied {
+                        source: original.version,
+                        reason: interrupted.error().to_string(),
                     });
+
+                    completion = completion.combine(interrupted);
+                    continue;
                 }
+
+                if original.text == proposed.text {
+                    writes.push(WriteOutcome::Unchanged);
+                    continue;
+                }
+
+                let Some(destination) = destination else {
+                    writes.push(WriteOutcome::NotRequested);
+                    continue;
+                };
+
+                let outcome = snapshot
+                    .transition(ChangeBatch {
+                        changes: vec![ProjectChange::Source(SourceChange::Replace {
+                            expected: original.version,
+                            text: Arc::clone(&proposed.text),
+                        })],
+                    })
+                    .and_then(|next| {
+                        let revision = next
+                            .source(original.version.identity)
+                            .ok_or_else(|| invalid("accepted source is absent"))?
+                            .version;
+
+                        write(&destination, original, proposed, options)?;
+
+                        Ok((next, revision))
+                    });
+
+                match outcome {
+                    Ok((next, revision)) => {
+                        *snapshot = next;
+                        revisions.push(revision);
+                        writes.push(WriteOutcome::Written {
+                            source: original.version,
+                            revision: revision.revision,
+                        });
+                    }
+
+                    Err(error) => {
+                        completion =
+                            completion.combine(options.interrupted().unwrap_or(
+                                Completion::Incomplete(vec![Reason::FailedPrerequisite]),
+                            ));
+
+                        writes.push(WriteOutcome::Failed {
+                            source: original.version,
+                            message: error.to_string(),
+                        });
+                    }
+                }
+            }
+
+            snapshot.clone()
+        };
+
+        for (source, outcome) in request.edit.proposal.guards.iter().zip(&writes) {
+            if matches!(
+                outcome,
+                WriteOutcome::Written { .. } | WriteOutcome::Failed { .. }
+            ) {
+                options.report(Event {
+                    invocation: 0,
+                    operation: 0,
+                    payload: EventPayload::Progress(Progress {
+                        source: Some(*source),
+                        phase: "Applying edits".to_owned(),
+                        completed: 1,
+                        total: Some(1),
+                    }),
+                });
             }
         }
 
@@ -126,7 +182,7 @@ impl Runtime {
         Ok(ApplyReport {
             identity: request.edit.proposal.identity,
             writes,
-            revisions: Vec::new(),
+            revisions,
             snapshot,
             completion,
         })
@@ -159,11 +215,12 @@ fn destinations(
     Ok(destinations)
 }
 
-fn compare(
+fn write(
     destination: &Path,
     original: &SourceSnapshot,
+    proposed: &SourceSnapshot,
     options: &Options,
-) -> io::Result<WriteOutcome> {
+) -> io::Result<()> {
     options.check()?;
     let metadata = fs::symlink_metadata(destination)?;
 
@@ -171,20 +228,34 @@ fn compare(
         return Err(invalid("refusing to replace a nonregular file"));
     }
 
-    let file = OpenOptions::new()
+    let mut file = OpenOptions::new()
         .read(true)
         .write(true)
         .open(destination)?;
 
     file.try_lock().map_err(io::Error::other)?;
+
+    if !file.metadata()?.is_file() {
+        return Err(invalid("refusing to replace a nonregular file"));
+    }
+
+    let parent = destination
+        .parent()
+        .ok_or_else(|| invalid("write destination has no parent"))?;
+    let mut staged = tempfile::NamedTempFile::new_in(parent)?;
+    staged.write_all(proposed.text.as_bytes())?;
+    staged.as_file().set_permissions(metadata.permissions())?;
+    staged.as_file().sync_all()?;
+
     let mut bytes = Vec::new();
 
-    file.take(
-        u64::try_from(original.text.len())
-            .map_err(io::Error::other)?
-            .saturating_add(1),
-    )
-    .read_to_end(&mut bytes)?;
+    (&mut file)
+        .take(
+            u64::try_from(original.text.len())
+                .map_err(io::Error::other)?
+                .saturating_add(1),
+        )
+        .read_to_end(&mut bytes)?;
 
     options.check()?;
 
@@ -192,7 +263,14 @@ fn compare(
         return Err(invalid("source changed since proposal validation"));
     }
 
-    Ok(WriteOutcome::Unapplied { source: original.version, reason: "comparison-through-commit protection against noncooperating external writers is unavailable; atomic replacement alone is not compare-and-swap".to_owned() })
+    if !fs::symlink_metadata(destination)?.is_file() {
+        return Err(invalid("refusing to replace a nonregular file"));
+    }
+
+    drop(file);
+    staged.persist(destination).map_err(|error| error.error)?;
+
+    Ok(())
 }
 
 fn invalid(message: &str) -> io::Error {

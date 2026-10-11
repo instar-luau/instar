@@ -27,7 +27,7 @@ use crate::{
 
 impl Runtime {
     pub(crate) fn validate_format(
-        &mut self,
+        &self,
         format: &ValidatedFormat,
         snapshot: &ProjectSnapshot,
         inputs: &[InputVersion],

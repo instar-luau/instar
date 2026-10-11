@@ -360,6 +360,13 @@ impl Context<'_, '_> {
             return;
         };
 
+        if !self.bindings.global_assignments.contains("print")
+            && !self.bindings.global_mutations.contains("_G")
+            && matches!(&call.targets, Knowledge::Known(targets) if !targets.is_empty() && targets.iter().all(|target| matches!(target, SemanticIdentity::Environment { namespace, name, .. } if namespace == "@luau" && name == "print")))
+        {
+            return;
+        }
+
         let Knowledge::Known(effect) = &call.effects else {
             self.unavailable(Reason::UnavailableSemantics);
 
@@ -604,7 +611,7 @@ pub(crate) fn evaluate(
     };
 
     context.walk(options, |context, node, ancestors| {
-        check(context, node, ancestors, options)
+        check(context, node, ancestors, options);
     });
 
     context.finish(options)

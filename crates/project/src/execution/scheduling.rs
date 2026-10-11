@@ -123,7 +123,7 @@ impl Runtime {
         }
     }
 
-    pub(crate) fn identity(&mut self) -> u64 {
+    pub(crate) fn identity(&self) -> u64 {
         self.host.next_invocation.fetch_add(1, Ordering::Relaxed)
     }
 

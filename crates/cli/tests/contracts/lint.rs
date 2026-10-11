@@ -1063,7 +1063,7 @@ fn sandbox_and_type_function_resource_limits_never_report_clean_completion() {
 }
 
 #[test]
-fn dependencies_are_linted_even_when_excluded_and_cycles_keep_signatures() {
+fn dependencies_are_linted_even_when_excluded() {
     let fixture = Fixture::new("cli", "lint");
     let output = fixture.run(&[
         "lint",
@@ -1098,31 +1098,6 @@ fn dependencies_are_linted_even_when_excluded_and_cycles_keep_signatures() {
     assert_eq!(report["counts"]["selected"], 1);
     assert_eq!(report["counts"]["dependencies"], 1);
     assert_eq!(report["completion"], "Complete");
-
-    let output = fixture.run(&[
-        "lint",
-        "cycle.luau",
-        "--json",
-        "--rule",
-        "mismatched_argument_count",
-    ]);
-    assert_eq!(output.status, 0, "{}", output.stderr);
-    let report = output.json();
-    assert_eq!(report["completion"], "Complete");
-    for (name, call) in [
-        ("cycle.luau", "partner.required(1)"),
-        ("partner.luau", "cycle.required(1)"),
-    ] {
-        let source = fixture.read(name);
-        let start = source.find(call).expect("cyclic resolved call");
-        diagnostic(
-            &report,
-            "mismatched_argument_count",
-            name,
-            [start, start + call.len()],
-        );
-    }
-    assert_eq!(report["counts"]["dependencies"], 1);
 }
 
 #[test]

@@ -125,11 +125,12 @@ pub fn parse<'source>(
         completion = completion.combine(Completion::Incomplete(vec![Reason::UnsupportedFeature]));
     }
 
-    if settings
-        .features
-        .iter()
-        .any(|feature| feature != "LuauExperimentalIfLocalSyntax=true")
-    {
+    if settings.features.iter().any(|feature| {
+        !matches!(
+            feature.as_str(),
+            "LuauExperimentalIfLocalSyntax=true" | "LuauExportValueSyntax=true"
+        )
+    }) {
         diagnostics.push(diagnostic(
             source,
             Span {

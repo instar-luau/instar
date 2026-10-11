@@ -89,7 +89,7 @@ impl Runtime {
 
         let mut report = FormatReport {
             snapshot: capture.snapshot.clone(),
-            inputs: inputs.clone(),
+            inputs,
             results: Vec::new(),
             selection: selection.decisions,
             settings: selection
@@ -144,7 +144,7 @@ impl Runtime {
     }
 
     fn format_result(
-        &mut self,
+        &self,
         request: &FormatRequest,
         result: FormatResult,
         report: &mut FormatReport,
@@ -228,7 +228,7 @@ impl Runtime {
     }
 
     fn apply_format(
-        &mut self,
+        &self,
         validated: &ValidatedEdit,
         source: SourceVersion,
         report: &mut FormatReport,
@@ -272,6 +272,14 @@ impl Runtime {
 
         if matches!(write, WriteOutcome::Written { .. }) {
             report.counts.written += 1;
+
+            for input in &mut report.inputs {
+                if let Some(current) = applied.snapshot.input_versions.get(&input.identity) {
+                    *input = current.clone();
+                }
+            }
+
+            report.snapshot = applied.snapshot;
         }
 
         if matches!(

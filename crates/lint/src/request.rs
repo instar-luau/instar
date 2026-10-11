@@ -277,7 +277,12 @@ pub fn run(input: &RuleInput<'_, '_>, options: &Options) -> RuleResult {
             break;
         }
 
-        let mut status = availability(input, definition.prerequisites, &mut result);
+        let mut status = availability(
+            input,
+            definition.identity,
+            definition.prerequisites,
+            &mut result,
+        );
 
         if !matches!(status, Availability::Unavailable(_))
             || !definition.prerequisites.semantics.is_empty()
@@ -386,10 +391,12 @@ fn collect_diagnostics(input: &RuleInput<'_, '_>, result: &mut RuleResult) {
 
 fn availability(
     input: &RuleInput<'_, '_>,
+    rule: RuleIdentity,
     prerequisites: Prerequisites,
     result: &mut RuleResult,
 ) -> Availability {
     let mut status = Availability::Available;
+    let demand_driven = rule == RuleIdentity::LoopInvariantCall;
 
     if prerequisites.bindings {
         status = combine_availability(status, input.bindings.availability);
@@ -423,9 +430,10 @@ fn availability(
     if !prerequisites.semantics.is_empty()
         && let Some(facts) = input.facts
     {
-        result.completion = result.completion.clone().combine(facts.completion.clone());
+        let uncertainty = matches!(&facts.completion, Completion::Incomplete(reasons) if !reasons.is_empty() && reasons.iter().all(|reason| *reason == Reason::UnavailableSemantics));
 
-        if facts.completion != Completion::Complete {
+        if facts.completion != Completion::Complete && !(demand_driven && uncertainty) {
+            result.completion = result.completion.clone().combine(facts.completion.clone());
             status =
                 combine_availability(status, Availability::Partial(Reason::FailedPrerequisite));
         }
@@ -438,7 +446,9 @@ fn availability(
             .copied()
             .unwrap_or(Availability::Unavailable(Reason::UnavailableSemantics));
 
-        status = combine_availability(status, available);
+        if !(demand_driven && available == Availability::Partial(Reason::UnavailableSemantics)) {
+            status = combine_availability(status, available);
+        }
     }
 
     status

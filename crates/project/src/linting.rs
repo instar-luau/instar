@@ -1,4 +1,5 @@
 use std::{
+    cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
     io, mem, slice,
     sync::Arc,
@@ -6,7 +7,7 @@ use std::{
 
 use instar_lint::{
     self as lint, FixValidation, LintSettings, ResolvedDependency, RuleAvailability, RuleFix,
-    RuleIdentity, RuleInput, RuleProducer,
+    RuleIdentity, RuleInput, RuleProducer, RuleResult,
 };
 
 use instar_luau::{
@@ -22,7 +23,10 @@ use instar_shared::{
     SourceVersion, Span,
 };
 
-use instar_syntax::{Directive, DirectiveKind, bindings, directives, parse};
+use instar_syntax::{
+    BindingResult, Directive, DirectiveKind, DirectiveResult, SyntaxResult, bindings, directives,
+    parse,
+};
 
 use crate::{
     capture::Capture,
@@ -51,6 +55,26 @@ struct LintContext {
     categories: Vec<SemanticCategory>,
     requested_native: bool,
     failures: Vec<OperationFailure>,
+}
+
+struct LintSource<'source> {
+    syntax: SyntaxResult<'source>,
+    bindings: BindingResult,
+    directives: DirectiveResult,
+}
+
+impl<'source> LintSource<'source> {
+    fn new(node: &'source ModuleNode, options: &Options) -> Self {
+        let syntax = parse(&node.source, &syntax_settings(&node.effective), options);
+        let bindings = bindings(&syntax.tree, options);
+        let directives = directives(&syntax.tree, options);
+
+        Self {
+            syntax,
+            bindings,
+            directives,
+        }
+    }
 }
 
 struct LintState {
@@ -137,7 +161,7 @@ impl Runtime {
     ) -> io::Result<LintReport> {
         let mut context = self.lint_context(request, snapshot, options)?;
         let mut state = LintState::new(&context);
-        lint_syntax(&context, &mut state, options);
+        let sources = lint_syntax(&context, &mut state, options);
         stream_early_findings(request, &context, &mut state, options);
         let recipes = self.lint_recipes(&context, &mut state, options)?;
 
@@ -148,7 +172,7 @@ impl Runtime {
             Self::record_lint_prerequisites(prerequisites, &context, &mut state, options)?;
         }
 
-        lint_modules(&context, &mut state, options);
+        lint_modules(&context, sources, &mut state, options);
         stream_lint_outcomes(&context, &mut state, options);
         filter_lint_findings(&context, &mut state);
         self.prepare_lint_fixes(&context, &mut state);
@@ -335,7 +359,7 @@ impl Runtime {
     }
 
     fn lint_recipes(
-        &mut self,
+        &self,
         context: &LintContext,
         state: &mut LintState,
         options: &Options,
@@ -547,13 +571,29 @@ impl Runtime {
                         })
                         .collect();
 
-                    state.completed = state.completed.clone().combine(result.completion.clone());
+                    let mut completion = result.completion.clone();
 
-                    accumulate(
-                        &mut state.producer_completion,
-                        identity,
-                        result.completion.clone(),
-                    );
+                    if let Completion::Incomplete(reasons) = &completion
+                        && !reasons.is_empty()
+                        && reasons
+                            .iter()
+                            .all(|reason| *reason == Reason::UnavailableSemantics)
+                        && context.graph.modules[&identity]
+                            .effective
+                            .settings
+                            .linting
+                            .enabled()
+                            .all(|(rule, _)| {
+                                rule.prerequisites.semantics.is_empty()
+                                    || rule.identity == RuleIdentity::LoopInvariantCall
+                            })
+                    {
+                        completion = Completion::Complete;
+                    }
+
+                    state.completed = state.completed.clone().combine(completion.clone());
+
+                    accumulate(&mut state.producer_completion, identity, completion);
 
                     state
                         .findings
@@ -614,7 +654,7 @@ impl Runtime {
         Ok(())
     }
 
-    fn prepare_lint_fixes(&mut self, context: &LintContext, state: &mut LintState) {
+    fn prepare_lint_fixes(&self, context: &LintContext, state: &mut LintState) {
         state.fixes.retain(|fix| {
             fix.proposal.edits.iter().all(|edit| {
                 context
@@ -754,7 +794,7 @@ impl Runtime {
     }
 
     fn write_lint_fixes(
-        &mut self,
+        &self,
         validated: &ValidatedEdit,
         changed: &BTreeSet<SourceIdentity>,
         report: &mut LintReport,
@@ -922,7 +962,12 @@ impl Runtime {
     }
 }
 
-fn lint_syntax(context: &LintContext, state: &mut LintState, options: &Options) {
+fn lint_syntax<'source>(
+    context: &'source LintContext,
+    state: &mut LintState,
+    options: &Options,
+) -> BTreeMap<ModuleIdentity, LintSource<'source>> {
+    let mut sources = BTreeMap::new();
     progress(options, 0, context.graph.modules.len());
 
     for (index, node) in context.graph.modules.values().enumerate() {
@@ -931,13 +976,11 @@ fn lint_syntax(context: &LintContext, state: &mut LintState, options: &Options) 
             break;
         }
 
-        let syntax = parse(&node.source, &syntax_settings(&node.effective), options);
-        let bindings = bindings(&syntax.tree, options);
-        let directives = directives(&syntax.tree, options);
+        let source = LintSource::new(node, options);
 
         state
             .suppressions
-            .insert(node.source.version, directives.directives.clone());
+            .insert(node.source.version, source.directives.directives.clone());
 
         let imports = dependencies(&node.imports);
         let mut settings = node.effective.settings.linting.clone();
@@ -953,12 +996,12 @@ fn lint_syntax(context: &LintContext, state: &mut LintState, options: &Options) 
         let result = lint::run(
             &RuleInput {
                 source: &node.source,
-                syntax: &syntax.tree,
-                bindings: &bindings,
+                syntax: &source.syntax.tree,
+                bindings: &source.bindings,
                 facts: None,
                 imports: &imports,
                 settings: &settings,
-                directives: &directives,
+                directives: &source.directives,
             },
             options,
         );
@@ -980,8 +1023,12 @@ fn lint_syntax(context: &LintContext, state: &mut LintState, options: &Options) 
 
         state.completed = state.completed.clone().combine(result.completion);
         state.fixes.extend(result.fixes);
+        state.availability.extend(result.availability);
+        sources.insert(node.identity, source);
         progress(options, index + 1, context.graph.modules.len());
     }
+
+    sources
 }
 
 fn stream_early_findings(
@@ -1456,7 +1503,12 @@ fn record_native_availability(
     Ok(())
 }
 
-fn lint_modules(context: &LintContext, state: &mut LintState, options: &Options) {
+fn lint_modules<'source>(
+    context: &'source LintContext,
+    mut sources: BTreeMap<ModuleIdentity, LintSource<'source>>,
+    state: &mut LintState,
+    options: &Options,
+) {
     for node in context.graph.modules.values() {
         let mut settings = node.effective.settings.linting.clone();
 
@@ -1484,37 +1536,64 @@ fn lint_modules(context: &LintContext, state: &mut LintState, options: &Options)
 
         settings.globals.sort();
         settings.globals.dedup();
-        let syntax = parse(&node.source, &syntax_settings(&node.effective), options);
-        let bindings = bindings(&syntax.tree, options);
-        let directives = directives(&syntax.tree, options);
+        let source = sources
+            .remove(&node.identity)
+            .unwrap_or_else(|| LintSource::new(node, options));
 
         if options.interrupted().is_none() {
             state
                 .suppressions
-                .insert(node.source.version, directives.directives.clone());
+                .insert(node.source.version, source.directives.directives.clone());
         }
 
         let imports = dependencies(&node.imports);
 
-        let result = lint::run(
-            &RuleInput {
-                source: &node.source,
-                syntax: &syntax.tree,
-                bindings: &bindings,
-                facts: state.facts.get(&node.identity),
-                imports: &imports,
-                settings: &settings,
-                directives: &directives,
-            },
-            options,
-        );
+        let mut remaining = settings.clone();
+
+        if state.syntax_completion.contains_key(&node.identity) {
+            for rule in lint::rules() {
+                if !rule.prerequisites.environment
+                    && rule.prerequisites.semantics.is_empty()
+                    && let Some(configuration) = remaining.rules.get_mut(&rule.identity)
+                {
+                    configuration.enabled = false;
+                }
+            }
+        }
+
+        let result = if remaining
+            .enabled()
+            .any(|(rule, _)| matches!(rule.producer, RuleProducer::Instar(_)))
+        {
+            lint::run(
+                &RuleInput {
+                    source: &node.source,
+                    syntax: &source.syntax.tree,
+                    bindings: &source.bindings,
+                    facts: state.facts.get(&node.identity),
+                    imports: &imports,
+                    settings: &remaining,
+                    directives: &source.directives,
+                },
+                options,
+            )
+        } else {
+            RuleResult::default()
+        };
 
         let mut source_completion = state
             .producer_completion
             .get(&node.identity)
             .cloned()
             .unwrap_or(Completion::Complete)
-            .combine(result.completion.clone());
+            .combine(result.completion.clone())
+            .combine(
+                state
+                    .syntax_completion
+                    .get(&node.identity)
+                    .cloned()
+                    .unwrap_or(Completion::Complete),
+            );
 
         if settings.enabled().all(|(rule, _)| {
             matches!(rule.producer, RuleProducer::Instar(_))
@@ -2350,12 +2429,10 @@ fn merge(
     previous_precedence: usize,
     next_precedence: usize,
 ) {
-    let severity = if next_precedence > previous_precedence {
-        next.severity
-    } else if previous_precedence > next_precedence {
-        previous.severity
-    } else {
-        previous.severity.min(next.severity)
+    let severity = match next_precedence.cmp(&previous_precedence) {
+        Ordering::Greater => next.severity,
+        Ordering::Less => previous.severity,
+        Ordering::Equal => previous.severity.min(next.severity),
     };
 
     let mut related = mem::take(&mut previous.related);
