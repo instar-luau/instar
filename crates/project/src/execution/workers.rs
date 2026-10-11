@@ -1,5 +1,4 @@
 use std::{
-    collections::VecDeque,
     io,
     sync::{Arc, Condvar, Mutex, PoisonError, mpsc},
     thread,
@@ -9,10 +8,10 @@ use std::{
 use instar_format::{FormatInput, FormatResult, Formatter};
 
 use instar_luau::{
-    AnalysisReference, AnalysisRequest, AnalysisResult, Completions, ConfigurationEvaluator,
-    ConfigurationInput, ConfigurationResult, FactsInput, FactsResult, InspectionResult,
-    LanguageProfile, LintInput, LintResult, ModuleIdentity, Native, PositionInput,
-    SemanticCategory, UpstreamWarningSettings,
+    AnalysisReference, AnalysisRequest, AnalysisResult, ClosureIdentity, Completions,
+    ConfigurationEvaluator, ConfigurationInput, ConfigurationResult, FactsInput, FactsResult,
+    InspectionResult, LanguageProfile, LintInput, LintResult, ModuleIdentity, Native,
+    PositionInput, SemanticCategory, UpstreamWarningSettings,
 };
 
 use instar_shared::{Options, Reason};
@@ -29,26 +28,31 @@ pub(crate) enum Work {
 
     Analysis(AnalysisRequest),
 
+    CachedAnalysis {
+        closure: ClosureIdentity,
+        result: Arc<AnalysisResult>,
+    },
+
     Facts {
-        closure: AnalysisRequest,
+        closure: Arc<AnalysisRequest>,
         module: ModuleIdentity,
         categories: Vec<SemanticCategory>,
     },
 
     Warnings {
-        closure: AnalysisRequest,
+        closure: Arc<AnalysisRequest>,
         module: ModuleIdentity,
         warnings: UpstreamWarningSettings,
     },
 
     Inspect {
-        closure: AnalysisRequest,
+        closure: Arc<AnalysisRequest>,
         module: ModuleIdentity,
         offset: usize,
     },
 
     Complete {
-        closure: AnalysisRequest,
+        closure: Arc<AnalysisRequest>,
         module: ModuleIdentity,
         offset: usize,
     },
@@ -56,10 +60,29 @@ pub(crate) enum Work {
     Format(FormatInput),
 }
 
+impl Work {
+    fn closure(&self) -> Option<ClosureIdentity> {
+        match self {
+            Self::Analysis(input) => Some(input.closure),
+            Self::CachedAnalysis { closure, .. } => Some(*closure),
+            Self::Facts { closure, .. }
+            | Self::Warnings { closure, .. }
+            | Self::Inspect { closure, .. }
+            | Self::Complete { closure, .. } => Some(closure.closure),
+            Self::Configuration(_) | Self::Asset { .. } | Self::Format(_) => None,
+        }
+    }
+}
+
+struct Group {
+    closure: Option<ClosureIdentity>,
+    work: Vec<(usize, Work)>,
+}
+
 pub(crate) enum WorkOutput {
     Configuration(ConfigurationResult),
     Asset(DownloadResult),
-    Analysis(AnalysisResult),
+    Analysis(Arc<AnalysisResult>),
     Facts(FactsResult),
     Warnings(LintResult),
     Inspection(InspectionResult),
@@ -132,6 +155,7 @@ struct Lane {
     formatter: Formatter,
     acquisition: Acquisition,
     profile: Option<LanguageProfile>,
+    closure: Option<ClosureIdentity>,
 }
 
 impl Lane {
@@ -157,7 +181,12 @@ impl Lane {
                 .format(&input, options)
                 .map(WorkOutput::Format),
 
-            Work::Analysis(input) => self.analyze(&input, options).map(WorkOutput::Analysis),
+            Work::Analysis(input) => self
+                .analyze(&input, options)
+                .map(Arc::new)
+                .map(WorkOutput::Analysis),
+
+            Work::CachedAnalysis { result, .. } => Ok(WorkOutput::Analysis(result)),
 
             Work::Facts {
                 closure,
@@ -231,7 +260,10 @@ impl Lane {
 
         self.profile = Some(input.profile.clone());
 
-        self.native.analyze(input, options)
+        let result = self.native.analyze(input, options)?;
+        self.closure = Some(input.closure);
+
+        Ok(result)
     }
 
     fn reference(
@@ -240,6 +272,10 @@ impl Lane {
         module: ModuleIdentity,
         options: &Options,
     ) -> io::Result<AnalysisReference> {
+        if let Some(reference) = self.native.reference(input, module)? {
+            return Ok(reference);
+        }
+
         let result = self.analyze(input, options)?;
 
         result
@@ -251,6 +287,7 @@ impl Lane {
     }
 
     fn finish(&mut self) -> io::Result<()> {
+        self.closure = None;
         let analysis = self.native.finish();
         let configuration = self.configuration.finish();
         let formatting = self.formatter.finish();
@@ -300,6 +337,21 @@ impl Workers {
         work: Vec<Work>,
         options: &Options,
     ) -> Vec<io::Result<WorkOutput>> {
+        self.batch_with(work, options, &|_, _| Vec::new())
+            .into_iter()
+            .map(|(result, _)| result)
+            .collect()
+    }
+
+    pub(crate) fn batch_with(
+        &mut self,
+        work: Vec<Work>,
+        options: &Options,
+        following: &(impl Fn(usize, &WorkOutput) -> Vec<(ModuleIdentity, Work)> + Sync),
+    ) -> Vec<(
+        io::Result<WorkOutput>,
+        Vec<(ModuleIdentity, io::Result<WorkOutput>)>,
+    )> {
         let count = work.len();
 
         if count == 0 {
@@ -308,37 +360,33 @@ impl Workers {
 
         let admitted = self.permit.is_some();
         self.leave();
-        let jobs = options.jobs.get().min(count);
-
-        while self.lanes.len() < jobs {
-            self.lanes.push(Mutex::new(Lane::default()));
-        }
-
-        let queue = Mutex::new(work.into_iter().enumerate().collect::<VecDeque<_>>());
+        let assignments = self.distribute(work, options.jobs.get());
         let (sender, receiver) = mpsc::channel();
 
         let results = thread::scope(|scope| {
-            for lane in self.lanes.iter().take(jobs) {
-                let queue = &queue;
+            for (index, group) in assignments {
+                let lane = &self.lanes[index];
                 let sender = sender.clone();
                 let budget = Arc::clone(&self.budget);
 
                 scope.spawn(move || {
-                    loop {
-                        let work = queue
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .pop_front();
+                    for (index, work) in group.work {
+                        let output = budget.acquire(options).map(|_permit| {
+                            let mut lane = lane.lock().unwrap_or_else(PoisonError::into_inner);
+                            let result = lane.execute(work, options);
+                            let prerequisites = result.as_ref().map_or_else(
+                                |_| Vec::new(),
+                                |result| {
+                                    following(index, result)
+                                        .into_iter()
+                                        .map(|(module, work)| (module, lane.execute(work, options)))
+                                        .collect()
+                                },
+                            );
 
-                        let Some((index, work)) = work else {
-                            break;
-                        };
-
-                        let output = budget.acquire(options).and_then(|_permit| {
-                            lane.lock()
-                                .unwrap_or_else(PoisonError::into_inner)
-                                .execute(work, options)
+                            (result, prerequisites)
                         });
+                        let output = output.unwrap_or_else(|error| (Err(error), Vec::new()));
 
                         if sender.send((index, output)).is_err() {
                             break;
@@ -358,7 +406,10 @@ impl Workers {
                 .into_iter()
                 .map(|result| {
                     result.unwrap_or_else(|| {
-                        Err(io::Error::other("project lane stopped without an outcome"))
+                        (
+                            Err(io::Error::other("project lane stopped without an outcome")),
+                            Vec::new(),
+                        )
                     })
                 })
                 .collect()
@@ -391,5 +442,79 @@ impl Workers {
         self.leave();
 
         self.discard()
+    }
+
+    fn distribute(&mut self, work: Vec<Work>, limit: usize) -> Vec<(usize, Group)> {
+        let mut groups: Vec<Group> = Vec::new();
+
+        for (index, work) in work.into_iter().enumerate() {
+            let closure = work.closure();
+            let existing = closure.and_then(|closure| {
+                groups
+                    .iter_mut()
+                    .find(|group| group.closure == Some(closure))
+            });
+
+            if let Some(group) = existing {
+                group.work.push((index, work));
+            } else {
+                groups.push(Group {
+                    closure,
+                    work: vec![(index, work)],
+                });
+            }
+        }
+
+        let jobs = limit.min(groups.len());
+
+        while self.lanes.len() < jobs {
+            self.lanes.push(Mutex::new(Lane::default()));
+        }
+
+        let closures = self
+            .lanes
+            .iter()
+            .map(|lane| lane.lock().unwrap_or_else(PoisonError::into_inner).closure)
+            .collect::<Vec<_>>();
+
+        groups.sort_by_key(|group| group.closure.is_none() || !closures.contains(&group.closure));
+        let mut lanes = (0..self.lanes.len()).collect::<Vec<_>>();
+
+        lanes.sort_by_key(|index| {
+            closures[*index].is_none()
+                || !groups.iter().any(|group| group.closure == closures[*index])
+        });
+
+        let mut assignments = lanes
+            .into_iter()
+            .take(jobs)
+            .map(|index| {
+                (
+                    index,
+                    Group {
+                        closure: None,
+                        work: Vec::new(),
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+
+        for group in groups {
+            let preferred = assignments.iter().position(|(index, _)| {
+                group.closure.is_some() && closures[*index] == group.closure
+            });
+
+            let index = preferred.unwrap_or_else(|| {
+                assignments
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, (_, group))| group.work.len())
+                    .map_or(0, |(index, _)| index)
+            });
+
+            assignments[index].1.work.extend(group.work);
+        }
+
+        assignments
     }
 }

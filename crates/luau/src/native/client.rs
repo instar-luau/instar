@@ -15,7 +15,7 @@ use super::{
         AnalysisIdentity, FactsInput, FactsResult, InspectionResult, PositionInput,
         SemanticAvailability, SemanticFacts,
     },
-    source::ParsedMetadata,
+    source::{ModuleIdentity, ParsedMetadata},
 };
 
 use crate::{
@@ -150,6 +150,45 @@ impl Native {
             modules,
             completion: output.completion,
         })
+    }
+
+    /// Returns a guarded reference when the exact closure is already established.
+    ///
+    /// # Errors
+    /// Returns child status, transport cleanup or established-state validation failures.
+    pub fn reference(
+        &mut self,
+        input: &AnalysisRequest,
+        module: ModuleIdentity,
+    ) -> io::Result<Option<AnalysisReference>> {
+        self.process.refresh()?;
+
+        let Some(established) = self.established.as_ref().filter(|established| {
+            Some(established.generation) == self.process.generation()
+                && established.captured.analysis.as_deref() == Some(input)
+        }) else {
+            return Ok(None);
+        };
+
+        let Some(analysis) = established
+            .modules
+            .keys()
+            .find(|analysis| analysis.module == module)
+        else {
+            return Ok(None);
+        };
+
+        let reference = AnalysisReference {
+            analysis: *analysis,
+            client: self.process.identity(),
+            generation: established.generation,
+            frontend_revision: established.revision,
+            purpose: input.purpose,
+        };
+
+        self.validate(&reference)?;
+
+        Ok(Some(reference))
     }
 
     /// Detaches requested semantic records from the exact referenced native state.

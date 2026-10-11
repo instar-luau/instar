@@ -242,11 +242,26 @@ impl Runtime {
         recipes: &[ClosureRecipe],
         options: &Options,
     ) -> Vec<io::Result<Arc<AnalysisResult>>> {
+        self.analyze_with(recipes, options, &|_, _| Vec::new())
+            .into_iter()
+            .map(|(result, _)| result)
+            .collect()
+    }
+
+    pub(crate) fn analyze_with(
+        &mut self,
+        recipes: &[ClosureRecipe],
+        options: &Options,
+        following: &(impl Fn(usize, &AnalysisResult) -> Vec<(ModuleIdentity, Work)> + Sync),
+    ) -> Vec<(
+        io::Result<Arc<AnalysisResult>>,
+        Vec<(ModuleIdentity, io::Result<WorkOutput>)>,
+    )> {
         let epoch = self.host.worker_epoch.load(Ordering::Acquire);
 
         if epoch != self.epoch {
             if let Err(error) = self.workers.discard() {
-                return vec![Err(error)];
+                return vec![(Err(error), Vec::new())];
             }
 
             self.epoch = epoch;
@@ -260,6 +275,7 @@ impl Runtime {
 
         let mut work = Vec::new();
         let mut indices = Vec::new();
+        let mut uncached = BTreeSet::new();
         let mut results = (0..recipes.len()).map(|_| None).collect::<Vec<_>>();
 
         for (index, recipe) in recipes.iter().enumerate() {
@@ -267,22 +283,36 @@ impl Runtime {
                 equivalent(&entry.recipe, &recipe.request)
                     && entry.result.completion == Completion::Complete
             }) {
-                results[index] = Some(Ok(Arc::clone(&entry.result)));
+                if following(index, &entry.result).is_empty() {
+                    results[index] = Some((Ok(Arc::clone(&entry.result)), Vec::new()));
+                } else {
+                    indices.push(index);
+                    work.push(Work::CachedAnalysis {
+                        closure: recipe.request.closure,
+                        result: Arc::clone(&entry.result),
+                    });
+                }
             } else {
                 indices.push(index);
+                uncached.insert(index);
                 work.push(Work::Analysis(recipe.request.clone()));
             }
         }
 
-        for (index, result) in indices
-            .into_iter()
-            .zip(self.workers.batch(work, &worker_options(options)))
-        {
+        let outcomes =
+            self.workers.batch_with(
+                work,
+                &worker_options(options),
+                &|index, output| match output {
+                    WorkOutput::Analysis(result) => following(indices[index], result),
+                    _ => Vec::new(),
+                },
+            );
+
+        for (index, (result, prerequisites)) in indices.into_iter().zip(outcomes) {
             match result {
                 Ok(WorkOutput::Analysis(result)) => {
-                    let result = Arc::new(result);
-
-                    if result.completion == Completion::Complete {
+                    if result.completion == Completion::Complete && uncached.contains(&index) {
                         self.cache.analyses.push(AnalysisEntry {
                             recipe: recipes[index].request.clone(),
                             result: Arc::clone(&result),
@@ -290,17 +320,18 @@ impl Runtime {
                         });
                     }
 
-                    results[index] = Some(Ok(result));
+                    results[index] = Some((Ok(result), prerequisites));
                 }
 
                 Ok(_) => {
-                    results[index] = Some(Err(io::Error::other(
-                        "analysis lane returned wrong outcome",
-                    )));
+                    results[index] = Some((
+                        Err(io::Error::other("analysis lane returned wrong outcome")),
+                        prerequisites,
+                    ));
                 }
 
                 Err(error) => {
-                    results[index] = Some(Err(error));
+                    results[index] = Some((Err(error), prerequisites));
                 }
             }
         }
@@ -308,7 +339,12 @@ impl Runtime {
         results
             .into_iter()
             .map(|result| {
-                result.unwrap_or_else(|| Err(io::Error::other("analysis produced no outcome")))
+                result.unwrap_or_else(|| {
+                    (
+                        Err(io::Error::other("analysis produced no outcome")),
+                        Vec::new(),
+                    )
+                })
             })
             .collect()
     }

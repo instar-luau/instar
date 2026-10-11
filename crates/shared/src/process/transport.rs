@@ -57,6 +57,20 @@ impl<Request, Response> Process<Request, Response> {
             .map(|transport| transport.handshake.generation)
     }
 
+    /// Discards a generation whose worker has exited.
+    ///
+    /// # Errors
+    /// Returns child status or transport cleanup failures.
+    pub fn refresh(&mut self) -> io::Result<()> {
+        if let Some(transport) = self.transport.as_mut()
+            && transport.child.try_wait()?.is_some()
+        {
+            self.discard()?;
+        }
+
+        Ok(())
+    }
+
     /// Sends a captured request, starting its worker lazily under the original deadline.
     /// Healthy structured invalid-request errors retain the worker; failed transports do not.
     ///
@@ -204,11 +218,7 @@ impl<Request, Response> Process<Request, Response> {
         Request: Serialize + Send + 'static,
         Response: DeserializeOwned + Send + 'static,
     {
-        if let Some(transport) = self.transport.as_mut()
-            && transport.child.try_wait()?.is_some()
-        {
-            self.discard()?;
-        }
+        self.refresh()?;
 
         if self.transport.is_none() {
             self.generation = self

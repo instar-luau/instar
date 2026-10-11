@@ -1046,6 +1046,8 @@ impl Runtime {
             let mut locations = Vec::new();
 
             for recipe in &captured.recipes {
+                let closure = Arc::new(recipe.request.clone());
+
                 for module in &recipe.request.modules {
                     if module.analysis.module.source != request.source.identity
                         || !modules.insert(module.analysis.module)
@@ -1055,7 +1057,7 @@ impl Runtime {
 
                     let WorkOutput::Inspection(inspection) = self.workers.execute(
                         Work::Inspect {
-                            closure: recipe.request.clone(),
+                            closure: Arc::clone(&closure),
                             module: module.analysis.module,
                             offset: request.offset,
                         },
@@ -1097,7 +1099,7 @@ impl Runtime {
 
             let WorkOutput::Inspection(inspection) = self.workers.execute(
                 Work::Inspect {
-                    closure,
+                    closure: Arc::new(closure),
                     module,
                     offset: request.offset,
                 },
@@ -1244,7 +1246,7 @@ impl Runtime {
 
             let WorkOutput::Inspection(inspection) = self.workers.execute(
                 Work::Inspect {
-                    closure,
+                    closure: Arc::new(closure),
                     module,
                     offset: position.offset,
                 },
@@ -1310,7 +1312,7 @@ impl Runtime {
 
         let WorkOutput::Completions(native) = self.workers.execute(
             Work::Complete {
-                closure,
+                closure: Arc::new(closure),
                 module,
                 offset: request.position.offset,
             },
@@ -1425,11 +1427,17 @@ impl Runtime {
             .recipes
             .iter()
             .flat_map(|recipe| {
-                recipe.request.modules.iter().map(|module| Work::Facts {
-                    closure: recipe.request.clone(),
-                    module: module.analysis.module,
-                    categories: categories.to_vec(),
-                })
+                let closure = Arc::new(recipe.request.clone());
+
+                recipe
+                    .request
+                    .modules
+                    .iter()
+                    .map(move |module| Work::Facts {
+                        closure: Arc::clone(&closure),
+                        module: module.analysis.module,
+                        categories: categories.to_vec(),
+                    })
             })
             .collect();
 

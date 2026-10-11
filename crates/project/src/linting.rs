@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io, iter, mem,
+    io, iter, mem, slice,
     sync::Arc,
 };
 
@@ -28,9 +28,7 @@ use crate::{
     capture::Capture,
     change::{ChangeBatch, ProjectChange, SourceChange},
     checking,
-    configuration::{
-        CheckOverrides, DiagnosticPolicy, EffectiveSettings, OperationOverrides, worker_options,
-    },
+    configuration::{CheckOverrides, DiagnosticPolicy, EffectiveSettings, OperationOverrides},
     editing::{
         ApplyRequest, EditGuarantee, ValidatedEdit, WriteAuthorization, WriteOutcome, preview,
     },
@@ -142,9 +140,10 @@ impl Runtime {
         let recipes = self.lint_recipes(&context, &mut state, options)?;
 
         if context.requested_native && options.interrupted().is_none() {
-            self.lint_analysis(&recipes, &context, &mut state, options);
-            fold_lint_environment(&recipes, &mut state);
-            self.lint_prerequisites(&recipes, &context, &mut state, options)?;
+            let prerequisites = self.lint_analysis(&recipes, &context, &mut state, options);
+
+            fold_lint_environment(&recipes, &mut state.environment);
+            Self::record_lint_prerequisites(prerequisites, &context, &mut state, options)?;
         }
 
         lint_modules(&context, &mut state, options);
@@ -433,8 +432,44 @@ impl Runtime {
         context: &LintContext,
         state: &mut LintState,
         options: &Options,
-    ) {
-        for (recipe, result) in recipes.iter().zip(self.analyze(recipes, options)) {
+    ) -> Vec<(ModuleIdentity, io::Result<WorkOutput>)> {
+        let results = self.analyze_with(recipes, options, &|index, result| {
+            let recipe = slice::from_ref(&recipes[index]);
+            let mut environment = recipe[0]
+                .request
+                .modules
+                .iter()
+                .map(|module| {
+                    let identity = module.analysis.module;
+                    (identity, state.environment[&identity])
+                })
+                .collect::<BTreeMap<_, _>>();
+
+            let prepared = result
+                .modules
+                .iter()
+                .map(|module| module.analysis.module)
+                .collect();
+
+            for module in &result.modules {
+                let identity = module.analysis.module;
+                let status = lint_environment(
+                    module,
+                    &context.graph.modules[&identity],
+                    environment[&identity],
+                );
+
+                environment.insert(identity, status);
+            }
+
+            fold_lint_environment(recipe, &mut environment);
+            let (work, identities) = lint_work(recipe, context, &prepared, &environment, options);
+
+            identities.into_iter().zip(work).collect()
+        });
+        let mut prerequisites = Vec::new();
+
+        for (recipe, (result, following)) in recipes.iter().zip(results) {
             match result {
                 Ok(result) => {
                     state.completed = state.completed.clone().combine(result.completion.clone());
@@ -478,22 +513,19 @@ impl Runtime {
                     }
                 }
             }
+            prerequisites.extend(following);
         }
+
+        prerequisites
     }
 
-    fn lint_prerequisites(
-        &mut self,
-        recipes: &[ClosureRecipe],
+    fn record_lint_prerequisites(
+        results: Vec<(ModuleIdentity, io::Result<WorkOutput>)>,
         context: &LintContext,
         state: &mut LintState,
         options: &Options,
     ) -> io::Result<()> {
-        let (work, identities) = lint_work(recipes, context, state, options);
-
-        for (identity, result) in identities
-            .into_iter()
-            .zip(self.workers.batch(work, &worker_options(options)))
-        {
+        for (identity, result) in results {
             match result {
                 Ok(WorkOutput::Facts(mut result)) => {
                     if result.analysis.module != identity {
@@ -1038,6 +1070,15 @@ fn record_lint_analysis(module: &ModuleAnalysis, context: &LintContext, state: &
 
     state.completed = state.completed.clone().combine(module.completion.clone());
 
+    let identity = module.analysis.module;
+    let status = lint_environment(
+        module,
+        &context.graph.modules[&identity],
+        state.environment[&identity],
+    );
+
+    state.environment.insert(identity, status);
+
     if let Some(metadata) = &module.environment
         && context.graph.modules[&module.analysis.module]
             .environment
@@ -1047,19 +1088,6 @@ fn record_lint_analysis(module: &ModuleAnalysis, context: &LintContext, state: &
             .completion
             == Completion::Complete
     {
-        let status = combine(
-            state
-                .environment
-                .get(&module.analysis.module)
-                .copied()
-                .unwrap_or(Availability::Unavailable(Reason::UnavailableEnvironment)),
-            combine(
-                metadata.availability,
-                coverage(&metadata.completion, Reason::UnavailableEnvironment),
-            ),
-        );
-
-        state.environment.insert(module.analysis.module, status);
         state.completed = state.completed.clone().combine(metadata.completion.clone());
 
         for finding in &metadata.diagnostics {
@@ -1093,21 +1121,42 @@ fn record_lint_analysis(module: &ModuleAnalysis, context: &LintContext, state: &
                 diagnostic,
             });
         }
-    } else if context.graph.modules[&module.analysis.module]
+    }
+}
+
+fn lint_environment(
+    module: &ModuleAnalysis,
+    node: &ModuleNode,
+    current: Availability,
+) -> Availability {
+    if let Some(metadata) = &module.environment
+        && node.environment.requested
+        && node.environment.completion == Completion::Complete
+    {
+        combine(
+            current,
+            combine(
+                metadata.availability,
+                coverage(&metadata.completion, Reason::UnavailableEnvironment),
+            ),
+        )
+    } else if node
         .effective
         .settings
         .linting
         .enabled()
         .any(|(rule, _)| rule.prerequisites.environment || !rule.prerequisites.semantics.is_empty())
     {
-        state.environment.insert(
-            module.analysis.module,
-            Availability::Unavailable(Reason::UnavailableEnvironment),
-        );
+        Availability::Unavailable(Reason::UnavailableEnvironment)
+    } else {
+        current
     }
 }
 
-fn fold_lint_environment(recipes: &[ClosureRecipe], state: &mut LintState) {
+fn fold_lint_environment(
+    recipes: &[ClosureRecipe],
+    environment: &mut BTreeMap<ModuleIdentity, Availability>,
+) {
     for recipe in recipes {
         if recipe
             .request
@@ -1123,18 +1172,14 @@ fn fold_lint_environment(recipes: &[ClosureRecipe], state: &mut LintState) {
                     .fold(Availability::Available, |status, module| {
                         combine(
                             status,
-                            state
-                                .environment
-                                .get(&module.analysis.module)
-                                .copied()
-                                .unwrap_or(Availability::Unavailable(
-                                    Reason::UnavailableEnvironment,
-                                )),
+                            environment.get(&module.analysis.module).copied().unwrap_or(
+                                Availability::Unavailable(Reason::UnavailableEnvironment),
+                            ),
                         )
                     });
 
             for module in &recipe.request.modules {
-                state.environment.insert(module.analysis.module, status);
+                environment.insert(module.analysis.module, status);
             }
         }
     }
@@ -1143,13 +1188,16 @@ fn fold_lint_environment(recipes: &[ClosureRecipe], state: &mut LintState) {
 fn lint_work(
     recipes: &[ClosureRecipe],
     context: &LintContext,
-    state: &LintState,
+    prepared: &BTreeSet<ModuleIdentity>,
+    environment: &BTreeMap<ModuleIdentity, Availability>,
     options: &Options,
 ) -> (Vec<Work>, Vec<ModuleIdentity>) {
     let mut work = Vec::new();
     let mut identities = Vec::new();
 
     for recipe in recipes {
+        let closure = Arc::new(recipe.request.clone());
+
         for module in &recipe.request.modules {
             if options.interrupted().is_some() {
                 break;
@@ -1157,7 +1205,7 @@ fn lint_work(
 
             let identity = module.analysis.module;
 
-            if !state.prepared.contains(&identity) {
+            if !prepared.contains(&identity) {
                 continue;
             }
 
@@ -1176,10 +1224,10 @@ fn lint_work(
 
             if !categories.is_empty()
                 && module.inference.required
-                && state.environment.get(&identity) == Some(&Availability::Available)
+                && environment.get(&identity) == Some(&Availability::Available)
             {
                 work.push(Work::Facts {
-                    closure: recipe.request.clone(),
+                    closure: Arc::clone(&closure),
                     module: identity,
                     categories,
                 });
@@ -1197,7 +1245,7 @@ fn lint_work(
 
             if !enabled.is_empty() {
                 work.push(Work::Warnings {
-                    closure: recipe.request.clone(),
+                    closure: Arc::clone(&closure),
                     module: identity,
                     warnings: UpstreamWarningSettings {
                         enabled,
