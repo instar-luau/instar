@@ -246,14 +246,18 @@ impl Context<'_, '_> {
             return;
         }
 
-        let expands = values.last().is_some_and(|value| {
-            matches!(
-                self.tree.node(*value).kind,
-                NodeKind::Call { .. } | NodeKind::MethodCall { .. } | NodeKind::Variadic { .. }
-            )
-        });
+        let expands = matches!(call.argument_count, Knowledge::Unavailable(_))
+            && values.last().is_some_and(|value| {
+                matches!(
+                    self.tree.node(*value).kind,
+                    NodeKind::Call { .. } | NodeKind::MethodCall { .. } | NodeKind::Variadic { .. }
+                )
+            });
 
-        let count = values.len() - usize::from(expands);
+        let count = match call.argument_count {
+            Knowledge::Known(count) => count,
+            Knowledge::Unavailable(_) => values.len() - usize::from(expands),
+        };
         let mut unavailable = false;
 
         for signature in signatures {

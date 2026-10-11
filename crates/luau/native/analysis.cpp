@@ -333,6 +333,7 @@ namespace instar::native {
                 }
 
                 const auto outcome = state.frontend.getCheckResult(name, false, false);
+                bool type_errors_only = true;
 
                 if (outcome) {
                     if (!outcome->timeoutHits.empty()) {
@@ -343,6 +344,7 @@ namespace instar::native {
                     for (const auto &error : outcome->errors) {
                         auto finding = diagnostic(operation, error, name);
                         const auto category = finding.kind;
+                        type_errors_only = type_errors_only && category == NativeKind::Type;
 
                         if (category == NativeKind::Syntax) {
                             continue;
@@ -366,7 +368,7 @@ namespace instar::native {
                 }
 
                 observed.semantic_complete =
-                    observed.inferred && outcome && outcome->errors.empty() && !observed.recovered_syntax;
+                    observed.inferred && outcome && type_errors_only && !observed.recovered_syntax;
             }
 
             if (observed.completion != NativeCompletion::Complete) {

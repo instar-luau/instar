@@ -420,6 +420,9 @@ pub struct CallFact {
     /// Call arguments in source order.
     pub arguments: Vec<ArgumentRelation>,
 
+    /// The established argument count after expression-list expansion.
+    pub argument_count: Knowledge<usize>,
+
     /// Established execution effects or their unavailable reason.
     pub effects: Knowledge<EffectFact>,
 }

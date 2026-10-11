@@ -336,6 +336,8 @@ pub(crate) mod native {
         callee: NativeLocation,
         signatures: NativeSignatures,
         arguments: Vec<NativeLocation>,
+        argument_count: usize,
+        has_argument_count: bool,
     }
 
     struct NativeEnvironmentBinding {

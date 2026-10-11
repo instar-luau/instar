@@ -1811,6 +1811,26 @@ namespace instar::native {
                         evidence.arguments.push_back(location(operation, name, argument->location));
                     }
 
+                    evidence.argument_count = call->args.size;
+                    evidence.has_argument_count = true;
+
+                    if (call->args.size != 0) {
+                        const auto *last = call->args.data[call->args.size - 1];
+
+                        if (last->is<Luau::AstExprCall>() || last->is<Luau::AstExprVarargs>()) {
+                            evidence.has_argument_count = false;
+
+                            if (const auto *pack = checked ? checked->astTypePacks.find(last) : nullptr) {
+                                const auto [head, tail] = Luau::flatten(*pack);
+
+                                if (!tail) {
+                                    evidence.argument_count = call->args.size - 1 + head.size();
+                                    evidence.has_argument_count = true;
+                                }
+                            }
+                        }
+                    }
+
                     if (checked) {
                         auto position = call->argLocation.begin;
                         evidence.signatures = signatures(state, operation, name, position.line, position.column);

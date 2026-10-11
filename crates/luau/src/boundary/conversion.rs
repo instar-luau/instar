@@ -1980,6 +1980,11 @@ fn call_facts(
             },
             signatures: signature_information,
             arguments,
+            argument_count: if evidence.has_argument_count {
+                Knowledge::Known(evidence.argument_count)
+            } else {
+                Knowledge::Unavailable(Reason::UnavailableSemantics)
+            },
             effects,
         });
     }
@@ -3390,6 +3395,14 @@ pub(crate) fn validate_facts_result(
         }
 
         validate_signatures(&call.signatures, captured)?;
+
+        if let Knowledge::Known(count) = call.argument_count
+            && count < call.arguments.len().saturating_sub(1)
+        {
+            return Err(invalid(
+                "native expanded argument count omits fixed arguments",
+            ));
+        }
 
         for argument in &call.arguments {
             captured.validate_location(argument.argument)?;
