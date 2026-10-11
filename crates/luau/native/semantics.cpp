@@ -1,6 +1,7 @@
+#include "semantics.hpp"
+
 #include "analysis.hpp"
 #include "parsing.hpp"
-#include "semantics.hpp"
 
 #include "Luau/AstQuery.h"
 #include "Luau/GlobalTypes.h"
@@ -77,7 +78,7 @@ namespace instar::native {
         );
 
         void property(
-            const NativeOperation &host, Luau::TypeId initial, const std::string &name,
+            AnalysisState &state, const NativeOperation &host, Luau::TypeId initial, const std::string &name,
             rust::Vec<NativeLocation> &result
         );
 
@@ -277,7 +278,7 @@ namespace instar::native {
 
                     if (const auto *index = value->as<Luau::AstExprIndexName>()) {
                         if (const auto *type = checked->astTypes.find(index->expr)) {
-                            property(host, *type, index->index.value, result);
+                            property(state, host, *type, index->index.value, result);
                         }
 
                         if (!result.empty()) {
@@ -332,8 +333,52 @@ namespace instar::native {
             return Luau::getDocumentationSymbolAtPosition(source, module, position);
         }
 
+        std::string property_module(AnalysisState &state, const Luau::TableType &initial) {
+            const auto *table = &initial;
+            std::set<const Luau::TableType *> visited;
+
+            while (visited.insert(table).second) {
+                const auto *source = state.frontend.getSourceModule(table->definitionModuleName);
+                const auto checked = state.frontend.moduleResolver.getModule(table->definitionModuleName);
+
+                if (!source || !source->root || !checked) {
+                    break;
+                }
+
+                const auto scope = Luau::findScopeAtPosition(*checked, table->definitionLocation.begin);
+
+                if (!scope) {
+                    break;
+                }
+
+                const auto ancestry = Luau::findAstAncestryOfPosition(*source, table->definitionLocation.begin, true);
+                std::optional<Luau::TypeFun> binding;
+
+                for (auto node = ancestry.rbegin(); node != ancestry.rend(); ++node) {
+                    const auto *reference = (*node)->as<Luau::AstTypeReference>();
+
+                    if (reference && reference->location == table->definitionLocation) {
+                        binding = reference->prefix
+                                      ? scope->lookupImportedType(reference->prefix->value, reference->name.value)
+                                      : scope->lookupType(reference->name.value);
+                        break;
+                    }
+                }
+
+                const auto *original = binding ? Luau::getTableType(binding->type) : nullptr;
+
+                if (!original) {
+                    break;
+                }
+
+                table = original;
+            }
+
+            return table->definitionModuleName;
+        }
+
         void property(
-            const NativeOperation &host, Luau::TypeId initial, const std::string &name,
+            AnalysisState &state, const NativeOperation &host, Luau::TypeId initial, const std::string &name,
             rust::Vec<NativeLocation> &result
         ) {
             std::set<Luau::TypeId> visited;
@@ -354,7 +399,7 @@ namespace instar::native {
                         const auto range = found->second.location ? found->second.location : found->second.typeLocation;
 
                         if (range) {
-                            append(host, table->definitionModuleName, *range, result);
+                            append(host, property_module(state, *table), *range, result);
                         }
                     }
                 } else if (const auto *external = Luau::get<Luau::ExternType>(type)) {
@@ -740,7 +785,7 @@ namespace instar::native {
                     bool literal, Luau::TypeId value = nullptr, bool method = false
                 ) {
                     rust::Vec<NativeLocation> targets;
-                    property(host, type, label, targets);
+                    property(state, host, type, label, targets);
 
                     append(
                         label,
@@ -894,53 +939,6 @@ namespace instar::native {
                 return result;
             }
 
-            rust::Vec<NativeParameter> parameters(const std::string &label) {
-                Luau::Allocator allocator;
-                Luau::AstNameTable names(allocator);
-                Luau::Lexer lexer(label.data(), label.size(), names);
-                rust::Vec<NativeParameter> result;
-                size_t depth = 0;
-                std::optional<size_t> start;
-                size_t end = 0;
-
-                for (auto token = lexer.next(); token.type != Luau::Lexeme::Eof; token = lexer.next()) {
-                    if (depth == 0) {
-                        if (token.type == '(') {
-                            depth = 1;
-                        }
-
-                        continue;
-                    }
-
-                    if (depth == 1 && (token.type == ',' || token.type == ')')) {
-                        if (start) {
-                            result.push_back(NativeParameter{*start, end});
-                            start.reset();
-                        }
-
-                        if (token.type == ')') {
-                            return result;
-                        }
-
-                        continue;
-                    }
-
-                    if (!start) {
-                        start = token.location.begin.column;
-                    }
-
-                    end = token.location.end.column;
-
-                    if (token.type == '(' || token.type == '{' || token.type == '[' || token.type == '<') {
-                        ++depth;
-                    } else if (token.type == ')' || token.type == '}' || token.type == ']' || token.type == '>') {
-                        --depth;
-                    }
-                }
-
-                throw std::runtime_error("native signature label is incomplete");
-            }
-
             NativeSignature detach(
                 const NativeOperation &host, const std::string &name, const Luau::FunctionType &function,
                 size_t receivers, Luau::ToStringOptions &options
@@ -964,12 +962,82 @@ namespace instar::native {
                 Luau::TypePackVar arguments{Luau::TypePack{std::move(head), tail}};
                 display.argTypes = &arguments;
 
-                const auto label = Luau::toStringNamedFunction(name, display, options);
                 const auto *variadic = tail ? Luau::get<Luau::VariadicTypePack>(Luau::follow(*tail)) : nullptr;
+                NativeSignature result{};
+                result.variadic = tail.has_value() && (!variadic || !variadic->hidden);
+                std::string label = name;
 
-                NativeSignature result{rust::String(label),
-                    parameters(label),
-                    tail.has_value() && (!variadic || !variadic->hidden)};
+                if (!options.hideNamedFunctionTypeParameters &&
+                    (!display.generics.empty() || !display.genericPacks.empty())) {
+                    label += "<";
+                    bool first = true;
+
+                    const auto generic = [&](const std::string &text) {
+                        if (!first) {
+                            label += ", ";
+                        }
+
+                        first = false;
+                        label += text;
+                    };
+
+                    for (const auto type : display.generics) {
+                        generic(Luau::toString(type, options));
+                    }
+
+                    for (const auto pack : display.genericPacks) {
+                        generic(Luau::toString(pack, options));
+                    }
+
+                    label += ">";
+                }
+
+                label += "(";
+
+                const auto parameter = [&](const std::string &text) {
+                    if (!result.parameters.empty()) {
+                        label += ", ";
+                    }
+
+                    const auto start = label.size();
+                    label += text;
+                    result.parameters.push_back(NativeParameter{start, label.size()});
+                };
+
+                const auto &visible = Luau::get<Luau::TypePack>(&arguments)->head;
+
+                for (size_t index = 0; index < visible.size(); ++index) {
+                    const auto argument_name = index < options.namedFunctionOverrideArgNames.size()
+                                                   ? options.namedFunctionOverrideArgNames[index]
+                                               : index < display.argNames.size() && display.argNames[index]
+                                                   ? display.argNames[index]->name
+                                                   : "_";
+                    parameter(argument_name + ": " + Luau::toString(visible[index], options));
+                }
+
+                if (result.variadic) {
+                    parameter(
+                        "...: " + (variadic ? Luau::toString(variadic->ty, options) : Luau::toString(*tail, options))
+                    );
+                }
+
+                label += "): ";
+                const auto return_size = Luau::size(display.retTypes);
+                const auto return_tail = !Luau::finite(display.retTypes);
+                const bool wrap = Luau::get<Luau::TypePack>(Luau::follow(display.retTypes)) &&
+                                  (return_tail ? return_size != 0 : return_size > 1);
+
+                if (wrap) {
+                    label += "(";
+                }
+
+                label += Luau::toString(display.retTypes, options);
+
+                if (wrap) {
+                    label += ")";
+                }
+
+                result.label = rust::String(label);
 
                 if (!tail || variadic) {
                     result.minimum_arguments = Luau::getParameterExtents(Luau::TxnLog::empty(), &arguments).first;
