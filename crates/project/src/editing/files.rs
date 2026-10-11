@@ -46,9 +46,12 @@ impl Runtime {
 
         let mut capture = Capture::new(Arc::clone(&self.host), request.snapshot);
 
-        for change in &changes {
-            preflight(change, &mut capture, options)?;
-        }
+        let prepared = changes
+            .iter()
+            .try_for_each(|change| preflight(change, &mut capture, options));
+        report.snapshot = capture.snapshot.clone();
+        report.inputs = capture.guards();
+        prepared?;
 
         let selected = self.file_targets(&mut capture, options)?;
         let mut before = self.file_before(&selected, &mut capture, options)?;

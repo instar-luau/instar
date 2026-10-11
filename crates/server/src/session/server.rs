@@ -15,8 +15,8 @@ use instar_project::{
 };
 
 use instar_shared::{
-    Availability, Cancellation, Completion, DiagnosticCategory, Knowledge, OperationFailure,
-    Options, Reason, SourceSnapshot,
+    Availability, Cancellation, Completion, DiagnosticCategory, FailureKind, Knowledge,
+    OperationFailure, Options, Reason, SourceSnapshot,
 };
 
 use serde_json::to_value;
@@ -160,15 +160,22 @@ impl Server {
             return Err(Error::content_modified());
         }
 
-        if report.completion != Completion::Complete && !partial {
-            return Err(failure(&report.completion.error()));
-        }
+        if report.completion != Completion::Complete && !partial
+            || matches!(
+                report.completion,
+                Completion::Cancelled | Completion::TimedOut
+            )
+        {
+            let error = OperationFailure {
+                kind: FailureKind::Operational,
+                message: report.completion.error().to_string(),
+                completion: report.completion.clone(),
+                diagnostics: report.diagnostics.clone(),
+                completed_sources: Vec::new(),
+                completed_edits: Vec::new(),
+            };
 
-        if matches!(
-            report.completion,
-            Completion::Cancelled | Completion::TimedOut
-        ) {
-            return Err(failure(&report.completion.error()));
+            return Err(failure(&io::Error::from(error)));
         }
 
         if let Availability::Unavailable(reason) = report.availability {
@@ -297,12 +304,27 @@ pub(crate) fn failure(error: &io::Error) -> Error {
         _ => ErrorCode::ServerError(-32803),
     };
 
+    let operation = error
+        .get_ref()
+        .and_then(|failure| failure.downcast_ref::<OperationFailure>());
+    let mut message = error.to_string();
+
+    if let Some(operation) = operation {
+        for diagnostic in &operation.diagnostics {
+            if matches!(
+                diagnostic.category,
+                DiagnosticCategory::Configuration | DiagnosticCategory::Analysis
+            ) && !message.contains(&diagnostic.message)
+            {
+                message.push_str("; ");
+                message.push_str(&diagnostic.message);
+            }
+        }
+    }
+
     Error {
         code,
-        message: error.to_string().into(),
-        data: error
-            .get_ref()
-            .and_then(|failure| failure.downcast_ref::<OperationFailure>())
-            .and_then(|failure| to_value(failure).ok()),
+        message: message.into(),
+        data: operation.and_then(|failure| to_value(failure).ok()),
     }
 }

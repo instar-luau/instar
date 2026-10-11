@@ -1,7 +1,11 @@
-use std::{io, sync::Arc};
+use std::{
+    io,
+    sync::{Arc, Mutex},
+};
 
 use instar_shared::{
-    Completion, EditIdentity, EditIntent, EditProposal, Options, Reason, SourceVersion,
+    Completion, EditIdentity, EditIntent, EditProposal, OperationFailure, Options, Reason,
+    SourceVersion,
 };
 
 use instar_syntax::identifier;
@@ -9,8 +13,11 @@ use instar_syntax::identifier;
 use super::request::{EditGuarantee, EditRequest, ValidatedEdit};
 
 use crate::{
-    capture::Capture, execution::Runtime, inputs::ProjectSnapshot,
-    queries::service::checked_source, report::EditReport,
+    capture::Capture,
+    execution::{Runtime, failure},
+    inputs::ProjectSnapshot,
+    queries::service::checked_source,
+    report::EditReport,
 };
 
 impl Runtime {
@@ -46,7 +53,7 @@ impl Runtime {
             proposal: None,
             validated: None,
             linked_ranges: Vec::new(),
-            unavailable_guarantees: Vec::new(),
+            failure: None,
             diagnostics: Vec::new(),
             completion: Completion::Complete,
         };
@@ -100,6 +107,12 @@ impl Runtime {
                             .and_then(|cause| cause.downcast_ref::<Completion>())
                             .cloned()
                     })
+                    .or_else(|| {
+                        error
+                            .get_ref()
+                            .and_then(|cause| cause.downcast_ref::<OperationFailure>())
+                            .map(|failure| failure.completion.clone())
+                    })
                     .unwrap_or_else(|| {
                         let reason = error
                             .get_ref()
@@ -114,8 +127,11 @@ impl Runtime {
                         Completion::Incomplete(vec![reason])
                     });
 
-                report.completion = report.completion.clone().combine(completion);
-                report.unavailable_guarantees.push(error.to_string());
+                let mut operation = failure(&error, options, &Mutex::default());
+                operation.completion = report.completion.clone().combine(completion);
+                report.completion.clone_from(&operation.completion);
+                report.diagnostics.extend(operation.diagnostics.clone());
+                report.failure = Some(operation);
                 report.validated = None;
                 report.linked_ranges.clear();
             }
@@ -136,6 +152,12 @@ impl Runtime {
         });
 
         report.diagnostics.dedup();
+
+        if let Some(failure) = &mut report.failure {
+            failure.completion.clone_from(&report.completion);
+            failure.diagnostics.clone_from(&report.diagnostics);
+        }
+
         report.snapshots.push(report.snapshot.clone());
 
         Ok(report)

@@ -1688,9 +1688,7 @@ fn failed(
     }
 
     for outcome in outcomes {
-        if !failure.completed_sources.contains(&outcome) {
-            failure.completed_sources.push(outcome);
-        }
+        failure.retain_source(outcome);
     }
 
     for pending in failures {
@@ -1708,9 +1706,7 @@ fn failed(
         }
 
         for source in pending.completed_sources {
-            if !failure.completed_sources.contains(&source) {
-                failure.completed_sources.push(source);
-            }
+            failure.retain_source(source);
         }
 
         for edit in pending.completed_edits {

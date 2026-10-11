@@ -45,6 +45,21 @@ pub struct OperationFailure {
     pub completed_edits: Vec<EditOutcome>,
 }
 
+impl OperationFailure {
+    /// Retains one combined completion outcome per exact source revision.
+    pub fn retain_source(&mut self, outcome: SourceOutcome) {
+        if let Some(previous) = self
+            .completed_sources
+            .iter_mut()
+            .find(|previous| previous.source == outcome.source)
+        {
+            previous.completion = previous.completion.clone().combine(outcome.completion);
+        } else {
+            self.completed_sources.push(outcome);
+        }
+    }
+}
+
 impl Display for OperationFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.message)

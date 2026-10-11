@@ -1913,9 +1913,7 @@ fn finish_lint_failures(context: LintContext, report: LintReport) -> io::Result<
             }
 
             for outcome in additional.completed_sources {
-                if !failure.completed_sources.contains(&outcome) {
-                    failure.completed_sources.push(outcome);
-                }
+                failure.retain_source(outcome);
             }
 
             for outcome in additional.completed_edits {
@@ -1934,9 +1932,7 @@ fn finish_lint_failures(context: LintContext, report: LintReport) -> io::Result<
         }
 
         for outcome in report.outcomes {
-            if !failure.completed_sources.contains(&outcome) {
-                failure.completed_sources.push(outcome);
-            }
+            failure.retain_source(outcome);
         }
 
         return Err(failure.into());

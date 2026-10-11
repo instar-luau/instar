@@ -741,10 +741,8 @@ pub(crate) fn failure(
                 failure.diagnostics.push(diagnostic.clone());
             }
 
-            EventPayload::SourceOutcome(outcome)
-                if !failure.completed_sources.contains(outcome) =>
-            {
-                failure.completed_sources.push(outcome.clone());
+            EventPayload::SourceOutcome(outcome) => {
+                failure.retain_source(outcome.clone());
             }
 
             EventPayload::EditOutcome(outcome) if !failure.completed_edits.contains(outcome) => {

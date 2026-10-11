@@ -5,8 +5,8 @@ use instar_lint::{RuleAvailability, RuleFix};
 use instar_luau::{ImportOutcome, ImportSite, ModuleIdentity};
 
 use instar_shared::{
-    Availability, Completion, Diagnostic, EditIdentity, EditProposal, SourceIdentity,
-    SourceOutcome, SourceVersion,
+    Availability, Completion, Diagnostic, EditIdentity, EditProposal, OperationFailure,
+    SourceIdentity, SourceOutcome, SourceVersion,
 };
 
 use serde::{Serialize, Serializer, ser::SerializeStruct};
@@ -254,8 +254,8 @@ pub struct EditReport {
     /// Consulted input guards for freshness and application checks.
     pub inputs: Vec<InputVersion>,
 
-    /// Explanations of prerequisites or guarantees that could not be established.
-    pub unavailable_guarantees: Vec<String>,
+    /// Classified preparation failure retaining completion and accumulated outcomes.
+    pub failure: Option<OperationFailure>,
 
     /// Diagnostics retained during preparation and validation.
     pub diagnostics: Vec<Diagnostic>,

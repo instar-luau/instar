@@ -375,7 +375,7 @@ pub(crate) async fn edit(
         return Err(Error::content_modified());
     }
 
-    if report.completion != Completion::Complete || !report.unavailable_guarantees.is_empty() {
+    if report.completion != Completion::Complete || report.failure.is_some() {
         let rendered = report
             .diagnostics
             .iter()
@@ -385,14 +385,20 @@ pub(crate) async fn edit(
             })
             .collect::<Result<Vec<_>>>()?;
 
-        let mut error = if report.completion != Completion::Complete {
-            failure(&report.completion.error())
+        let mut error = if let Some(operation) = &report.failure {
+            failure(&operation.clone().into())
         } else {
-            Error::invalid_params(report.unavailable_guarantees.join("\n"))
+            failure(&report.completion.error())
         };
 
+        let guarantees = report
+            .failure
+            .iter()
+            .map(|failure| &failure.message)
+            .collect::<Vec<_>>();
+
         error.data = Some(
-            json!({"diagnostics":report.diagnostics,"rendered":rendered,"completion":report.completion,"guarantees":report.unavailable_guarantees}),
+            json!({"diagnostics":report.diagnostics,"rendered":rendered,"completion":report.completion,"guarantees":guarantees,"failure":report.failure}),
         );
 
         return Err(error);
