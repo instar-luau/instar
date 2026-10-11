@@ -819,7 +819,8 @@ pub(crate) fn diagnostic(
         .collect::<io::Result<Vec<_>>>()?;
 
     if let Some(request) = &captured.analysis
-        && input.message.contains("cyclic")
+        && category == DiagnosticCategory::Type
+        && input.code == 1024
     {
         for cycle in &request.cycles {
             for edge in &cycle.edges {
