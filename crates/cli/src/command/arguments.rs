@@ -77,7 +77,7 @@ pub(crate) enum Command {
     #[command(about = "Typecheck selected sources and their dependencies")]
     Check(CheckArguments),
 
-    #[command(about = "Check, preview, emit, or explicitly write validated formatting")]
+    #[command(about = "Format sources in place, or check, preview, and emit formatted source")]
     Format(FormatArguments),
 
     #[command(about = "Lint selected sources and their dependencies")]
@@ -178,14 +178,14 @@ pub(crate) struct FormatArguments {
     #[command(flatten)]
     pub(crate) inputs: InputArguments,
 
-    #[arg(long, conflicts_with_all = ["preview", "source", "write"])]
+    #[arg(long, conflicts_with_all = ["preview", "source"])]
     pub(crate) check: bool,
 
-    #[arg(long, conflicts_with_all = ["check", "source", "write"])]
+    #[arg(long, conflicts_with_all = ["check", "source"])]
     pub(crate) preview: bool,
 
-    #[command(flatten)]
-    pub(crate) output: FormatOutputArguments,
+    #[arg(long, conflicts_with_all = ["check", "preview"])]
+    pub(crate) source: bool,
 
     #[arg(long = "range", value_name = "START:END", action = clap::ArgAction::Append, conflicts_with = "on_type")]
     pub(crate) ranges: Vec<String>,
@@ -213,15 +213,6 @@ pub(crate) struct FormatArguments {
 
     #[arg(long, action = clap::ArgAction::Set)]
     pub(crate) final_newline: Option<bool>,
-}
-
-#[derive(Args, Clone)]
-pub(crate) struct FormatOutputArguments {
-    #[arg(long, conflicts_with_all = ["check", "preview"])]
-    pub(crate) source: bool,
-
-    #[arg(long, conflicts_with_all = ["check", "preview"], help = "Authorize protected writes to selected disk sources")]
-    pub(crate) write: bool,
 }
 
 #[derive(Clone, Copy, ValueEnum)]

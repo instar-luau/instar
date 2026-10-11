@@ -117,7 +117,6 @@ pub struct LintRequest {
 #[derive(Clone, Copy, Debug, Default)]
 pub enum FormatMode {
     /// Report formatting differences as a failed check.
-    #[default]
     Check,
 
     /// Produce previews without applying edits.
@@ -127,6 +126,7 @@ pub enum FormatMode {
     Source,
 
     /// Request protected disk writes, with standard input emitted as source.
+    #[default]
     Write,
 }
 

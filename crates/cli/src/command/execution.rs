@@ -194,33 +194,27 @@ async fn execute(
                 .iter()
                 .any(|path| path == Path::new("-"));
 
-            let mode = if arguments.output.write {
-                FormatMode::Write
+            let mode = if arguments.check {
+                FormatMode::Check
             } else if arguments.preview {
                 FormatMode::Preview
-            } else if arguments.output.source || (stdin && !arguments.check && !json_output) {
+            } else if arguments.source {
                 FormatMode::Source
             } else {
-                FormatMode::Check
+                FormatMode::default()
             };
 
-            if arguments.output.source && arguments.output.write && !stdin {
-                return Err(invalid("combined --source and --write requires stdin").into());
-            }
+            let source_output =
+                matches!(mode, FormatMode::Source) || (stdin && matches!(mode, FormatMode::Write));
 
-            if (matches!(mode, FormatMode::Source) || (stdin && arguments.output.write))
-                && json_output
-                && !report_destination
-            {
+            if source_output && json_output && !report_destination {
                 return Err(invalid(
                     "JSON source output requires --output for the report, or --check",
                 )
                 .into());
             }
 
-            if execution.watch
-                && (matches!(mode, FormatMode::Source) || (stdin && arguments.output.write))
-            {
+            if execution.watch && source_output {
                 return Err(
                     invalid("watch cannot be combined with formatted-source output").into(),
                 );

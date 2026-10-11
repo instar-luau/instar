@@ -182,9 +182,9 @@ fn check_and_preview_never_write() {
 }
 
 #[test]
-fn explicit_write_commits_validated_goldens() {
+fn default_formatting_commits_validated_goldens() {
     let fixture = Fixture::new("cli", "format/basic");
-    let written = fixture.run(&["format", "--json", "--write", "input.luau"]);
+    let written = fixture.run(&["format", "--json", "input.luau"]);
     assert_eq!(written.status, 0, "{}", written.stderr);
     let report = written.json();
     assert_eq!(report["completion"], "Complete");
@@ -202,7 +202,7 @@ fn explicit_write_commits_validated_goldens() {
                 .expect("original revision")
     );
     assert_eq!(fixture.bytes("input.luau"), fixture.bytes("expected.luau"));
-    let unchanged = fixture.run(&["format", "--json", "--write", "input.luau"]);
+    let unchanged = fixture.run(&["format", "--json", "input.luau"]);
     assert_eq!(unchanged.status, 0);
     assert_eq!(unchanged.json()["sources"][0]["write"], "Unchanged");
     assert_eq!(unchanged.json()["counts"]["written"], 0);
@@ -216,7 +216,7 @@ fn unchanged_write_leaves_metadata_and_bytes_untouched() {
         .expect("golden metadata")
         .modified()
         .expect("golden modification time");
-    let output = fixture.run(&["format", "--json", "--write", "expected.luau"]);
+    let output = fixture.run(&["format", "--json", "expected.luau"]);
     assert_eq!(output.status, 0);
     let report = output.json();
     assert_eq!(report["counts"]["unchanged"], 1);
@@ -241,7 +241,6 @@ fn batch_writes_retain_valid_and_unsuccessful_outcomes() {
     let output = fixture.run(&[
         "format",
         "--json",
-        "--write",
         "input.luau",
         "expected.luau",
         "broken.luau",
@@ -476,7 +475,7 @@ fn invalid_directives_are_source_attributed_failures() {
         ),
     ] {
         let original = fixture.bytes(name);
-        let output = fixture.run(&["format", "--json", "--write", name]);
+        let output = fixture.run(&["format", "--json", name]);
         assert_eq!(output.status, 5, "{name}");
         let report = output.json();
         let source = &report["sources"][0];
@@ -773,15 +772,7 @@ fn source_output_is_isolated_and_stdin_never_authorizes_context_writes() {
     );
     assert_eq!(report["sources"][0]["write"], "NotRequested");
     let write = fixture.stdin(
-        &[
-            "format",
-            "--write",
-            "--source",
-            "--quiet",
-            "--stdin-filepath",
-            "input.luau",
-            "-",
-        ],
+        &["format", "--quiet", "--stdin-filepath", "input.luau", "-"],
         &fixture.read("input.luau"),
     );
     assert_eq!(write.status, 0);
@@ -910,7 +901,7 @@ fn invalid_invocations_and_empty_selections_are_explicit() {
         ],
         vec!["format", "--source", "input.luau", "expected.luau"],
         vec!["format", "--source", "--json", "input.luau"],
-        vec!["format", "--source", "--write", "input.luau"],
+        vec!["format", "--source", "--check", "input.luau"],
         vec!["format", "--source", "--watch", "input.luau"],
         vec!["format", "--json", "--check", "absent*.luau"],
         vec![
@@ -1017,7 +1008,7 @@ fn unsupported_encoding_and_utf8_range_boundaries_never_produce_output() {
         ("invalid.luau", vec![b'l', 0xff, b'\n'], "invalid utf-8"),
     ] {
         fixture.write(name, &bytes);
-        let output = fixture.run(&["format", "--json", "--write", name]);
+        let output = fixture.run(&["format", "--json", name]);
         assert_eq!(output.status, 2);
         assert_eq!(output.stdout, "");
         assert!(
@@ -1570,7 +1561,6 @@ fn combined_stdin_writes_only_the_authorized_disk_source() {
     let output = fixture.stdin(
         &[
             "format",
-            "--write",
             "--json",
             "--output",
             "report.json",
