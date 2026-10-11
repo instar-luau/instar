@@ -4,7 +4,7 @@ use tower_lsp_server::gen_lsp_types::{
     ClientCapabilities, ClientSemanticTokensRequestOptionsFull,
     ClientSemanticTokensRequestOptionsRange, CodeActionOptions, CodeLensOptions, CompletionOptions,
     DiagnosticOptions, DocumentLinkOptions, DocumentOnTypeFormattingOptions, ExecuteCommandOptions,
-    FileOperationFilter, FileOperationOptions, FileOperationPattern, FileOperationPatternKind,
+    FileOperationFilter, FileOperationOptions, FileOperationPattern,
     FileOperationRegistrationOptions, Full, InlayHintOptions, InlineCompletionOptions, MarkupKind,
     PositionEncodingKind, RenameOptions, SemanticTokensFullDelta, SemanticTokensLegend,
     SemanticTokensOptions, SemanticTokensOptionsRange, ServerCapabilities, SignatureHelpOptions,
@@ -225,13 +225,29 @@ impl Capabilities {
         let files = FileOperationRegistrationOptions {
             filters: vec![FileOperationFilter {
                 scheme: Some("file".to_owned()),
-                pattern: FileOperationPattern::new(
-                    "**/*".to_owned(),
-                    Some(FileOperationPatternKind::File),
-                    None,
-                ),
+                pattern: FileOperationPattern::new("**/*".to_owned(), None, None),
             }],
         };
+
+        let operations = self
+            .workspace()
+            .and_then(|workspace| workspace.file_operations.as_ref())
+            .filter(|operations| {
+                operations.did_create == Some(true)
+                    || operations.will_create == Some(true)
+                    || operations.did_rename == Some(true)
+                    || operations.will_rename == Some(true)
+                    || operations.did_delete == Some(true)
+                    || operations.will_delete == Some(true)
+            })
+            .map(|operations| FileOperationOptions {
+                did_create: (operations.did_create == Some(true)).then(|| files.clone()),
+                will_create: (operations.will_create == Some(true)).then(|| files.clone()),
+                did_rename: (operations.did_rename == Some(true)).then(|| files.clone()),
+                will_rename: (operations.will_rename == Some(true)).then(|| files.clone()),
+                did_delete: (operations.did_delete == Some(true)).then(|| files.clone()),
+                will_delete: (operations.will_delete == Some(true)).then_some(files),
+            });
 
         let symbols = self
             .workspace()
@@ -364,14 +380,7 @@ impl Capabilities {
                     supported: Some(true),
                     change_notifications: Some(true.into()),
                 }),
-                file_operations: Some(FileOperationOptions {
-                    did_create: Some(files.clone()),
-                    will_create: Some(files.clone()),
-                    did_rename: Some(files.clone()),
-                    will_rename: Some(files.clone()),
-                    did_delete: Some(files.clone()),
-                    will_delete: Some(files),
-                }),
+                file_operations: operations,
                 text_document_content: self
                     .workspace()
                     .filter(|workspace| workspace.text_document_content.is_some())
