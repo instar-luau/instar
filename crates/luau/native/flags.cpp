@@ -7,9 +7,16 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 namespace instar {
     namespace {
+        struct ResolvedFlag {
+            const NativeFlag &value;
+            Luau::FValue<bool> *boolean;
+            Luau::FValue<int> *integer;
+        };
+
         template <typename Value> Luau::FValue<Value> *registered_flag(const std::string &name) {
             for (auto *flag = Luau::FValue<Value>::list; flag; flag = flag->next) {
                 if (name == flag->name ||
@@ -21,7 +28,7 @@ namespace instar {
             return nullptr;
         }
 
-        void validate_flags(rust::Slice<const NativeFlag> flags) {
+        std::vector<ResolvedFlag> validate_flags(rust::Slice<const NativeFlag> flags) {
             static const std::unordered_set<std::string> stdout_flags{
                 "DebugLuauLogSolver",
                 "DebugLuauLogBindings",
@@ -33,12 +40,17 @@ namespace instar {
             };
 
             std::unordered_set<const void *> registered;
+            std::vector<ResolvedFlag> resolved;
+            resolved.reserve(flags.size());
 
             for (const auto &flag : flags) {
                 const std::string name(flag.name);
 
-                const void *found = flag.is_boolean ? static_cast<const void *>(registered_flag<bool>(name))
-                                                    : static_cast<const void *>(registered_flag<int>(name));
+                auto *boolean = flag.is_boolean ? registered_flag<bool>(name) : nullptr;
+                auto *integer = flag.is_boolean ? nullptr : registered_flag<int>(name);
+
+                const void *found =
+                    flag.is_boolean ? static_cast<const void *>(boolean) : static_cast<const void *>(integer);
 
                 if (!found) {
                     throw std::invalid_argument("unknown Luau flag or incorrect value type: " + name);
@@ -48,11 +60,14 @@ namespace instar {
                     throw std::invalid_argument("duplicate Luau flag alias: " + name);
                 }
 
-                if (flag.is_boolean && flag.boolean &&
-                    stdout_flags.find(registered_flag<bool>(name)->name) != stdout_flags.end()) {
+                if (boolean && flag.boolean && stdout_flags.find(boolean->name) != stdout_flags.end()) {
                     throw std::invalid_argument("Luau flag writes to stdout and is unavailable: " + name);
                 }
+
+                resolved.push_back({flag, boolean, integer});
             }
+
+            return resolved;
         }
 
         const std::map<std::string, NativeFlag> &registry_defaults() {
@@ -72,40 +87,32 @@ namespace instar {
     }
 
     void apply_flags(rust::Slice<const NativeFlag> flags) {
-        validate_flags(flags);
+        const auto resolved = validate_flags(flags);
         static_cast<void>(registry_defaults());
 
-        for (const auto &flag : flags) {
-            const std::string name(flag.name);
-
-            if (flag.is_boolean) {
-                registered_flag<bool>(name)->value = flag.boolean;
+        for (const auto &flag : resolved) {
+            if (flag.boolean) {
+                flag.boolean->value = flag.value.boolean;
             } else {
-                registered_flag<int>(name)->value = flag.integer;
+                flag.integer->value = flag.value.integer;
             }
         }
     }
 
     rust::Vec<NativeFlag> normalize_flags(rust::Slice<const NativeFlag> flags) {
-        validate_flags(flags);
+        const auto resolved = validate_flags(flags);
         auto effective = registry_defaults();
 
-        for (const auto &flag : flags) {
-            const std::string name(flag.name);
-
-            if (flag.is_boolean) {
-                const auto *registered = registered_flag<bool>(name);
-
+        for (const auto &flag : resolved) {
+            if (flag.boolean) {
                 effective.insert_or_assign(
-                    registered->name,
-                    NativeFlag{rust::String(registered->name), flag.boolean, 0, true}
+                    flag.boolean->name,
+                    NativeFlag{rust::String(flag.boolean->name), flag.value.boolean, 0, true}
                 );
             } else {
-                const auto *registered = registered_flag<int>(name);
-
                 effective.insert_or_assign(
-                    registered->name,
-                    NativeFlag{rust::String(registered->name), false, flag.integer, false}
+                    flag.integer->name,
+                    NativeFlag{rust::String(flag.integer->name), false, flag.value.integer, false}
                 );
             }
         }
