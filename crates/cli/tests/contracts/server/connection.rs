@@ -41,10 +41,12 @@ pub(super) fn capabilities() -> Value {
 
 pub(super) fn connect(fixture: &Fixture, capabilities: &Value) -> Session {
     let mut session = Session::new(fixture);
+
     session.reply(
         "workspace/workspaceFolders",
         json!([{"uri":fixture.uri(""),"name":"contract"}]),
     );
+
     let initialized = session.request(
         "initialize",
         &json!({
@@ -54,21 +56,26 @@ pub(super) fn connect(fixture: &Fixture, capabilities: &Value) -> Session {
             "capabilities":capabilities
         }),
     );
+
     assert_eq!(initialized["serverInfo"]["name"], "Instar");
     session.notify("initialized", &json!({}));
+
     session
 }
 
 pub(super) fn open(session: &mut Session, fixture: &Fixture, name: &str) -> String {
     let text = fixture.read(name);
     let address = fixture.uri(name);
+
     session.notify(
         "textDocument/didOpen",
         &json!({"textDocument":{"uri":address,"languageId":"luau","version":1,"text":text}}),
     );
+
     assert_eq!(
         session.request("workspace/textDocumentContent", &json!({"uri":address}))["text"],
         text
     );
+
     text
 }

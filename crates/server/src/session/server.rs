@@ -318,6 +318,7 @@ pub(crate) fn failure(error: &io::Error) -> Error {
     let operation = error
         .get_ref()
         .and_then(|failure| failure.downcast_ref::<OperationFailure>());
+
     let mut message = error.to_string();
 
     if let Some(operation) = operation {

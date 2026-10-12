@@ -2,6 +2,7 @@
 
 #[macro_use]
 mod catalog;
+
 mod fixes;
 mod request;
 mod result;

@@ -1,7 +1,6 @@
-#include "semantics.hpp"
-
 #include "analysis.hpp"
 #include "parsing.hpp"
+#include "semantics.hpp"
 
 #include "Luau/AstQuery.h"
 #include "Luau/GlobalTypes.h"
@@ -312,9 +311,10 @@ namespace instar::native {
                         const auto scope = Luau::findScopeAtPosition(module, position);
 
                         if (scope) {
-                            const auto binding = reference->prefix
-                                ? scope->lookupImportedType(reference->prefix->value, reference->name.value)
-                                : scope->lookupType(reference->name.value);
+                            const auto binding =
+                                reference->prefix
+                                    ? scope->lookupImportedType(reference->prefix->value, reference->name.value)
+                                    : scope->lookupType(reference->name.value);
 
                             if (binding && binding->typeParams.empty() && binding->typePackParams.empty()) {
                                 return binding->type;
@@ -388,6 +388,7 @@ namespace instar::native {
                         binding = reference->prefix
                                       ? scope->lookupImportedType(reference->prefix->value, reference->name.value)
                                       : scope->lookupType(reference->name.value);
+
                         break;
                     }
                 }
@@ -482,9 +483,10 @@ namespace instar::native {
             for (auto node = ancestry.rbegin(); node != ancestry.rend(); ++node) {
                 if (const auto *annotation = (*node)->asType()) {
                     const auto *reference = annotation->as<Luau::AstTypeReference>();
-                    range = reference && reference->nameLocation.contains(position)
-                        ? reference->nameLocation
-                        : annotation->location;
+
+                    range = reference && reference->nameLocation.contains(position) ? reference->nameLocation
+                                                                                    : annotation->location;
+
                     break;
                 }
             }
@@ -1051,6 +1053,7 @@ namespace instar::native {
                                                : index < display.argNames.size() && display.argNames[index]
                                                    ? display.argNames[index]->name
                                                    : "_";
+
                     parameter(argument_name + ": " + Luau::toString(visible[index], options));
                 }
 
@@ -1063,6 +1066,7 @@ namespace instar::native {
                 label += "): ";
                 const auto return_size = Luau::size(display.retTypes);
                 const auto return_tail = !Luau::finite(display.retTypes);
+
                 const bool wrap = Luau::get<Luau::TypePack>(Luau::follow(display.retTypes)) &&
                                   (return_tail ? return_size != 0 : return_size > 1);
 

@@ -49,6 +49,7 @@ impl Runtime {
         let prepared = changes
             .iter()
             .try_for_each(|change| preflight(change, &mut capture, options));
+
         report.snapshot = capture.snapshot.clone();
         report.inputs = capture.guards();
         prepared?;
@@ -330,10 +331,12 @@ impl Runtime {
 
             let destination = if let Some(alias) = requested.strip_prefix('@') {
                 let (name, _) = alias.split_once(['/', '\\']).unwrap_or((alias, ""));
+
                 let node = intermediate
                     .modules
                     .get(&edge.importer)
                     .ok_or_else(|| unavailable("file importer lost its semantic context"))?;
+
                 let root = node
                     .effective
                     .settings
@@ -344,6 +347,7 @@ impl Runtime {
                     format!("@{name}")
                 } else {
                     let suffix = relative(&root, &target)?;
+
                     format!("@{name}/{}", suffix.strip_prefix("./").unwrap_or(&suffix))
                 }
             } else {

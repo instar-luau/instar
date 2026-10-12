@@ -127,15 +127,18 @@ impl Runtime {
                 match self.workers.receive(pending, options) {
                     Ok(WorkOutput::Format(result)) => result,
                     Ok(_) => return Err(io::Error::other("format lane returned wrong outcome")),
+
                     Err(error) => {
                         if let Some(completion) = options.interrupted() {
                             report.completion = report.completion.combine(completion);
                             break;
                         }
+
                         return Err(error);
                     }
                 }
             };
+
             if result.completion == Completion::Complete {
                 self.host
                     .formats
@@ -143,6 +146,7 @@ impl Runtime {
                     .unwrap_or_else(PoisonError::into_inner)
                     .insert(input.source.version.identity, (input, result.clone()));
             }
+
             self.format_result(request, result, &mut report, options)?;
         }
 

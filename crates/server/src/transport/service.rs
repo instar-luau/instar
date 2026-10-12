@@ -54,6 +54,7 @@ where
                 "window/workDoneProgress/cancel",
                 |server: &Server, parameters| {
                     server.cancel_progress(&parameters);
+
                     ready(())
                 },
             )

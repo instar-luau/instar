@@ -124,11 +124,13 @@ fn handle_request(
 
             snapshot.validate()?;
             snapshots.push(snapshot.clone());
+
             ResponseOutcome::Captured {
                 index: *index,
                 source: snapshot.version,
             }
         }
+
         Operation::Analyze(input) => {
             let snapshots = mem::take(snapshots);
             let input = input.unpack(&snapshots)?;
@@ -270,6 +272,7 @@ fn query_request(
         Operation::Lint(input) => lint_request(active, input, &operation_context, emitter),
         Operation::Inspect(input) => inspection_request(active, input, &operation_context),
         Operation::Complete(input) => completion_request(active, input, &operation_context),
+
         Operation::Capture { .. } | Operation::Analyze(_) => {
             Err(conversion::invalid("invalid native operation dispatch"))
         }

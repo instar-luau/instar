@@ -258,6 +258,7 @@ impl Context<'_, '_> {
             Knowledge::Known(count) => count,
             Knowledge::Unavailable(_) => values.len() - usize::from(expands),
         };
+
         let mut unavailable = false;
 
         for signature in signatures {

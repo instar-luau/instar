@@ -22,7 +22,8 @@ namespace instar::native {
             void local(const Luau::AstLocal *binding) {
                 if (binding && binding->shadow) {
                     declarations.emplace(
-                        binding->location.begin, std::make_pair(binding->location, binding->shadow->location)
+                        binding->location.begin,
+                        std::make_pair(binding->location, binding->shadow->location)
                     );
                 }
             }
@@ -31,16 +32,19 @@ namespace instar::native {
                 for (const auto *binding : node->vars) {
                     local(binding);
                 }
+
                 return true;
             }
 
             bool visit(Luau::AstStatLocalFunction *node) override {
                 local(node->name);
+
                 return true;
             }
 
             bool visit(Luau::AstStatFor *node) override {
                 local(node->var);
+
                 return true;
             }
 
@@ -48,6 +52,7 @@ namespace instar::native {
                 for (const auto *binding : node->vars) {
                     local(binding);
                 }
+
                 return true;
             }
 
@@ -55,6 +60,7 @@ namespace instar::native {
                 for (const auto *binding : node->args) {
                     local(binding);
                 }
+
                 return true;
             }
         };
@@ -66,15 +72,18 @@ namespace instar::native {
             NativeWarning result{location(operation, name, warning.location),
                 static_cast<int32_t>(warning.code),
                 rust::String(Luau::LintWarning::getName(warning.code)),
-                rust::String(warning.text), {}};
+                rust::String(warning.text),
+                {}};
 
             if (warning.code == Luau::LintWarning::Code_LocalShadow ||
                 warning.code == Luau::LintWarning::Code_DuplicateLocal) {
                 const auto found = shadows.declarations.find(warning.location.begin);
+
                 if (found != shadows.declarations.end() && found->second.first == warning.location) {
-                    result.related.push_back(NativeRelated{
-                        location(operation, name, found->second.second), rust::String("previous declaration")
-                    });
+                    result.related.push_back(
+                        NativeRelated{location(operation, name, found->second.second),
+                            rust::String("previous declaration")}
+                    );
                 }
             }
 

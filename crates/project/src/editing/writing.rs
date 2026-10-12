@@ -36,6 +36,7 @@ impl Runtime {
                 .original
                 .source(version.identity)
                 .ok_or_else(|| invalid("proposal source is absent"))?;
+
             let proposed = request
                 .edit
                 .proposed
@@ -129,6 +130,7 @@ impl Runtime {
                     Ok((next, revision)) => {
                         *snapshot = next;
                         revisions.push(revision);
+
                         writes.push(WriteOutcome::Written {
                             source: original.version,
                             revision: revision.revision,
@@ -242,6 +244,7 @@ fn write(
     let parent = destination
         .parent()
         .ok_or_else(|| invalid("write destination has no parent"))?;
+
     let mut staged = tempfile::NamedTempFile::new_in(parent)?;
     staged.write_all(proposed.text.as_bytes())?;
     staged.as_file().set_permissions(metadata.permissions())?;

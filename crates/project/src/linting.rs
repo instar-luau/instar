@@ -462,12 +462,14 @@ impl Runtime {
     ) -> Vec<(ModuleIdentity, io::Result<WorkOutput>)> {
         let results = self.analyze_with(recipes, options, &|index, result| {
             let recipe = slice::from_ref(&recipes[index]);
+
             let mut environment = recipe[0]
                 .request
                 .modules
                 .iter()
                 .map(|module| {
                     let identity = module.analysis.module;
+
                     (identity, state.environment[&identity])
                 })
                 .collect::<BTreeMap<_, _>>();
@@ -480,6 +482,7 @@ impl Runtime {
 
             for module in &result.modules {
                 let identity = module.analysis.module;
+
                 let status = lint_environment(
                     module,
                     &context.graph.modules[&identity],
@@ -494,6 +497,7 @@ impl Runtime {
 
             identities.into_iter().zip(work).collect()
         });
+
         let mut prerequisites = Vec::new();
 
         for (recipe, (result, following)) in recipes.iter().zip(results) {
@@ -540,6 +544,7 @@ impl Runtime {
                     }
                 }
             }
+
             prerequisites.extend(following);
         }
 
@@ -1116,6 +1121,7 @@ fn record_lint_analysis(module: &ModuleAnalysis, context: &LintContext, state: &
     state.completed = state.completed.clone().combine(module.completion.clone());
 
     let identity = module.analysis.module;
+
     let status = lint_environment(
         module,
         &context.graph.modules[&identity],
@@ -1537,6 +1543,7 @@ fn lint_modules<'source>(
 
         settings.globals.sort();
         settings.globals.dedup();
+
         let source = sources
             .remove(&node.identity)
             .unwrap_or_else(|| LintSource::new(node, options));

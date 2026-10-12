@@ -70,6 +70,7 @@ impl Work {
         match self {
             Self::Analysis(input) => Some(input.closure),
             Self::CachedAnalysis { closure, .. } => Some(*closure),
+
             Self::Facts { closure, .. }
             | Self::Warnings { closure, .. }
             | Self::Inspect { closure, .. }
@@ -548,6 +549,7 @@ impl Workers {
                         let output = budget.acquire(options).map(|_permit| {
                             let mut lane = lane.lock().unwrap_or_else(PoisonError::into_inner);
                             let result = lane.execute(work, options);
+
                             let prerequisites = result.as_ref().map_or_else(
                                 |_| Vec::new(),
                                 |result| {
@@ -560,6 +562,7 @@ impl Workers {
 
                             (result, prerequisites)
                         });
+
                         let output = output.unwrap_or_else(|error| (Err(error), Vec::new()));
 
                         if sender.send((index, output)).is_err() {
@@ -652,6 +655,7 @@ impl Workers {
 
         for (index, work) in work.into_iter().enumerate() {
             let closure = work.closure();
+
             let existing = closure.and_then(|closure| {
                 groups
                     .iter_mut()

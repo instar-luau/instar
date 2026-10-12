@@ -35,6 +35,7 @@ pub(crate) enum Operation {
         index: usize,
         snapshot: SourceSnapshot,
     },
+
     Analyze(WireAnalysisRequest),
     Facts(WireFactsInput),
     Lint(WireLintInput),
@@ -72,6 +73,7 @@ impl WireAnalysisRequest {
             .iter()
             .map(|module| {
                 let source = WireSourceInput::new(&module.source, &mut snapshots, &mut indices)?;
+
                 let environment = module
                     .environment
                     .as_ref()
@@ -135,6 +137,7 @@ impl WireAnalysisRequest {
             .iter()
             .map(|module| {
                 let source = module.source.unpack(snapshots, &mut used)?;
+
                 let environment = module
                     .environment
                     .as_ref()
@@ -400,6 +403,7 @@ impl PackedAnalysisResult {
             .analysis
             .as_ref()
             .ok_or_else(|| conversion::invalid("native captured analysis input is missing"))?;
+
         conversion::validate_analysis_result(input, request, captured)?;
 
         let modules = input
@@ -490,6 +494,7 @@ impl PackedAnalysisResult {
             .analysis
             .as_ref()
             .ok_or_else(|| conversion::invalid("native captured analysis input is missing"))?;
+
         conversion::validate_analysis_result(&output, input, captured)?;
 
         Ok(output)
@@ -574,7 +579,9 @@ fn row<'table, Value>(
     let value = table
         .get(index)
         .ok_or_else(|| conversion::invalid("native input reference is out of range"))?;
+
     used.insert(index);
+
     Ok(value)
 }
 
@@ -585,6 +592,7 @@ fn table_index<Value: Clone + PartialEq>(value: &Value, table: &mut Vec<Value>) 
 
     let index = table.len();
     table.push(value.clone());
+
     index
 }
 

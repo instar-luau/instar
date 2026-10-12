@@ -2,6 +2,7 @@ use instar_shared::{
     Completion, Diagnostic, DiagnosticCategory, Location, Options, RelatedLocation, SourceVersion,
     Span,
 };
+
 use serde::{Deserialize, Serialize};
 use vermis::{token::TokenKind, tree::NodeKind};
 
@@ -173,6 +174,7 @@ fn format(
                     "nested formatting region",
                     DiagnosticCategory::Formatting,
                 );
+
                 finding.related.push(RelatedLocation {
                     location: Location {
                         source: tree.snapshot().version,
@@ -180,6 +182,7 @@ fn format(
                     },
                     message: "formatting region starts here".to_owned(),
                 });
+
                 result.diagnostics.push(finding);
             } else {
                 *region = Some(location);

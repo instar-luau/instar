@@ -551,6 +551,7 @@ impl BindingResult {
             {
                 self.execution
                     .insert(declaration.get(), self.execution_scope);
+
                 self.function(tree, *declaration, true);
             }
 

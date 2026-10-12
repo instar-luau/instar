@@ -16,25 +16,30 @@ pub(crate) fn hierarchy(
         vec![identity.clone()]
     } else if request.position.is_some() {
         let inspection = inspection.ok_or(Reason::FailedPrerequisite)?;
+
         let category = match request.kind {
             HierarchyQueryKind::PrepareTypes
             | HierarchyQueryKind::Supertypes
             | HierarchyQueryKind::Subtypes => SemanticCategory::Nominals,
+
             HierarchyQueryKind::PrepareCalls
             | HierarchyQueryKind::IncomingCalls
             | HierarchyQueryKind::OutgoingCalls => SemanticCategory::Functions,
         };
+
         match &inspection.occurrence {
             Some(occurrence) => match &occurrence.hierarchy {
                 Knowledge::Known(identities) => identities.clone(),
                 Knowledge::Unavailable(reason) => return Err(*reason),
             },
+
             None if inspection.completion == Completion::Complete
                 && inspection.availability.categories.get(&category)
                     == Some(&Availability::Available) =>
             {
                 Vec::new()
             }
+
             None => return Err(Reason::UnavailableSemantics),
         }
     } else {

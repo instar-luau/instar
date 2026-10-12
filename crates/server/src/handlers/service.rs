@@ -39,6 +39,7 @@ use super::{
     assistance, diagnostics, editing, formatting, hierarchy, navigation, presentation,
     synchronization, workspace,
 };
+
 use crate::Server;
 
 impl LanguageServer for Server {

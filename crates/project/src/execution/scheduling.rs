@@ -13,6 +13,7 @@ use std::{
 };
 
 use instar_format::{FormatInput, FormatResult};
+
 use instar_shared::{
     Cancellation, Completion, ContextIdentity, Event, EventPayload, FailureKind, OperationFailure,
     Options, Progress, Reason, SourceIdentity, SourceVersion,

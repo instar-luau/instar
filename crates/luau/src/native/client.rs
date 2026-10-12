@@ -465,12 +465,14 @@ impl Native {
                         index: captured,
                         source,
                     } if captured == index && source == version => {}
+
                     _ => {
                         return self.reject(conversion::invalid(
                             "native snapshot acknowledgement disagrees with its capture",
                         ));
                     }
                 },
+
                 Outcome::Interrupted(completion) => return Ok(Some(completion)),
             }
         }

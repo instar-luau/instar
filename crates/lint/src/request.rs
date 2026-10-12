@@ -434,6 +434,7 @@ fn availability(
 
         if facts.completion != Completion::Complete && !(demand_driven && uncertainty) {
             result.completion = result.completion.clone().combine(facts.completion.clone());
+
             status =
                 combine_availability(status, Availability::Partial(Reason::FailedPrerequisite));
         }

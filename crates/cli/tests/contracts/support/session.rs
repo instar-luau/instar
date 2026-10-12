@@ -38,6 +38,7 @@ impl Session {
             .stderr(Stdio::piped())
             .spawn()
             .expect("launch real Instar server");
+
         let input = child.stdin.take().expect("server stdin");
         let output = child.stdout.take().expect("server stdout");
         let mut error = child.stderr.take().expect("server stderr");
@@ -45,6 +46,7 @@ impl Session {
         let (sender, messages) = mpsc::channel();
         let errors = Arc::new(Mutex::new(String::new()));
         let captured = Arc::clone(&errors);
+
         let threads = vec![
             thread::spawn(move || {
                 let mut input = input;
@@ -83,6 +85,7 @@ impl Session {
                 }
             }),
         ];
+
         Self {
             child,
             writer: Some(writer),
@@ -100,15 +103,18 @@ impl Session {
     pub(in crate::contracts) fn request(&mut self, method: &str, parameters: &Value) -> Value {
         let response = self.response(method, parameters);
         assert!(response.get("error").is_none(), "{method}: {response}");
+
         response.get("result").expect("request result").clone()
     }
 
     pub(in crate::contracts) fn response(&mut self, method: &str, parameters: &Value) -> Value {
         let identifier = self.start(method, parameters);
         let response = self.receive(identifier);
+
         if method == "shutdown" && response.get("error").is_none() {
             self.shutdown = true;
         }
+
         response
     }
 
@@ -116,11 +122,13 @@ impl Session {
         self.identifier += 1;
         let identifier = self.identifier;
         self.send(json!({"jsonrpc":"2.0", "id":identifier, "method":method, "params":parameters}));
+
         identifier
     }
 
     pub(in crate::contracts) fn receive(&mut self, identifier: u64) -> Value {
         let deadline = Instant::now() + DEADLINE;
+
         loop {
             if let Some(index) = self
                 .retained
@@ -129,6 +137,7 @@ impl Session {
             {
                 return self.retained.remove(index);
             }
+
             self.pump(deadline);
         }
     }
@@ -139,6 +148,7 @@ impl Session {
 
     pub(in crate::contracts) fn message(&mut self, method: &str) -> Value {
         let deadline = Instant::now() + DEADLINE;
+
         loop {
             if let Some(index) = self
                 .retained
@@ -147,6 +157,7 @@ impl Session {
             {
                 return self.retained.remove(index);
             }
+
             self.pump(deadline);
         }
     }
@@ -168,28 +179,34 @@ impl Session {
         if !self.shutdown {
             assert_eq!(self.request("shutdown", &Value::Null), Value::Null);
         }
+
         self.notify("exit", &Value::Null);
         let deadline = Instant::now() + DEADLINE;
+
         loop {
             if let Some(status) = self.child.try_wait().expect("server process status") {
                 return status.code().expect("server exit code");
             }
+
             assert!(
                 Instant::now() < deadline,
                 "server failed to exit: {}",
                 self.errors.lock().expect("server stderr")
             );
+
             thread::sleep(Duration::from_millis(10));
         }
     }
 
     fn send(&self, value: Value) {
         let (sender, completion) = mpsc::channel();
+
         self.writer
             .as_ref()
             .expect("live server stdin")
             .send((value, sender))
             .expect("server writer thread");
+
         completion
             .recv_timeout(DEADLINE)
             .expect("bounded server write")
@@ -198,6 +215,7 @@ impl Session {
 
     fn pump(&mut self, deadline: Instant) {
         let duration = deadline.saturating_duration_since(Instant::now());
+
         let message = self
             .messages
             .recv_timeout(duration)
@@ -208,7 +226,9 @@ impl Session {
                 )
             })
             .expect("valid server frame");
+
         assert_eq!(message["jsonrpc"], "2.0");
+
         if let (Some(method), Some(identifier)) = (message["method"].as_str(), message.get("id"))
             && !self.held.remove(method)
         {
@@ -224,10 +244,13 @@ impl Session {
                             .expect("configuration scopes")
                             .len()
                     ]),
+
                     "workspace/applyEdit" => {
                         json!({"applied":false,"failureReason":"contract client declined edit"})
                     }
+
                     "window/showDocument" => json!({"success":true}),
+
                     "workspace/workspaceFolders"
                     | "window/showMessageRequest"
                     | "client/registerCapability"
@@ -240,10 +263,13 @@ impl Session {
                     | "workspace/inlineValue/refresh"
                     | "workspace/foldingRange/refresh"
                     | "workspace/textDocumentContent/refresh" => Value::Null,
+
                     _ => panic!("unexpected server request: {message}"),
                 });
+
             self.respond(identifier, &result);
         }
+
         self.retained.push(message);
     }
 }
@@ -253,10 +279,13 @@ impl Drop for Session {
         {
             let _writer = self.writer.take();
         }
+
         if self.child.try_wait().ok().flatten().is_none() {
             let _result = self.child.kill();
         }
+
         let _result = self.child.wait();
+
         for thread in self.threads.drain(..) {
             let _result = thread.join();
         }
@@ -265,8 +294,10 @@ impl Drop for Session {
 
 fn frame(reader: &mut impl BufRead) -> Result<Value, String> {
     let mut length = None;
+
     for _index in 0..32 {
         let mut header = String::new();
+
         if reader
             .read_line(&mut header)
             .map_err(|error| error.to_string())?
@@ -274,23 +305,30 @@ fn frame(reader: &mut impl BufRead) -> Result<Value, String> {
         {
             return Err("server stdout closed".to_owned());
         }
+
         if header == "\r\n" {
             let length = length.ok_or_else(|| "missing Content-Length".to_owned())?;
+
             if length > 16 * 1024 * 1024 {
                 return Err("server frame exceeds contract bound".to_owned());
             }
+
             let mut bytes = vec![0; length];
+
             reader
                 .read_exact(&mut bytes)
                 .map_err(|error| error.to_string())?;
+
             return serde_json::from_slice(&bytes).map_err(|error| error.to_string());
         }
+
         if let Some((name, value)) = header.split_once(':')
             && name.eq_ignore_ascii_case("Content-Length")
         {
             if length.is_some() {
                 return Err("duplicate Content-Length".to_owned());
             }
+
             length = Some(
                 value
                     .trim()
@@ -299,5 +337,6 @@ fn frame(reader: &mut impl BufRead) -> Result<Value, String> {
             );
         }
     }
+
     Err("too many server headers".to_owned())
 }

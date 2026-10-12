@@ -285,6 +285,7 @@ impl Runtime {
                     results[index] = Some((Ok(Arc::clone(&entry.result)), Vec::new()));
                 } else {
                     indices.push(index);
+
                     work.push(Work::CachedAnalysis {
                         closure: recipe.request.closure,
                         result: Arc::clone(&entry.result),
@@ -686,6 +687,7 @@ pub(crate) fn reporting(
 
         retained.push(finding);
     }
+
     options.check()?;
 
     Ok((retained, failed))
