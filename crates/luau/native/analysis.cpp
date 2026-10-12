@@ -1,6 +1,4 @@
 #include "analysis.hpp"
-#include "environment.hpp"
-#include "parsing.hpp"
 
 #include "Luau/Ast.h"
 #include "Luau/BuiltinDefinitions.h"
@@ -9,6 +7,8 @@
 #include "Luau/Error.h"
 #include "Luau/Module.h"
 #include "Luau/TypeArena.h"
+#include "environment.hpp"
+#include "parsing.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -127,10 +127,16 @@ namespace instar::native {
 
     NativeAnalysisResult
     analyze(AnalysisState &state, const NativeAnalysisRequest &input, const NativeOperation &operation) {
+        size_t completed = 0;
         NativeAnalysisResult result{state.revision, {}, NativeCompletion::Complete};
         Interruption interruption(operation);
         state.purpose = input.purpose;
         rust::Vec<rust::String> names;
+        names.reserve(input.modules.size());
+
+        for (const auto &module : input.modules) {
+            names.push_back(module.name);
+        }
 
         for (const auto &module : input.modules) {
             if (module.name.empty() || module.mode > 1 || module.retained.size() > 11) {
@@ -145,7 +151,26 @@ namespace instar::native {
                 state.frontend.markDirty(name);
             }
 
-            state.resolver.captured.insert_or_assign(name, module);
+            std::vector<CapturedImport> sites;
+            sites.reserve(module.sites.size());
+
+            for (const auto &site : module.sites) {
+                sites.push_back(
+                    CapturedImport{site.argument_start, site.argument_end, site.static_resolution, site.target}
+                );
+            }
+
+            state.resolver.captured.insert_or_assign(
+                name,
+                CapturedModule{module.text,
+                    module.logical_revision,
+                    module.signature,
+                    module.environment_signature,
+                    module.environment_identity,
+                    module.retained,
+                    std::move(sites)}
+            );
+
             Luau::Config configuration;
 
             configuration.mode = module.inference ? (module.mode == 0 ? Luau::Mode::Strict : Luau::Mode::Nonstrict)
@@ -160,7 +185,6 @@ namespace instar::native {
             }
 
             state.resolver.configurations.insert_or_assign(name, std::move(configuration));
-            names.push_back(module.name);
             const auto environment = prepare_environment(state, module, operation);
             NativeModuleAnalysis observed{};
             observed.name = module.name;
@@ -186,7 +210,8 @@ namespace instar::native {
                 module.completion = result.completion;
             }
 
-            state.captured = input;
+            state.signature = input.signature;
+            state.names = std::move(names);
 
             return result;
         }
@@ -266,7 +291,9 @@ namespace instar::native {
             struct Reset {
                 Resolver &resolver;
 
-                ~Reset() { resolver.host = nullptr; }
+                ~Reset() {
+                    resolver.host = nullptr;
+                }
             } reset{state.resolver};
 
             auto options = state.frontend.options;
@@ -277,7 +304,7 @@ namespace instar::native {
                 options.moduleTimeLimitSec = double(remaining) / 1000000000.0;
             }
 
-            size_t completed = 0;
+            completed = 0;
             operation.progress("Checking", "", completed, input.modules.size());
 
             options.customModuleCheck = [&](const Luau::SourceModule &source, const Luau::Module &) {
@@ -444,7 +471,8 @@ namespace instar::native {
             }
         }
 
-        state.captured = input;
+        state.signature = input.signature;
+        state.names = std::move(names);
         result.frontend_revision = state.revision;
 
         return result;

@@ -1,10 +1,10 @@
+#include "engine.hpp"
+
 #include "analysis.hpp"
 #include "completion.hpp"
-#include "engine.hpp"
+#include "instar-luau/src/boundary/mod.rs.h"
 #include "linting.hpp"
 #include "semantics.hpp"
-
-#include "instar-luau/src/boundary/mod.rs.h"
 
 #include <limits>
 #include <new>
@@ -57,7 +57,8 @@ namespace instar {
             const auto previous = state->resolver.captured.find(name);
 
             rebuild = rebuild || (previous != state->resolver.captured.end() &&
-                                     previous->second.environment_signature != module.environment_signature);
+                                     (previous->second.environment_identity != module.environment_identity ||
+                                         previous->second.environment_signature != module.environment_signature));
         }
 
         std::set<std::string> roots;
@@ -88,7 +89,7 @@ namespace instar {
             }
         }
 
-        const bool changed = !state->reusable || state->captured.signature != input.signature;
+        const bool changed = !state->reusable || state->signature != input.signature;
 
         if (changed) {
             if (state->revision == std::numeric_limits<uint64_t>::max()) {

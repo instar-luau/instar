@@ -482,12 +482,11 @@ impl Native {
 
     fn validate_captured(&self, captured: &Captured) -> io::Result<()> {
         if let Some(previous) = &self.established {
-            for source in captured.documents.values() {
+            for source in captured.snapshots() {
                 if previous
                     .captured
-                    .documents
-                    .values()
-                    .any(|old| old.version == source.version && old != source)
+                    .snapshot(source.version)
+                    .is_some_and(|old| old != source)
                 {
                     return Err(conversion::invalid(
                         "captured revision changed its exact snapshot",
@@ -495,12 +494,11 @@ impl Native {
                 }
             }
 
-            for module in captured.modules.values() {
+            for module in captured.modules() {
                 if previous
                     .captured
-                    .modules
-                    .values()
-                    .any(|old| old.analysis == module.analysis && old != module)
+                    .module(module.analysis)
+                    .is_ok_and(|old| old != module)
                 {
                     return Err(conversion::invalid(
                         "logical analysis identity changed its captured inputs",

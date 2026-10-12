@@ -43,9 +43,14 @@ use crate::{
 
 pub(crate) struct Captured {
     pub analysis: Option<Arc<AnalysisRequest>>,
-    pub documents: BTreeMap<String, SourceSnapshot>,
-    pub lines: BTreeMap<String, Vec<usize>>,
-    pub modules: BTreeMap<String, ModuleInput>,
+    documents: BTreeMap<SourceVersion, Document>,
+    names: BTreeMap<String, SourceVersion>,
+    modules: BTreeMap<String, usize>,
+}
+
+struct Document {
+    source: SourceSnapshot,
+    lines: Vec<usize>,
 }
 
 struct FactIdentities {
@@ -67,11 +72,11 @@ impl Captured {
         let mut captured = Self {
             analysis: None,
             documents: BTreeMap::new(),
-            lines: BTreeMap::new(),
+            names: BTreeMap::new(),
             modules: BTreeMap::new(),
         };
 
-        for module in &input.modules {
+        for (index, module) in input.modules.iter().enumerate() {
             captured.insert(module_name(module.analysis.module), &module.source.source)?;
 
             if let Some(environment) = &module.environment {
@@ -87,7 +92,7 @@ impl Captured {
 
             captured
                 .modules
-                .insert(module_name(module.analysis.module), module.clone());
+                .insert(module_name(module.analysis.module), index);
         }
 
         captured.analysis = Some(input);
@@ -99,7 +104,7 @@ impl Captured {
         let mut captured = Self {
             analysis: None,
             documents: BTreeMap::new(),
-            lines: BTreeMap::new(),
+            names: BTreeMap::new(),
             modules: BTreeMap::new(),
         };
 
@@ -109,25 +114,47 @@ impl Captured {
     }
 
     pub(crate) fn module(&self, identity: AnalysisIdentity) -> io::Result<&ModuleInput> {
-        self.modules
-            .get(&module_name(identity.module))
+        self.module_named(&module_name(identity.module))
             .filter(|module| module.analysis == identity)
             .ok_or_else(|| invalid("logical analysis identity is not captured"))
     }
 
-    pub(crate) fn document(&self, name: &str) -> io::Result<&SourceSnapshot> {
+    pub(crate) fn module_named(&self, name: &str) -> Option<&ModuleInput> {
+        self.analysis
+            .as_ref()?
+            .modules
+            .get(*self.modules.get(name)?)
+    }
+
+    pub(crate) fn modules(&self) -> impl Iterator<Item = &ModuleInput> {
+        self.analysis.iter().flat_map(|input| &input.modules)
+    }
+
+    pub(crate) fn snapshots(&self) -> impl Iterator<Item = &SourceSnapshot> {
+        self.documents.values().map(|document| &document.source)
+    }
+
+    pub(crate) fn snapshot(&self, version: SourceVersion) -> Option<&SourceSnapshot> {
         self.documents
+            .get(&version)
+            .map(|document| &document.source)
+    }
+
+    pub(crate) fn document(&self, name: &str) -> io::Result<&SourceSnapshot> {
+        self.names
             .get(name)
+            .and_then(|version| self.snapshot(*version))
             .ok_or_else(|| invalid("source is not captured"))
     }
 
     pub(crate) fn offset(&self, name: &str, position: LinePosition) -> io::Result<usize> {
         let source = self.document(name)?;
 
-        let lines = self
-            .lines
-            .get(name)
-            .ok_or_else(|| invalid("native source coordinate has no captured line index"))?;
+        let lines = &self
+            .documents
+            .get(&source.version)
+            .ok_or_else(|| invalid("native source coordinate has no captured line index"))?
+            .lines;
 
         let start = *lines
             .get(position.line)
@@ -159,10 +186,11 @@ impl Captured {
         }
         .validate(source)?;
 
-        let lines = self
-            .lines
-            .get(name)
-            .ok_or_else(|| invalid("native source coordinate has no captured line index"))?;
+        let lines = &self
+            .documents
+            .get(&source.version)
+            .ok_or_else(|| invalid("native source coordinate has no captured line index"))?
+            .lines;
 
         let line = lines.partition_point(|start| *start <= offset) - 1;
 
@@ -193,53 +221,47 @@ impl Captured {
 
     pub(crate) fn validate_location(&self, location: Location) -> io::Result<()> {
         let source = self
-            .documents
-            .values()
-            .find(|source| source.version == location.source)
+            .snapshot(location.source)
             .ok_or_else(|| invalid("result source revision is not captured"))?;
 
         location.validate(source).map_err(invalid)
     }
 
     pub(crate) fn inputs(&self) -> Vec<SourceVersion> {
-        self.documents
-            .values()
-            .map(|source| source.version)
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect()
+        self.documents.keys().copied().collect()
     }
 
     fn insert(&mut self, name: String, source: &SourceSnapshot) -> io::Result<()> {
         source.validate()?;
 
-        if let Some(previous) = self
-            .documents
-            .values()
-            .find(|previous| previous.version == source.version)
+        if let Some(previous) = self.snapshot(source.version)
             && previous != source
         {
             return Err(invalid("captured source revision has conflicting bytes"));
         }
 
-        if let Some(previous) = self.documents.insert(name.clone(), source.clone())
-            && previous != *source
+        if let Some(previous) = self.names.get(&name)
+            && *previous != source.version
         {
             return Err(invalid("captured document identity is inconsistent"));
         }
 
-        self.lines.insert(
-            name,
-            iter::once(0)
-                .chain(
-                    source
-                        .text
-                        .bytes()
-                        .enumerate()
-                        .filter_map(|(offset, byte)| (byte == b'\n').then_some(offset + 1)),
-                )
-                .collect(),
-        );
+        self.names.insert(name, source.version);
+
+        self.documents
+            .entry(source.version)
+            .or_insert_with(|| Document {
+                source: source.clone(),
+                lines: iter::once(0)
+                    .chain(
+                        source
+                            .text
+                            .bytes()
+                            .enumerate()
+                            .filter_map(|(offset, byte)| (byte == b'\n').then_some(offset + 1)),
+                    )
+                    .collect(),
+            });
 
         Ok(())
     }
@@ -432,6 +454,10 @@ fn validate_features(
     flags: &BTreeMap<String, FlagValue>,
     profile: &LanguageProfile,
 ) -> io::Result<()> {
+    if flags == &profile.flags {
+        return Ok(());
+    }
+
     if LanguageProfile::new(flags, profile.type_function_heap_bytes)?.flags != profile.flags {
         return Err(invalid(
             "captured input disagrees with immutable language profile",
@@ -586,9 +612,14 @@ fn valid_namespace(namespace: &str) -> bool {
     })
 }
 
-pub(crate) fn analysis_input(input: &AnalysisRequest) -> io::Result<native::NativeAnalysisRequest> {
+pub(crate) fn analysis_input(captured: &Captured) -> io::Result<native::NativeAnalysisRequest> {
+    let input = captured
+        .analysis
+        .as_ref()
+        .ok_or_else(|| invalid("native captured analysis input is missing"))?;
+
     Ok(native::NativeAnalysisRequest {
-        signature: serde_json::to_string(input).map_err(invalid)?,
+        signature: analysis_signature(captured)?,
         purpose: purpose(input.purpose),
         roots: input.roots.iter().copied().map(module_name).collect(),
         modules: input
@@ -599,6 +630,110 @@ pub(crate) fn analysis_input(input: &AnalysisRequest) -> io::Result<native::Nati
     })
 }
 
+fn analysis_signature(captured: &Captured) -> io::Result<String> {
+    let input = captured
+        .analysis
+        .as_ref()
+        .ok_or_else(|| invalid("native captured analysis input is missing"))?;
+
+    let snapshots = captured.snapshots().collect::<Vec<_>>();
+
+    let indices = snapshots
+        .iter()
+        .enumerate()
+        .map(|(index, source)| (source.version, index))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut environments = Vec::new();
+
+    let modules = input
+        .modules
+        .iter()
+        .map(|module| {
+            (
+                module.analysis,
+                (
+                    module.source.module,
+                    indices[&module.source.source.version],
+                    &module.source.language,
+                ),
+                module
+                    .environment
+                    .as_ref()
+                    .map(|environment| borrowed_index(environment, &mut environments)),
+                &module.inference,
+                &module.reporting,
+                &module.imports,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let mut capabilities = Vec::new();
+    let mut instance_trees = Vec::new();
+
+    let environments = environments
+        .into_iter()
+        .map(|environment| {
+            let declarations = environment
+                .declarations
+                .iter()
+                .map(|group| {
+                    group
+                        .definitions
+                        .iter()
+                        .map(|definition| {
+                            (indices[&definition.source.version], &definition.namespace)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+
+            (
+                environment.identity,
+                &environment.language,
+                &environment.globals,
+                declarations,
+                borrowed_index(&environment.capabilities, &mut capabilities),
+                environment.instances.as_ref().map(|instances| {
+                    (
+                        &instances.root,
+                        &instances.script,
+                        borrowed_index(&instances.instances, &mut instance_trees),
+                    )
+                }),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    serde_json::to_string(&(
+        input.closure,
+        &input.profile,
+        input.purpose,
+        &input.roots,
+        modules,
+        &input.cycles,
+        snapshots,
+        environments,
+        capabilities,
+        instance_trees,
+    ))
+    .map_err(invalid)
+}
+
+fn borrowed_index<'input, Value: PartialEq>(
+    value: &'input Value,
+    table: &mut Vec<&'input Value>,
+) -> usize {
+    if let Some(index) = table.iter().position(|previous| *previous == value) {
+        index
+    } else {
+        let index = table.len();
+        table.push(value);
+
+        index
+    }
+}
+
 fn module_input(input: &ModuleInput) -> io::Result<native::NativeModuleInput> {
     let environment = input.environment.as_ref();
 
@@ -607,8 +742,25 @@ fn module_input(input: &ModuleInput) -> io::Result<native::NativeModuleInput> {
         text: input.source.source.text.to_string(),
         revision: input.source.source.version.revision,
         logical_revision: input.analysis.revision,
-        signature: serde_json::to_string(input).map_err(invalid)?,
-        environment_signature: serde_json::to_string(&input.environment).map_err(invalid)?,
+        signature: serde_json::to_string(&(
+            input.analysis,
+            &input.source,
+            &input.inference,
+            &input.reporting,
+            &input.imports,
+        ))
+        .map_err(invalid)?,
+        environment_signature: serde_json::to_string(&environment.map(
+            |EnvironmentInput {
+                 identity: _identity,
+                 language,
+                 globals,
+                 declarations,
+                 capabilities,
+                 instances,
+             }| (language, globals, declarations, capabilities, instances),
+        ))
+        .map_err(invalid)?,
         declaration_syntax: input.source.language.declaration_syntax,
         inference: input.inference.required,
         mode: match input.inference.mode {
@@ -3225,7 +3377,7 @@ fn validate_identity(identity: &SemanticIdentity, captured: &Captured) -> io::Re
             ..
         } if !name.is_empty()
             && !name.contains('\0')
-            && captured.modules.values().any(|module| {
+            && captured.modules().any(|module| {
                 module.environment.as_ref().is_some_and(|input| {
                     input.identity == *environment
                         && (namespace == "@luau"

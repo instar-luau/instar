@@ -86,13 +86,13 @@ pub fn run_worker() -> io::Result<()> {
     process::serve(
         "analysis",
         |request: Request, emitter: &Emitter<Response>| {
-            handle_request(&request, emitter, &mut session, &mut snapshots)
+            handle_request(request, emitter, &mut session, &mut snapshots)
         },
     )
 }
 
 fn handle_request(
-    request: &Request,
+    request: Request,
     emitter: &Emitter<Response>,
     session: &mut Option<Session>,
     snapshots: &mut Vec<SourceSnapshot>,
@@ -106,13 +106,13 @@ fn handle_request(
         ));
     }
 
-    let outcome = match &request.operation {
+    let outcome = match request.operation {
         Operation::Capture { index, snapshot } => {
-            if *index == 0 {
+            if index == 0 {
                 snapshots.clear();
             }
 
-            if *index != snapshots.len()
+            if index != snapshots.len()
                 || snapshots
                     .iter()
                     .any(|captured| captured.version.identity == snapshot.version.identity)
@@ -123,19 +123,17 @@ fn handle_request(
             }
 
             snapshot.validate()?;
-            snapshots.push(snapshot.clone());
+            let source = snapshot.version;
+            snapshots.push(snapshot);
 
-            ResponseOutcome::Captured {
-                index: *index,
-                source: snapshot.version,
-            }
+            ResponseOutcome::Captured { index, source }
         }
 
         Operation::Analyze(input) => {
             let snapshots = mem::take(snapshots);
             let input = input.unpack(&snapshots)?;
 
-            analyze_request(&input, session, emitter, request.remaining_budget, started)?
+            analyze_request(input, session, emitter, request.remaining_budget, started)?
         }
 
         operation => {
@@ -144,7 +142,7 @@ fn handle_request(
             }
 
             query_request(
-                operation,
+                &operation,
                 session,
                 emitter,
                 request.remaining_budget,
@@ -161,7 +159,7 @@ fn handle_request(
 }
 
 fn analyze_request(
-    input: &AnalysisRequest,
+    input: AnalysisRequest,
     session: &mut Option<Session>,
     emitter: &Emitter<Response>,
     remaining_budget: Option<Duration>,
@@ -169,7 +167,12 @@ fn analyze_request(
 ) -> io::Result<ResponseOutcome> {
     let events = emitter.clone();
     let emit = move |payload| events.emit(payload);
-    let captured = Arc::new(Captured::analysis(Arc::new(input.clone()))?);
+    let captured = Arc::new(Captured::analysis(Arc::new(input))?);
+
+    let input = captured
+        .analysis
+        .as_ref()
+        .ok_or_else(|| conversion::invalid("worker analysis input is missing"))?;
 
     if let Some(active) = session.as_ref()
         && active.profile != input.profile
@@ -188,7 +191,7 @@ fn analyze_request(
         .ok_or_else(|| io::Error::other("native worker session is unavailable"))?;
 
     let operation = NativeOperation::new(Arc::clone(&captured), remaining_budget, started, emit)?;
-    let input = conversion::analysis_input(input)?;
+    let input = conversion::analysis_input(&captured)?;
 
     let native_result = active
         .engine

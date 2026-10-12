@@ -5,18 +5,37 @@
 #include "Luau/Frontend.h"
 #include "instar-luau/src/boundary/mod.rs.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace instar::native {
+    struct CapturedImport {
+        std::size_t argument_start;
+        std::size_t argument_end;
+        bool static_resolution;
+        rust::String target;
+    };
+
+    struct CapturedModule {
+        rust::String text;
+        uint64_t logical_revision;
+        rust::String signature;
+        rust::String environment_signature;
+        uint64_t environment_identity;
+        rust::Vec<uint8_t> retained;
+        std::vector<CapturedImport> sites;
+    };
+
     struct Resolver final : Luau::FileResolver, Luau::ConfigResolver {
         const NativeOperation *host = nullptr;
         std::string active;
         std::map<std::string, Luau::Config> configurations;
         std::map<std::string, std::string> environments;
-        std::map<std::string, NativeModuleInput> captured;
+        std::map<std::string, CapturedModule> captured;
 
         std::optional<Luau::SourceCode> readSource(const Luau::ModuleName &name) override;
 
@@ -44,7 +63,8 @@ namespace instar::native {
 
         uint64_t revision = 0;
         uint8_t purpose = 0;
-        NativeAnalysisRequest captured;
+        rust::String signature;
+        rust::Vec<rust::String> names;
         std::map<std::string, ModuleOutcome> outcomes;
         bool reusable = false;
         AnalysisState();

@@ -114,7 +114,7 @@ impl WireAnalysisRequest {
         Ok((request, snapshots))
     }
 
-    pub(crate) fn unpack(&self, snapshots: &[SourceSnapshot]) -> io::Result<AnalysisRequest> {
+    pub(crate) fn unpack(self, snapshots: &[SourceSnapshot]) -> io::Result<AnalysisRequest> {
         validate_snapshots(snapshots)?;
 
         if self.snapshots
@@ -134,13 +134,12 @@ impl WireAnalysisRequest {
 
         let modules = self
             .modules
-            .iter()
+            .into_iter()
             .map(|module| {
                 let source = module.source.unpack(snapshots, &mut used)?;
 
                 let environment = module
                     .environment
-                    .as_ref()
                     .map(|environment| {
                         environment.unpack(
                             snapshots,
@@ -157,9 +156,9 @@ impl WireAnalysisRequest {
                     analysis: module.analysis,
                     source,
                     environment,
-                    inference: module.inference.clone(),
-                    reporting: module.reporting.clone(),
-                    imports: module.imports.clone(),
+                    inference: module.inference,
+                    reporting: module.reporting,
+                    imports: module.imports,
                 })
             })
             .collect::<io::Result<Vec<_>>>()?;
@@ -170,11 +169,11 @@ impl WireAnalysisRequest {
 
         Ok(AnalysisRequest {
             closure: self.closure,
-            profile: self.profile.clone(),
+            profile: self.profile,
             purpose: self.purpose,
-            roots: self.roots.clone(),
+            roots: self.roots,
             modules,
-            cycles: self.cycles.clone(),
+            cycles: self.cycles,
         })
     }
 }
@@ -210,14 +209,14 @@ impl WireSourceInput {
     }
 
     fn unpack(
-        &self,
+        self,
         snapshots: &[SourceSnapshot],
         used: &mut BTreeSet<usize>,
     ) -> io::Result<SourceInput> {
         Ok(SourceInput {
             module: self.module,
             source: row(snapshots, self.source, used)?.clone(),
-            language: self.language.clone(),
+            language: self.language,
         })
     }
 }
@@ -279,7 +278,7 @@ impl WireEnvironmentInput {
     }
 
     fn unpack(
-        &self,
+        self,
         snapshots: &[SourceSnapshot],
         used: &mut BTreeSet<usize>,
         capabilities: &[Capabilities],
@@ -289,15 +288,15 @@ impl WireEnvironmentInput {
     ) -> io::Result<EnvironmentInput> {
         let declarations = self
             .declarations
-            .iter()
+            .into_iter()
             .map(|group| {
                 let definitions = group
                     .definitions
-                    .iter()
+                    .into_iter()
                     .map(|definition| {
                         Ok(Definition {
                             source: row(snapshots, definition.source, used)?.clone(),
-                            namespace: definition.namespace.clone(),
+                            namespace: definition.namespace,
                         })
                     })
                     .collect::<io::Result<Vec<_>>>()?;
@@ -308,11 +307,10 @@ impl WireEnvironmentInput {
 
         let instances = self
             .instances
-            .as_ref()
             .map(|instances| -> io::Result<_> {
                 Ok(InstanceEnvironment {
-                    root: instances.root.clone(),
-                    script: instances.script.clone(),
+                    root: instances.root,
+                    script: instances.script,
                     instances: row(instance_trees, instances.instances, used_instance_trees)?
                         .clone(),
                 })
@@ -321,8 +319,8 @@ impl WireEnvironmentInput {
 
         Ok(EnvironmentInput {
             identity: self.identity,
-            language: self.language.clone(),
-            globals: self.globals.clone(),
+            language: self.language,
+            globals: self.globals,
             declarations,
             capabilities: row(capabilities, self.capabilities, used_capabilities)?.clone(),
             instances,

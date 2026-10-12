@@ -1,5 +1,3 @@
-#include "analysis.hpp"
-#include "parsing.hpp"
 #include "semantics.hpp"
 
 #include "Luau/AstQuery.h"
@@ -12,7 +10,9 @@
 #include "Luau/Type.h"
 #include "Luau/TypePack.h"
 #include "Luau/TypeUtils.h"
+#include "analysis.hpp"
 #include "instar-luau/src/boundary/mod.rs.h"
+#include "parsing.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -704,9 +704,13 @@ namespace instar::native {
                     return true;
                 }
 
-                bool visit(Luau::AstType *node) override { return true; }
+                bool visit(Luau::AstType *node) override {
+                    return true;
+                }
 
-                bool visit(Luau::AstTypePack *node) override { return true; }
+                bool visit(Luau::AstTypePack *node) override {
+                    return true;
+                }
 
                 bool visit(Luau::AstTypeReference *node) override {
                     if (node->prefixLocal && node->prefixLocation) {
@@ -1647,12 +1651,12 @@ namespace instar::native {
         rust::Vec<rust::String> inferred_modules(const AnalysisState &state) {
             rust::Vec<rust::String> result;
 
-            for (const auto &module : state.captured.modules) {
-                const std::string name(module.name);
+            for (const auto &module : state.names) {
+                const std::string name(module);
                 const auto checked = state.frontend.moduleResolver.getModule(name);
 
                 if (state.outcomes.at(name).inferred && checked && checked->hasModuleScope()) {
-                    result.push_back(module.name);
+                    result.push_back(module);
                 }
             }
 
@@ -1742,12 +1746,14 @@ namespace instar::native {
                 return false;
             }
 
-            bool visit(Luau::AstStatTypeFunction *) override { return false; }
+            bool visit(Luau::AstStatTypeFunction *) override {
+                return false;
+            }
         };
 
         bool stable_builtins(AnalysisState &state) {
-            for (const auto &module : state.captured.modules) {
-                const std::string name(module.name);
+            for (const auto &module : state.names) {
+                const std::string name(module);
 
                 const auto &outcome = state.outcomes.at(name);
 
@@ -1911,11 +1917,17 @@ namespace instar::native {
                 return true;
             }
 
-            bool visit(Luau::AstStatTypeFunction *) override { return false; }
+            bool visit(Luau::AstStatTypeFunction *) override {
+                return false;
+            }
 
-            bool visit(Luau::AstType *) override { return true; }
+            bool visit(Luau::AstType *) override {
+                return true;
+            }
 
-            bool visit(Luau::AstTypePack *) override { return true; }
+            bool visit(Luau::AstTypePack *) override {
+                return true;
+            }
         };
     }
 

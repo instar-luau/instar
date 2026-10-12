@@ -59,8 +59,7 @@ impl NativeOperation {
         let source = if source.is_empty() {
             if self.captured.analysis.is_none() {
                 self.captured
-                    .documents
-                    .values()
+                    .snapshots()
                     .next()
                     .map(|source| source.version)
             } else {
@@ -79,7 +78,7 @@ impl NativeOperation {
     }
 
     pub(crate) fn read_module(&self, name: &str) -> boundary::NativeModule {
-        self.captured.modules.get(name).map_or_else(
+        self.captured.module_named(name).map_or_else(
             || boundary::NativeModule {
                 found: false,
                 revision: 0,
@@ -97,16 +96,15 @@ impl NativeOperation {
         boundary::NativeSource {
             classes: self
                 .captured
-                .modules
-                .get(name)
+                .module_named(name)
                 .and_then(|module| module.environment.as_ref())
                 .map_or_else(Vec::new, conversion::native_classes),
         }
     }
 
     pub(crate) fn read_document(&self, name: &str) -> boundary::NativeDocument {
-        self.captured.documents.get(name).map_or_else(
-            || boundary::NativeDocument {
+        self.captured.document(name).map_or_else(
+            |_| boundary::NativeDocument {
                 found: false,
                 text: String::new(),
                 revision: 0,
@@ -128,7 +126,7 @@ impl NativeOperation {
     }
 
     pub(crate) fn require(&self, name: &str, start: usize, end: usize) -> bool {
-        self.captured.modules.get(name).is_some_and(|module| {
+        self.captured.module_named(name).is_some_and(|module| {
             module.imports.iter().any(|import| {
                 import.site.call.span.start == start && import.site.call.span.end == end
             })
