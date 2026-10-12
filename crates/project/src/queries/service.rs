@@ -923,15 +923,14 @@ impl Runtime {
                 .clone()
                 .map_or_else(assets::roblox_cache_directory, Ok)?;
 
-            index.merge(
-                assets::load(
-                    &directory,
-                    target.effective.settings.environment.security,
-                    &mut capture,
-                    options,
-                )?
-                .documentation,
+            let loaded = self.assets(
+                &directory,
+                target.effective.settings.environment.security,
+                &mut capture,
+                options,
             )?;
+
+            index.merge(loaded.documentation.clone())?;
         }
 
         for group in &target.effective.settings.environment.groups {

@@ -134,12 +134,60 @@ pub struct SourceRecord {
     pub revision: u64,
 }
 
-/// Immutable snapshot-owned source records and disk identities.
+/// Immutable snapshot-owned source records and indexed resolution paths.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SourceStore {
     pub(crate) records: BTreeMap<SourceIdentity, SourceRecord>,
-    pub(crate) disk: BTreeMap<PathBuf, SourceIdentity>,
+    paths: BTreeMap<PathBuf, BTreeSet<SourceIdentity>>,
     pub(crate) declarations: BTreeSet<SourceVersion>,
+}
+
+impl SourceStore {
+    pub(crate) fn disk_identity(&self, path: &Path) -> Option<SourceIdentity> {
+        self.paths.get(path)?.iter().copied().find(|identity| {
+            self.records
+                .get(identity)
+                .is_some_and(|record| matches!(record.origin, SourceOrigin::Disk(_)))
+        })
+    }
+
+    fn source_at(&self, path: &Path) -> Option<&SourceSnapshot> {
+        self.paths
+            .get(path)?
+            .iter()
+            .filter_map(|identity| self.records.get(identity))
+            .filter(|record| {
+                !matches!(record.origin, SourceOrigin::Stdin { .. }) && record.snapshot.is_some()
+            })
+            .max_by_key(|record| matches!(record.origin, SourceOrigin::Document { .. }))
+            .and_then(|record| record.snapshot.as_ref())
+    }
+
+    fn insert(&mut self, identity: SourceIdentity, record: SourceRecord) {
+        self.remove(identity);
+
+        if let Some(path) = record.origin.path() {
+            self.paths
+                .entry(path.to_path_buf())
+                .or_default()
+                .insert(identity);
+        }
+
+        self.records.insert(identity, record);
+    }
+
+    fn remove(&mut self, identity: SourceIdentity) {
+        if let Some(record) = self.records.remove(&identity)
+            && let Some(path) = record.origin.path()
+            && let Some(identities) = self.paths.get_mut(path)
+        {
+            identities.remove(&identity);
+
+            if identities.is_empty() {
+                self.paths.remove(path);
+            }
+        }
+    }
 }
 
 /// Immutable snapshot-owned workspace and client configuration.
@@ -178,13 +226,9 @@ impl ProjectSnapshot {
         let path = origin.path().map(Path::to_path_buf);
         let sources = Arc::make_mut(&mut snapshot.sources);
 
-        if let SourceOrigin::Disk(path) = &origin {
-            sources.disk.insert(path.clone(), identity);
-        }
-
         sources.declarations.insert(source.version);
 
-        sources.records.insert(
+        sources.insert(
             identity,
             SourceRecord {
                 origin,
@@ -232,16 +276,7 @@ impl ProjectSnapshot {
     /// Returns captured contents at a path, preferring an open document over disk.
     #[must_use]
     pub fn source_at(&self, path: &Path) -> Option<&SourceSnapshot> {
-        self.sources
-            .records
-            .values()
-            .filter(|record| {
-                record.origin.path() == Some(path)
-                    && !matches!(record.origin, SourceOrigin::Stdin { .. })
-                    && record.snapshot.is_some()
-            })
-            .max_by_key(|record| matches!(record.origin, SourceOrigin::Document { .. }))
-            .and_then(|record| record.snapshot.as_ref())
+        self.sources.source_at(path)
     }
 
     /// Returns captured contents for a disk or client address.
@@ -609,21 +644,15 @@ impl ProjectSnapshot {
             return Err(invalid("admitted source version differs from its record"));
         }
 
-        if let SourceOrigin::Disk(path) = &record.origin {
-            if self.sources.disk.contains_key(path) {
-                return Err(invalid(
-                    "admitted disk path conflicts with recorded history",
-                ));
-            }
-
-            Arc::make_mut(&mut self.sources)
-                .disk
-                .insert(path.clone(), identity);
+        if let SourceOrigin::Disk(path) = &record.origin
+            && self.sources.disk_identity(path).is_some()
+        {
+            return Err(invalid(
+                "admitted disk path conflicts with recorded history",
+            ));
         }
 
-        Arc::make_mut(&mut self.sources)
-            .records
-            .insert(identity, record.clone());
+        Arc::make_mut(&mut self.sources).insert(identity, record.clone());
 
         Ok(true)
     }
@@ -751,16 +780,7 @@ fn apply_source(
             invalidate_directories(inputs, &path, opening)?;
         }
 
-        let snapshot = store
-            .records
-            .values()
-            .filter(|record| {
-                record.origin.path() == Some(path.as_path())
-                    && !matches!(record.origin, SourceOrigin::Stdin { .. })
-                    && record.snapshot.is_some()
-            })
-            .max_by_key(|record| matches!(record.origin, SourceOrigin::Document { .. }))
-            .and_then(|record| record.snapshot.clone());
+        let snapshot = store.source_at(&path).cloned();
 
         let state = snapshot.map_or(InputState::Missing, InputState::Source);
         let identity = InputIdentity::Path(path);
@@ -853,8 +873,8 @@ fn invalidate_path(
 ) -> io::Result<()> {
     invalidate_directories(inputs, path, false)?;
 
-    if let Some(source) = sources.disk.get(path)
-        && let Some(input) = inputs.get_mut(&InputIdentity::Source(*source))
+    if let Some(source) = sources.disk_identity(path)
+        && let Some(input) = inputs.get_mut(&InputIdentity::Source(source))
         && input.state != InputState::Stale
     {
         input.revision = input
@@ -918,12 +938,10 @@ fn open_source(
         return Err(invalid("source identity is already registered"));
     }
 
-    if let SourceOrigin::Disk(path) = &origin {
-        if store.disk.contains_key(path) {
-            return Err(invalid("disk path is already registered"));
-        }
-
-        store.disk.insert(path.clone(), identity);
+    if let SourceOrigin::Disk(path) = &origin
+        && store.disk_identity(path).is_some()
+    {
+        return Err(invalid("disk path is already registered"));
     }
 
     let snapshot = SourceSnapshot::new(
@@ -934,7 +952,7 @@ fn open_source(
         text,
     )?;
 
-    store.records.insert(
+    store.insert(
         identity,
         SourceRecord {
             origin,
@@ -1031,15 +1049,13 @@ fn move_source(
 
     if let SourceOrigin::Disk(path) = &origin
         && store
-            .disk
-            .get(path)
-            .is_some_and(|identity| *identity != expected.identity)
+            .disk_identity(path)
+            .is_some_and(|identity| identity != expected.identity)
     {
         return Err(invalid("move destination is already registered"));
     }
 
     let record = checked_record(store, expected)?;
-    let previous = record.origin.path().map(Path::to_path_buf);
 
     let revision = expected
         .revision
@@ -1060,19 +1076,14 @@ fn move_source(
         Arc::clone(contents),
     )?;
 
-    record.origin = origin.clone();
-    record.snapshot = Some(snapshot.clone());
-    record.revision = revision;
-
-    if let Some(previous) = previous
-        && store.disk.get(&previous) == Some(&expected.identity)
-    {
-        store.disk.remove(&previous);
-    }
-
-    if let SourceOrigin::Disk(path) = origin {
-        store.disk.insert(path, expected.identity);
-    }
+    store.insert(
+        expected.identity,
+        SourceRecord {
+            origin,
+            snapshot: Some(snapshot.clone()),
+            revision,
+        },
+    );
 
     inputs.insert(
         InputIdentity::Source(expected.identity),
@@ -1121,13 +1132,8 @@ fn remove_source(
     inputs: &mut BTreeMap<InputIdentity, InputVersion>,
     expected: SourceVersion,
 ) -> io::Result<()> {
-    let record = checked_record(store, expected)?.clone();
-
-    if let SourceOrigin::Disk(path) = record.origin {
-        store.disk.remove(&path);
-    }
-
-    store.records.remove(&expected.identity);
+    checked_record(store, expected)?;
+    store.remove(expected.identity);
 
     inputs.insert(
         InputIdentity::Source(expected.identity),

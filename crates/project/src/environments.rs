@@ -23,7 +23,7 @@ pub(crate) struct EnvironmentRecipe {
     pub(crate) input: EnvironmentInput,
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) completion: Completion,
-    pub(crate) assets: Option<Assets>,
+    pub(crate) assets: Option<Arc<Assets>>,
     pub(crate) requested: bool,
     pub(crate) member_inputs: Vec<InputVersion>,
     pub(crate) failures: Vec<OperationFailure>,
@@ -115,7 +115,7 @@ impl EnvironmentRecipe {
 
 impl Runtime {
     pub(crate) fn environment(
-        &self,
+        &mut self,
         effective: &EffectiveSettings,
         map: Option<&(Arc<Map>, usize)>,
         capture: &mut Capture,
@@ -157,7 +157,7 @@ impl Runtime {
                 .clone()
                 .map_or_else(assets::roblox_cache_directory, Ok)
                 .and_then(|directory| {
-                    assets::load(&directory, settings.environment.security, capture, options)
+                    self.assets(&directory, settings.environment.security, capture, options)
                 });
 
             recipe.member_inputs = capture.end_consultation();

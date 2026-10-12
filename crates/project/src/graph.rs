@@ -12,8 +12,8 @@ use instar_luau::{
 };
 
 use instar_shared::{
-    Completion, Diagnostic, DiagnosticCategory, FindingIdentity, OperationFailure, Options, Reason,
-    Severity, SourceSnapshot,
+    Completion, ContextIdentity, Diagnostic, DiagnosticCategory, FindingIdentity, OperationFailure,
+    Options, Reason, Severity, SourceSnapshot, SourceVersion,
 };
 
 use instar_syntax::{DirectiveKind, SyntaxSettings, directives, parse};
@@ -53,7 +53,7 @@ pub struct DependencyEdge {
 pub(crate) struct ModuleNode {
     pub(crate) identity: ModuleIdentity,
     pub(crate) source: SourceSnapshot,
-    pub(crate) effective: EffectiveSettings,
+    pub(crate) effective: Arc<EffectiveSettings>,
     pub(crate) environment: EnvironmentRecipe,
     pub(crate) imports: Vec<ResolvedImport>,
     pub(crate) map: Option<(Arc<Map>, usize)>,
@@ -84,13 +84,14 @@ struct GraphRequest<'request> {
 struct PendingModule {
     identity: ModuleIdentity,
     source: SourceSnapshot,
-    effective: EffectiveSettings,
+    effective: Arc<EffectiveSettings>,
     map: Option<(Arc<Map>, usize)>,
 }
 
 struct GraphBuild {
     graph: DependencyGraph,
     pending: Vec<PendingModule>,
+    prepared: BTreeMap<(SourceVersion, ContextIdentity), Arc<EffectiveSettings>>,
 }
 
 impl Runtime {
@@ -119,6 +120,7 @@ impl Runtime {
                 completion: Completion::Complete,
             },
             pending: Vec::new(),
+            prepared: BTreeMap::new(),
         };
 
         self.graph_roots(selected, &request, &mut build, capture, options)?;
@@ -256,7 +258,7 @@ impl Runtime {
                 build.pending.push(PendingModule {
                     identity,
                     source: source.clone(),
-                    effective: selected.effective.clone(),
+                    effective: Arc::new(selected.effective.clone()),
                     map,
                 });
             }
@@ -368,6 +370,7 @@ impl Runtime {
         node: &ModuleNode,
         site: &ImportSite,
         request: &GraphRequest<'_>,
+        build: &mut GraphBuild,
         capture: &mut Capture,
         options: &Options,
     ) -> io::Result<Option<PendingModule>> {
@@ -376,21 +379,44 @@ impl Runtime {
         };
 
         let target_source = capture.source(&target.path, options)?;
-        let mut dependency_overrides = request.overrides.clone();
 
-        if let OperationOverrides::Check(overrides) = &mut dependency_overrides {
-            overrides.checking.mode = None;
-        }
+        let key = (
+            target_source.version,
+            capture.snapshot.context(target_source.version.identity),
+        );
 
-        let effective = self.effective(
-            target_source.version.identity,
-            request.invocation,
-            &dependency_overrides,
-            capture,
-            options,
-        )?;
+        let effective = if let Some(effective) = build
+            .prepared
+            .get(&key)
+            .filter(|effective| capture.snapshot.current(&effective.inputs))
+        {
+            for input in &effective.inputs {
+                capture.consult_input(input);
+            }
 
-        self.prepare_source(&target_source, &effective, options)?;
+            options.check()?;
+
+            Arc::clone(effective)
+        } else {
+            let mut dependency_overrides = request.overrides.clone();
+
+            if let OperationOverrides::Check(overrides) = &mut dependency_overrides {
+                overrides.checking.mode = None;
+            }
+
+            let effective = Arc::new(self.effective(
+                target_source.version.identity,
+                request.invocation,
+                &dependency_overrides,
+                capture,
+                options,
+            )?);
+
+            self.prepare_source(&target_source, &effective, options)?;
+            build.prepared.insert(key, Arc::clone(&effective));
+
+            effective
+        };
 
         let (target_identity, map) = if let Some((map, placement)) = target.map {
             let context = self
@@ -438,7 +464,7 @@ impl Runtime {
         for site in sites {
             options.check()?;
             capture.begin_consultation();
-            let target = self.graph_target(&node, &site, request, capture, options);
+            let target = self.graph_target(&node, &site, request, build, capture, options);
             let inputs = capture.end_consultation();
 
             let (outcome, failure) = match target {
@@ -476,7 +502,7 @@ impl Runtime {
     }
 
     fn graph_lint_environment(
-        &self,
+        &mut self,
         graph: &mut DependencyGraph,
         capture: &mut Capture,
         options: &Options,

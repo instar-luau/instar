@@ -35,7 +35,7 @@ pub(crate) struct Capture {
     pub(crate) snapshot: ProjectSnapshot,
     pub(crate) inputs: BTreeMap<InputIdentity, InputVersion>,
     reads: BTreeSet<PathBuf>,
-    consultation: Vec<Vec<InputVersion>>,
+    consultation: Vec<BTreeSet<InputIdentity>>,
     frozen: bool,
 }
 
@@ -118,14 +118,14 @@ impl Capture {
             match &input.state {
                 InputState::Source(source) if !refreshing => {
                     let source = source.clone();
-                    self.consult_input(input);
+                    self.consult_input(&input);
                     self.consult_source(&source);
 
                     return Ok(Some(source));
                 }
 
                 InputState::Missing if !refreshing => {
-                    self.consult_input(input);
+                    self.consult_input(&input);
                     self.consult_closed(&path);
 
                     return Ok(None);
@@ -145,7 +145,7 @@ impl Capture {
             self.consult_source(&source);
 
             if let Some(input) = self.snapshot.input_versions.get(&identity).cloned() {
-                self.consult_input(input);
+                self.consult_input(&input);
             }
 
             self.reads.insert(path.clone());
@@ -240,7 +240,7 @@ impl Capture {
             };
 
             if let Some(paths) = paths {
-                self.consult_input(input);
+                self.consult_input(&input);
 
                 return Ok(paths);
             }
@@ -364,7 +364,7 @@ impl Capture {
                     !current
                         .input_versions
                         .contains_key(&InputIdentity::Source(*identity))
-                        && !current.sources.disk.contains_key(path)
+                        && current.sources.disk_identity(path).is_none()
                         && !current
                             .input_versions
                             .contains_key(&InputIdentity::Path(path.clone()))
@@ -447,47 +447,47 @@ impl Capture {
     }
 
     pub(crate) fn begin_consultation(&mut self) {
-        self.consultation.push(Vec::new());
+        self.consultation.push(BTreeSet::new());
     }
 
     pub(crate) fn end_consultation(&mut self) -> Vec<InputVersion> {
-        self.consultation.pop().unwrap_or_default()
+        self.consultation
+            .pop()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|identity| self.inputs[&identity].clone())
+            .collect()
     }
 
-    pub(crate) fn consult_input(&mut self, input: InputVersion) {
+    pub(crate) fn consult_input(&mut self, input: &InputVersion) {
         for consultation in &mut self.consultation {
-            if let Some(previous) = consultation
-                .iter_mut()
-                .find(|previous| previous.identity == input.identity)
-            {
-                *previous = input.clone();
-            } else {
-                consultation.push(input.clone());
-            }
+            consultation.insert(input.identity.clone());
         }
 
-        self.inputs.insert(input.identity.clone(), input);
+        if self.inputs.get(&input.identity) != Some(input) {
+            self.inputs.insert(input.identity.clone(), input.clone());
+        }
     }
 
     pub(crate) fn consult_source(&mut self, source: &SourceSnapshot) {
         let identity = InputIdentity::Source(source.version.identity);
 
         if let Some(input) = self.snapshot.input_versions.get(&identity).cloned() {
-            self.consult_input(input);
+            self.consult_input(&input);
         }
 
         if let Some(SourceOrigin::Disk(path)) = self.snapshot.origin(source.version.identity) {
             let identity = InputIdentity::Path(path.clone());
 
             if let Some(input) = self.snapshot.input_versions.get(&identity).cloned() {
-                self.consult_input(input);
+                self.consult_input(&input);
             }
         }
 
         let context = InputIdentity::Context(self.snapshot.context(source.version.identity));
 
         if let Some(input) = self.snapshot.input_versions.get(&context).cloned() {
-            self.consult_input(input);
+            self.consult_input(&input);
         }
     }
 
@@ -512,7 +512,7 @@ impl Capture {
             .get(&InputIdentity::Sources)
             .cloned()
         {
-            self.consult_input(input);
+            self.consult_input(&input);
         }
 
         let inputs = self
@@ -524,7 +524,7 @@ impl Capture {
             .collect::<Vec<_>>();
 
         for input in inputs {
-            self.consult_input(input);
+            self.consult_input(&input);
         }
     }
 
@@ -601,9 +601,8 @@ impl Capture {
 
         let registered = current
             .sources
-            .disk
-            .get(path)
-            .and_then(|identity| current.source(*identity))
+            .disk_identity(path)
+            .and_then(|identity| current.source(identity))
             .cloned();
 
         if self.snapshot.source_at(path).is_none()
@@ -703,7 +702,7 @@ impl Capture {
                 .get(&InputIdentity::Source(identity))
                 .cloned()
         {
-            self.consult_input(input);
+            self.consult_input(&input);
         }
 
         Ok(source)
@@ -821,7 +820,7 @@ impl Capture {
 
         if let Some(input) = &expected {
             if input.state == state {
-                self.consult_input(input.clone());
+                self.consult_input(input);
 
                 return Ok(());
             }
@@ -852,7 +851,7 @@ impl Capture {
             self.snapshot = self.snapshot.admit(&current, &protected)?;
             let input = input.clone();
             drop(current);
-            self.consult_input(input);
+            self.consult_input(&input);
 
             return Ok(());
         }
@@ -913,7 +912,7 @@ impl Capture {
 
         self.snapshot = proposed;
         drop(current);
-        self.consult_input(input);
+        self.consult_input(&input);
 
         Ok(())
     }
@@ -942,7 +941,7 @@ impl Capture {
         if expected.state == state {
             let protected = except(current, &BTreeSet::from([identity]));
             self.snapshot = self.snapshot.admit(current, &protected)?;
-            self.consult_input(expected);
+            self.consult_input(&expected);
 
             return Ok(());
         }
@@ -967,7 +966,7 @@ impl Capture {
         let snapshot = self.snapshot.admit(&proposed, &protected)?;
         *current = proposed;
         self.snapshot = snapshot;
-        self.consult_input(input);
+        self.consult_input(&input);
 
         Ok(())
     }
@@ -988,7 +987,7 @@ impl Capture {
             .collect::<Vec<_>>();
 
         for input in inputs {
-            self.consult_input(input);
+            self.consult_input(&input);
         }
     }
 
@@ -1015,7 +1014,7 @@ impl Capture {
             };
 
             if absent {
-                self.consult_input(input);
+                self.consult_input(&input);
 
                 return true;
             }

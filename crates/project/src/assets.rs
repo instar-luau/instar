@@ -21,6 +21,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::{
     acquisition,
+    cache::AssetEntry,
     capture::Capture,
     configuration::Security,
     documentation::{self, Index},
@@ -62,7 +63,7 @@ pub struct AssetSnapshot {
 }
 
 pub(crate) struct Assets {
-    pub(crate) definitions: Vec<SourceSnapshot>,
+    pub(crate) definitions: [SourceSnapshot; 2],
     pub(crate) capabilities: Capabilities,
     pub(crate) documentation: Index,
     pub(crate) members: Members,
@@ -262,6 +263,47 @@ impl Runtime {
         })
     }
 
+    pub(crate) fn assets(
+        &mut self,
+        directory: &Path,
+        security: Security,
+        capture: &mut Capture,
+        options: &Options,
+    ) -> io::Result<Arc<Assets>> {
+        let directory = absolute(directory)?;
+
+        let profile = match security {
+            Security::None => "none",
+            Security::Local => "local",
+            Security::Plugin => "plugin",
+            Security::Roblox => "roblox",
+        };
+
+        let key = (directory, profile);
+        capture.begin_consultation();
+
+        let loaded = load(
+            &key.0,
+            profile,
+            capture,
+            self.cache.assets.get(&key),
+            options,
+        );
+
+        let inputs = capture.end_consultation();
+        let assets = loaded?;
+
+        self.cache.assets.insert(
+            key,
+            AssetEntry {
+                assets: Arc::clone(&assets),
+                inputs,
+            },
+        );
+
+        Ok(assets)
+    }
+
     fn asset_download(
         &mut self,
         selection: &str,
@@ -294,13 +336,40 @@ impl Runtime {
     }
 }
 
-pub(crate) fn load(
+fn load(
     directory: &Path,
-    security: Security,
+    profile: &str,
     capture: &mut Capture,
+    prepared: Option<&AssetEntry>,
     options: &Options,
-) -> io::Result<Assets> {
+) -> io::Result<Arc<Assets>> {
     let metadata_source = capture.source(&directory.join("metadata.json"), options)?;
+
+    let declarations_path = directory.join(format!("{profile}.d.luau"));
+    let documentation_path = directory.join("documentation.json");
+    let enumerations_path = directory.join("enumerations.d.luau");
+
+    let previous = prepared.filter(|entry| capture.snapshot.current(&entry.inputs));
+
+    let captured = if let Some(entry) = previous {
+        let declarations = capture.source(&declarations_path, options)?;
+        let documentation = capture.source(&documentation_path, options)?;
+        let enumerations = capture.source(&enumerations_path, options)?;
+
+        if entry
+            .inputs
+            .iter()
+            .all(|input| capture.inputs.get(&input.identity) == Some(input))
+        {
+            options.check()?;
+
+            return Ok(Arc::clone(&entry.assets));
+        }
+
+        Some((declarations, documentation, enumerations))
+    } else {
+        None
+    };
 
     let metadata = Metadata::parse(&metadata_source.text)
         .map_err(|error| attributed(&metadata_source, &[], "assets.metadata", error))?;
@@ -311,16 +380,15 @@ pub(crate) fn load(
     let creatable = names(&metadata.creatable_instances)
         .map_err(|error| attributed(&metadata_source, &[], "assets.metadata", error))?;
 
-    let profile = match security {
-        Security::None => "none",
-        Security::Local => "local",
-        Security::Plugin => "plugin",
-        Security::Roblox => "roblox",
-    };
+    let (declarations, documentation, enumerations) = if let Some(captured) = captured {
+        captured
+    } else {
+        let declarations = capture.source(&declarations_path, options)?;
+        let documentation = capture.source(&documentation_path, options)?;
+        let enumerations = capture.source(&enumerations_path, options)?;
 
-    let declarations = capture.source(&directory.join(format!("{profile}.d.luau")), options)?;
-    let documentation = capture.source(&directory.join("documentation.json"), options)?;
-    let enumerations = capture.source(&directory.join("enumerations.d.luau"), options)?;
+        (declarations, documentation, enumerations)
+    };
 
     verify(&declarations.text, &metadata.profiles[profile]).map_err(|error| {
         attributed(
@@ -402,14 +470,14 @@ pub(crate) fn load(
 
     options.check()?;
 
-    Ok(Assets {
-        definitions: vec![declarations, enumerations],
+    Ok(Arc::new(Assets {
+        definitions: [declarations, enumerations],
         capabilities: Capabilities {
             classes: classes.into_values().collect(),
         },
         documentation: index,
         members,
-    })
+    }))
 }
 
 /// Returns the versioned Roblox asset cache without creating it.

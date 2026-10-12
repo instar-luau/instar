@@ -8,6 +8,7 @@ use instar_luau::{
 use instar_shared::{ContextIdentity, SourceVersion};
 
 use crate::{
+    assets::Assets,
     configuration::{ConfigurationLayer, ProjectSettings},
     inputs::InputVersion,
     preparation::SyntaxEntry,
@@ -17,6 +18,11 @@ use crate::{
 pub(crate) struct AnalysisEntry {
     pub(crate) recipe: AnalysisRequest,
     pub(crate) result: Arc<AnalysisResult>,
+    pub(crate) inputs: Vec<InputVersion>,
+}
+
+pub(crate) struct AssetEntry {
+    pub(crate) assets: Arc<Assets>,
     pub(crate) inputs: Vec<InputVersion>,
 }
 
@@ -44,6 +50,7 @@ pub(crate) struct Cache {
     pub(crate) profiles: Vec<(BTreeMap<String, FlagValue>, LanguageProfile)>,
     pub(crate) matchers: BTreeMap<Vec<String>, Arc<Matcher>>,
     pub(crate) syntax: BTreeMap<SourceVersion, SyntaxEntry>,
+    pub(crate) assets: BTreeMap<(PathBuf, &'static str), AssetEntry>,
     pub(crate) analyses: Vec<AnalysisEntry>,
 }
 

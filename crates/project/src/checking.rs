@@ -230,7 +230,7 @@ impl Runtime {
             settings: graph
                 .modules
                 .into_values()
-                .map(|node| node.effective)
+                .map(|node| Arc::unwrap_or_clone(node.effective))
                 .collect(),
             counts,
             completion,

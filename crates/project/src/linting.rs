@@ -1855,7 +1855,7 @@ fn lint_report(
             .graph
             .modules
             .values()
-            .map(|node| node.effective.clone())
+            .map(|node| node.effective.as_ref().clone())
             .collect(),
         dependencies: mem::take(&mut context.graph.edges),
         counts: Counts {

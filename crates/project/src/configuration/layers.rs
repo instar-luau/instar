@@ -421,7 +421,7 @@ impl Runtime {
 
             if capture.snapshot.current(&entry.inputs) {
                 for input in &entry.inputs {
-                    capture.consult_input(input.clone());
+                    capture.consult_input(input);
                 }
 
                 options.check()?;
@@ -441,7 +441,7 @@ impl Runtime {
             .get(&InputIdentity::Context(location.context))
             .cloned()
         {
-            capture.consult_input(input);
+            capture.consult_input(&input);
         }
 
         let outcome =
@@ -666,7 +666,7 @@ impl Runtime {
             && capture.snapshot.current(&layer.inputs)
         {
             for input in &layer.inputs {
-                capture.consult_input(input.clone());
+                capture.consult_input(input);
             }
 
             return Ok(Arc::clone(layer));
@@ -682,7 +682,7 @@ impl Runtime {
             .get(&InputIdentity::Context(context))
             .cloned()
         {
-            capture.consult_input(input);
+            capture.consult_input(&input);
         }
 
         let loaded = self.parsed_layer(filename, source, language, context, diagnostics, options);
@@ -950,7 +950,7 @@ fn configuration_location(
         .get(&InputIdentity::Context(context))
         .cloned()
     {
-        capture.consult_input(input);
+        capture.consult_input(&input);
     }
 
     let source_path = capture

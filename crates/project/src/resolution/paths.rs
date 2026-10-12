@@ -31,7 +31,7 @@ impl Runtime {
         capture.consult_source(&importer.source);
 
         for input in &importer.effective.inputs {
-            capture.consult_input(input.clone());
+            capture.consult_input(input);
         }
 
         match &site.request {
@@ -268,7 +268,7 @@ fn instance(
 
             InstanceStep::Field(name) => {
                 for input in &importer.environment.member_inputs {
-                    capture.consult_input(input.clone());
+                    capture.consult_input(input);
                 }
 
                 let assets = importer.environment.assets.as_ref().ok_or_else(|| {
