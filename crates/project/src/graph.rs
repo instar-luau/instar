@@ -849,12 +849,7 @@ fn closure_module(
 }
 
 pub(crate) fn source_mode(node: &ModuleNode, options: &Options) -> CheckingMode {
-    if node
-        .effective
-        .origins
-        .iter()
-        .any(|origin| origin.field == "checking.mode" && origin.precedence == usize::MAX)
-    {
+    if node.effective.settings.checking_override {
         return node.effective.settings.checking;
     }
 

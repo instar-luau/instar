@@ -879,37 +879,25 @@ impl Reporter {
         let explanations = match report {
             CommandReport::Check(report) => Some((
                 &report.selection,
-                &report.settings,
                 Some((&report.dependencies, &report.imports)),
             )),
 
-            CommandReport::Format(report, _) => Some((&report.selection, &report.settings, None)),
+            CommandReport::Format(report, _) => Some((&report.selection, None)),
 
             CommandReport::Lint(report, _) => Some((
                 &report.selection,
-                &report.settings,
                 Some((&report.dependencies, &report.imports)),
             )),
 
             _ => None,
         };
 
-        if let Some((selection, settings, dependencies)) = explanations {
+        if let Some((selection, dependencies)) = explanations {
             if self.explanations.selection {
                 self.write_report(
                     format!(
                         "Selection: {}\n",
                         serde_json::to_string_pretty(selection).map_err(io::Error::other)?
-                    )
-                    .as_bytes(),
-                )?;
-            }
-
-            if self.explanations.settings {
-                self.write_report(
-                    format!(
-                        "Settings: {}\n",
-                        serde_json::to_string_pretty(settings).map_err(io::Error::other)?
                     )
                     .as_bytes(),
                 )?;

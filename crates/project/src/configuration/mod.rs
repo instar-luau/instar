@@ -1,10 +1,8 @@
 mod layers;
-mod provenance;
 mod settings;
 
-pub use layers::{ConfigurationLayer, ConfigurationState};
+pub use layers::{ConfigurationLayer, ConfigurationState, EffectiveSettings};
 pub(crate) use layers::{TYPE_FUNCTION_MEMORY, worker_options};
-pub use provenance::{EffectiveSettings, SettingOrigin};
 pub(crate) use settings::validate_namespace;
 
 pub use settings::{

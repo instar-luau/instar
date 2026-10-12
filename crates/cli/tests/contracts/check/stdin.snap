@@ -146,13 +146,11 @@ assertion_line: 17
   "selection": [
     {
       "input": "$ROOT/nested/input.luau",
-      "origin": "$ROOT",
       "reason": "selected",
       "selected": true
     },
     {
       "input": "$ROOT/consumer.lua",
-      "origin": "$ROOT",
       "reason": "selected",
       "selected": true
     }

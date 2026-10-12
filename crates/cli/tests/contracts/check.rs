@@ -154,7 +154,7 @@ fn configuration() {
     );
     let configuration = fixture.bytes("instar.toml");
     let child = fixture.bytes("nested/instar.toml");
-    let output = fixture.run(&["check", "nested/input.luau", "--json", "--explain-settings"]);
+    let output = fixture.run(&["check", "nested/input.luau", "--json"]);
     let report = output.json();
     let effective = &report["settings"][0];
 
@@ -164,44 +164,12 @@ fn configuration() {
         effective["settings"]["environment"]["globals"],
         json!(["child"])
     );
-    let origin = effective["origins"]
-        .as_array()
-        .expect("origins")
-        .iter()
-        .find(|origin| origin["field"] == "checking.mode")
-        .expect("mode origin");
-    assert_eq!(origin["base"], json!(fixture.path("nested")));
-    assert!(origin["input"].as_u64().is_some());
-    assert!(
-        origin["location"]["source"]["revision"]
-            .as_u64()
-            .is_some_and(|revision| revision > 0)
-    );
 
-    let overridden = fixture.run(&[
-        "check",
-        "nested/input.luau",
-        "--json",
-        "--mode",
-        "strict",
-        "--explain-settings",
-    ]);
+    let overridden = fixture.run(&["check", "nested/input.luau", "--json", "--mode", "strict"]);
     let strict = overridden.json();
     assert_eq!(overridden.status, 1, "{strict}");
     assert_eq!(strict["settings"][0]["settings"]["checking"], "strict");
     assert_eq!(strict["diagnostics"][0]["category"], "Type");
-    let override_origin = strict["settings"][0]["origins"]
-        .as_array()
-        .expect("origins")
-        .iter()
-        .find(|origin| origin["field"] == "checking.mode")
-        .expect("override origin");
-    assert!(override_origin["input"].is_null());
-    assert!(override_origin["location"].is_null());
-    assert!(
-        override_origin["precedence"].as_u64().expect("precedence")
-            > origin["precedence"].as_u64().expect("precedence")
-    );
     assert_eq!(fixture.bytes("instar.toml"), configuration);
     assert_eq!(fixture.bytes("nested/instar.toml"), child);
 
@@ -213,9 +181,8 @@ fn configuration() {
             "inherited": {
                 "mode": effective["settings"]["checking"],
                 "globals": effective["settings"]["environment"]["globals"],
-                "origin": origin,
             },
-            "override": {"origin": override_origin, "diagnostics": strict["diagnostics"]},
+            "override": {"mode": strict["settings"][0]["settings"]["checking"], "diagnostics": strict["diagnostics"]},
         }),
     );
 }
@@ -585,7 +552,8 @@ fn groups() {
         "child.json",
         "{\"@child/global/subject\":{\"documentation\":\"Child contract\"}}\n",
     );
-    let ordered = fixture.run(&["check", "input.luau", "--json", "--explain-settings"]);
+
+    let ordered = fixture.run(&["check", "input.luau", "--json"]);
     let report = ordered.json();
     assert_eq!(ordered.status, 0, "{report}");
     assert_eq!(
@@ -969,7 +937,7 @@ fn projects() {
     fixture.write("second/instar.toml", "[environment]\nglobals=['second']\n");
     fixture.write("first/input.luau", "return first\n");
     fixture.write("second/input.lua", "return second\n");
-    let output = fixture.run(&["check", "first", "second", "--json", "--explain-settings"]);
+    let output = fixture.run(&["check", "first", "second", "--json"]);
     let report = output.json();
     assert_eq!(output.status, 0, "{report}");
     assert_eq!(report["counts"]["selected"], 2);

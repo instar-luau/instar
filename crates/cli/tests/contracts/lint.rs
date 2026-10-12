@@ -913,20 +913,26 @@ fn configuration_inheritance_executable_settings_and_schema_are_real() {
         "fixing.luau",
         "child/input.luau",
         "--json",
-        "--explain-settings",
         "--project-root",
         ".",
     ]);
     assert_eq!(inherited.status, 0);
     let report = inherited.json();
     assert_eq!(report["diagnostics"].as_array().expect("findings").len(), 2);
-    assert!(
-        report["settings"]
-            .as_array()
-            .expect("settings")
-            .iter()
-            .all(|settings| !settings["origins"].as_array().expect("origins").is_empty())
-    );
+    let settings = report["settings"].as_array().expect("settings");
+    assert_eq!(settings.len(), 2);
+
+    assert!(settings.iter().any(|effective| {
+        effective["settings"]["linting"]["rules"]["self_assignment"]["enabled"] == true
+            && effective["settings"]["linting"]["rules"]["parenthesized_conditions"]["enabled"]
+                == false
+    }));
+
+    assert!(settings.iter().any(|effective| {
+        effective["settings"]["linting"]["rules"]["parenthesized_conditions"]["enabled"] == true
+            && effective["settings"]["linting"]["rules"]["self_assignment"]["enabled"] == false
+    }));
+
     fixture.write("alternate.toml", "[linting]\npresets = ['none']\n");
     let explicit = fixture.run(&[
         "lint",
@@ -1496,7 +1502,6 @@ fn shared_project_exports_and_ordered_declarations_supply_real_signatures() {
         "--json",
         "--rule",
         "mismatched_argument_count",
-        "--explain-settings",
         "--explain-dependencies",
     ]);
     assert_eq!(output.status, 0, "{}", output.stderr);

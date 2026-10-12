@@ -295,7 +295,7 @@ pub struct SettingsReport {
     /// Operation whose effective settings were requested.
     pub operation: Operation,
 
-    /// Effective settings and provenance for selected inputs.
+    /// Effective settings for selected inputs.
     pub settings: Vec<EffectiveSettings>,
 
     /// Identifier of the effective-settings report schema.

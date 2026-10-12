@@ -43,7 +43,7 @@ impl ContextIdentity {
 /// The exact immutable revision of a source input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
 pub struct SourceVersion {
-    /// Store-owned identity; provenance does not grant write permission.
+    /// Store-owned source identity.
     pub identity: SourceIdentity,
 
     /// Revision assigned by the owning source store.

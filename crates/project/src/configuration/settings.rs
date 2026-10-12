@@ -1262,6 +1262,12 @@ pub struct ProjectSettings {
 
     #[serde(skip)]
     pub(crate) syntax: SyntaxSettings,
+
+    #[serde(skip)]
+    pub(crate) checking_override: bool,
+
+    #[serde(skip)]
+    pub(crate) lint_priorities: BTreeMap<RuleIdentity, usize>,
 }
 
 impl Default for ProjectSettings {
@@ -1280,6 +1286,8 @@ impl Default for ProjectSettings {
             environment: EnvironmentSettings::default(),
             editing: EditingSettings::default(),
             syntax: SyntaxSettings::default(),
+            checking_override: false,
+            lint_priorities: BTreeMap::new(),
         }
     }
 }

@@ -45,9 +45,6 @@ pub struct ExplanationSelection {
     /// Request input selection explanations.
     pub selection: bool,
 
-    /// Request effective settings provenance.
-    pub settings: bool,
-
     /// Request import and dependency resolution explanations.
     pub dependencies: bool,
 }

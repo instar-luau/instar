@@ -122,9 +122,6 @@ pub(crate) struct ExplanationArguments {
     pub(crate) explain_selection: bool,
 
     #[arg(long)]
-    pub(crate) explain_settings: bool,
-
-    #[arg(long)]
     pub(crate) explain_dependencies: bool,
 }
 

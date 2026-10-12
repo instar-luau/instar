@@ -29,7 +29,6 @@ assertion_line: 17
     "selection": [
       {
         "input": "$ROOT/source/excluded.luau",
-        "origin": "$ROOT",
         "reason": "configured exclusion",
         "selected": false
       }
@@ -45,19 +44,16 @@ assertion_line: 17
     },
     {
       "input": "$ROOT/outside.luau",
-      "origin": "$ROOT",
       "reason": "not matched by includes",
       "selected": false
     },
     {
       "input": "$ROOT/source/excluded.luau",
-      "origin": "$ROOT",
       "reason": "configured exclusion",
       "selected": false
     },
     {
       "input": "$ROOT/source/selected.luau",
-      "origin": "$ROOT",
       "reason": "selected",
       "selected": true
     }

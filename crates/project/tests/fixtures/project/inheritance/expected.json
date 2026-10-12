@@ -32,7 +32,5 @@
     "child2"
   ],
   "/settings/resolution/aliases/base": "$ROOT/modules",
-  "/origins/resolution.aliases.base": "$ROOT",
-  "/origins/resolution.aliases.child": "$ROOT/child",
   "/settings/linting/rules/LocalUnused/enabled": true
 }

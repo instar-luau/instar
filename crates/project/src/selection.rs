@@ -103,7 +103,8 @@ pub struct SelectionDecision {
     /// Explanation of inclusion or exclusion.
     pub reason: String,
 
-    /// Ignore-file path or configuration base responsible for the decision.
+    /// Ignore-file path responsible for the decision.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub origin: Option<PathBuf>,
 }
 
@@ -207,12 +208,7 @@ impl Runtime {
                     "selected"
                 }
                 .to_owned(),
-                origin: effective
-                    .origins
-                    .iter()
-                    .rev()
-                    .find(|origin| origin.field.starts_with("selection."))
-                    .map(|origin| origin.base.clone()),
+                origin: None,
             });
 
             if selected || purpose == SelectionPurpose::Settings {

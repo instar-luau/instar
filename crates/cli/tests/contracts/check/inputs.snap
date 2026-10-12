@@ -20,7 +20,6 @@ assertion_line: 17
     "selection": [
       {
         "input": "$ROOT/source/first.luau",
-        "origin": "$ROOT",
         "reason": "selected",
         "selected": true
       }
@@ -43,13 +42,11 @@ assertion_line: 17
     "selection": [
       {
         "input": "$ROOT/source/first.luau",
-        "origin": "$ROOT",
         "reason": "selected",
         "selected": true
       },
       {
         "input": "$ROOT/source/nested/second.lua",
-        "origin": "$ROOT",
         "reason": "selected",
         "selected": true
       }
@@ -72,7 +69,6 @@ assertion_line: 17
     "selection": [
       {
         "input": "$ROOT/source/nested/second.lua",
-        "origin": "$ROOT",
         "reason": "selected",
         "selected": true
       }
@@ -95,19 +91,16 @@ assertion_line: 17
     "selection": [
       {
         "input": "$ROOT/source/first.luau",
-        "origin": "$ROOT",
         "reason": "selected",
         "selected": true
       },
       {
         "input": "$ROOT/source/nested/second.lua",
-        "origin": "$ROOT",
         "reason": "selected",
         "selected": true
       },
       {
         "input": "$ROOT/third.luau",
-        "origin": "$ROOT",
         "reason": "selected",
         "selected": true
       }
@@ -130,19 +123,16 @@ assertion_line: 17
     "selection": [
       {
         "input": "$ROOT/source/first.luau",
-        "origin": "$ROOT",
         "reason": "selected",
         "selected": true
       },
       {
         "input": "$ROOT/source/nested/second.lua",
-        "origin": "$ROOT",
         "reason": "selected",
         "selected": true
       },
       {
         "input": "$ROOT/third.luau",
-        "origin": "$ROOT",
         "reason": "selected",
         "selected": true
       }

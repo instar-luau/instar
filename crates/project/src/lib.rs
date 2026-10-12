@@ -45,7 +45,7 @@ pub use configuration::{
     FormatOverrides, FormattingPatch, HintPatch, HintSettings, LanguagePatch, LintOverrides,
     LintPatch, ObviousHints, Operation, OperationOverrides, ProjectSettings, ProjectSettingsPatch,
     RequirePatch, RequireStyle, ResolutionPatch, ResolutionSettings, Security, SelectionOverrides,
-    SelectionSettings, SettingOrigin,
+    SelectionSettings,
 };
 
 pub use documentation::{DocumentationEntry, DocumentationParameter};

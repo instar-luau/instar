@@ -2225,14 +2225,8 @@ fn family(finding: &Diagnostic) -> String {
 }
 
 fn precedence(settings: &EffectiveSettings, code: &str) -> usize {
-    let field = format!("linting.rules.{code}.");
-
-    settings
-        .origins
-        .iter()
-        .filter(|origin| origin.field.starts_with(&field))
-        .map(|origin| origin.precedence)
-        .max()
+    RuleIdentity::named(code)
+        .and_then(|identity| settings.settings.lint_priorities.get(&identity).copied())
         .unwrap_or(0)
 }
 

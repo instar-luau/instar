@@ -17,20 +17,17 @@ use instar_luau::{
 
 use instar_shared::{
     Completion, ContextIdentity, Diagnostic, DiagnosticCategory, Event, EventPayload, FailureKind,
-    Location, OperationFailure, Options, Progress, Reason, Severity, SourceIdentity, SourceOutcome,
-    SourceSnapshot, Span,
+    OperationFailure, Options, Progress, Reason, Severity, SourceIdentity, SourceOutcome,
+    SourceSnapshot,
 };
 
 use instar_syntax::SyntaxSettings;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
-use super::{
-    provenance::{EffectiveSettings, SettingOrigin, defaults, policy, record, resolved},
-    settings::{
-        CheckingMode, EnvironmentPatch, OperationOverrides, ProjectSettings, ProjectSettingsPatch,
-        ResolutionPatch, canonical_flags,
-    },
+use super::settings::{
+    CheckingMode, DiagnosticPolicy, OperationOverrides, ProjectSettings, ProjectSettingsPatch,
+    canonical_flags,
 };
 
 use crate::{
@@ -59,9 +56,6 @@ pub struct ConfigurationLayer {
 
     /// Complete validated patch.
     pub patch: ProjectSettingsPatch,
-
-    /// Source-attributed setting origins.
-    pub origins: Vec<SettingOrigin>,
 
     /// Consulted layer input guards.
     pub inputs: Vec<InputVersion>,
@@ -95,6 +89,25 @@ pub enum ConfigurationState {
     },
 }
 
+/// Validated settings for one exact project source and context.
+#[derive(Clone, Debug, Serialize)]
+pub struct EffectiveSettings {
+    /// Selected project context.
+    pub context: ContextIdentity,
+
+    /// Selected source identity.
+    pub source: SourceIdentity,
+
+    /// Complete effective settings.
+    pub settings: ProjectSettings,
+
+    /// Actual request reporting policy, absent for formatting.
+    pub diagnostics: Option<DiagnosticPolicy>,
+
+    /// Every consulted input guarding these settings.
+    pub inputs: Vec<InputVersion>,
+}
+
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct LanguageLayer {
@@ -116,7 +129,6 @@ pub(crate) struct LayerResult {
     pub(crate) state: ConfigurationState,
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) completion: Completion,
-    origins: Vec<SettingOrigin>,
     error: Option<io::Error>,
 }
 
@@ -135,21 +147,41 @@ struct ConfigurationLocation {
 
 struct SettingsAssembly {
     settings: ProjectSettings,
-    origins: Vec<SettingOrigin>,
     precedence: usize,
 }
 
 impl SettingsAssembly {
-    fn overlay(
+    fn apply(
         &mut self,
-        configuration: &mut ProjectSettingsPatch,
-        origin: &SettingOrigin,
+        configuration: &ProjectSettingsPatch,
+        base: &Path,
         options: &Options,
     ) -> io::Result<()> {
-        anchor(&origin.base, configuration)?;
-        configuration.apply(&mut self.settings, Some((&origin.base, options)))?;
+        configuration.apply(&mut self.settings, Some((base, options)))?;
 
-        resolved(configuration, &self.settings, origin, &mut self.origins)
+        let patch = &configuration.linting;
+
+        for definition in instar_lint::rules() {
+            if patch.presets.is_some()
+                || patch.selected.is_some()
+                || patch
+                    .rules
+                    .as_ref()
+                    .is_some_and(|rules| rules.contains_key(&definition.identity))
+                || patch
+                    .warnings
+                    .as_ref()
+                    .is_some_and(|warnings| warnings.contains_key(&definition.identity))
+                || patch.upstream_errors.is_some()
+                    && matches!(definition.producer, RuleProducer::Upstream(_))
+            {
+                self.settings
+                    .lint_priorities
+                    .insert(definition.identity, self.precedence);
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -227,7 +259,6 @@ impl Runtime {
             source,
             settings: *effective,
             diagnostics: overrides.diagnostics().cloned(),
-            origins: result.origins,
             inputs,
         })
     }
@@ -255,7 +286,7 @@ impl Runtime {
         let inputs = capture.end_consultation();
 
         match outcome {
-            Ok((settings, origins)) => LayerResult {
+            Ok(settings) => LayerResult {
                 state: ConfigurationState::Ready {
                     layers: loading.layers,
                     effective: Box::new(settings),
@@ -263,7 +294,6 @@ impl Runtime {
                 },
                 diagnostics: loading.diagnostics,
                 completion: Completion::Complete,
-                origins,
                 error: None,
             },
 
@@ -330,7 +360,6 @@ impl Runtime {
             },
             diagnostics: loading.diagnostics,
             completion,
-            origins: Vec::new(),
             error: Some(error),
         }
     }
@@ -343,13 +372,12 @@ impl Runtime {
         capture: &mut Capture,
         loading: &mut ConfigurationLoading,
         options: &Options,
-    ) -> io::Result<(ProjectSettings, Vec<SettingOrigin>)> {
+    ) -> io::Result<ProjectSettings> {
         let location = configuration_location(source, invocation, capture, options)?;
         let baseline = LanguageProfile::new(&BTreeMap::new(), TYPE_FUNCTION_MEMORY)?.flags;
 
         let mut assembly = SettingsAssembly {
             settings: ProjectSettings::default(),
-            origins: Vec::new(),
             precedence: 1,
         };
 
@@ -359,18 +387,6 @@ impl Runtime {
         }
 
         assembly.settings.language.flags.clone_from(&baseline);
-
-        defaults(
-            &assembly.settings,
-            &SettingOrigin {
-                input: None,
-                field: String::new(),
-                location: None,
-                base: location.base.clone(),
-                precedence: 0,
-            },
-            &mut assembly.origins,
-        )?;
 
         for directory in configuration_directories(&location, invocation)? {
             self.load_directory(
@@ -402,7 +418,7 @@ impl Runtime {
         assembly.settings.syntax = grammar(&assembly.settings.language, &baseline);
         options.check()?;
 
-        Ok((assembly.settings, assembly.origins))
+        Ok(assembly.settings)
     }
 
     fn load_directory(
@@ -493,13 +509,7 @@ impl Runtime {
             options,
         )?;
 
-        apply_layer(
-            &layer,
-            &mut assembly.settings,
-            &mut assembly.origins,
-            assembly.precedence,
-            options,
-        )?;
+        assembly.apply(&layer.patch, &layer.base, options)?;
 
         loading.layers.push(layer);
         assembly.precedence += 1;
@@ -659,26 +669,6 @@ impl Runtime {
         anchor(&base, &mut configuration)?;
         configuration.language.flags = canonical_flags(&configuration.language.flags)?;
         configuration.validate()?;
-        let mut origins = Vec::new();
-
-        record(
-            &configuration,
-            &SettingOrigin {
-                input: Some(source.version.identity),
-                field: String::new(),
-                location: Some(Location::new(
-                    source,
-                    Span {
-                        start: 0,
-                        end: source.text.len(),
-                    },
-                )?),
-                base: base.clone(),
-                precedence: 0,
-            },
-            &mut origins,
-        )?;
-
         options.check()?;
 
         Ok(ConfigurationLayer {
@@ -686,7 +676,6 @@ impl Runtime {
             source: source.clone(),
             base,
             patch: configuration,
-            origins,
             inputs: Vec::new(),
         })
     }
@@ -927,17 +916,8 @@ fn apply_client(
             .find_map(|(root, identity)| (*identity == location.context).then_some(root.clone()))
             .unwrap_or_else(|| location.base.clone());
 
-        assembly.overlay(
-            &mut configuration,
-            &SettingOrigin {
-                input: None,
-                field: String::new(),
-                location: None,
-                base,
-                precedence: assembly.precedence,
-            },
-            options,
-        )?;
+        anchor(&base, &mut configuration)?;
+        assembly.apply(&configuration, &base, options)?;
     }
 
     Ok(())
@@ -952,19 +932,10 @@ fn apply_invocation(
     let mut configuration = overrides.patch();
     configuration.validate()?;
 
-    let origin = SettingOrigin {
-        input: None,
-        field: String::new(),
-        location: None,
-        base: base.to_path_buf(),
-        precedence: usize::MAX,
-    };
-
-    assembly.overlay(&mut configuration, &origin, options)?;
-
-    if let Some(diagnostics) = overrides.diagnostics() {
-        policy(diagnostics, &origin, &mut assembly.origins)?;
-    }
+    anchor(base, &mut configuration)?;
+    assembly.precedence = usize::MAX;
+    assembly.settings.checking_override = configuration.checking.mode.is_some();
+    assembly.apply(&configuration, base, options)?;
 
     Ok(())
 }
@@ -982,28 +953,8 @@ fn discover_defaults(
             options.check()?;
             let map = ancestor.join("sourcemap.json");
 
-            if let Some(source) = capture.read(&map, options)? {
-                assembly.settings.resolution.sourcemaps = vec![map.clone()];
-
-                let configuration = ProjectSettingsPatch {
-                    resolution: ResolutionPatch {
-                        sourcemaps: Some(vec![map]),
-                        ..ResolutionPatch::default()
-                    },
-                    ..ProjectSettingsPatch::default()
-                };
-
-                record(
-                    &configuration,
-                    &SettingOrigin {
-                        input: Some(source.version.identity),
-                        field: String::new(),
-                        location: Some(Location::new(&source, Span { start: 0, end: 0 })?),
-                        base: ancestor.to_path_buf(),
-                        precedence: 0,
-                    },
-                    &mut assembly.origins,
-                )?;
+            if capture.read(&map, options)?.is_some() {
+                assembly.settings.resolution.sourcemaps = vec![map];
 
                 break;
             }
@@ -1013,35 +964,7 @@ fn discover_defaults(
     if !assembly.settings.environment.roblox_explicit {
         assembly.settings.environment.roblox = !assembly.settings.resolution.sourcemaps.is_empty();
 
-        let origin = assembly
-            .origins
-            .iter()
-            .find(|origin| origin.field == "resolution.sourcemaps")
-            .cloned()
-            .unwrap_or(SettingOrigin {
-                input: None,
-                field: String::new(),
-                location: None,
-                base: location.base.clone(),
-                precedence: 0,
-            });
-
-        let configuration = ProjectSettingsPatch {
-            environment: EnvironmentPatch {
-                roblox: Some(assembly.settings.environment.roblox),
-                ..EnvironmentPatch::default()
-            },
-            ..ProjectSettingsPatch::default()
-        };
-
         assembly.settings.linting.roblox = assembly.settings.environment.roblox;
-
-        resolved(
-            &configuration,
-            &assembly.settings,
-            &origin,
-            &mut assembly.origins,
-        )?;
     }
 
     Ok(())
@@ -1088,35 +1011,6 @@ pub(crate) fn worker_options(options: &Options) -> Options {
     }
 
     worker
-}
-
-fn apply_layer(
-    layer: &ConfigurationLayer,
-    settings: &mut ProjectSettings,
-    origins: &mut Vec<SettingOrigin>,
-    precedence: usize,
-    options: &Options,
-) -> io::Result<()> {
-    layer.patch.apply(settings, Some((&layer.base, options)))?;
-
-    resolved(
-        &layer.patch,
-        settings,
-        &SettingOrigin {
-            input: Some(layer.identity),
-            field: String::new(),
-            location: Some(Location::new(
-                &layer.source,
-                Span {
-                    start: 0,
-                    end: layer.source.text.len(),
-                },
-            )?),
-            base: layer.base.clone(),
-            precedence,
-        },
-        origins,
-    )
 }
 
 fn anchor(base: &Path, patch: &mut ProjectSettingsPatch) -> io::Result<()> {

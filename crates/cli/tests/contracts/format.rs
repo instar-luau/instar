@@ -625,7 +625,7 @@ fn selection_combines_inputs_and_honors_project_controls() {
 }
 
 #[test]
-fn inherited_settings_keep_origins_and_command_overrides() {
+fn inherited_settings_keep_command_overrides() {
     let fixture = Fixture::new("cli", "format/contexts");
     let original = fixture.bytes("instar.toml");
     let child = fixture.run(&["format", "--source", "child/input.luau"]);
@@ -650,7 +650,6 @@ fn inherited_settings_keep_origins_and_command_overrides() {
         "format",
         "--json",
         "--check",
-        "--explain-settings",
         "--indent-width",
         "6",
         "--quotes",
@@ -677,13 +676,7 @@ fn inherited_settings_keep_origins_and_command_overrides() {
             .expect("globals")
             .contains(&json!("emit"))
     );
-    let origins = settings["origins"].as_array().expect("setting origins");
-    assert!(origins.iter().any(|origin| {
-        origin["field"] == "formatting.indent_width" && origin["input"].is_null()
-    }));
-    assert!(origins.iter().any(|origin| {
-        origin["field"] == "formatting.indent_style" && !origin["location"].is_null()
-    }));
+
     let explicit = fixture.run(&[
         "format",
         "--source",

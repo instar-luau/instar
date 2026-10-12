@@ -666,7 +666,6 @@ async fn invocation(
             .transpose()?,
         explanations: ExplanationSelection {
             selection: arguments.explanations.explain_selection,
-            settings: arguments.explanations.explain_settings,
             dependencies: arguments.explanations.explain_dependencies,
         },
     })

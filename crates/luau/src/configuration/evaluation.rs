@@ -3,13 +3,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::native::LanguageFeatures;
 
-/// Defining-layer provenance without filesystem authority.
+/// Captured configuration evaluation context.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ConfigurationContext {
     /// The stable identity of this captured record.
     pub identity: ContextIdentity,
 
-    /// The defining layer base provenance, not filesystem permission.
+    /// The defining layer directory.
     pub base: String,
 
     /// Whether the captured source is executable Luau rather than JSON.
@@ -38,7 +38,7 @@ pub struct ConfigurationInput {
     /// The immutable source language features.
     pub language: LanguageFeatures,
 
-    /// The defining layer and evaluation provenance.
+    /// The defining layer and evaluation context.
     pub context: ConfigurationContext,
 
     /// Explicit VM allocation and extraction bounds.
