@@ -18,7 +18,6 @@ serde_json.workspace = true
 [build-dependencies]
 cmake.workspace = true
 cxx-build.workspace = true
-serde_json.workspace = true
 
 [lints]
 workspace = true
