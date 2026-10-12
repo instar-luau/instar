@@ -9,7 +9,6 @@ use instar_luau::{
     AnalysisIdentity, AnalysisPurpose, AnalysisRequest, ClosureIdentity, CycleEdge, CyclePath,
     ImportOutcome, ImportRequest, ImportSite, InferenceMode, InferenceSettings, InstanceStep,
     ModuleIdentity, ModuleInput, ReportingSettings, ResolvedImport, SemanticCategory, SourceInput,
-    flags::LanguageProfile,
 };
 
 use instar_shared::{
@@ -28,10 +27,9 @@ use serde::Serialize;
 
 use crate::{
     capture::Capture,
-    configuration::{CheckingMode, EffectiveSettings, OperationOverrides, TYPE_FUNCTION_MEMORY},
+    configuration::{CheckingMode, EffectiveSettings, OperationOverrides},
     environments::{self, EnvironmentRecipe},
     execution::{Runtime, failure},
-    extract::extract,
     inputs::{InputVersion, SourceOrigin},
     report::{DiagnosticRecord, ImportExplanation, ImportFailure},
     request::{Input, Invocation},
@@ -268,7 +266,7 @@ impl Runtime {
     }
 
     fn graph_node(
-        &self,
+        &mut self,
         module: PendingModule,
         request: &GraphRequest<'_>,
         graph: &mut DependencyGraph,
@@ -283,7 +281,7 @@ impl Runtime {
         } = module;
 
         capture.consult_source(&source);
-        let syntax = parse(&source, &syntax_settings(&effective), options);
+        let syntax = self.source_syntax(&source, &effective, options)?;
         graph.completion = graph.completion.clone().combine(syntax.completion.clone());
 
         graph
@@ -299,18 +297,23 @@ impl Runtime {
                     }),
             );
 
-        let sites = extract(&syntax.tree, options).map_err(|error| {
-            let mut failure = failure(&error, options, &self.events);
-            failure.completion = failure.completion.combine(graph.completion.clone());
+        let sites = syntax
+            .imports
+            .as_ref()
+            .map_err(|error| {
+                let mut failure = failure(error, options, &self.events);
+                failure.completion = failure.completion.combine(graph.completion.clone());
 
-            for finding in &graph.findings {
-                if !failure.diagnostics.contains(&finding.diagnostic) {
-                    failure.diagnostics.push(finding.diagnostic.clone());
+                for finding in &graph.findings {
+                    if !failure.diagnostics.contains(&finding.diagnostic) {
+                        failure.diagnostics.push(finding.diagnostic.clone());
+                    }
                 }
-            }
 
-            io::Error::from(failure)
-        })?;
+                io::Error::from(failure)
+            })?
+            .clone();
+
         let member_precedence = sites.iter().any(|site| matches!(&site.request, ImportRequest::Instance(path) if path.steps.iter().any(|step| matches!(step, InstanceStep::Field(_)))));
 
         let requested = if matches!(request.overrides, OperationOverrides::Lint(_)) {
@@ -386,6 +389,8 @@ impl Runtime {
             capture,
             options,
         )?;
+
+        self.prepare_source(&target_source, &effective, options)?;
 
         let (target_identity, map) = if let Some((map, placement)) = target.map {
             let context = self
@@ -597,7 +602,7 @@ impl Runtime {
     }
 
     pub(crate) fn closures(
-        &self,
+        &mut self,
         graph: &DependencyGraph,
         purpose: AnalysisPurpose,
         semantic: &[SemanticCategory],
@@ -632,10 +637,7 @@ impl Runtime {
             for identity in &component {
                 let node = &graph.modules[identity];
 
-                let current = LanguageProfile::new(
-                    &node.effective.settings.language.flags,
-                    TYPE_FUNCTION_MEMORY,
-                )?;
+                let current = self.profile(&node.effective.settings.language.flags)?;
 
                 if profile.as_ref().is_some_and(|profile| profile != &current) {
                     compatible = false;

@@ -33,6 +33,7 @@ use super::{
 
 use crate::{
     assets,
+    cache::Cache,
     capture::Capture,
     configuration::{
         CheckOverrides, DiagnosticScope, LintOverrides, OperationOverrides, SelectionOverrides,
@@ -44,7 +45,7 @@ use crate::{
     inputs::{ProjectSnapshot, SourceOrigin},
     report::{ProjectLink, QueryReport},
     request::{CheckRequest, FixMode, Input, Invocation, LintRequest},
-    selection::{Matcher, SelectedSource, SelectionPurpose},
+    selection::{SelectedSource, SelectionPurpose},
     symbols,
 };
 
@@ -232,6 +233,8 @@ impl Runtime {
             ..context.map_or_else(CheckOverrides::default, |context| context.overrides.clone())
         });
 
+        let mut accepted = BTreeSet::new();
+
         let selected = self
             .select(
                 &invocation,
@@ -239,16 +242,23 @@ impl Runtime {
                 capture,
                 SelectionPurpose::Editor,
                 options,
+                |runtime, target, capture, options| {
+                    if Some(target.identity) == source
+                        || indexed(target, &capture.snapshot, &mut runtime.cache)?
+                    {
+                        runtime.prepare_target(target, capture, options)?;
+                        accepted.insert(target.identity);
+                    }
+
+                    Ok(())
+                },
             )?
             .targets;
 
-        let mut targets = Vec::new();
-
-        for target in selected {
-            if Some(target.identity) == source || indexed(&target, &capture.snapshot)? {
-                targets.push(target);
-            }
-        }
+        let mut targets = selected
+            .into_iter()
+            .filter(|target| accepted.contains(&target.identity))
+            .collect::<Vec<_>>();
 
         if workspace {
             let documents = capture
@@ -293,8 +303,10 @@ impl Runtime {
                     effective,
                 };
 
-                if Some(identity) == source || indexed(&target, &capture.snapshot)? {
+                if Some(identity) == source || indexed(&target, &capture.snapshot, &mut self.cache)?
+                {
                     capture.consult_source(&document);
+                    self.prepare_target(&target, capture, options)?;
                     targets.push(target);
                 }
             }
@@ -305,10 +317,13 @@ impl Runtime {
         {
             let effective = self.effective(identity, &invocation, &overrides, capture, options)?;
 
-            targets.push(SelectedSource {
+            let target = SelectedSource {
                 identity,
                 effective,
-            });
+            };
+
+            self.prepare_target(&target, capture, options)?;
+            targets.push(target);
         }
 
         Ok(targets)
@@ -461,6 +476,8 @@ impl Runtime {
             ..Invocation::default()
         };
 
+        let mut accepted = BTreeSet::new();
+
         let selected = self.select(
             &invocation,
             &OperationOverrides::Check(CheckOverrides {
@@ -474,34 +491,43 @@ impl Runtime {
             &mut capture,
             SelectionPurpose::Editor,
             options,
+            |runtime, target, capture, options| {
+                let explicit = invocation.inputs.iter().any(|input| match input {
+                    Input::Source(identity) => *identity == target.identity,
+                    Input::Module(module) => module.source == target.identity,
+                    _ => false,
+                });
+
+                let open = matches!(
+                    capture.snapshot.origin(target.identity),
+                    Some(SourceOrigin::Document { .. })
+                );
+
+                if explicit
+                    || open
+                    || matches!(
+                        target.effective.settings.editing.diagnostic_scope,
+                        DiagnosticScope::Workspace
+                    ) && indexed(target, &capture.snapshot, &mut runtime.cache)?
+                {
+                    if request.checking || request.lint {
+                        runtime.prepare_target(target, capture, options)?;
+                    }
+
+                    accepted.insert(target.identity);
+                }
+
+                Ok(())
+            },
         )?;
 
-        let mut inputs = Vec::new();
+        invocation.inputs = selected
+            .targets
+            .into_iter()
+            .filter(|target| accepted.contains(&target.identity))
+            .map(|target| Input::Source(target.identity))
+            .collect();
 
-        for target in selected.targets {
-            let explicit = invocation.inputs.iter().any(|input| match input {
-                Input::Source(identity) => *identity == target.identity,
-                Input::Module(module) => module.source == target.identity,
-                _ => false,
-            });
-
-            let open = matches!(
-                capture.snapshot.origin(target.identity),
-                Some(SourceOrigin::Document { .. })
-            );
-
-            if explicit
-                || open
-                || matches!(
-                    target.effective.settings.editing.diagnostic_scope,
-                    DiagnosticScope::Workspace
-                ) && indexed(&target, &capture.snapshot)?
-            {
-                inputs.push(Input::Source(target.identity));
-            }
-        }
-
-        invocation.inputs = inputs;
         let selected = !invocation.inputs.is_empty();
 
         let check = if request.checking && selected {
@@ -1608,7 +1634,11 @@ fn requested_completion(
     completion
 }
 
-fn indexed(target: &SelectedSource, snapshot: &ProjectSnapshot) -> io::Result<bool> {
+fn indexed(
+    target: &SelectedSource,
+    snapshot: &ProjectSnapshot,
+    cache: &mut Cache,
+) -> io::Result<bool> {
     if snapshot
         .source(target.identity)
         .is_some_and(|source| snapshot.is_declaration(source.version))
@@ -1618,8 +1648,8 @@ fn indexed(target: &SelectedSource, snapshot: &ProjectSnapshot) -> io::Result<bo
 
     let selection = &target.effective.settings.selection;
     let policy = &selection.index;
-    let include = Matcher::new(policy.include.as_deref().or(selection.include.as_deref()))?;
-    let exclude = Matcher::new(policy.exclude.as_deref().or(selection.exclude.as_deref()))?;
+    let include = cache.matcher(policy.include.as_deref().or(selection.include.as_deref()))?;
+    let exclude = cache.matcher(policy.exclude.as_deref().or(selection.exclude.as_deref()))?;
 
     let path = snapshot
         .origin(target.identity)

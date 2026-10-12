@@ -19,6 +19,7 @@ use super::{
 };
 
 use crate::{
+    cache::Cache,
     capture::{Capture, Listing},
     configuration::{BindingStyle, CheckOverrides, OperationOverrides, RequireStyle},
     execution::Runtime,
@@ -26,7 +27,7 @@ use crate::{
     inputs::{SourceOrigin, normalize},
     request::Invocation,
     resolution::module_path,
-    selection::{Matcher, SelectedSource},
+    selection::SelectedSource,
     sourcemap::Map,
 };
 
@@ -276,7 +277,9 @@ impl Runtime {
                 continue;
             }
 
-            let Some(proposed) = automatic_import_candidate(&target, imports, capture)? else {
+            let Some(proposed) =
+                automatic_import_candidate(&target, imports, capture, &mut self.cache)?
+            else {
                 continue;
             };
 
@@ -465,6 +468,7 @@ fn automatic_import_candidate(
     target: &SelectedSource,
     imports: &AutomaticImports,
     capture: &Capture,
+    cache: &mut Cache,
 ) -> io::Result<Option<ImportCandidate>> {
     let Some(path) = capture
         .snapshot
@@ -477,20 +481,24 @@ fn automatic_import_candidate(
 
     let policy = &target.effective.settings.selection.imports;
 
-    if !Matcher::new(
-        policy
-            .include
-            .as_deref()
-            .or(target.effective.settings.selection.include.as_deref()),
-    )?
-    .includes(&path)
-        || Matcher::new(
+    if !cache
+        .matcher(
             policy
-                .exclude
+                .include
                 .as_deref()
-                .or(target.effective.settings.selection.exclude.as_deref()),
+                .or(target.effective.settings.selection.include.as_deref()),
         )?
-        .matches(&path)
+        .includes(&path)
+        || cache
+            .matcher(
+                policy.exclude.as_deref().or(target
+                    .effective
+                    .settings
+                    .selection
+                    .exclude
+                    .as_deref()),
+            )?
+            .matches(&path)
             && !policy.override_exclusions
     {
         return Ok(None);

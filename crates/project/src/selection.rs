@@ -140,16 +140,36 @@ impl Runtime {
         capture: &mut Capture,
         purpose: SelectionPurpose,
         options: &Options,
+        mut ready: impl FnMut(&mut Self, &SelectedSource, &mut Capture, &Options) -> io::Result<()>,
     ) -> io::Result<SelectionResult> {
         overrides.selection().validate()?;
         let candidates = self.discover_inputs(invocation, capture, purpose, options)?;
+        let mut ignored = Vec::new();
         let mut decisions = Vec::new();
-        let identities = capture_candidates(candidates, &mut decisions, capture, options)?;
-
-        let candidate_count = identities.len() + decisions.len();
+        let mut identities = BTreeSet::new();
+        let mut sources = candidates.sources.into_iter();
+        let mut paths = candidates.paths.into_iter();
         let mut targets = Vec::new();
 
-        for identity in identities {
+        loop {
+            let identity = if let Some(identity) = sources.next() {
+                identity
+            } else if let Some((path, root)) = paths.next() {
+                let Some(identity) =
+                    capture_candidate(&path, root.as_deref(), &mut ignored, capture, options)?
+                else {
+                    continue;
+                };
+
+                identity
+            } else {
+                break;
+            };
+
+            if !identities.insert(identity) {
+                continue;
+            }
+
             options.check()?;
 
             let source = capture
@@ -184,8 +204,8 @@ impl Runtime {
                 .selection
                 .operation(overrides.operation());
 
-            let include = Matcher::new(policy.include.as_deref())?;
-            let exclude = Matcher::new(policy.exclude.as_deref())?;
+            let include = self.cache.matcher(policy.include.as_deref())?;
+            let exclude = self.cache.matcher(policy.exclude.as_deref())?;
             let included = path.is_none_or(|path| include.includes(path));
 
             let excluded =
@@ -212,10 +232,13 @@ impl Runtime {
             });
 
             if selected || purpose == SelectionPurpose::Settings {
-                targets.push(SelectedSource {
+                let target = SelectedSource {
                     identity,
                     effective,
-                });
+                };
+
+                ready(self, &target, capture, options)?;
+                targets.push(target);
             }
         }
 
@@ -227,6 +250,9 @@ impl Runtime {
                 .map(Path::to_path_buf)
         });
 
+        let candidate_count = identities.len() + ignored.len();
+        ignored.extend(decisions);
+
         if candidate_count == 0 && purpose == SelectionPurpose::Command {
             return Err(invalid("empty discovery: no source candidates"));
         }
@@ -234,13 +260,13 @@ impl Runtime {
         Ok(SelectionResult {
             targets,
             candidates: candidate_count,
-            decisions,
+            decisions: ignored,
             completion: Completion::Complete,
         })
     }
 
     fn discover_inputs(
-        &self,
+        &mut self,
         invocation: &Invocation,
         capture: &mut Capture,
         purpose: SelectionPurpose,
@@ -288,7 +314,7 @@ impl Runtime {
 
                 Input::Pattern { base, pattern } => {
                     let base = absolute(&base)?;
-                    let matcher = Matcher::new(Some(&[anchor(&base, &pattern)?]))?;
+                    let matcher = self.cache.matcher(Some(&[anchor(&base, &pattern)?]))?;
 
                     let paths = discover(&base, capture, options)?
                         .into_iter()
@@ -362,53 +388,46 @@ pub(crate) fn anchor(base: &Path, pattern: &str) -> io::Result<String> {
     ))
 }
 
-fn capture_candidates(
-    candidates: InputCandidates,
+fn capture_candidate(
+    path: &Path,
+    root: Option<&Path>,
     decisions: &mut Vec<SelectionDecision>,
     capture: &mut Capture,
     options: &Options,
-) -> io::Result<BTreeSet<SourceIdentity>> {
-    let InputCandidates {
-        paths: candidates,
-        sources: mut identities,
-    } = candidates;
+) -> io::Result<Option<SourceIdentity>> {
+    options.check()?;
 
-    for (path, root) in candidates {
-        options.check()?;
-
-        if path.file_name().is_some_and(|name| name == "instar.luau") {
-            return Err(invalid("instar.luau is not an importable module"));
-        }
-
-        if !source_path(&path) {
-            return Err(invalid(format!(
-                "not a Lua or Luau source: {}",
-                path.display()
-            )));
-        }
-
-        let ignored = match root {
-            Some(root) => ignored(&path, &root, capture, options)?,
-            None => None,
-        };
-
-        if let Some((origin, reason)) = ignored {
-            decisions.push(SelectionDecision {
-                input: path.display().to_string(),
-                source: None,
-                selected: false,
-                reason,
-                origin,
-            });
-
-            continue;
-        }
-
-        let source = capture.source(&path, options)?;
-        identities.insert(source.version.identity);
+    if path.file_name().is_some_and(|name| name == "instar.luau") {
+        return Err(invalid("instar.luau is not an importable module"));
     }
 
-    Ok(identities)
+    if !source_path(path) {
+        return Err(invalid(format!(
+            "not a Lua or Luau source: {}",
+            path.display()
+        )));
+    }
+
+    let ignored = match root {
+        Some(root) => ignored(path, root, capture, options)?,
+        None => None,
+    };
+
+    if let Some((origin, reason)) = ignored {
+        decisions.push(SelectionDecision {
+            input: path.display().to_string(),
+            source: None,
+            selected: false,
+            reason,
+            origin,
+        });
+
+        return Ok(None);
+    }
+
+    let source = capture.source(path, options)?;
+
+    Ok(Some(source.version.identity))
 }
 
 fn collect_candidates(

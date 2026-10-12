@@ -1,8 +1,8 @@
 mod layers;
 mod settings;
 
+pub(crate) use layers::worker_options;
 pub use layers::{ConfigurationLayer, ConfigurationState, EffectiveSettings};
-pub(crate) use layers::{TYPE_FUNCTION_MEMORY, worker_options};
 pub(crate) use settings::validate_namespace;
 
 pub use settings::{

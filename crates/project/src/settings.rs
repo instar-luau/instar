@@ -24,6 +24,7 @@ impl Runtime {
             &mut capture,
             SelectionPurpose::Settings,
             options,
+            |_, _, _, _| Ok(()),
         )?;
 
         let mut settings = selected

@@ -16,6 +16,7 @@ mod formatting;
 mod graph;
 mod inputs;
 mod linting;
+mod preparation;
 mod project;
 mod queries;
 mod report;

@@ -412,7 +412,9 @@ impl Execution {
             }))
             .unwrap_or_else(|_| Err(io::Error::other("project operation panicked")));
 
-            runtime.workers.leave();
+            runtime.finish_preparation();
+            let cleanup = runtime.workers.complete();
+            let result = result.and_then(|output| cleanup.map(|()| output));
             let result = result.map_err(|error| failure(&error, &running, &recorded));
             complete(&completed, result);
 

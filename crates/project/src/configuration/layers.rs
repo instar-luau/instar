@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     env::current_dir,
     fmt::Display,
     io,
@@ -31,6 +31,7 @@ use super::settings::{
 };
 
 use crate::{
+    cache::{SettingsEntry, SettingsKey},
     capture::Capture,
     environments::diagnostic,
     execution::{Runtime, Work, WorkOutput},
@@ -374,7 +375,134 @@ impl Runtime {
         options: &Options,
     ) -> io::Result<ProjectSettings> {
         let location = configuration_location(source, invocation, capture, options)?;
-        let baseline = LanguageProfile::new(&BTreeMap::new(), TYPE_FUNCTION_MEMORY)?.flags;
+
+        let key = SettingsKey {
+            context: location.context,
+            directory: location.directory.clone(),
+            base: location.base.clone(),
+            configuration: invocation
+                .configuration
+                .as_deref()
+                .map(absolute)
+                .transpose()?,
+            overrides: serde_json::to_string(overrides).map_err(io::Error::other)?,
+        };
+
+        if let Some(entry) = self.cache.settings.get(&key).map(Arc::clone) {
+            let paths = entry
+                .inputs
+                .iter()
+                .filter_map(|input| match &input.identity {
+                    InputIdentity::Path(path) => Some(path.clone()),
+
+                    InputIdentity::Source(source)
+                    | InputIdentity::Configuration(source)
+                    | InputIdentity::Sourcemap(source) => capture
+                        .snapshot
+                        .origin(*source)
+                        .and_then(SourceOrigin::path)
+                        .map(Path::to_path_buf),
+
+                    _ => None,
+                })
+                .collect::<BTreeSet<_>>();
+
+            loading.consulted.clone_from(&entry.consulted);
+
+            for path in paths {
+                capture.read(&path, options)?;
+            }
+
+            for input in &entry.inputs {
+                if let InputIdentity::Directory(path) = &input.identity {
+                    capture.listing(path, options)?;
+                }
+            }
+
+            if capture.snapshot.current(&entry.inputs) {
+                for input in &entry.inputs {
+                    capture.consult_input(input.clone());
+                }
+
+                options.check()?;
+                loading.layers.clone_from(&entry.layers);
+
+                return Ok(entry.settings.clone());
+            }
+
+            self.cache.settings.remove(&key);
+        }
+
+        capture.begin_consultation();
+
+        if let Some(input) = capture
+            .snapshot
+            .input_versions
+            .get(&InputIdentity::Context(location.context))
+            .cloned()
+        {
+            capture.consult_input(input);
+        }
+
+        let outcome =
+            self.assemble_settings(&location, invocation, overrides, capture, loading, options);
+
+        let inputs = capture.end_consultation();
+        let settings = outcome?;
+
+        if loading.diagnostics.is_empty() {
+            if self.cache.settings.len() >= 128 {
+                self.cache.settings.pop_first();
+            }
+
+            self.cache.settings.insert(
+                key,
+                Arc::new(SettingsEntry {
+                    settings: settings.clone(),
+                    layers: loading.layers.clone(),
+                    inputs,
+                    consulted: loading.consulted.clone(),
+                }),
+            );
+        }
+
+        Ok(settings)
+    }
+
+    pub(crate) fn profile(
+        &mut self,
+        flags: &BTreeMap<String, FlagValue>,
+    ) -> io::Result<LanguageProfile> {
+        if let Some((_, profile)) = self
+            .cache
+            .profiles
+            .iter()
+            .find(|(selected, profile)| selected == flags || &profile.flags == flags)
+        {
+            return Ok(profile.clone());
+        }
+
+        let profile = LanguageProfile::new(flags, TYPE_FUNCTION_MEMORY)?;
+
+        if self.cache.profiles.len() >= 32 {
+            self.cache.profiles.remove(0);
+        }
+
+        self.cache.profiles.push((flags.clone(), profile.clone()));
+
+        Ok(profile)
+    }
+
+    fn assemble_settings(
+        &mut self,
+        location: &ConfigurationLocation,
+        invocation: &Invocation,
+        overrides: &OperationOverrides,
+        capture: &mut Capture,
+        loading: &mut ConfigurationLoading,
+        options: &Options,
+    ) -> io::Result<ProjectSettings> {
+        let baseline = self.profile(&BTreeMap::new())?.flags;
 
         let mut assembly = SettingsAssembly {
             settings: ProjectSettings::default(),
@@ -388,7 +516,7 @@ impl Runtime {
 
         assembly.settings.language.flags.clone_from(&baseline);
 
-        for directory in configuration_directories(&location, invocation)? {
+        for directory in configuration_directories(location, invocation)? {
             self.load_directory(
                 &directory,
                 invocation,
@@ -399,9 +527,9 @@ impl Runtime {
             )?;
         }
 
-        apply_client(capture, &location, &mut assembly, options)?;
+        apply_client(capture, location, &mut assembly, options)?;
         apply_invocation(overrides, &location.base, &mut assembly, options)?;
-        discover_defaults(&location, &mut assembly, capture, options)?;
+        discover_defaults(location, &mut assembly, capture, options)?;
 
         assembly
             .settings
@@ -412,8 +540,7 @@ impl Runtime {
         assembly.settings.linting.roblox = assembly.settings.environment.roblox;
         assembly.settings.linting.validate()?;
 
-        assembly.settings.language.flags =
-            LanguageProfile::new(&assembly.settings.language.flags, TYPE_FUNCTION_MEMORY)?.flags;
+        assembly.settings.language.flags = self.profile(&assembly.settings.language.flags)?.flags;
 
         assembly.settings.syntax = grammar(&assembly.settings.language, &baseline);
         options.check()?;

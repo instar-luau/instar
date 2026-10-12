@@ -53,6 +53,7 @@ impl Runtime {
             &mut capture,
             SelectionPurpose::Command,
             options,
+            Self::prepare_target,
         )?;
 
         let graph = self.graph(

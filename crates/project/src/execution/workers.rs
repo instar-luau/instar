@@ -1,7 +1,8 @@
 use std::{
     io,
+    panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, Condvar, Mutex, PoisonError, mpsc},
-    thread,
+    thread::{self, JoinHandle},
     time::Duration,
 };
 
@@ -14,9 +15,12 @@ use instar_luau::{
     PositionInput, SemanticCategory, UpstreamWarningSettings,
 };
 
-use instar_shared::{Options, Reason};
+use instar_shared::{CancellationGuard, Options, Reason};
 
-use crate::acquisition::{Acquisition, DownloadResult};
+use crate::{
+    acquisition::{Acquisition, DownloadResult},
+    preparation::{self, SyntaxInput, SyntaxResult},
+};
 
 pub(crate) enum Work {
     Configuration(ConfigurationInput),
@@ -58,6 +62,7 @@ pub(crate) enum Work {
     },
 
     Format(FormatInput),
+    Syntax(SyntaxInput),
 }
 
 impl Work {
@@ -69,7 +74,8 @@ impl Work {
             | Self::Warnings { closure, .. }
             | Self::Inspect { closure, .. }
             | Self::Complete { closure, .. } => Some(closure.closure),
-            Self::Configuration(_) | Self::Asset { .. } | Self::Format(_) => None,
+
+            Self::Configuration(_) | Self::Asset { .. } | Self::Format(_) | Self::Syntax(_) => None,
         }
     }
 }
@@ -88,12 +94,29 @@ pub(crate) enum WorkOutput {
     Inspection(InspectionResult),
     Completions(Completions),
     Format(FormatResult),
+    Syntax(SyntaxResult),
 }
 
 pub(crate) type BatchOutcome<Output> = (
     io::Result<Output>,
     Vec<(ModuleIdentity, io::Result<WorkOutput>)>,
 );
+
+pub(crate) struct Pending {
+    receiver: Arc<Mutex<mpsc::Receiver<io::Result<WorkOutput>>>>,
+}
+
+struct Request {
+    work: Work,
+    options: Options,
+    sender: mpsc::Sender<io::Result<WorkOutput>>,
+    receiver: Arc<Mutex<mpsc::Receiver<io::Result<WorkOutput>>>>,
+}
+
+struct Dispatch {
+    sender: mpsc::Sender<Request>,
+    thread: JoinHandle<io::Result<()>>,
+}
 
 #[derive(Default)]
 struct BudgetState {
@@ -185,6 +208,8 @@ impl Lane {
                 .formatter
                 .format(&input, options)
                 .map(WorkOutput::Format),
+
+            Work::Syntax(input) => Ok(WorkOutput::Syntax(preparation::parse(&input, options))),
 
             Work::Analysis(input) => self
                 .analyze(&input, options)
@@ -303,9 +328,12 @@ impl Lane {
 }
 
 pub(crate) struct Workers {
-    lanes: Vec<Mutex<Lane>>,
+    lanes: Vec<Arc<Mutex<Lane>>>,
     budget: Arc<Budget>,
     permit: Option<Permit>,
+    dispatch: Vec<Dispatch>,
+    cancellation: Vec<CancellationGuard>,
+    next: usize,
 }
 
 impl Workers {
@@ -314,6 +342,9 @@ impl Workers {
             lanes: Vec::new(),
             budget,
             permit: None,
+            dispatch: Vec::new(),
+            cancellation: Vec::new(),
+            next: 0,
         }
     }
 
@@ -329,6 +360,147 @@ impl Workers {
 
     pub(crate) fn leave(&mut self) {
         self.permit = None;
+    }
+
+    pub(crate) fn submit(&mut self, work: Work, options: &Options) -> io::Result<Pending> {
+        options.check()?;
+
+        if !matches!(&work, Work::Format(_) | Work::Syntax(_)) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "early dispatch requires independent format or syntax work",
+            ));
+        }
+
+        let (sender, receiver) = mpsc::channel();
+
+        let pending = Pending {
+            receiver: Arc::new(Mutex::new(receiver)),
+        };
+
+        if options.jobs.get() == 1 {
+            sender.send(self.execute(work, options)).map_err(|error| {
+                io::Error::other(format!("project dispatch send failed: {error}"))
+            })?;
+
+            return Ok(pending);
+        }
+
+        let index = self.next % options.jobs;
+
+        if index == self.dispatch.len() {
+            while self.lanes.len() <= index {
+                self.lanes.push(Arc::new(Mutex::new(Lane::default())));
+            }
+
+            let lane = Arc::clone(&self.lanes[index]);
+            let budget = Arc::clone(&self.budget);
+            let (sender, receiver) = mpsc::channel::<Request>();
+
+            let thread = thread::Builder::new()
+                .name(format!("project-dispatch-{index}"))
+                .spawn(move || {
+                    for Request {
+                        work,
+                        options,
+                        sender,
+                        receiver,
+                    } in receiver
+                    {
+                        let result = catch_unwind(AssertUnwindSafe(|| {
+                            let _permit = budget.acquire(&options)?;
+
+                            lane.lock()
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .execute(work, &options)
+                        }))
+                        .unwrap_or_else(|_| {
+                            Err(io::Error::other("project dispatch work panicked"))
+                        });
+
+                        let sent = sender.send(result).map_err(|error| {
+                            io::Error::other(format!("project dispatch send failed: {error}"))
+                        });
+
+                        drop(receiver);
+                        sent?;
+                    }
+
+                    Ok(())
+                })?;
+
+            self.dispatch.push(Dispatch { sender, thread });
+        }
+
+        let guard = options.cancellation.guard();
+        let mut running = options.clone();
+        running.cancellation = guard.cancellation().clone();
+
+        self.dispatch[index]
+            .sender
+            .send(Request {
+                work,
+                options: running,
+                sender,
+                receiver: Arc::clone(&pending.receiver),
+            })
+            .map_err(|error| io::Error::other(format!("project dispatch queue failed: {error}")))?;
+
+        self.cancellation.push(guard);
+        self.next = (index + 1) % options.jobs;
+
+        Ok(pending)
+    }
+
+    pub(crate) fn receive(
+        &mut self,
+        pending: Pending,
+        options: &Options,
+    ) -> io::Result<WorkOutput> {
+        let admitted = self.permit.is_some();
+        self.leave();
+
+        let result = (|| {
+            let receiver = pending.receiver;
+            let receiver = receiver.lock().unwrap_or_else(PoisonError::into_inner);
+
+            loop {
+                let interval = options
+                    .remaining()
+                    .map_or(Duration::from_millis(10), |remaining| {
+                        remaining.min(Duration::from_millis(10))
+                    });
+
+                match receiver.recv_timeout(interval) {
+                    Ok(result) => return result,
+
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        return Err(io::Error::other(
+                            "project dispatch stopped without an outcome",
+                        ));
+                    }
+
+                    Err(mpsc::RecvTimeoutError::Timeout) => options.check()?,
+                }
+            }
+        })();
+
+        let admission = if admitted {
+            match self.enter(options) {
+                Err(_) if options.interrupted().is_some() => Ok(()),
+                result => result,
+            }
+        } else {
+            Ok(())
+        };
+
+        result.and_then(|output| admission.map(|()| output))
+    }
+
+    pub(crate) fn complete(&mut self) -> io::Result<()> {
+        self.leave();
+
+        self.drain()
     }
 
     pub(crate) fn execute(&mut self, work: Work, options: &Options) -> io::Result<WorkOutput> {
@@ -425,7 +597,7 @@ impl Workers {
     }
 
     pub(crate) fn discard(&mut self) -> io::Result<()> {
-        let mut result = Ok(());
+        let mut result = self.drain();
 
         for lane in &self.lanes {
             let finished = lane.lock().unwrap_or_else(PoisonError::into_inner).finish();
@@ -444,6 +616,35 @@ impl Workers {
         self.leave();
 
         self.discard()
+    }
+
+    fn drain(&mut self) -> io::Result<()> {
+        self.cancellation.clear();
+        self.next = 0;
+        let mut result = Ok(());
+
+        for Dispatch { sender, thread } in self.dispatch.drain(..) {
+            drop(sender);
+
+            let joined = thread
+                .join()
+                .map_err(|error| {
+                    let message = error
+                        .downcast_ref::<String>()
+                        .map(String::as_str)
+                        .or_else(|| error.downcast_ref::<&str>().copied())
+                        .unwrap_or("non-string panic payload");
+
+                    io::Error::other(format!("project dispatch lane panicked: {message}"))
+                })
+                .and_then(|result| result);
+
+            if result.is_ok() {
+                result = joined;
+            }
+        }
+
+        result
     }
 
     fn distribute(&mut self, work: Vec<Work>, limit: usize) -> Vec<(usize, Group)> {
@@ -470,7 +671,7 @@ impl Workers {
         let jobs = limit.min(groups.len());
 
         while self.lanes.len() < jobs {
-            self.lanes.push(Mutex::new(Lane::default()));
+            self.lanes.push(Arc::new(Mutex::new(Lane::default())));
         }
 
         let closures = self

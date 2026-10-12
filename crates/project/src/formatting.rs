@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     io,
     sync::{Arc, PoisonError},
 };
@@ -29,12 +30,51 @@ impl Runtime {
             |snapshot| Capture::new(Arc::clone(&self.host), snapshot.clone()),
         );
 
+        let mut prepared = BTreeMap::new();
+
         let selection = self.select(
             &request.invocation,
             &OperationOverrides::Format(request.overrides.clone()),
             &mut capture,
             SelectionPurpose::Command,
             options,
+            |runtime, target, capture, options| {
+                let source = capture
+                    .snapshot
+                    .source(target.identity)
+                    .cloned()
+                    .ok_or_else(|| io::Error::other("selected format source is absent"))?;
+
+                let input = FormatInput {
+                    source,
+                    settings: target.effective.settings.formatting.clone(),
+                    syntax: syntax_settings(&target.effective),
+                    scope: request.scope.clone(),
+                };
+
+                let cached = runtime
+                    .host
+                    .formats
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .get(&input.source.version.identity)
+                    .filter(|(previous, _)| previous == &input)
+                    .map(|(_, result)| result.clone());
+
+                let pending = if cached.is_none() {
+                    Some(
+                        runtime
+                            .workers
+                            .submit(Work::Format(input.clone()), &worker_options(options))?,
+                    )
+                } else {
+                    None
+                };
+
+                prepared.insert(target.identity, (input, cached, pending));
+
+                Ok(())
+            },
         )?;
 
         let excluded_stdin = selection.targets.is_empty()
@@ -52,40 +92,6 @@ impl Runtime {
         }
 
         let inputs = capture.guards();
-        let mut work = Vec::new();
-        let mut prepared = Vec::new();
-
-        for target in &selection.targets {
-            let source = capture
-                .snapshot
-                .source(target.identity)
-                .cloned()
-                .ok_or_else(|| io::Error::other("selected format source is absent"))?;
-
-            let input = FormatInput {
-                source,
-                settings: target.effective.settings.formatting.clone(),
-                syntax: syntax_settings(&target.effective),
-                scope: request.scope.clone(),
-            };
-            let cached = self
-                .host
-                .formats
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .get(&input.source.version.identity)
-                .filter(|(previous, _)| previous == &input)
-                .map(|(_, result)| result.clone());
-            if cached.is_none() {
-                work.push(Work::Format(input.clone()));
-            }
-            prepared.push((input, cached));
-        }
-
-        let mut outcomes = self
-            .workers
-            .batch(work, &worker_options(options))
-            .into_iter();
 
         let mut report = FormatReport {
             snapshot: capture.snapshot.clone(),
@@ -107,14 +113,18 @@ impl Runtime {
             failed: false,
         };
 
-        for (input, cached) in prepared {
+        for target in selection.targets {
+            let (input, cached, pending) = prepared
+                .remove(&target.identity)
+                .ok_or_else(|| io::Error::other("prepared format source is absent"))?;
+
             let result = if let Some(result) = cached {
                 result
             } else {
-                match outcomes
-                    .next()
-                    .ok_or_else(|| io::Error::other("format work outcome is absent"))?
-                {
+                let pending =
+                    pending.ok_or_else(|| io::Error::other("format work outcome is absent"))?;
+
+                match self.workers.receive(pending, options) {
                     Ok(WorkOutput::Format(result)) => result,
                     Ok(_) => return Err(io::Error::other("format lane returned wrong outcome")),
                     Err(error) => {

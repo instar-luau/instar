@@ -269,6 +269,7 @@ impl Runtime {
             &mut capture,
             SelectionPurpose::Command,
             options,
+            Self::prepare_target,
         )?;
 
         let stdin = selected
@@ -359,7 +360,7 @@ impl Runtime {
     }
 
     fn lint_recipes(
-        &self,
+        &mut self,
         context: &LintContext,
         state: &mut LintState,
         options: &Options,
