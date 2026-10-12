@@ -378,7 +378,9 @@ namespace instar::native {
                     break;
                 }
 
-                const auto ancestry = Luau::findAstAncestryOfPosition(*source, table->definitionLocation.begin, true);
+                const auto ancestry =
+                    Luau::findAncestryAtPositionForAutocomplete(*source, table->definitionLocation.end);
+
                 std::optional<Luau::TypeFun> binding;
 
                 for (auto node = ancestry.rbegin(); node != ancestry.rend(); ++node) {

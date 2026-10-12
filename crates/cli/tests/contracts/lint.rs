@@ -321,6 +321,42 @@ fn resolved_signatures_obey_required_optional_method_and_variadic_parameters() {
 }
 
 #[test]
+fn imported_generic_properties_preserve_declaration_locations() {
+    let fixture = Fixture::empty();
+
+    fixture.write(
+        "module.luau",
+        "export type State<T> = { read get: () -> T, read set: (T) -> () }\nexport type Module = { read state: <T>(T) -> State<T> }\nlocal function state<T>(value: T): State<T>\n    return { get = function() return value end, set = function(next: T) value = next end }\nend\nreturn { state = state } :: Module\n",
+    );
+
+    let source = "local module = require(\"./module\")\nlocal function state(): module.State<number>\nreturn module.state(1)\nend\nlocal value = state()\nvalue.get()\nvalue.set()\n";
+    fixture.write("probe.luau", source);
+    let output = fixture.run(&["lint", "probe.luau", "--rule", "mismatched_argument_count"]);
+    assert_eq!(output.status, 0, "{}", output.stderr);
+
+    let report = lint(
+        &fixture,
+        prepare(&fixture, &["probe.luau"], &["mismatched_argument_count"]),
+    );
+
+    assert_eq!(report.completion, Completion::Complete);
+    assert_eq!(report.counts.selected, 1);
+    assert_eq!(report.counts.dependencies, 1);
+    assert_eq!(report.final_findings.len(), 1);
+    let start = source.find("value.set()").expect("invalid call");
+
+    diagnostic(
+        &report.final_findings,
+        &report.snapshot,
+        "mismatched_argument_count",
+        "probe.luau",
+        [start, start + "value.set()".len()],
+    );
+
+    assert_eq!(fixture.read("probe.luau"), source);
+}
+
+#[test]
 fn declarations_inference_and_type_functions_survive_source_type_errors() {
     let fixture = Fixture::new("cli", "lint");
     fixture.write("instar.toml", "[linting]\npresets = ['none']\n[[environment.groups]]\nnamespace = '@project'\ndefinitions = ['declaration.luau']\n");
