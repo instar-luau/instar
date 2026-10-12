@@ -47,7 +47,7 @@ toml = "1"
 tower-lsp-server = { version = "0.24.0-rc.1", features = ["url-url"] }
 tower-service = "0.3"
 tracing = { version = "0.1", default-features = false, features = ["std"] }
-tracing-subscriber = { version = "0.3", default-features = false, features = ["ansi", "fmt", "json", "registry"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["ansi", "fmt", "registry"] }
 unicode-width = "0.2"
 ureq = "3"
 vermis = "0.7"

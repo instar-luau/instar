@@ -1,6 +1,5 @@
 ---
 source: crates/cli/tests/contracts/support/snapshots.rs
-assertion_line: 17
 ---
 [
   {
@@ -22,7 +21,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "roblox_incorrect_color3_new_bounds",
@@ -41,14 +40,15 @@ assertion_line: 17
           "producer": "instar"
         },
         "message": "Color3.new channels use a 0–1 scale",
-        "path": "$ROOT/positive.luau",
-        "range": [
-          10,
-          29
-        ],
+        "primary": {
+          "source": {},
+          "span": {
+            "end": 29,
+            "start": 10
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
@@ -56,8 +56,7 @@ assertion_line: 17
     "scenario": "color",
     "sources": [
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -78,7 +77,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "roblox_manual_fromscale_or_fromoffset",
@@ -97,14 +96,15 @@ assertion_line: 17
           "producer": "instar"
         },
         "message": "use UDim2.fromScale when both offsets are zero",
-        "path": "$ROOT/positive.luau",
-        "range": [
-          10,
-          32
-        ],
+        "primary": {
+          "source": {},
+          "span": {
+            "end": 32,
+            "start": 10
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
@@ -112,8 +112,7 @@ assertion_line: 17
     "scenario": "scale",
     "sources": [
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -134,7 +133,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "roblox_prefer_get_players",
@@ -153,14 +152,15 @@ assertion_line: 17
           "producer": "instar"
         },
         "message": "use Players:GetPlayers() to select players",
-        "path": "$ROOT/positive.luau",
-        "range": [
-          51,
-          72
-        ],
+        "primary": {
+          "source": {},
+          "span": {
+            "end": 72,
+            "start": 51
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
@@ -168,8 +168,7 @@ assertion_line: 17
     "scenario": "players",
     "sources": [
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -190,7 +189,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "roblox_suspicious_udim2_new",
@@ -209,14 +208,15 @@ assertion_line: 17
           "producer": "instar"
         },
         "message": "UDim2.new needs scale and offset components for both axes",
-        "path": "$ROOT/positive.luau",
-        "range": [
-          10,
-          24
-        ],
+        "primary": {
+          "source": {},
+          "span": {
+            "end": 24,
+            "start": 10
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
@@ -224,8 +224,7 @@ assertion_line: 17
     "scenario": "dimensions",
     "sources": [
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -246,12 +245,11 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [],
+    "findings": [],
     "rule": "roblox_incorrect_color3_new_bounds",
     "scenario": "shadowing",
     "sources": [
       {}
-    ],
-    "status": 0
+    ]
   }
 ]

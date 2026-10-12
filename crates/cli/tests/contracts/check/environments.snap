@@ -1,6 +1,5 @@
 ---
 source: crates/cli/tests/contracts/support/snapshots.rs
-assertion_line: 17
 ---
 {
   "invalid": {
@@ -9,7 +8,7 @@ assertion_line: 17
         "UnavailableEnvironment"
       ]
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Analysis",
         "code": "environment.unavailable",
@@ -29,24 +28,34 @@ assertion_line: 17
           "producer": "project"
         },
         "message": "requested declaration environment is unavailable",
-        "path": "$ROOT/probe.luau",
-        "range": [
-          0,
-          0
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/probe.luau"
+            }
+          },
+          "span": {
+            "end": 0,
+            "start": 0
+          }
+        },
         "related": [
           {
-            "message": "Unknown type 'MissingType'",
-            "path": "$ROOT/broken.luau",
-            "range": [
-              16,
-              27
-            ],
-            "source": {}
+            "location": {
+              "source": {
+                "origin": {
+                  "Disk": "$ROOT/broken.luau"
+                }
+              },
+              "span": {
+                "end": 27,
+                "start": 16
+              }
+            },
+            "message": "Unknown type 'MissingType'"
           }
         ],
-        "severity": "error",
-        "source": {},
+        "severity": "Error",
         "tags": []
       },
       {
@@ -68,14 +77,19 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "Unknown type 'MissingType'",
-        "path": "$ROOT/broken.luau",
-        "range": [
-          16,
-          27
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/broken.luau"
+            }
+          },
+          "span": {
+            "end": 27,
+            "start": 16
+          }
+        },
         "related": [],
-        "severity": "error",
-        "source": {},
+        "severity": "Error",
         "tags": []
       }
     ]
@@ -86,7 +100,7 @@ assertion_line: 17
         "UnavailableEnvironment"
       ]
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Analysis",
         "code": "environment.unavailable",
@@ -105,14 +119,19 @@ assertion_line: 17
           "producer": "project"
         },
         "message": "source not found: $ROOT\\absent.luau",
-        "path": "$ROOT/probe.luau",
-        "range": [
-          0,
-          0
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/probe.luau"
+            }
+          },
+          "span": {
+            "end": 0,
+            "start": 0
+          }
+        },
         "related": [],
-        "severity": "error",
-        "source": {},
+        "severity": "Error",
         "tags": []
       }
     ]
@@ -123,7 +142,7 @@ assertion_line: 17
         "UnavailableEnvironment"
       ]
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Analysis",
         "code": "environment.unavailable",
@@ -142,14 +161,19 @@ assertion_line: 17
           "producer": "project"
         },
         "message": "source not found: $ROOT\\absent\\metadata.json",
-        "path": "$ROOT/probe.luau",
-        "range": [
-          0,
-          0
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/probe.luau"
+            }
+          },
+          "span": {
+            "end": 0,
+            "start": 0
+          }
+        },
         "related": [],
-        "severity": "error",
-        "source": {},
+        "severity": "Error",
         "tags": []
       }
     ]

@@ -1,6 +1,5 @@
 ---
 source: crates/cli/tests/contracts/support/snapshots.rs
-assertion_line: 17
 ---
 [
   {
@@ -26,7 +25,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "mismatched_argument_count",
@@ -45,14 +44,15 @@ assertion_line: 17
           "producer": "instar"
         },
         "message": "call argument count is incompatible with every established signature",
-        "path": "$ROOT/calls.luau",
-        "range": [
-          180,
-          191
-        ],
+        "primary": {
+          "source": {},
+          "span": {
+            "end": 191,
+            "start": 180
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       },
       {
@@ -73,14 +73,15 @@ assertion_line: 17
           "producer": "instar"
         },
         "message": "call argument count is incompatible with every established signature",
-        "path": "$ROOT/calls.luau",
-        "range": [
-          197,
-          214
-        ],
+        "primary": {
+          "source": {},
+          "span": {
+            "end": 214,
+            "start": 197
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       },
       {
@@ -101,14 +102,15 @@ assertion_line: 17
           "producer": "instar"
         },
         "message": "call argument count is incompatible with every established signature",
-        "path": "$ROOT/calls.luau",
-        "range": [
-          220,
-          230
-        ],
+        "primary": {
+          "source": {},
+          "span": {
+            "end": 230,
+            "start": 220
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       },
       {
@@ -129,14 +131,15 @@ assertion_line: 17
           "producer": "instar"
         },
         "message": "call argument count is incompatible with every established signature",
-        "path": "$ROOT/calls.luau",
-        "range": [
-          236,
-          251
-        ],
+        "primary": {
+          "source": {},
+          "span": {
+            "end": 251,
+            "start": 236
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       },
       {
@@ -157,14 +160,15 @@ assertion_line: 17
           "producer": "instar"
         },
         "message": "call argument count is incompatible with every established signature",
-        "path": "$ROOT/calls.luau",
-        "range": [
-          257,
-          281
-        ],
+        "primary": {
+          "source": {},
+          "span": {
+            "end": 281,
+            "start": 257
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
@@ -172,8 +176,7 @@ assertion_line: 17
     "sources": [
       {},
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -198,7 +201,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "mismatched_argument_count",
@@ -217,14 +220,15 @@ assertion_line: 17
           "producer": "instar"
         },
         "message": "call argument count is incompatible with every established signature",
-        "path": "$ROOT/calls.luau",
-        "range": [
-          180,
-          191
-        ],
+        "primary": {
+          "source": {},
+          "span": {
+            "end": 191,
+            "start": 180
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       },
       {
@@ -245,14 +249,15 @@ assertion_line: 17
           "producer": "instar"
         },
         "message": "call argument count is incompatible with every established signature",
-        "path": "$ROOT/calls.luau",
-        "range": [
-          197,
-          214
-        ],
+        "primary": {
+          "source": {},
+          "span": {
+            "end": 214,
+            "start": 197
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       },
       {
@@ -273,14 +278,15 @@ assertion_line: 17
           "producer": "instar"
         },
         "message": "call argument count is incompatible with every established signature",
-        "path": "$ROOT/calls.luau",
-        "range": [
-          220,
-          230
-        ],
+        "primary": {
+          "source": {},
+          "span": {
+            "end": 230,
+            "start": 220
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       },
       {
@@ -301,14 +307,15 @@ assertion_line: 17
           "producer": "instar"
         },
         "message": "call argument count is incompatible with every established signature",
-        "path": "$ROOT/calls.luau",
-        "range": [
-          236,
-          251
-        ],
+        "primary": {
+          "source": {},
+          "span": {
+            "end": 251,
+            "start": 236
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       },
       {
@@ -329,14 +336,15 @@ assertion_line: 17
           "producer": "instar"
         },
         "message": "call argument count is incompatible with every established signature",
-        "path": "$ROOT/calls.luau",
-        "range": [
-          257,
-          281
-        ],
+        "primary": {
+          "source": {},
+          "span": {
+            "end": 281,
+            "start": 257
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
@@ -344,8 +352,7 @@ assertion_line: 17
     "sources": [
       {},
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -370,7 +377,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "mismatched_argument_count",
@@ -389,14 +396,15 @@ assertion_line: 17
           "producer": "instar"
         },
         "message": "call argument count is incompatible with every established signature",
-        "path": "$ROOT/calls.luau",
-        "range": [
-          180,
-          191
-        ],
+        "primary": {
+          "source": {},
+          "span": {
+            "end": 191,
+            "start": 180
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       },
       {
@@ -417,14 +425,15 @@ assertion_line: 17
           "producer": "instar"
         },
         "message": "call argument count is incompatible with every established signature",
-        "path": "$ROOT/calls.luau",
-        "range": [
-          197,
-          214
-        ],
+        "primary": {
+          "source": {},
+          "span": {
+            "end": 214,
+            "start": 197
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       },
       {
@@ -445,14 +454,15 @@ assertion_line: 17
           "producer": "instar"
         },
         "message": "call argument count is incompatible with every established signature",
-        "path": "$ROOT/calls.luau",
-        "range": [
-          220,
-          230
-        ],
+        "primary": {
+          "source": {},
+          "span": {
+            "end": 230,
+            "start": 220
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       },
       {
@@ -473,14 +483,15 @@ assertion_line: 17
           "producer": "instar"
         },
         "message": "call argument count is incompatible with every established signature",
-        "path": "$ROOT/calls.luau",
-        "range": [
-          236,
-          251
-        ],
+        "primary": {
+          "source": {},
+          "span": {
+            "end": 251,
+            "start": 236
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       },
       {
@@ -501,14 +512,15 @@ assertion_line: 17
           "producer": "instar"
         },
         "message": "call argument count is incompatible with every established signature",
-        "path": "$ROOT/calls.luau",
-        "range": [
-          257,
-          281
-        ],
+        "primary": {
+          "source": {},
+          "span": {
+            "end": 281,
+            "start": 257
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
@@ -516,7 +528,6 @@ assertion_line: 17
     "sources": [
       {},
       {}
-    ],
-    "status": 0
+    ]
   }
 ]

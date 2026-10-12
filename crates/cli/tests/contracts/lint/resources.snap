@@ -1,6 +1,5 @@
 ---
 source: crates/cli/tests/contracts/support/snapshots.rs
-assertion_line: 17
 ---
 [
   {
@@ -10,12 +9,35 @@ assertion_line: 17
     "sandbox": {
       "category": "Configuration",
       "code": "configuration",
-      "path": "$ROOT/sandbox.luau",
-      "range": [
-        0,
-        71
-      ],
-      "severity": "error"
+      "identity": {
+        "code": "configuration",
+        "inputs": [
+          {}
+        ],
+        "location": {
+          "source": {},
+          "span": {
+            "end": 71,
+            "start": 0
+          }
+        },
+        "producer": "luau.configuration"
+      },
+      "message": "configuration:1: attempt to call a nil value",
+      "primary": {
+        "source": {
+          "origin": {
+            "Disk": "$ROOT/sandbox.luau"
+          }
+        },
+        "span": {
+          "end": 71,
+          "start": 0
+        }
+      },
+      "related": [],
+      "severity": "Error",
+      "tags": []
     }
   },
   {

@@ -33,7 +33,7 @@ use tracing_subscriber::fmt;
 use super::arguments::{
     Arguments, CheckArguments, CheckingMode, Command, DiagnosticArguments, DiagnosticSeverity,
     FormatArguments, ImportOrder, Indentation, InputArguments, LineEnding, LintArguments,
-    QuoteStyle, ReportStyle,
+    QuoteStyle,
 };
 
 use crate::report::{CommandReport, Reporter};
@@ -142,8 +142,6 @@ async fn execute(
         reporting,
     } = arguments;
 
-    let json_output = reporting.json || reporting.style == ReportStyle::Json;
-    let report_destination = reporting.destination.is_some();
     let reporter = Arc::new(Mutex::new(Reporter::new(&reporting)?));
 
     if execution.verbose {
@@ -207,13 +205,6 @@ async fn execute(
             let source_output =
                 matches!(mode, FormatMode::Source) || (stdin && matches!(mode, FormatMode::Write));
 
-            if source_output && json_output && !report_destination {
-                return Err(invalid(
-                    "JSON source output requires --output for the report, or --check",
-                )
-                .into());
-            }
-
             if execution.watch && source_output {
                 return Err(
                     invalid("watch cannot be combined with formatted-source output").into(),
@@ -256,11 +247,6 @@ async fn execute(
                 || arguments.fix_stdin)
             {
                 return Err(invalid("--fix-rule requires a fix mode").into());
-            }
-
-            if stdin && (arguments.fix || arguments.fix_stdin) && json_output && !report_destination
-            {
-                return Err(invalid("JSON fixed stdin requires --output for the report").into());
             }
 
             if execution.watch && stdin && (arguments.fix || arguments.fix_stdin) {
@@ -420,7 +406,7 @@ async fn execute(
             reporter
                 .lock()
                 .expect("reporter lock")
-                .watch(&iteration.snapshot, iteration.changed)?;
+                .watch(&iteration.snapshot, &iteration.changed)?;
 
             let report = watch_report(iteration.report, &request);
             let iteration = finish(&reporter, &report)?;
@@ -549,13 +535,9 @@ async fn serve(
             Level::WARN
         });
 
-    let result = if arguments.reporting.json || arguments.reporting.style == ReportStyle::Json {
-        subscriber.json().try_init()
-    } else {
-        subscriber.try_init()
-    };
-
-    result.map_err(|error| eyre::eyre!("{error}"))?;
+    subscriber
+        .try_init()
+        .map_err(|error| eyre::eyre!("{error}"))?;
 
     options.observer = Some(Arc::new(|event| {
         if let EventPayload::Progress(progress) = event.payload {

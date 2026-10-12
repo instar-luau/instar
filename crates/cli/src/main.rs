@@ -12,13 +12,10 @@ use std::{
 use clap::{ColorChoice, CommandFactory as _, FromArgMatches as _, Parser as _};
 use color_eyre::config::{HookBuilder, Theme};
 use instar_luau::{run_configuration_worker, run_worker};
-use instar_shared::{Completion, OperationFailure, Reason};
+use instar_shared::OperationFailure;
 use tokio::runtime::Builder;
 
-use crate::{
-    command::{Arguments, CommandStatus, ReportStyle, WorkerKind},
-    report::failure_record,
-};
+use crate::command::{Arguments, CommandStatus, WorkerKind};
 
 fn main() -> ExitCode {
     let values = env::args_os().collect::<Vec<_>>();
@@ -72,11 +69,9 @@ fn main() -> ExitCode {
 
     let matches = Arguments::command().color(color).get_matches_from(values);
     let arguments = Arguments::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
-    let json = arguments.reporting.json || arguments.reporting.style == ReportStyle::Json;
 
-    let theme = if !json
-        && (color == ColorChoice::Always
-            || (color == ColorChoice::Auto && io::stderr().is_terminal()))
+    let theme = if color == ColorChoice::Always
+        || (color == ColorChoice::Auto && io::stderr().is_terminal())
     {
         Theme::dark()
     } else {
@@ -115,35 +110,7 @@ fn main() -> ExitCode {
                 3
             };
 
-            if json {
-                let record = if let Some(failure) = error.downcast_ref::<OperationFailure>() {
-                    let mut record = failure_record(failure);
-                    record["error"] = serde_json::json!(format!("{error:#}"));
-
-                    record
-                } else {
-                    let completion = if code == 4 {
-                        if error
-                            .downcast_ref::<io::Error>()
-                            .is_some_and(|error| error.kind() == io::ErrorKind::Interrupted)
-                        {
-                            Completion::Cancelled
-                        } else {
-                            Completion::TimedOut
-                        }
-                    } else if code == 3 {
-                        Completion::Incomplete(vec![Reason::FailedPrerequisite])
-                    } else {
-                        Completion::Complete
-                    };
-
-                    serde_json::json!({"error":format!("{error:#}"),"status":code,"completion":completion})
-                };
-
-                eprintln!("{record}");
-            } else {
-                eprintln!("{error:?}");
-            }
+            eprintln!("{error:?}");
 
             ExitCode::from(code)
         }

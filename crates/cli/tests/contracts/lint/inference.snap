@@ -1,6 +1,5 @@
 ---
 source: crates/cli/tests/contracts/support/snapshots.rs
-assertion_line: 17
 ---
 [
   {
@@ -26,7 +25,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "implicit_any_local",
@@ -45,14 +44,15 @@ assertion_line: 17
           "producer": "instar"
         },
         "message": "unannotated binding has inferred any type",
-        "path": "$ROOT/globals.luau",
-        "range": [
-          6,
-          14
-        ],
+        "primary": {
+          "source": {},
+          "span": {
+            "end": 14,
+            "start": 6
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       },
       {
@@ -73,22 +73,22 @@ assertion_line: 17
           "producer": "instar"
         },
         "message": "unannotated binding has inferred any type",
-        "path": "$ROOT/globals.luau",
-        "range": [
-          98,
-          107
-        ],
+        "primary": {
+          "source": {},
+          "span": {
+            "end": 107,
+            "start": 98
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
     "mode": "strict",
     "sources": [
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -113,7 +113,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "implicit_any_local",
@@ -132,14 +132,15 @@ assertion_line: 17
           "producer": "instar"
         },
         "message": "unannotated binding has inferred any type",
-        "path": "$ROOT/globals.luau",
-        "range": [
-          6,
-          14
-        ],
+        "primary": {
+          "source": {},
+          "span": {
+            "end": 14,
+            "start": 6
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       },
       {
@@ -160,22 +161,22 @@ assertion_line: 17
           "producer": "instar"
         },
         "message": "unannotated binding has inferred any type",
-        "path": "$ROOT/globals.luau",
-        "range": [
-          98,
-          107
-        ],
+        "primary": {
+          "source": {},
+          "span": {
+            "end": 107,
+            "start": 98
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
     "mode": "nonstrict",
     "sources": [
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -200,7 +201,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "implicit_any_local",
@@ -219,14 +220,15 @@ assertion_line: 17
           "producer": "instar"
         },
         "message": "unannotated binding has inferred any type",
-        "path": "$ROOT/globals.luau",
-        "range": [
-          6,
-          14
-        ],
+        "primary": {
+          "source": {},
+          "span": {
+            "end": 14,
+            "start": 6
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       },
       {
@@ -247,22 +249,22 @@ assertion_line: 17
           "producer": "instar"
         },
         "message": "unannotated binding has inferred any type",
-        "path": "$ROOT/globals.luau",
-        "range": [
-          98,
-          107
-        ],
+        "primary": {
+          "source": {},
+          "span": {
+            "end": 107,
+            "start": 98
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
     "mode": "nocheck",
     "sources": [
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -284,7 +286,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "mismatched_argument_count",
@@ -303,20 +305,20 @@ assertion_line: 17
           "producer": "instar"
         },
         "message": "call argument count is incompatible with every established signature",
-        "path": "$ROOT/function.luau",
-        "range": [
-          135,
-          144
-        ],
+        "primary": {
+          "source": {},
+          "span": {
+            "end": 144,
+            "start": 135
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
     "sources": [
       {}
-    ],
-    "status": 0
+    ]
   }
 ]

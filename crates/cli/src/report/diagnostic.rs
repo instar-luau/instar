@@ -11,7 +11,6 @@ use codespan_reporting::{
 
 use instar_project::{ProjectSnapshot, SourceOrigin};
 use instar_shared::{Diagnostic, Location, Severity, SourceSnapshot, SourceVersion};
-use serde_json::{Value, json};
 
 #[derive(Default)]
 pub(super) struct Diagnostics {
@@ -91,17 +90,6 @@ impl Diagnostics {
             .map_err(io::Error::other)?;
 
         Ok(buffer.into_inner())
-    }
-
-    pub(super) fn record(&self, diagnostic: &Diagnostic) -> Value {
-        let severity = match diagnostic.severity {
-            Severity::Error => "error",
-            Severity::Warning => "warning",
-            Severity::Information => "info",
-            Severity::Hint => "hint",
-        };
-
-        json!({"identity":diagnostic.identity,"source":diagnostic.primary.source,"path":self.name(diagnostic.primary.source),"revision":diagnostic.primary.source.revision,"range":[diagnostic.primary.span.start,diagnostic.primary.span.end],"code":diagnostic.code,"category":diagnostic.category,"severity":severity,"message":diagnostic.message,"tags":diagnostic.tags,"related":diagnostic.related.iter().map(|related| json!({"source":related.location.source,"path":self.name(related.location.source),"revision":related.location.source.revision,"range":[related.location.span.start,related.location.span.end],"message":related.message})).collect::<Vec<_>>()})
     }
 
     pub(super) fn name(&self, version: SourceVersion) -> String {

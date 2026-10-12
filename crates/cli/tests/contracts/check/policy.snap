@@ -27,7 +27,11 @@ assertion_line: 17
         },
         "message": "Expected this to be 'string', but got 'number'",
         "primary": {
-          "source": {},
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/input.luau"
+            }
+          },
           "span": {
             "end": 24,
             "start": 22

@@ -40,12 +40,6 @@ pub(crate) struct ExecutionArguments {
 
 #[derive(Args)]
 pub(crate) struct ReportingArguments {
-    #[arg(long = "report", global = true, value_enum, default_value = "human")]
-    pub(crate) style: ReportStyle,
-
-    #[arg(long, global = true)]
-    pub(crate) json: bool,
-
     #[arg(long, global = true, value_enum, default_value = "auto")]
     pub(crate) color: Color,
 
@@ -57,12 +51,6 @@ pub(crate) struct ReportingArguments {
 
     #[arg(long, global = true)]
     pub(crate) streaming: bool,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub(crate) enum ReportStyle {
-    Human,
-    Json,
 }
 
 #[derive(Clone, Copy, ValueEnum)]

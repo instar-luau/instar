@@ -1,10 +1,9 @@
 ---
 source: crates/cli/tests/contracts/support/snapshots.rs
-assertion_line: 17
 ---
 {
   "completion": "Complete",
-  "diagnostics": [
+  "findings": [
     {
       "category": "Analysis",
       "code": "analysis.dependency",
@@ -24,51 +23,76 @@ assertion_line: 17
         "producer": "project"
       },
       "message": "required module has unavailable analysis",
-      "path": "$ROOT/probe.luau",
-      "range": [
-        37,
-        47
-      ],
+      "primary": {
+        "source": {
+          "origin": {
+            "Disk": "$ROOT/probe.luau"
+          }
+        },
+        "span": {
+          "end": 47,
+          "start": 37
+        }
+      },
       "related": [
         {
-          "message": "Expected identifier when parsing variable name, got '='",
-          "path": "$ROOT/broken/init.luau",
-          "range": [
-            16,
-            17
-          ],
-          "source": {}
+          "location": {
+            "source": {
+              "origin": {
+                "Disk": "$ROOT/broken/init.luau"
+              }
+            },
+            "span": {
+              "end": 17,
+              "start": 16
+            }
+          },
+          "message": "Expected identifier when parsing variable name, got '='"
         },
         {
-          "message": "Expected identifier when parsing expression, got 'return'",
-          "path": "$ROOT/broken/init.luau",
-          "range": [
-            18,
-            24
-          ],
-          "source": {}
+          "location": {
+            "source": {
+              "origin": {
+                "Disk": "$ROOT/broken/init.luau"
+              }
+            },
+            "span": {
+              "end": 24,
+              "start": 18
+            }
+          },
+          "message": "Expected identifier when parsing expression, got 'return'"
         },
         {
-          "message": "Expected identifier when parsing variable name, got '='",
-          "path": "$ROOT/broken/init.luau",
-          "range": [
-            16,
-            17
-          ],
-          "source": {}
+          "location": {
+            "source": {
+              "origin": {
+                "Disk": "$ROOT/broken/init.luau"
+              }
+            },
+            "span": {
+              "end": 17,
+              "start": 16
+            }
+          },
+          "message": "Expected identifier when parsing variable name, got '='"
         },
         {
-          "message": "Expected identifier when parsing expression, got 'return'",
-          "path": "$ROOT/broken/init.luau",
-          "range": [
-            18,
-            24
-          ],
-          "source": {}
+          "location": {
+            "source": {
+              "origin": {
+                "Disk": "$ROOT/broken/init.luau"
+              }
+            },
+            "span": {
+              "end": 24,
+              "start": 18
+            }
+          },
+          "message": "Expected identifier when parsing expression, got 'return'"
         }
       ],
-      "severity": "error",
-      "source": {},
+      "severity": "Error",
       "tags": []
     },
     {
@@ -91,14 +115,19 @@ assertion_line: 17
         "producer": "luau"
       },
       "message": "Expected this to be 'string', but got 'number'",
-      "path": "$ROOT/probe.luau",
-      "range": [
-        71,
-        73
-      ],
+      "primary": {
+        "source": {
+          "origin": {
+            "Disk": "$ROOT/probe.luau"
+          }
+        },
+        "span": {
+          "end": 73,
+          "start": 71
+        }
+      },
       "related": [],
-      "severity": "error",
-      "source": {},
+      "severity": "Error",
       "tags": []
     },
     {
@@ -121,14 +150,19 @@ assertion_line: 17
         "producer": "luau"
       },
       "message": "Expected identifier when parsing variable name, got '='",
-      "path": "$ROOT/broken/init.luau",
-      "range": [
-        16,
-        17
-      ],
+      "primary": {
+        "source": {
+          "origin": {
+            "Disk": "$ROOT/broken/init.luau"
+          }
+        },
+        "span": {
+          "end": 17,
+          "start": 16
+        }
+      },
       "related": [],
-      "severity": "error",
-      "source": {},
+      "severity": "Error",
       "tags": []
     },
     {
@@ -151,20 +185,24 @@ assertion_line: 17
         "producer": "luau"
       },
       "message": "Expected identifier when parsing expression, got 'return'",
-      "path": "$ROOT/broken/init.luau",
-      "range": [
-        18,
-        24
-      ],
+      "primary": {
+        "source": {
+          "origin": {
+            "Disk": "$ROOT/broken/init.luau"
+          }
+        },
+        "span": {
+          "end": 24,
+          "start": 18
+        }
+      },
       "related": [],
-      "severity": "error",
-      "source": {},
+      "severity": "Error",
       "tags": []
     }
   ],
   "sources": [
     {},
     {}
-  ],
-  "status": 1
+  ]
 }

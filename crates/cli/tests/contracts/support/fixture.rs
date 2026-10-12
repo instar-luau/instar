@@ -176,23 +176,6 @@ impl Fixture {
     }
 }
 
-impl Output {
-    pub(crate) fn json(&self) -> Value {
-        let text = if self.stdout.trim().is_empty() {
-            &self.stderr
-        } else {
-            &self.stdout
-        };
-
-        serde_json::from_str(text).unwrap_or_else(|error| {
-            panic!(
-                "expected a JSON command report: {error}; exit {}; stdout {:?}; stderr {:?}",
-                self.status, self.stdout, self.stderr
-            )
-        })
-    }
-}
-
 fn copy(source: &Path, destination: &Path, root: &Path) {
     fs::create_dir_all(destination).expect("create fixture directory");
 

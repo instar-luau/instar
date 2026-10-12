@@ -1,184 +1,140 @@
 ---
 source: crates/cli/tests/contracts/support/snapshots.rs
-assertion_line: 17
 ---
 [
   {
-    "arguments": [
-      "missing.luau"
-    ],
-    "completion": {
-      "Incomplete": [
-        "FailedPrerequisite"
-      ]
-    },
-    "diagnostics": [],
-    "status": 2
+    "case": "missing",
+    "failure": {
+      "completed_edits": [],
+      "completed_sources": [],
+      "completion": {
+        "Incomplete": [
+          "FailedPrerequisite"
+        ]
+      },
+      "diagnostics": [],
+      "kind": "InvalidInvocation",
+      "message": "The system cannot find the file specified. (os error 2)"
+    }
   },
   {
-    "arguments": [
-      "unmatched/**/*.luau"
-    ],
-    "completion": {
-      "Incomplete": [
-        "FailedPrerequisite"
-      ]
-    },
-    "diagnostics": [],
-    "status": 2
+    "case": "binary",
+    "failure": {
+      "completed_edits": [],
+      "completed_sources": [],
+      "completion": {
+        "Incomplete": [
+          "FailedPrerequisite"
+        ]
+      },
+      "diagnostics": [],
+      "kind": "InvalidInvocation",
+      "message": "source encoding is unsupported; expected UTF-8"
+    }
   },
   {
-    "arguments": [
-      "binary.luau"
-    ],
-    "completion": {
-      "Incomplete": [
-        "FailedPrerequisite"
-      ]
-    },
-    "diagnostics": [],
-    "status": 2
+    "case": "extension",
+    "failure": {
+      "completed_edits": [],
+      "completed_sources": [],
+      "completion": {
+        "Incomplete": [
+          "FailedPrerequisite"
+        ]
+      },
+      "diagnostics": [],
+      "kind": "InvalidInvocation",
+      "message": "not a Lua or Luau source: $ROOT\\text.txt"
+    }
   },
   {
-    "arguments": [
-      "text.txt"
-    ],
-    "completion": {
-      "Incomplete": [
-        "FailedPrerequisite"
-      ]
-    },
-    "diagnostics": [],
-    "status": 2
-  },
-  {
-    "arguments": [
-      "input.luau",
-      "--configuration",
-      "missing.toml"
-    ],
-    "completion": {
-      "Incomplete": [
-        "FailedPrerequisite"
-      ]
-    },
-    "diagnostics": [
-      {
-        "category": "Configuration",
-        "code": "configuration.invalid",
-        "identity": {
+    "configuration": "missing.toml",
+    "failure": {
+      "completed_edits": [],
+      "completed_sources": [],
+      "completion": {
+        "Incomplete": [
+          "FailedPrerequisite"
+        ]
+      },
+      "diagnostics": [
+        {
+          "category": "Configuration",
           "code": "configuration.invalid",
-          "inputs": [
-            {}
-          ],
-          "location": {
+          "identity": {
+            "code": "configuration.invalid",
+            "inputs": [
+              {}
+            ],
+            "location": {
+              "source": {},
+              "span": {
+                "end": 0,
+                "start": 0
+              }
+            },
+            "producer": "project"
+          },
+          "message": "source not found: $ROOT\\missing.toml",
+          "primary": {
             "source": {},
             "span": {
               "end": 0,
               "start": 0
             }
           },
-          "producer": "project"
-        },
-        "message": "source not found: $ROOT\\missing.toml",
-        "path": "$ROOT/input.luau",
-        "range": [
-          0,
-          0
-        ],
-        "related": [],
-        "severity": "error",
-        "source": {},
-        "tags": []
-      }
-    ],
-    "status": 2
+          "related": [],
+          "severity": "Error",
+          "tags": []
+        }
+      ],
+      "kind": "InvalidInvocation",
+      "message": "source not found: $ROOT\\missing.toml"
+    }
   },
   {
-    "arguments": [
-      "input.luau",
-      "--configuration",
-      "broken.toml"
-    ],
-    "completion": {
-      "Incomplete": [
-        "FailedPrerequisite"
-      ]
-    },
-    "diagnostics": [
-      {
-        "category": "Configuration",
-        "code": "configuration.invalid",
-        "identity": {
+    "configuration": "broken.toml",
+    "failure": {
+      "completed_edits": [],
+      "completed_sources": [],
+      "completion": {
+        "Incomplete": [
+          "FailedPrerequisite"
+        ]
+      },
+      "diagnostics": [
+        {
+          "category": "Configuration",
           "code": "configuration.invalid",
-          "inputs": [
-            {}
-          ],
-          "location": {
+          "identity": {
+            "code": "configuration.invalid",
+            "inputs": [
+              {}
+            ],
+            "location": {
+              "source": {},
+              "span": {
+                "end": 0,
+                "start": 0
+              }
+            },
+            "producer": "project"
+          },
+          "message": "$ROOT/broken.toml: checking.mode: TOML parse error at line 2, column 6\n  |\n2 | mode='impossible'\n  |      ^^^^^^^^^^^^\nunknown variant `impossible`, expected one of `strict`, `nonstrict`, `nocheck`\n",
+          "primary": {
             "source": {},
             "span": {
               "end": 0,
               "start": 0
             }
           },
-          "producer": "project"
-        },
-        "message": "$ROOT/broken.toml: checking.mode: TOML parse error at line 2, column 6\n  |\n2 | mode='impossible'\n  |      ^^^^^^^^^^^^\nunknown variant `impossible`, expected one of `strict`, `nonstrict`, `nocheck`\n",
-        "path": "$ROOT/broken.toml",
-        "range": [
-          0,
-          0
-        ],
-        "related": [],
-        "severity": "error",
-        "source": {},
-        "tags": []
-      }
-    ],
-    "status": 2
-  },
-  {
-    "arguments": [
-      "input.luau",
-      "--include",
-      "["
-    ],
-    "completion": {
-      "Incomplete": [
-        "FailedPrerequisite"
-      ]
-    },
-    "diagnostics": [],
-    "status": 2
-  },
-  {
-    "arguments": [
-      "input.luau",
-      "--set",
-      "checking.unknown=true"
-    ],
-    "completion": "Complete",
-    "diagnostics": null,
-    "status": 2
-  },
-  {
-    "arguments": [
-      "input.luau",
-      "--set",
-      "checking.mode=notjson"
-    ],
-    "completion": "Complete",
-    "diagnostics": null,
-    "status": 2
-  },
-  {
-    "arguments": [
-      "input.luau",
-      "--stdin-filepath",
-      "input.luau"
-    ],
-    "completion": "Complete",
-    "diagnostics": null,
-    "status": 2
+          "related": [],
+          "severity": "Error",
+          "tags": []
+        }
+      ],
+      "kind": "InvalidInvocation",
+      "message": "$ROOT/broken.toml: checking.mode: TOML parse error at line 2, column 6\n  |\n2 | mode='impossible'\n  |      ^^^^^^^^^^^^\nunknown variant `impossible`, expected one of `strict`, `nonstrict`, `nocheck`\n"
+    }
   }
 ]

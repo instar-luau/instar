@@ -11,5 +11,5 @@ pub(super) use self::{
     fixture::Fixture,
     runtime::{complete, options},
     session::Session,
-    snapshots::snapshot,
+    snapshots::{attributed, snapshot},
 };

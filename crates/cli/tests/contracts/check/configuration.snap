@@ -1,6 +1,5 @@
 ---
 source: crates/cli/tests/contracts/support/snapshots.rs
-assertion_line: 17
 ---
 {
   "inherited": {
@@ -10,7 +9,7 @@ assertion_line: 17
     "mode": "nocheck"
   },
   "override": {
-    "diagnostics": [
+    "findings": [
       {
         "category": "Type",
         "code": "1000",
@@ -29,14 +28,19 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "Expected this to be 'string', but got 'number'",
-        "path": "$ROOT/nested/input.luau",
-        "range": [
-          22,
-          24
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/nested/input.luau"
+            }
+          },
+          "span": {
+            "end": 24,
+            "start": 22
+          }
+        },
         "related": [],
-        "severity": "error",
-        "source": {},
+        "severity": "Error",
         "tags": []
       }
     ],

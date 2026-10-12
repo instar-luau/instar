@@ -13,15 +13,14 @@ use instar_format::FormatOutcome;
 
 use instar_project::{
     CheckReport, Counts, ExplanationSelection, FixMode, FormatMode, FormatReport, InputIdentity,
-    InputVersion, LintReport, ProjectSnapshot, SelectionDecision, SourceOrigin, ValidatedEdit,
-    WatchReport, WriteOutcome,
+    InputVersion, LintReport, ProjectSnapshot, SelectionDecision, SourceOrigin, WatchReport,
+    WriteOutcome,
 };
 
 use instar_shared::{
     Completion, Diagnostic, Event, EventPayload, FindingIdentity, LogLevel, OperationFailure,
 };
 
-use serde_json::{Value, json};
 use tempfile::{NamedTempFile, TempPath};
 use tracing::Level as TraceLevel;
 
@@ -30,7 +29,7 @@ use tracing_subscriber::{
 };
 
 use super::{diagnostic::Diagnostics, difference};
-use crate::command::{Color, CommandStatus, ReportStyle, ReportingArguments};
+use crate::command::{Color, CommandStatus, ReportingArguments};
 
 pub(crate) enum CommandReport {
     Check(CheckReport),
@@ -164,7 +163,6 @@ pub(crate) struct Reporter {
     destination_path: Option<PathBuf>,
     temporary: Option<TempPath>,
     explanations: ExplanationSelection,
-    json: bool,
     quiet: bool,
     streaming: bool,
     color: ColorChoice,
@@ -172,18 +170,16 @@ pub(crate) struct Reporter {
     output_failure: Option<io::Error>,
     iteration: u64,
     watch_snapshot: Option<u64>,
-    changed_inputs: Vec<InputVersion>,
     protected_paths: BTreeMap<PathBuf, PathBuf>,
-    historical: Vec<Value>,
+    historical: Vec<String>,
     watch_events: Vec<Event>,
 }
 
 impl Reporter {
     pub(crate) fn new(arguments: &ReportingArguments) -> io::Result<Self> {
-        let json = arguments.json || arguments.style == ReportStyle::Json;
         let progress = ProgressBar::new_spinner().with_finish(ProgressFinish::AndClear);
 
-        if json || arguments.quiet || !io::stderr().is_terminal() {
+        if arguments.quiet || !io::stderr().is_terminal() {
             progress.set_draw_target(ProgressDrawTarget::hidden());
         }
 
@@ -227,7 +223,6 @@ impl Reporter {
             destination_path,
             temporary,
             explanations: ExplanationSelection::default(),
-            json,
             quiet: arguments.quiet,
             streaming: arguments.streaming,
             color,
@@ -235,7 +230,6 @@ impl Reporter {
             output_failure: None,
             iteration: 0,
             watch_snapshot: None,
-            changed_inputs: Vec::new(),
             protected_paths: BTreeMap::new(),
             historical: Vec::new(),
             watch_events: Vec::new(),
@@ -247,28 +241,25 @@ impl Reporter {
 
         let output = fmt::layer()
             .without_time()
-            .with_ansi(!self.json && !matches!(self.color, ColorChoice::Never))
+            .with_ansi(!matches!(self.color, ColorChoice::Never))
             .with_writer(move || LogWriter(progress.clone()));
 
         let filter = Targets::new().with_target("instar", TraceLevel::DEBUG);
 
-        let result = if self.json {
-            tracing_subscriber::registry()
-                .with(output.json())
-                .with(filter)
-                .try_init()
-        } else {
-            tracing_subscriber::registry()
-                .with(output)
-                .with(filter)
-                .try_init()
-        };
+        let result = tracing_subscriber::registry()
+            .with(output)
+            .with(filter)
+            .try_init();
 
         result.map_err(|error| eyre::eyre!("{error}"))
     }
 
     pub(crate) fn capture(&mut self, snapshot: &ProjectSnapshot) {
         self.diagnostics.capture(snapshot);
+
+        if self.destination_path.is_none() {
+            return;
+        }
 
         let protected = snapshot
             .sources()
@@ -342,22 +333,14 @@ impl Reporter {
     pub(crate) fn watch(
         &mut self,
         snapshot: &ProjectSnapshot,
-        changed: Vec<InputVersion>,
+        changed: &[InputVersion],
     ) -> io::Result<()> {
         self.capture(snapshot);
         self.watch_snapshot = Some(snapshot.identity);
-        self.changed_inputs = changed;
 
-        if self.streaming && self.json {
-            self.record(&json!({"event":"iteration","iteration":self.iteration,"snapshot":self.watch_snapshot,"changed":self.changed_inputs}), CommandStatus::Clean)?;
-        } else if !self.json && !self.quiet {
+        if !self.quiet {
             self.write_report(
-                format!(
-                    "Watch iteration {}: {}\n",
-                    self.iteration,
-                    serde_json::to_string(&self.changed_inputs).map_err(io::Error::other)?
-                )
-                .as_bytes(),
+                format!("Watch iteration {}: {changed:#?}\n", self.iteration).as_bytes(),
             )?;
         }
 
@@ -374,30 +357,30 @@ impl Reporter {
         self.capture_report(report);
         self.check_output()?;
 
-        if !self.json {
-            let mut identities = BTreeSet::new();
+        let mut identities = BTreeSet::new();
 
-            let findings = report
-                .findings()
-                .into_iter()
-                .filter(|finding| identities.insert(finding.identity.clone()))
-                .collect::<Vec<_>>();
+        let findings = report
+            .findings()
+            .into_iter()
+            .filter(|finding| identities.insert(finding.identity.clone()))
+            .collect::<Vec<_>>();
 
-            if !findings.is_empty() {
-                self.write_report(b"Historical watch findings (not current)\n")?;
-            }
-
-            for finding in findings {
-                let output = self.diagnostics.render(finding, self.color)?;
-                self.write_report(&output)?;
-            }
+        if !findings.is_empty() {
+            self.write_report(b"Historical watch findings (not current)\n")?;
         }
 
-        let mut record = self.projection(report);
-        record["current"] = json!(false);
-        record["snapshot"] = json!(snapshot.identity);
-        record["invalidations"] = json!(changed);
-        self.historical.push(record);
+        for finding in findings {
+            let output = self.diagnostics.render(finding, self.color)?;
+            self.write_report(&output)?;
+        }
+
+        self.historical.push(format!(
+            "Snapshot {}: status {}; completion {:?}; invalidations {changed:#?}",
+            snapshot.identity,
+            report.status().code(),
+            report.completion(),
+        ));
+
         self.watch_snapshot = Some(snapshot.identity);
 
         Ok(())
@@ -482,26 +465,15 @@ impl Reporter {
 
             EventPayload::Diagnostic(diagnostic) => {
                 if self.streaming
-                    && (self.json || self.diagnostics.available(diagnostic))
+                    && self.diagnostics.available(diagnostic)
                     && self.emitted.insert(diagnostic.identity.clone())
                 {
-                    if self.json {
-                        self.record(&json!({"event":"diagnostic","invocation":event.invocation,"operation":event.operation,"iteration":self.iteration,"diagnostic":self.diagnostics.record(diagnostic)}), CommandStatus::Clean)?;
-                    } else {
-                        let output = self.diagnostics.render(diagnostic, self.color)?;
-                        self.write_report(&output)?;
-                    }
+                    let output = self.diagnostics.render(diagnostic, self.color)?;
+                    self.write_report(&output)?;
                 }
             }
 
-            EventPayload::SourceOutcome(_) | EventPayload::EditOutcome(_) => {
-                if self.streaming && self.json {
-                    self.record(
-                        &json!({"event":event,"iteration":self.iteration}),
-                        CommandStatus::Clean,
-                    )?;
-                }
-            }
+            EventPayload::SourceOutcome(_) | EventPayload::EditOutcome(_) => {}
 
             EventPayload::Log(log) => {
                 if matches!(log.level, LogLevel::Warning | LogLevel::Error) {
@@ -521,48 +493,23 @@ impl Reporter {
         self.capture_report(report);
         self.check_output()?;
 
-        let findings = report.findings();
-        let mut identities = BTreeSet::new();
-
-        let findings = findings
-            .into_iter()
-            .filter(|finding| identities.insert(finding.identity.clone()))
-            .collect::<Vec<_>>();
-
-        let mut record = self.projection(report);
-
-        if let Some(snapshot) = self.watch_snapshot {
-            let snapshot = match report {
-                CommandReport::Watch(report) => report.snapshot.identity,
-                _ => snapshot,
-            };
-
-            record["iteration"] = json!(self.iteration);
-            record["snapshot"] = json!(snapshot);
-            record["invalidations"] = json!(self.changed_inputs);
-        }
-
         let source = Self::source(report)?;
 
-        if self.json {
-            if self.streaming {
-                self.record(
-                    &json!({"event":"report","iteration":self.iteration,"report":record}),
-                    report.status(),
-                )?;
-            } else {
-                self.record(&record, report.status())?;
-            }
-        } else {
-            for diagnostic in findings {
-                if !self.emitted.contains(&diagnostic.identity) {
-                    let output = self.diagnostics.render(diagnostic, self.color)?;
-                    self.write_report(&output)?;
-                }
-            }
+        let mut identities = BTreeSet::new();
 
-            self.human(report)?;
+        let findings = report
+            .findings()
+            .into_iter()
+            .filter(|finding| identities.insert(finding.identity.clone()));
+
+        for diagnostic in findings {
+            if !self.emitted.contains(&diagnostic.identity) {
+                let output = self.diagnostics.render(diagnostic, self.color)?;
+                self.write_report(&output)?;
+            }
         }
+
+        self.human(report)?;
 
         if let Some(source) = source {
             io::stdout().lock().write_all(source.as_bytes())?;
@@ -574,82 +521,6 @@ impl Reporter {
         self.progress.reset();
 
         Ok(())
-    }
-
-    fn projection(&self, report: &CommandReport) -> Value {
-        let mut identities = BTreeSet::new();
-
-        let diagnostics = report
-            .findings()
-            .into_iter()
-            .filter(|finding| {
-                matches!(report, CommandReport::Lint(_, _))
-                    || identities.insert(finding.identity.clone())
-            })
-            .map(|finding| self.diagnostics.record(finding))
-            .collect::<Vec<_>>();
-
-        let mut record = match report {
-            CommandReport::Check(report) => {
-                json!({"operation":"check","sources":report.sources,"modules":report.modules,"module_findings":report.module_findings,"imports":report.imports,"selection":report.selection,"dependencies":report.dependencies,"settings":report.settings,"counts":report.counts,"failed":report.failed,"changed":[],"skipped":skipped(&report.snapshot,&report.selection)})
-            }
-
-            CommandReport::Format(report, mode) => {
-                let changed = report
-                    .results
-                    .iter()
-                    .filter_map(|source| match &source.result.outcome {
-                        FormatOutcome::Validated(proposal)
-                            if proposal.input().source.text.as_ref() != proposal.output() =>
-                        {
-                            Some(self.diagnostics.name(source.result.source))
-                        }
-
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>();
-
-                let sources = report.results.iter().map(|source| {
-                    let outcome = match &source.result.outcome {
-                        FormatOutcome::Validated(proposal) => json!({"state":"validated","output":proposal.output(),"selections":proposal.selections(),"preservation":proposal.preservation()}),
-                        FormatOutcome::Unavailable { reason, selections, preservation } => json!({"state":"unavailable","reason":reason,"selections":selections,"preservation":preservation}),
-                    };
-
-                    json!({"source":source.result.source,"path":self.diagnostics.name(source.result.source),"outcome":outcome,"diagnostics":source.result.diagnostics,"completion":source.result.completion,"proposal":source.proposal.as_ref().map(ValidatedEdit::proposal),"preview":source.preview,"write":source.write})
-                }).collect::<Vec<_>>();
-
-                json!({"operation":"format","mode":format!("{mode:?}"),"sources":sources,"selection":report.selection,"settings":report.settings,"counts":report.counts,"failed":report.failed,"changed":changed,"skipped":skipped(&report.snapshot,&report.selection)})
-            }
-
-            CommandReport::Lint(report, mode) => {
-                json!({"operation":"lint","mode":format!("{mode:?}"),"sources":report.sources,"modules":report.modules,"module_findings":report.module_findings,"imports":report.imports,"outcomes":report.outcomes,"findings":report.findings.iter().map(|finding|self.diagnostics.record(finding)).collect::<Vec<_>>(),"final_findings":diagnostics,"availability":report.availability,"fixes":report.fixes,"proposals":report.proposals.iter().map(ValidatedEdit::proposal).collect::<Vec<_>>(),"previews":report.previews,"writes":report.writes,"selection":report.selection,"settings":report.settings,"dependencies":report.dependencies,"counts":report.counts,"failed":report.failed,"changed":[],"skipped":skipped(&report.snapshot,&report.selection)})
-            }
-
-            CommandReport::Watch(report) => {
-                json!({"operation":"watch","iterations":[],"failure":report.failure})
-            }
-
-            CommandReport::Failure(failure) => {
-                let mut record = failure_record(failure);
-                record["changed"] = json!([]);
-                record["skipped"] = json!([]);
-
-                record
-            }
-        };
-
-        record["diagnostics"] = json!(diagnostics);
-        record["completion"] = json!(report.completion());
-        record["status"] = json!(report.status().code());
-
-        if matches!(report, CommandReport::Watch(_))
-            || (matches!(report, CommandReport::Failure(_)) && self.watch_snapshot.is_some())
-        {
-            record["historical"] = json!(self.historical);
-            record["events"] = json!(self.watch_events);
-        }
-
-        record
     }
 
     fn source(report: &CommandReport) -> io::Result<Option<String>> {
@@ -895,33 +766,14 @@ impl Reporter {
 
         if let Some((selection, dependencies)) = explanations {
             if self.explanations.selection {
-                self.write_report(
-                    format!(
-                        "Selection: {}\n",
-                        serde_json::to_string_pretty(selection).map_err(io::Error::other)?
-                    )
-                    .as_bytes(),
-                )?;
+                self.write_report(format!("Selection: {selection:#?}\n").as_bytes())?;
             }
 
             if self.explanations.dependencies
                 && let Some((dependencies, imports)) = dependencies
             {
-                self.write_report(
-                    format!(
-                        "Dependencies: {}\n",
-                        serde_json::to_string_pretty(dependencies).map_err(io::Error::other)?
-                    )
-                    .as_bytes(),
-                )?;
-
-                self.write_report(
-                    format!(
-                        "Imports: {}\n",
-                        serde_json::to_string_pretty(imports).map_err(io::Error::other)?
-                    )
-                    .as_bytes(),
-                )?;
+                self.write_report(format!("Dependencies: {dependencies:#?}\n").as_bytes())?;
+                self.write_report(format!("Imports: {imports:#?}\n").as_bytes())?;
             }
         }
 
@@ -933,21 +785,15 @@ impl Reporter {
             if !self.historical.is_empty() {
                 self.write_report(
                     format!(
-                        "Historical watch outcomes (not current): {}\n",
-                        serde_json::to_string(&self.historical).map_err(io::Error::other)?
+                        "Historical watch outcomes (not current):\n{}\n",
+                        self.historical.join("\n")
                     )
                     .as_bytes(),
                 )?;
             }
 
             if !self.watch_events.is_empty() {
-                self.write_report(
-                    format!(
-                        "Watch events: {}\n",
-                        serde_json::to_string(&self.watch_events).map_err(io::Error::other)?
-                    )
-                    .as_bytes(),
-                )?;
+                self.write_report(format!("Watch events: {:#?}\n", self.watch_events).as_bytes())?;
             }
         }
 
@@ -987,24 +833,6 @@ impl Reporter {
         };
 
         self.write_report(format!("{operation} {state}: {files} file{}{details}; {} diagnostics; {} dependencies; {} written; {} fixes; completion {completion:?}\n",if files == 1 { "" } else { "s" },counts.findings,counts.dependencies,counts.written,counts.fixes).as_bytes())
-    }
-
-    fn record(&mut self, value: &Value, status: CommandStatus) -> io::Result<()> {
-        let mut bytes = serde_json::to_vec(value).map_err(io::Error::other)?;
-        bytes.push(b'\n');
-
-        if self.output_failure.is_some() {
-            return Ok(());
-        }
-
-        if self.destination.is_some() || matches!(status, CommandStatus::InvalidInvocation) {
-            self.write_report(&bytes)
-        } else {
-            let mut output = io::stdout().lock();
-            output.write_all(&bytes)?;
-
-            output.flush()
-        }
     }
 
     fn protect(&mut self, path: PathBuf) -> io::Result<()> {
@@ -1086,10 +914,6 @@ impl Write for LogWriter {
     fn flush(&mut self) -> io::Result<()> {
         self.0.suspend(|| io::stderr().lock().flush())
     }
-}
-
-pub(crate) fn failure_record(failure: &OperationFailure) -> Value {
-    json!({"error":failure.message,"kind":failure.kind,"diagnostics":failure.diagnostics,"completion":failure.completion,"status":CommandStatus::failure(failure).code(),"completed_sources":failure.completed_sources,"completed_edits":failure.completed_edits})
 }
 
 fn skipped(snapshot: &ProjectSnapshot, decisions: &[SelectionDecision]) -> Vec<String> {

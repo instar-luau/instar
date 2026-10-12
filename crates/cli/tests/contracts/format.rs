@@ -9,16 +9,18 @@ use std::{
     time::{Duration, Instant},
 };
 
-use instar_format::{FormatOutcome, FormatScope, settings::IndentStyle};
-
-use instar_project::{
-    ApplyRequest, ChangeBatch, FormatMode, FormatOverrides, FormatRequest, Input, Invocation,
-    ProjectChange, SourceChange, WatchCommandReport, WatchOperation, WatchRequest,
-    WriteAuthorization, WriteOutcome,
+use instar_format::{
+    FormatOutcome, FormatScope, FormatSelection, SelectionOutcome, ValidatedFormat,
+    settings::{IndentStyle, QuoteStyle},
 };
 
-use instar_shared::{Completion, EventPayload};
-use serde_json::{Value, json};
+use instar_project::{
+    ApplyRequest, ChangeBatch, CheckingMode, FormatMode, FormatOverrides, FormatReport,
+    FormatRequest, FormattedSource, Input, Invocation, ProjectChange, SourceChange,
+    WatchCommandReport, WatchOperation, WatchRequest, WriteAuthorization, WriteOutcome,
+};
+
+use instar_shared::{Completion, DiagnosticCategory, EditIntent, EventPayload, Span};
 
 use super::support::{Fixture, complete, options};
 
@@ -35,41 +37,39 @@ fn request(fixture: &Fixture) -> FormatRequest {
     }
 }
 
-fn validated(source: &Value, expected: &str) {
-    assert_eq!(source["completion"], "Complete");
-    assert_eq!(source["outcome"]["state"], "validated");
-    assert_eq!(source["outcome"]["output"].as_str(), Some(expected));
-    let preservation = &source["outcome"]["preservation"];
-    assert_eq!(preservation["completion"], "Complete");
+fn format_report(fixture: &Fixture, requested: FormatRequest) -> FormatReport {
+    let project = fixture.project();
+    let report = complete(project.format(requested, options())).expect("formatting report");
+    complete(project.finish()).expect("project cleanup");
 
-    for guarantee in [
-        "structure",
-        "literals",
-        "comments",
-        "directives",
-        "multiple_results",
-        "outside",
-    ] {
-        assert_eq!(preservation[guarantee], "Preserved", "{guarantee}");
-    }
+    report
+}
 
-    if !source["proposal"].is_null() {
-        assert_eq!(source["proposal"]["intent"], "Formatting");
+fn validated<'source>(
+    source: &'source FormattedSource,
+    expected: &str,
+) -> &'source ValidatedFormat {
+    assert_eq!(source.result.completion, Completion::Complete);
 
-        assert!(
-            source["proposal"]["guards"]
-                .as_array()
-                .expect("proposal guards")
-                .contains(&source["source"])
-        );
+    let FormatOutcome::Validated(formatted) = &source.result.outcome else {
+        panic!("validated formatting");
+    };
 
-        for edit in source["proposal"]["edits"]
-            .as_array()
-            .expect("proposal edits")
-        {
-            assert_eq!(edit["location"]["source"], source["source"]);
+    assert_eq!(formatted.output(), expected);
+    assert_eq!(formatted.preservation().completion, Completion::Complete);
+    assert!(formatted.preservation().preserved());
+
+    if let Some(proposal) = &source.proposal {
+        let proposal = proposal.proposal();
+        assert_eq!(proposal.intent, EditIntent::Formatting);
+        assert!(proposal.guards.contains(&source.result.source));
+
+        for edit in &proposal.edits {
+            assert_eq!(edit.location.source, source.result.source);
         }
     }
+
+    formatted
 }
 
 #[test]
@@ -142,12 +142,14 @@ fn retained_goldens_preserve_settings_and_bytes() {
 
         assert_eq!(idempotent.status, 0, "{scenario}: {}", idempotent.stderr);
         assert_eq!(idempotent.stdout.as_bytes(), expected, "{scenario}");
-        let checked = fixture.run(&["format", "--json", "--check", "expected.luau"]);
+        let checked = fixture.run(&["format", "--check", "expected.luau"]);
         assert_eq!(checked.status, 0, "{scenario}: {}", checked.stderr);
-        let report = checked.json();
-        assert_eq!(report["counts"]["unchanged"], 1, "{scenario}");
-        assert_eq!(report["counts"]["dependencies"], 0, "{scenario}");
-        validated(&report["sources"][0], &fixture.read("expected.luau"));
+        let mut requested = request(&fixture);
+        requested.invocation.inputs = vec![Input::Path(fixture.path("expected.luau"))];
+        let report = format_report(&fixture, requested);
+        assert_eq!(report.counts.unchanged, 1, "{scenario}");
+        assert_eq!(report.counts.dependencies, 0, "{scenario}");
+        validated(&report.results[0], &fixture.read("expected.luau"));
         assert_eq!(fixture.bytes("input.luau"), original, "{scenario}");
         assert_eq!(fixture.bytes("expected.luau"), expected, "{scenario}");
     }
@@ -158,13 +160,18 @@ fn whole_source_preserves_multiple_results_and_attributes() {
     for scenario in ["basic", "semantics", "attributes", "encoding"] {
         let fixture = Fixture::new("cli", &format!("format/{scenario}"));
         let original = fixture.bytes("input.luau");
-        let output = fixture.run(&["format", "--json", "--check", "input.luau"]);
+        let output = fixture.run(&["format", "--check", "input.luau"]);
         assert_eq!(output.status, 1, "{scenario}: {}", output.stderr);
-        let report = output.json();
-        validated(&report["sources"][0], &fixture.read("expected.luau"));
-        assert_eq!(report["counts"]["changed"], 1);
-        assert_eq!(report["counts"]["written"], 0);
-        assert_eq!(report["sources"][0]["write"], "NotRequested");
+        let report = format_report(&fixture, request(&fixture));
+        validated(&report.results[0], &fixture.read("expected.luau"));
+        assert_eq!(report.counts.changed, 1);
+        assert_eq!(report.counts.written, 0);
+
+        assert!(matches!(
+            report.results[0].write,
+            WriteOutcome::NotRequested
+        ));
+
         assert_eq!(fixture.bytes("input.luau"), original);
     }
 }
@@ -173,52 +180,72 @@ fn whole_source_preserves_multiple_results_and_attributes() {
 fn check_and_preview_never_write() {
     let fixture = Fixture::new("cli", "format/basic");
     let original = fixture.bytes("input.luau");
-    let checked = fixture.run(&["format", "--json", "--check", "input.luau"]);
+    let checked = fixture.run(&["format", "--check", "input.luau"]);
     assert_eq!(checked.status, 1);
-    let report = checked.json();
-    assert_eq!(report["mode"], "Check");
-    assert_eq!(report["failed"], true);
-    validated(&report["sources"][0], &fixture.read("expected.luau"));
-    let previewed = fixture.run(&["format", "--json", "--preview", "input.luau"]);
+    let checked_report = format_report(&fixture, request(&fixture));
+    assert!(checked_report.failed);
+    validated(&checked_report.results[0], &fixture.read("expected.luau"));
+    let previewed = fixture.run(&["format", "--preview", "input.luau"]);
     assert_eq!(previewed.status, 0);
-    let preview = previewed.json();
-    assert_eq!(preview["mode"], "Preview");
-    assert_eq!(preview["completion"], "Complete");
-    assert_eq!(preview["counts"]["written"], 0);
-    let patch = preview["sources"][0]["preview"].as_str().expect("patch");
+    assert!(previewed.stderr.contains("-local value=1"));
+    assert!(previewed.stderr.contains("+\tlocal value = 1"));
+    let mut requested = request(&fixture);
+    requested.mode = FormatMode::Preview;
+    let preview = format_report(&fixture, requested);
+    assert_eq!(preview.completion, Completion::Complete);
+    assert_eq!(preview.counts.written, 0);
+    let patch = preview.results[0].preview.as_deref().expect("patch");
     assert!(patch.contains("-local value=1"));
     assert!(patch.contains("+\tlocal value = 1"));
-    assert_eq!(preview["sources"][0]["write"], "NotRequested");
+
+    assert!(matches!(
+        preview.results[0].write,
+        WriteOutcome::NotRequested
+    ));
+
     assert_eq!(fixture.bytes("input.luau"), original);
 }
 
 #[test]
 fn default_formatting_commits_validated_goldens() {
     let fixture = Fixture::new("cli", "format/basic");
-    let written = fixture.run(&["format", "--json", "input.luau"]);
+    let written = fixture.run(&["format", "input.luau"]);
     assert_eq!(written.status, 0, "{}", written.stderr);
-    let report = written.json();
-    assert_eq!(report["completion"], "Complete");
-    assert_eq!(report["counts"]["written"], 1);
-    assert_eq!(report["counts"]["unsuccessful"], 0);
-    let source = &report["sources"][0];
-    validated(source, &fixture.read("expected.luau"));
-    assert_eq!(source["write"]["Written"]["source"], source["source"]);
-
-    assert!(
-        source["write"]["Written"]["revision"]
-            .as_u64()
-            .expect("written revision")
-            > source["source"]["revision"]
-                .as_u64()
-                .expect("original revision")
-    );
-
     assert_eq!(fixture.bytes("input.luau"), fixture.bytes("expected.luau"));
-    let unchanged = fixture.run(&["format", "--json", "input.luau"]);
+    let unchanged = fixture.run(&["format", "input.luau"]);
     assert_eq!(unchanged.status, 0);
-    assert_eq!(unchanged.json()["sources"][0]["write"], "Unchanged");
-    assert_eq!(unchanged.json()["counts"]["written"], 0);
+    assert_eq!(fixture.bytes("input.luau"), fixture.bytes("expected.luau"));
+
+    let typed = Fixture::new("cli", "format/basic");
+    let mut requested = request(&typed);
+    requested.mode = FormatMode::Write;
+    let written = format_report(&typed, requested.clone());
+    assert_eq!(written.completion, Completion::Complete);
+    assert_eq!(written.counts.written, 1);
+    assert_eq!(written.counts.unsuccessful, 0);
+    let source = &written.results[0];
+    validated(source, &typed.read("expected.luau"));
+
+    let WriteOutcome::Written {
+        source: original,
+        revision,
+        ..
+    } = source.write
+    else {
+        panic!("written source");
+    };
+
+    assert_eq!(original, source.result.source);
+    assert!(revision > original.revision);
+    assert_eq!(typed.bytes("input.luau"), typed.bytes("expected.luau"));
+    let unchanged = format_report(&typed, requested);
+
+    assert!(matches!(
+        unchanged.results[0].write,
+        WriteOutcome::Unchanged
+    ));
+
+    assert_eq!(unchanged.counts.written, 0);
 }
 
 #[test]
@@ -231,12 +258,15 @@ fn unchanged_write_leaves_metadata_and_bytes_untouched() {
         .modified()
         .expect("golden modification time");
 
-    let output = fixture.run(&["format", "--json", "expected.luau"]);
+    let output = fixture.run(&["format", "expected.luau"]);
     assert_eq!(output.status, 0);
-    let report = output.json();
-    assert_eq!(report["counts"]["unchanged"], 1);
-    assert_eq!(report["counts"]["written"], 0);
-    assert_eq!(report["sources"][0]["write"], "Unchanged");
+    let mut requested = request(&fixture);
+    requested.invocation.inputs = vec![Input::Path(fixture.path("expected.luau"))];
+    requested.mode = FormatMode::Write;
+    let report = format_report(&fixture, requested);
+    assert_eq!(report.counts.unchanged, 1);
+    assert_eq!(report.counts.written, 0);
+    assert!(matches!(report.results[0].write, WriteOutcome::Unchanged));
     assert_eq!(fixture.bytes("expected.luau"), original);
 
     assert_eq!(
@@ -255,39 +285,48 @@ fn batch_writes_retain_valid_and_unsuccessful_outcomes() {
     fixture.write("broken.luau", malformed.bytes("input.luau"));
     let original = fixture.bytes("broken.luau");
 
-    let output = fixture.run(&[
-        "format",
-        "--json",
-        "input.luau",
-        "expected.luau",
-        "broken.luau",
-    ]);
-
+    let output = fixture.run(&["format", "input.luau", "expected.luau", "broken.luau"]);
     assert_eq!(output.status, 5);
-    let report = output.json();
-    assert_eq!(report["completion"], "Complete");
-    assert_eq!(report["counts"]["selected"], 3);
-    assert_eq!(report["counts"]["written"], 1);
-    assert_eq!(report["counts"]["unchanged"], 1);
-    assert_eq!(report["counts"]["unsuccessful"], 1);
     assert_eq!(fixture.bytes("input.luau"), fixture.bytes("expected.luau"));
     assert_eq!(fixture.bytes("broken.luau"), original);
 
-    let failed = report["sources"]
-        .as_array()
-        .expect("sources")
+    let typed = Fixture::new("cli", "format/basic");
+    typed.write("broken.luau", &original);
+    let mut requested = request(&typed);
+    requested.mode = FormatMode::Write;
+
+    requested.invocation.inputs = ["input.luau", "expected.luau", "broken.luau"]
+        .map(|name| Input::Path(typed.path(name)))
+        .into();
+
+    let report = format_report(&typed, requested);
+    assert_eq!(report.completion, Completion::Complete);
+    assert_eq!(report.counts.selected, 3);
+    assert_eq!(report.counts.written, 1);
+    assert_eq!(report.counts.unchanged, 1);
+    assert_eq!(report.counts.unsuccessful, 1);
+    assert_eq!(typed.bytes("input.luau"), typed.bytes("expected.luau"));
+    assert_eq!(typed.bytes("broken.luau"), original);
+
+    let failed = report
+        .results
         .iter()
         .find(|source| {
-            source["path"]
-                .as_str()
-                .expect("path")
-                .ends_with("broken.luau")
+            report
+                .snapshot
+                .origin(source.result.source.identity)
+                .and_then(|origin| origin.path())
+                == Some(typed.path("broken.luau").as_path())
         })
         .expect("malformed source");
 
-    assert_eq!(failed["outcome"]["state"], "unavailable");
-    assert!(failed["proposal"].is_null());
-    assert_eq!(failed["write"], "NotRequested");
+    assert!(matches!(
+        failed.result.outcome,
+        FormatOutcome::Unavailable { .. }
+    ));
+
+    assert!(failed.proposal.is_none());
+    assert!(matches!(failed.write, WriteOutcome::NotRequested));
 }
 
 #[test]
@@ -301,7 +340,6 @@ fn ranges_preserve_outside_bytes_and_original_coordinates() {
 
     let output = fixture.run(&[
         "format",
-        "--json",
         "--check",
         "--indentation",
         "spaces",
@@ -313,17 +351,29 @@ fn ranges_preserve_outside_bytes_and_original_coordinates() {
     ]);
 
     assert_eq!(output.status, 1);
-    let report = output.json();
-    let source = &report["sources"][0];
+    let mut requested = request(&fixture);
+
+    requested.scope = FormatScope::Ranges(vec![Span {
+        start: position,
+        end: position + 1,
+    }]);
+
+    requested.overrides.formatting.indent_style = Some(IndentStyle::Spaces);
+    requested.overrides.formatting.indent_width = NonZeroUsize::new(2);
+    let report = format_report(&fixture, requested);
     let expected = fixture.read("expected.luau");
-    validated(source, &expected);
+    let formatted = validated(&report.results[0], &expected);
 
     assert_eq!(
-        source["outcome"]["selections"],
-        json!([{
-            "requested": {"start": position, "end": position + 1},
-            "expanded": [{"start": start, "end": end}], "outcome": "Formatted",
-        }])
+        formatted.selections(),
+        &[FormatSelection {
+            requested: Span {
+                start: position,
+                end: position + 1
+            },
+            expanded: vec![Span { start, end }],
+            outcome: SelectionOutcome::Formatted,
+        }]
     );
 
     assert_eq!(&expected.as_bytes()[..start], &original.as_bytes()[..start]);
@@ -348,7 +398,6 @@ fn overlapping_ranges_merge_against_one_snapshot() {
 
     let output = fixture.run(&[
         "format",
-        "--json",
         "--check",
         "--indentation",
         "spaces",
@@ -364,31 +413,45 @@ fn overlapping_ranges_merge_against_one_snapshot() {
     ]);
 
     assert_eq!(output.status, 1);
-    let report = output.json();
-    let source = &report["sources"][0];
-    validated(source, &fixture.read("merged.luau"));
+    let mut requested = request(&fixture);
+
+    requested.scope = FormatScope::Ranges(vec![
+        Span {
+            start: first,
+            end: first + 1,
+        },
+        Span {
+            start: first + 1,
+            end: first + 4,
+        },
+        Span {
+            start: second,
+            end: second + 1,
+        },
+    ]);
+
+    requested.overrides.formatting.indent_style = Some(IndentStyle::Spaces);
+    requested.overrides.formatting.indent_width = NonZeroUsize::new(2);
+    let report = format_report(&fixture, requested);
+    let formatted = validated(&report.results[0], &fixture.read("merged.luau"));
+    assert_eq!(formatted.selections().len(), 3);
 
     assert_eq!(
-        source["outcome"]["selections"]
-            .as_array()
-            .expect("selections")
-            .len(),
-        3
+        formatted.preservation().selections,
+        vec![Span { start, end }]
     );
 
     assert_eq!(
-        source["outcome"]["preservation"]["selections"],
-        json!([{"start": start, "end": end}])
+        formatted.selections()[0].expanded,
+        formatted.selections()[1].expanded
     );
 
     assert_eq!(
-        source["outcome"]["selections"][0]["expanded"],
-        source["outcome"]["selections"][1]["expanded"]
-    );
-
-    assert_eq!(
-        source["outcome"]["selections"][2]["requested"],
-        json!({"start": second, "end": second + 1})
+        formatted.selections()[2].requested,
+        Span {
+            start: second,
+            end: second + 1
+        }
     );
 
     assert_eq!(fixture.read("input.luau"), original);
@@ -403,7 +466,6 @@ fn on_type_localizes_the_callers_trigger() {
 
     let output = fixture.run(&[
         "format",
-        "--json",
         "--check",
         "--indentation",
         "spaces",
@@ -415,13 +477,25 @@ fn on_type_localizes_the_callers_trigger() {
     ]);
 
     assert_eq!(output.status, 1);
-    let report = output.json();
-    validated(&report["sources"][0], &fixture.read("expected.luau"));
+    let mut requested = request(&fixture);
+
+    requested.scope = FormatScope::OnType {
+        offset: position,
+        trigger: '\n',
+    };
+
+    requested.overrides.formatting.indent_style = Some(IndentStyle::Spaces);
+    requested.overrides.formatting.indent_width = NonZeroUsize::new(2);
+    let report = format_report(&fixture, requested);
+    let formatted = validated(&report.results[0], &fixture.read("expected.luau"));
     let start = original.find("  local first").expect("trigger line");
 
     assert_eq!(
-        report["sources"][0]["outcome"]["selections"][0]["requested"],
-        json!({"start": start, "end": position})
+        formatted.selections()[0].requested,
+        Span {
+            start,
+            end: position
+        }
     );
 
     assert_eq!(fixture.read("input.luau"), original);
@@ -432,41 +506,34 @@ fn recovered_source_formats_only_well_formed_selected_regions() {
     let fixture = Fixture::new("cli", "format/recovery");
     let original = fixture.bytes("input.luau");
 
-    let selected = fixture.run(&[
-        "format",
-        "--json",
-        "--check",
-        "--range",
-        "6:8",
-        "input.luau",
-    ]);
+    let selected = fixture.run(&["format", "--check", "--range", "6:8", "input.luau"]);
 
     assert_eq!(selected.status, 1);
-    let report = selected.json();
-    validated(&report["sources"][0], &fixture.read("expected.luau"));
+    let mut requested = request(&fixture);
+    requested.scope = FormatScope::Ranges(vec![Span { start: 6, end: 8 }]);
+    let report = format_report(&fixture, requested);
+    validated(&report.results[0], &fixture.read("expected.luau"));
 
     assert!(
-        report["diagnostics"]
-            .as_array()
-            .expect("syntax diagnostics")
+        report
+            .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic["code"] == "syntax.parse")
+            .any(|diagnostic| diagnostic.code == "syntax.parse")
     );
 
-    let malformed = fixture.run(&[
-        "format",
-        "--json",
-        "--check",
-        "--range",
-        "20:25",
-        "input.luau",
-    ]);
+    let malformed = fixture.run(&["format", "--check", "--range", "20:25", "input.luau"]);
 
     assert_eq!(malformed.status, 5);
-    let unavailable = malformed.json();
-    assert_eq!(unavailable["sources"][0]["outcome"]["state"], "unavailable");
-    assert!(unavailable["sources"][0]["outcome"].get("output").is_none());
-    assert!(unavailable["sources"][0]["proposal"].is_null());
+    let mut requested = request(&fixture);
+    requested.scope = FormatScope::Ranges(vec![Span { start: 20, end: 25 }]);
+    let unavailable = format_report(&fixture, requested);
+
+    assert!(matches!(
+        unavailable.results[0].result.outcome,
+        FormatOutcome::Unavailable { .. }
+    ));
+
+    assert!(unavailable.results[0].proposal.is_none());
     let whole = fixture.run(&["format", "--source", "input.luau"]);
     assert_eq!(whole.status, 5);
     assert_eq!(whole.stdout, "");
@@ -477,30 +544,25 @@ fn recovered_source_formats_only_well_formed_selected_regions() {
 fn suppression_scopes_preserve_directives_and_protected_bytes() {
     let fixture = Fixture::new("cli", "format/suppressions");
     let original = fixture.bytes("input.luau");
-    let output = fixture.run(&["format", "--json", "--check", "input.luau"]);
+    let output = fixture.run(&["format", "--check", "input.luau"]);
     assert_eq!(output.status, 1);
-    let report = output.json();
-    validated(&report["sources"][0], &fixture.read("expected.luau"));
+    let report = format_report(&fixture, request(&fixture));
+    validated(&report.results[0], &fixture.read("expected.luau"));
     let whole = fixture.run(&["format", "--source", "whole.luau"]);
     assert_eq!(whole.status, 0);
     assert_eq!(whole.stdout.as_bytes(), fixture.bytes("whole.luau"));
 
-    let selected = fixture.run(&[
-        "format",
-        "--json",
-        "--check",
-        "--range",
-        "40:48",
-        "input.luau",
-    ]);
+    let selected = fixture.run(&["format", "--check", "--range", "40:48", "input.luau"]);
 
     assert_eq!(selected.status, 0);
-    let unchanged = selected.json();
-    validated(&unchanged["sources"][0], &fixture.read("input.luau"));
+    let mut requested = request(&fixture);
+    requested.scope = FormatScope::Ranges(vec![Span { start: 40, end: 48 }]);
+    let unchanged = format_report(&fixture, requested);
+    let formatted = validated(&unchanged.results[0], &fixture.read("input.luau"));
 
     assert_eq!(
-        unchanged["sources"][0]["outcome"]["selections"][0]["outcome"],
-        "Unchanged"
+        formatted.selections()[0].outcome,
+        SelectionOutcome::Unchanged
     );
 
     assert_eq!(fixture.bytes("input.luau"), original);
@@ -521,32 +583,43 @@ fn invalid_directives_are_source_attributed_failures() {
         ),
     ] {
         let original = fixture.bytes(name);
-        let output = fixture.run(&["format", "--json", name]);
+        let output = fixture.run(&["format", name]);
         assert_eq!(output.status, 5, "{name}");
-        let report = output.json();
-        let source = &report["sources"][0];
-        assert_eq!(source["outcome"]["state"], "unavailable");
-        assert!(source["outcome"].get("output").is_none());
-        assert!(source["proposal"].is_null());
-        assert_eq!(source["write"], "NotRequested");
+        let mut requested = request(&fixture);
+        requested.invocation.inputs = vec![Input::Path(fixture.path(name))];
+        requested.mode = FormatMode::Write;
+        let report = format_report(&fixture, requested.clone());
+        let source = &report.results[0];
 
-        let diagnostic = report["diagnostics"]
-            .as_array()
-            .expect("diagnostics")
+        assert!(matches!(
+            source.result.outcome,
+            FormatOutcome::Unavailable { .. }
+        ));
+
+        assert!(source.proposal.is_none());
+        assert!(matches!(source.write, WriteOutcome::NotRequested));
+
+        let diagnostic = report
+            .diagnostics
             .iter()
-            .find(|diagnostic| diagnostic["code"] == "format.directive")
+            .find(|diagnostic| diagnostic.code == "format.directive")
             .expect("directive diagnostic");
 
-        assert_eq!(diagnostic["category"], "Formatting");
-        assert_eq!(diagnostic["message"], message);
-        assert_eq!(diagnostic["source"], source["source"]);
-        assert_eq!(diagnostic["revision"], source["source"]["revision"]);
+        assert_eq!(diagnostic.category, DiagnosticCategory::Formatting);
+        assert_eq!(diagnostic.message, message);
+        assert_eq!(diagnostic.primary.source, source.result.source);
 
-        assert!(
-            diagnostic["path"]
-                .as_str()
-                .expect("diagnostic path")
-                .ends_with(name)
+        assert_eq!(
+            diagnostic.primary.source.revision,
+            source.result.source.revision
+        );
+
+        assert_eq!(
+            report
+                .snapshot
+                .origin(diagnostic.primary.source.identity)
+                .and_then(|origin| origin.path()),
+            Some(fixture.path(name).as_path())
         );
 
         let text = fixture.read(name);
@@ -558,19 +631,20 @@ fn invalid_directives_are_source_attributed_failures() {
         };
 
         let end = start + text[start..].find('\n').expect("directive line end");
-        assert_eq!(diagnostic["range"], json!([start, end]));
-        let repeated = fixture.run(&["format", "--json", "--check", name]);
+        assert_eq!(diagnostic.primary.span, Span { start, end });
+        let repeated = fixture.run(&["format", "--check", name]);
         assert_eq!(repeated.status, 5);
-        let repeated = repeated.json();
+        requested.mode = FormatMode::Check;
+        let repeated = format_report(&fixture, requested);
 
-        let identity = &repeated["diagnostics"]
-            .as_array()
-            .expect("repeated diagnostics")
+        let identity = &repeated
+            .diagnostics
             .iter()
-            .find(|finding| finding["code"] == "format.directive" && finding["message"] == message)
-            .expect("repeated directive diagnostic")["identity"];
+            .find(|finding| finding.code == "format.directive" && finding.message == message)
+            .expect("repeated directive diagnostic")
+            .identity;
 
-        assert_eq!(&diagnostic["identity"], identity);
+        assert_eq!(&diagnostic.identity, identity);
         assert_eq!(fixture.bytes(name), original);
     }
 }
@@ -578,48 +652,57 @@ fn invalid_directives_are_source_attributed_failures() {
 #[test]
 fn nested_directive_diagnostic_identifies_the_opening_location() {
     let fixture = Fixture::new("cli", "format/directives");
-    let output = fixture.run(&["format", "--json", "--check", "nested.luau"]);
-    assert_eq!(output.status, 5);
-    let report = output.json();
+    let mut requested = request(&fixture);
+    requested.invocation.inputs = vec![Input::Path(fixture.path("nested.luau"))];
+    let report = format_report(&fixture, requested);
+    assert!(report.failed);
+    assert_eq!(report.completion, Completion::Complete);
 
-    let diagnostic = report["diagnostics"]
-        .as_array()
-        .expect("diagnostics")
+    assert!(matches!(
+        report.results[0].result.outcome,
+        FormatOutcome::Unavailable { .. }
+    ));
+
+    let diagnostic = report
+        .diagnostics
         .iter()
-        .find(|diagnostic| diagnostic["message"] == "nested formatting region")
+        .find(|diagnostic| diagnostic.message == "nested formatting region")
         .expect("nested directive diagnostic");
 
-    assert!(
-        diagnostic["related"]
-            .as_array()
-            .expect("related locations")
-            .iter()
-            .any(|related| {
-                related["source"] == diagnostic["source"]
-                    && related["range"][0] == 0
-                    && related["range"][1] == 20
-                    && !related["message"]
-                        .as_str()
-                        .expect("related explanation")
-                        .is_empty()
-            })
-    );
+    assert!(diagnostic.related.iter().any(|related| {
+        related.location.source == diagnostic.primary.source
+            && related.location.span == Span { start: 0, end: 20 }
+            && !related.message.is_empty()
+    }));
 }
 
 #[test]
 fn selection_combines_inputs_and_honors_project_controls() {
     let fixture = Fixture::new("cli", "format/contexts");
-    let defaults = fixture.run(&["format", "--json", "--check", "--explain-selection"]);
+    let defaults = fixture.run(&["format", "--check", "--explain-selection"]);
     assert_eq!(defaults.status, 1);
-    let report = defaults.json();
-    assert_eq!(report["counts"]["selected"], 3);
-    assert_eq!(report["counts"]["excluded"], 2);
-    assert_eq!(report["counts"]["dependencies"], 0);
-    let sources = report["sources"].as_array().expect("sources");
+    assert!(defaults.stderr.contains("Selection:"));
+    assert!(defaults.stderr.contains("configured exclusion"));
+    let mut requested = request(&fixture);
+    requested.invocation.inputs.clear();
+    requested.invocation.explanations.selection = true;
+    let report = format_report(&fixture, requested.clone());
+    assert_eq!(report.counts.selected, 3);
+    assert_eq!(report.counts.excluded, 2);
+    assert_eq!(report.counts.dependencies, 0);
 
-    let names = sources
+    let names = report
+        .results
         .iter()
-        .map(|source| source["path"].as_str().expect("path").replace('\\', "/"))
+        .map(|source| {
+            report
+                .snapshot
+                .origin(source.result.source.identity)
+                .and_then(|origin| origin.path())
+                .expect("source path")
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
         .collect::<BTreeSet<_>>();
 
     assert!(names.iter().any(|name| name.ends_with("/input.luau")));
@@ -629,65 +712,85 @@ fn selection_combines_inputs_and_honors_project_controls() {
     assert!(!names.iter().any(|name| name.ends_with("/excluded.luau")));
 
     assert!(
-        report["selection"]
-            .as_array()
-            .expect("selection")
+        report
+            .selection
             .iter()
-            .any(|decision| {
-                decision["reason"] == "configured exclusion" && decision["selected"] == false
-            })
+            .any(|decision| { decision.reason == "configured exclusion" && !decision.selected })
     );
 
-    let combined = fixture.run(&[
-        "format",
-        "--json",
-        "--check",
-        "input.luau",
-        "child",
-        "*.lua",
-    ]);
-
+    let combined = fixture.run(&["format", "--check", "input.luau", "child", "*.lua"]);
     assert_eq!(combined.status, 1);
-    assert_eq!(combined.json()["counts"]["selected"], 3);
-    let ignored = fixture.run(&["format", "--json", "--check", "ignored.luau"]);
+
+    requested.invocation.inputs = vec![
+        Input::Path(fixture.path("input.luau")),
+        Input::Path(fixture.path("child")),
+        Input::Pattern {
+            base: fixture.root().to_path_buf(),
+            pattern: "*.lua".into(),
+        },
+    ];
+
+    assert_eq!(
+        format_report(&fixture, requested.clone()).counts.selected,
+        3
+    );
+
+    let ignored = fixture.run(&["format", "--check", "ignored.luau"]);
     assert_eq!(ignored.status, 1);
-    assert_eq!(ignored.json()["counts"]["selected"], 1);
-    let excluded = fixture.run(&["format", "--json", "--check", "excluded.luau"]);
+    requested.invocation.inputs = vec![Input::Path(fixture.path("ignored.luau"))];
+
+    assert_eq!(
+        format_report(&fixture, requested.clone()).counts.selected,
+        1
+    );
+
+    let excluded = fixture.run(&["format", "--check", "excluded.luau"]);
     assert_eq!(excluded.status, 0);
-    assert_eq!(excluded.json()["counts"]["selected"], 0);
-    assert_eq!(excluded.json()["counts"]["excluded"], 1);
+    requested.invocation.inputs = vec![Input::Path(fixture.path("excluded.luau"))];
+    let excluded_report = format_report(&fixture, requested.clone());
+    assert_eq!(excluded_report.counts.selected, 0);
+    assert_eq!(excluded_report.counts.excluded, 1);
 
     let overridden = fixture.run(&[
         "format",
-        "--json",
         "--check",
         "--override-exclusions",
         "excluded.luau",
     ]);
 
     assert_eq!(overridden.status, 1);
-    assert_eq!(overridden.json()["counts"]["selected"], 1);
-    let included = fixture.run(&["format", "--json", "--check", "--include", "*.lua", "."]);
-    assert_eq!(included.status, 1);
-    assert_eq!(included.json()["counts"]["selected"], 1);
+    requested.overrides.selection.override_exclusions = true;
 
-    let excluded_command =
-        fixture.run(&["format", "--json", "--check", "--exclude", "child/", "."]);
-
-    assert_eq!(excluded_command.status, 1);
-    assert_eq!(excluded_command.json()["counts"]["selected"], 3);
-
-    assert!(
-        !excluded_command.json()["sources"]
-            .as_array()
-            .expect("sources")
-            .iter()
-            .any(|source| source["path"]
-                .as_str()
-                .expect("path")
-                .replace('\\', "/")
-                .ends_with("/child/input.luau"))
+    assert_eq!(
+        format_report(&fixture, requested.clone()).counts.selected,
+        1
     );
+
+    let included = fixture.run(&["format", "--check", "--include", "*.lua", "."]);
+    assert_eq!(included.status, 1);
+    requested.invocation.inputs = vec![Input::Path(fixture.root().to_path_buf())];
+    requested.overrides.selection.override_exclusions = false;
+    requested.overrides.selection.include = Some(vec!["*.lua".into()]);
+
+    assert_eq!(
+        format_report(&fixture, requested.clone()).counts.selected,
+        1
+    );
+
+    let excluded_command = fixture.run(&["format", "--check", "--exclude", "child/", "."]);
+    assert_eq!(excluded_command.status, 1);
+    requested.overrides.selection.include = None;
+    requested.overrides.selection.exclude = Some(vec!["child/".into()]);
+    let excluded_report = format_report(&fixture, requested);
+    assert_eq!(excluded_report.counts.selected, 3);
+
+    assert!(!excluded_report.results.iter().any(|source| {
+        excluded_report
+            .snapshot
+            .origin(source.result.source.identity)
+            .and_then(|origin| origin.path())
+            == Some(fixture.path("child/input.luau").as_path())
+    }));
 }
 
 #[test]
@@ -717,7 +820,6 @@ fn inherited_settings_keep_command_overrides() {
 
     let overridden = fixture.run(&[
         "format",
-        "--json",
         "--check",
         "--indent-width",
         "6",
@@ -727,29 +829,30 @@ fn inherited_settings_keep_command_overrides() {
     ]);
 
     assert_eq!(overridden.status, 1);
-    let report = overridden.json();
-
-    validated(
-        &report["sources"][0],
-        "do\n      local text = 'child'\nend\n",
-    );
-
-    let settings = &report["settings"][0];
+    let mut requested = request(&fixture);
+    requested.invocation.inputs = vec![Input::Path(fixture.path("child/input.luau"))];
+    requested.overrides.formatting.indent_width = NonZeroUsize::new(6);
+    requested.overrides.formatting.quote_style = Some(QuoteStyle::Single);
+    let report = format_report(&fixture, requested);
+    validated(&report.results[0], "do\n      local text = 'child'\nend\n");
+    let settings = &report.settings[0];
+    assert_eq!(settings.source, report.results[0].result.source.identity);
 
     assert_eq!(
-        settings["source"],
-        report["sources"][0]["source"]["identity"]
+        settings.settings.formatting.indent_style,
+        IndentStyle::Spaces
     );
 
-    assert_eq!(settings["settings"]["formatting"]["indent_style"], "spaces");
-    assert_eq!(settings["settings"]["formatting"]["indent_width"], 6);
-    assert_eq!(settings["settings"]["checking"], "strict");
+    assert_eq!(settings.settings.formatting.indent_width.get(), 6);
+    assert!(matches!(settings.settings.checking, CheckingMode::Strict));
 
     assert!(
-        settings["settings"]["environment"]["globals"]
-            .as_array()
-            .expect("globals")
-            .contains(&json!("emit"))
+        settings
+            .settings
+            .environment
+            .globals
+            .iter()
+            .any(|name| name == "emit")
     );
 
     let explicit = fixture.run(&[
@@ -762,9 +865,12 @@ fn inherited_settings_keep_command_overrides() {
 
     assert_eq!(explicit.status, 0);
     assert_eq!(explicit.stdout, "do\n\tlocal text = 'child'\nend\n");
-    let rooted = fixture.run(&["format", "--json", "--check", "--project-root", "child"]);
+    let rooted = fixture.run(&["format", "--check", "--project-root", "child"]);
     assert_eq!(rooted.status, 1);
-    assert_eq!(rooted.json()["counts"]["selected"], 1);
+    let mut requested = request(&fixture);
+    requested.invocation.inputs.clear();
+    requested.invocation.project_root = Some(fixture.path("child"));
+    assert_eq!(format_report(&fixture, requested).counts.selected, 1);
     assert_eq!(fixture.bytes("instar.toml"), original);
 }
 
@@ -776,40 +882,56 @@ fn executable_configuration_is_evaluated_and_sandboxed() {
     assert_eq!(output.stdout, "do\n  local text = 'configured'\nend\n");
     let sandbox = Fixture::new("cli", "format/sandbox");
     let original = sandbox.bytes("input.luau");
-    let rejected = sandbox.run(&["format", "--json", "--check", "input.luau"]);
+    let rejected = sandbox.run(&["format", "--check", "input.luau"]);
     assert_eq!(rejected.status, 2);
-    let report = rejected.json();
+    assert!(rejected.stderr.contains("configuration"));
+    let project = sandbox.project();
+
+    let failure = complete(project.format(request(&sandbox), options()))
+        .expect_err("sandboxed configuration");
 
     assert!(
-        report["diagnostics"]
-            .as_array()
-            .expect("configuration diagnostics")
+        failure
+            .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic["category"] == "Configuration")
+            .any(|diagnostic| diagnostic.category == DiagnosticCategory::Configuration)
     );
+
+    complete(project.finish()).expect("project cleanup");
 
     assert!(!sandbox.path("escaped.luau").exists());
     assert_eq!(sandbox.bytes("input.luau"), original);
     let exhaustion = Fixture::new("cli", "format/exhaustion");
 
-    let timed = exhaustion.run(&[
-        "format",
-        "--json",
-        "--timeout",
-        "1",
-        "--check",
-        "input.luau",
-    ]);
+    let timed = exhaustion.run(&["format", "--timeout", "1", "--check", "input.luau"]);
 
     assert_eq!(timed.status, 4);
-    assert_eq!(timed.json()["completion"], "TimedOut");
 
     assert!(
-        timed
-            .json()
-            .get("sources")
-            .is_none_or(|sources| sources.as_array().is_some_and(Vec::is_empty))
+        timed.stderr.contains("TimedOut")
+            || timed.stderr.contains(&Completion::TimedOut.to_string()),
+        "{}",
+        timed.stderr
     );
+
+    assert_eq!(timed.stdout, "");
+    let project = exhaustion.project();
+    let mut execution = options();
+    execution.deadline = Some(Instant::now() + Duration::from_secs(1));
+
+    match complete(project.format(request(&exhaustion), execution)) {
+        Ok(report) => {
+            assert_eq!(report.completion, Completion::TimedOut);
+            assert!(report.results.is_empty());
+        }
+
+        Err(failure) => {
+            assert_eq!(failure.completion, Completion::TimedOut);
+            assert_eq!(failure.completed_sources, []);
+        }
+    }
+
+    complete(project.finish()).expect("project cleanup");
 
     assert_eq!(exhaustion.bytes("input.luau"), original);
 }
@@ -824,10 +946,9 @@ fn source_output_is_isolated_and_stdin_never_authorizes_context_writes() {
         &[
             "format",
             "--source",
-            "--json",
             "--verbose",
             "--output",
-            "report.json",
+            "report.txt",
             "--stdin-filepath",
             "input.luau",
             "-",
@@ -839,19 +960,30 @@ fn source_output_is_isolated_and_stdin_never_authorizes_context_writes() {
     assert!(output.stderr.contains("Command finished"));
     assert_eq!(output.stdout.as_bytes(), expected);
 
-    let report: Value =
-        serde_json::from_str(&fixture.read("report.json")).expect("destination report");
+    let destination = fixture.read("report.txt");
+    assert!(destination.contains("Formatting complete"));
+    assert!(destination.contains("completion Complete"));
+    let mut requested = request(&fixture);
+    requested.mode = FormatMode::Source;
 
-    validated(&report["sources"][0], &fixture.read("expected.luau"));
+    requested.invocation.inputs = vec![Input::Stdin {
+        text: Arc::from(fixture.read("input.luau")),
+        context: Some(fixture.path("input.luau")),
+    }];
 
-    assert!(
-        report["sources"][0]["path"]
-            .as_str()
-            .expect("context path")
-            .ends_with("input.luau")
+    let report = format_report(&fixture, requested);
+    let source = &report.results[0];
+    validated(source, &fixture.read("expected.luau"));
+
+    assert_eq!(
+        report
+            .snapshot
+            .origin(source.result.source.identity)
+            .and_then(|origin| origin.path()),
+        Some(fixture.path("input.luau").as_path())
     );
 
-    assert_eq!(report["sources"][0]["write"], "NotRequested");
+    assert!(matches!(source.write, WriteOutcome::NotRequested));
 
     let write = fixture.stdin(
         &["format", "--quiet", "--stdin-filepath", "input.luau", "-"],
@@ -878,7 +1010,6 @@ fn combined_stdin_and_disk_sources_keep_distinct_identities() {
     let output = fixture.stdin(
         &[
             "format",
-            "--json",
             "--check",
             "--stdin-filepath",
             "input.luau",
@@ -889,21 +1020,24 @@ fn combined_stdin_and_disk_sources_keep_distinct_identities() {
     );
 
     assert_eq!(output.status, 1);
-    let report = output.json();
-    assert_eq!(report["counts"]["selected"], 2);
-    assert_eq!(report["counts"]["changed"], 1);
-    assert_eq!(report["counts"]["unchanged"], 1);
+    let mut requested = request(&fixture);
 
-    let sources = report["sources"]
-        .as_array()
-        .expect("disk and stdin sources");
+    requested.invocation.inputs.push(Input::Stdin {
+        text: Arc::from(fixture.read("expected.luau")),
+        context: Some(fixture.path("input.luau")),
+    });
+
+    let report = format_report(&fixture, requested);
+    assert_eq!(report.counts.selected, 2);
+    assert_eq!(report.counts.changed, 1);
+    assert_eq!(report.counts.unchanged, 1);
 
     assert_ne!(
-        sources[0]["source"]["identity"],
-        sources[1]["source"]["identity"]
+        report.results[0].result.source.identity,
+        report.results[1].result.source.identity
     );
 
-    for source in sources {
+    for source in &report.results {
         validated(source, &fixture.read("expected.luau"));
     }
 
@@ -915,14 +1049,7 @@ fn report_destinations_cannot_replace_sources_or_stdin_context() {
     let fixture = Fixture::new("cli", "format/basic");
     let original = fixture.bytes("input.luau");
 
-    let disk = fixture.run(&[
-        "format",
-        "--json",
-        "--check",
-        "--output",
-        "input.luau",
-        "input.luau",
-    ]);
+    let disk = fixture.run(&["format", "--check", "--output", "input.luau", "input.luau"]);
 
     assert_eq!(disk.status, 2);
     assert_eq!(fixture.bytes("input.luau"), original);
@@ -930,8 +1057,7 @@ fn report_destinations_cannot_replace_sources_or_stdin_context() {
     let stdin = fixture.stdin(
         &[
             "format",
-            "--source",
-            "--json",
+            "--check",
             "--output",
             "input.luau",
             "--stdin-filepath",
@@ -952,52 +1078,16 @@ fn invalid_invocations_and_empty_selections_are_explicit() {
     let original = fixture.bytes("input.luau");
 
     for arguments in [
-        vec![
-            "format",
-            "--json",
-            "--check",
-            "--range",
-            "9:1",
-            "input.luau",
-        ],
-        vec![
-            "format",
-            "--json",
-            "--check",
-            "--range",
-            "0:9999",
-            "input.luau",
-        ],
-        vec![
-            "format",
-            "--json",
-            "--check",
-            "--on-type",
-            "1:ab",
-            "input.luau",
-        ],
-        vec!["format", "--json", "--check", "--width", "0", "input.luau"],
-        vec![
-            "format",
-            "--json",
-            "--check",
-            "--indent-width",
-            "0",
-            "input.luau",
-        ],
-        vec![
-            "format",
-            "--json",
-            "--check",
-            "--include",
-            "!*.luau",
-            "input.luau",
-        ],
+        vec!["format", "--check", "--range", "9:1", "input.luau"],
+        vec!["format", "--check", "--range", "0:9999", "input.luau"],
+        vec!["format", "--check", "--on-type", "1:ab", "input.luau"],
+        vec!["format", "--check", "--width", "0", "input.luau"],
+        vec!["format", "--check", "--indent-width", "0", "input.luau"],
+        vec!["format", "--check", "--include", "!*.luau", "input.luau"],
         vec!["format", "--source", "input.luau", "expected.luau"],
-        vec!["format", "--source", "--json", "input.luau"],
         vec!["format", "--source", "--check", "input.luau"],
         vec!["format", "--source", "--watch", "input.luau"],
-        vec!["format", "--json", "--check", "absent*.luau"],
+        vec!["format", "--check", "absent*.luau"],
         vec![
             "format",
             "--check",
@@ -1017,63 +1107,44 @@ fn invalid_invocations_and_empty_selections_are_explicit() {
         assert_eq!(fixture.bytes("input.luau"), original);
     }
 
-    let missing = fixture.run(&["format", "--json", "--check", "missing.luau"]);
+    let missing = fixture.run(&["format", "--check", "missing.luau"]);
     assert_ne!(missing.status, 0);
-    let missing_report = missing.json();
-    assert_eq!(missing_report["status"], missing.status);
-
-    assert_ne!(
-        missing_report["error"]
-            .as_str()
-            .expect("missing source failure"),
-        ""
-    );
-
-    assert_eq!(
-        missing_report["completed_sources"]
-            .as_array()
-            .expect("completed sources")
-            .as_slice(),
-        [] as [Value; 0]
-    );
+    assert_ne!(missing.stderr, "");
+    assert_eq!(missing.stdout, "");
+    let project = fixture.project();
+    let mut requested = request(&fixture);
+    requested.invocation.inputs = vec![Input::Path(fixture.path("missing.luau"))];
+    let failure = complete(project.format(requested, options())).expect_err("missing source");
+    assert_ne!(failure.message, "");
+    assert_eq!(failure.completed_sources, []);
+    complete(project.finish()).expect("project cleanup");
 
     let operational = fixture.run(&[
         "format",
-        "--json",
         "--check",
         "--output",
-        "absent/report.json",
+        "absent/report.txt",
         "input.luau",
     ]);
 
     assert_eq!(operational.status, 3);
-    assert_eq!(operational.json()["status"], 3);
-    assert_ne!(operational.json()["completion"], "Complete");
+    assert_ne!(operational.stderr, "");
+    assert!(!fixture.path("absent/report.txt").exists());
     assert_eq!(operational.stdout, "");
     assert_eq!(fixture.bytes("input.luau"), original);
-    let empty = Fixture::empty().run(&["format", "--json", "--check"]);
+    let empty = Fixture::empty().run(&["format", "--check"]);
     assert_eq!(empty.status, 2);
+    assert!(empty.stderr.contains("empty discovery"));
 
-    assert!(
-        empty.json()["error"]
-            .as_str()
-            .expect("empty target explanation")
-            .contains("empty discovery")
-    );
-
-    let excluded = fixture.run(&[
-        "format",
-        "--json",
-        "--check",
-        "--exclude",
-        "*.luau",
-        "input.luau",
-    ]);
+    let excluded = fixture.run(&["format", "--check", "--exclude", "*.luau", "input.luau"]);
 
     assert_eq!(excluded.status, 0);
-    assert_eq!(excluded.json()["counts"]["selected"], 0);
-    assert_eq!(excluded.json()["counts"]["excluded"], 1);
-    assert_eq!(excluded.json()["completion"], "Complete");
+    let mut requested = request(&fixture);
+    requested.overrides.selection.exclude = Some(vec!["*.luau".into()]);
+    let report = format_report(&fixture, requested);
+    assert_eq!(report.counts.selected, 0);
+    assert_eq!(report.counts.excluded, 1);
+    assert_eq!(report.completion, Completion::Complete);
 }
 
 #[test]
@@ -1084,25 +1155,12 @@ fn unsupported_encoding_and_utf8_range_boundaries_never_produce_output() {
     let position = text.find('é').expect("multibyte literal") + 1;
     let range = format!("{position}:{position}");
 
-    let boundary = fixture.run(&[
-        "format",
-        "--json",
-        "--check",
-        "--range",
-        &range,
-        "input.luau",
-    ]);
+    let boundary = fixture.run(&["format", "--check", "--range", &range, "input.luau"]);
 
     assert_eq!(boundary.status, 2);
     assert_eq!(boundary.stdout, "");
 
-    assert!(
-        boundary.json()["error"]
-            .as_str()
-            .expect("UTF-8 boundary error")
-            .to_ascii_lowercase()
-            .contains("utf-8")
-    );
+    assert!(boundary.stderr.to_ascii_lowercase().contains("utf-8"));
 
     assert_eq!(fixture.bytes("input.luau"), original);
 
@@ -1115,17 +1173,11 @@ fn unsupported_encoding_and_utf8_range_boundaries_never_produce_output() {
         ("invalid.luau", vec![b'l', 0xff, b'\n'], "invalid utf-8"),
     ] {
         fixture.write(name, &bytes);
-        let output = fixture.run(&["format", "--json", name]);
+        let output = fixture.run(&["format", name]);
         assert_eq!(output.status, 2);
         assert_eq!(output.stdout, "");
 
-        assert!(
-            output.json()["error"]
-                .as_str()
-                .expect("encoding error")
-                .to_ascii_lowercase()
-                .contains(detail)
-        );
+        assert!(output.stderr.to_ascii_lowercase().contains(detail));
 
         assert_eq!(fixture.bytes(name), bytes);
     }
@@ -1138,7 +1190,6 @@ fn selected_language_context_reports_unavailable_syntax() {
 
     let output = fixture.run(&[
         "format",
-        "--json",
         "--check",
         "--set",
         "language.declaration_syntax=false",
@@ -1146,20 +1197,24 @@ fn selected_language_context_reports_unavailable_syntax() {
     ]);
 
     assert_eq!(output.status, 4);
-    let report = output.json();
-    assert_ne!(report["completion"], "Complete");
-    assert_eq!(report["counts"]["unsuccessful"], 1);
-    assert_eq!(report["sources"][0]["outcome"]["state"], "unavailable");
-    assert!(report["sources"][0]["outcome"].get("output").is_none());
+    let mut requested = request(&fixture);
+    requested.overrides.language.declaration_syntax = Some(false);
+    let report = format_report(&fixture, requested);
+    assert_ne!(report.completion, Completion::Complete);
+    assert_eq!(report.counts.unsuccessful, 1);
 
-    let diagnostic = report["diagnostics"]
-        .as_array()
-        .expect("syntax diagnostics")
+    assert!(matches!(
+        report.results[0].result.outcome,
+        FormatOutcome::Unavailable { .. }
+    ));
+
+    let diagnostic = report
+        .diagnostics
         .iter()
-        .find(|diagnostic| diagnostic["code"] == "syntax.declaration")
+        .find(|diagnostic| diagnostic.code == "syntax.declaration")
         .expect("disabled declaration diagnostic");
 
-    assert_eq!(diagnostic["source"], report["sources"][0]["source"]);
+    assert_eq!(diagnostic.primary.source, report.results[0].result.source);
     assert_eq!(fixture.bytes("input.luau"), original);
 }
 
@@ -1195,7 +1250,6 @@ fn human_quiet_color_and_streaming_reports_retain_findings() {
 
     let streamed = fixture.run(&[
         "format",
-        "--json",
         "--streaming",
         "--check",
         "input.luau",
@@ -1204,23 +1258,60 @@ fn human_quiet_color_and_streaming_reports_retain_findings() {
 
     assert_eq!(streamed.status, 1);
 
-    let records = streamed
-        .stdout
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).expect("stream record"))
-        .collect::<Vec<_>>();
+    assert_eq!(streamed.stdout, "");
+    assert!(streamed.stderr.contains("Would reformat"));
+    assert!(streamed.stderr.contains("2 files"));
+    assert!(streamed.stderr.contains("completion Complete"));
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&events);
+    let mut execution = options();
 
-    let terminal = records.last().expect("terminal report");
-    assert_eq!(terminal["event"], "report");
-    assert_eq!(terminal["report"]["completion"], "Complete");
-    assert_eq!(terminal["report"]["counts"]["selected"], 2);
+    execution.observer = Some(Arc::new(move |event| {
+        observed.lock().expect("streaming events").push(event);
+    }));
 
-    for source in terminal["report"]["sources"].as_array().expect("sources") {
-        assert!(records[..records.len() - 1].iter().any(|record| {
-            record["event"]["payload"]["SourceOutcome"]["source"] == source["source"]
-                && record["event"]["payload"]["SourceOutcome"]["completion"] == "Complete"
-        }));
+    let project = fixture.project();
+    let mut requested = request(&fixture);
+
+    requested
+        .invocation
+        .inputs
+        .push(Input::Path(fixture.path("expected.luau")));
+
+    let report = complete(project.format(requested, execution)).expect("streaming source outcomes");
+    assert_eq!(report.completion, Completion::Complete);
+    assert_eq!(report.counts.selected, 2);
+    let events = events.lock().expect("source events");
+
+    for source in &report.results {
+        assert!(events.iter().any(|event| matches!(&event.payload,
+            EventPayload::SourceOutcome(outcome) if outcome.source == source.result.source
+                && outcome.completion == Completion::Complete)));
     }
+
+    drop(events);
+    complete(project.finish()).expect("project cleanup");
+
+    let streamed = malformed.run(&[
+        "format",
+        "--streaming",
+        "--check",
+        "--color",
+        "never",
+        "input.luau",
+    ]);
+
+    assert_eq!(streamed.status, 5);
+    assert_eq!(streamed.stdout, "");
+    let terminal = malformed.run(&["format", "--check", "--color", "never", "input.luau"]);
+    assert_eq!(terminal.status, 5);
+
+    assert_eq!(
+        streamed.stderr.matches("syntax.parse").count(),
+        terminal.stderr.matches("syntax.parse").count()
+    );
+
+    assert!(streamed.stderr.contains("syntax.parse"));
 }
 
 #[test]
@@ -1766,9 +1857,8 @@ fn combined_stdin_writes_only_the_authorized_disk_source() {
     let output = fixture.stdin(
         &[
             "format",
-            "--json",
             "--output",
-            "report.json",
+            "report.txt",
             "--stdin-filepath",
             "input.luau",
             "-",
@@ -1780,41 +1870,52 @@ fn combined_stdin_writes_only_the_authorized_disk_source() {
     assert_eq!(output.status, 0);
     assert_eq!(output.stdout.as_bytes(), expected);
 
-    let report: Value =
-        serde_json::from_str(&fixture.read("report.json")).expect("combined report");
+    let destination = fixture.read("report.txt");
+    assert!(destination.contains("Formatting complete"));
+    assert!(destination.contains("2 files"));
+    assert!(destination.contains("1 written"));
+    let typed = Fixture::new("cli", "format/basic");
+    let mut requested = request(&typed);
+    requested.mode = FormatMode::Write;
 
-    assert_eq!(report["completion"], "Complete");
-    assert_eq!(report["counts"]["selected"], 2);
-    assert_eq!(report["counts"]["written"], 1);
+    requested.invocation.inputs.push(Input::Stdin {
+        text: Arc::from(original),
+        context: Some(typed.path("input.luau")),
+    });
 
-    let sources = report["sources"]
-        .as_array()
-        .expect("stdin and disk outcomes");
+    let report = format_report(&typed, requested);
+    assert_eq!(report.completion, Completion::Complete);
+    assert_eq!(report.counts.selected, 2);
+    assert_eq!(report.counts.written, 1);
 
     assert_eq!(
-        sources
+        report
+            .results
             .iter()
-            .filter(|source| source["write"] == "NotRequested")
+            .filter(|source| matches!(source.write, WriteOutcome::NotRequested))
             .count(),
         1
     );
 
     assert_eq!(
-        sources
+        report
+            .results
             .iter()
-            .filter(|source| source["write"].get("Written").is_some())
+            .filter(|source| matches!(source.write, WriteOutcome::Written { .. }))
             .count(),
         1
     );
 
     assert_ne!(
-        sources[0]["source"]["identity"],
-        sources[1]["source"]["identity"]
+        report.results[0].result.source.identity,
+        report.results[1].result.source.identity
     );
 
-    for source in sources {
-        validated(source, &fixture.read("expected.luau"));
+    for source in &report.results {
+        validated(source, &typed.read("expected.luau"));
     }
+
+    assert_eq!(typed.bytes("input.luau"), expected);
 
     assert_eq!(fixture.bytes("input.luau"), expected);
     assert_eq!(fixture.bytes("expected.luau"), expected);
@@ -1910,7 +2011,6 @@ fn shared_typed_project_preserves_source_and_is_idempotent() {
 
     let output = fixture.run(&[
         "format",
-        "--json",
         "--check",
         "--indentation",
         "spaces",
@@ -1922,24 +2022,28 @@ fn shared_typed_project_preserves_source_and_is_idempotent() {
     ]);
 
     assert_eq!(output.status, 1, "{}", output.stderr);
-    let report = output.json();
-    assert_eq!(report["completion"], "Complete");
-    assert_eq!(report["counts"]["selected"], 3);
-    assert_eq!(report["counts"]["unchanged"], 0);
-    assert_eq!(report["counts"]["changed"], 3);
-    assert_eq!(report["counts"]["written"], 0);
-    assert_eq!(report["counts"]["dependencies"], 0);
+    let mut requested = request(&fixture);
+    requested.invocation.inputs = names.map(|name| Input::Path(fixture.path(name))).into();
+    requested.overrides.formatting.indent_style = Some(IndentStyle::Spaces);
+    requested.overrides.formatting.indent_width = NonZeroUsize::new(4);
+    let report = format_report(&fixture, requested);
+    assert_eq!(report.completion, Completion::Complete);
+    assert_eq!(report.counts.selected, 3);
+    assert_eq!(report.counts.unchanged, 0);
+    assert_eq!(report.counts.changed, 3);
+    assert_eq!(report.counts.written, 0);
+    assert_eq!(report.counts.dependencies, 0);
 
     for (name, original) in names.into_iter().zip(originals) {
-        let source = report["sources"]
-            .as_array()
-            .expect("typed project sources")
+        let source = report
+            .results
             .iter()
             .find(|source| {
-                source["path"]
-                    .as_str()
-                    .expect("source path")
-                    .ends_with(name)
+                report
+                    .snapshot
+                    .origin(source.result.source.identity)
+                    .and_then(|origin| origin.path())
+                    == Some(fixture.path(name).as_path())
             })
             .expect("selected typed source");
 

@@ -1,48 +1,43 @@
 ---
 source: crates/cli/tests/contracts/support/snapshots.rs
-assertion_line: 17
 ---
 {
   "findings": [
     {
-      "diagnostic": {
-        "category": "Type",
+      "category": "Type",
+      "code": "1000",
+      "identity": {
         "code": "1000",
-        "identity": {
-          "code": "1000",
-          "inputs": [
-            {},
-            {}
-          ],
-          "location": {
-            "source": {},
-            "span": {
-              "end": 34,
-              "start": 32
-            }
-          },
-          "producer": "luau"
-        },
-        "message": "Expected this to be 'string', but got 'number'",
-        "path": "$ROOT/probe.luau",
-        "range": [
-          32,
-          34
+        "inputs": [
+          {},
+          {}
         ],
-        "related": [],
-        "severity": "error",
-        "source": {},
-        "tags": []
+        "location": {
+          "source": {},
+          "span": {
+            "end": 34,
+            "start": 32
+          }
+        },
+        "producer": "luau"
       },
-      "event": "diagnostic",
-      "invocation": 1,
-      "iteration": 0,
-      "operation": 1
+      "message": "Expected this to be 'string', but got 'number'",
+      "primary": {
+        "source": {},
+        "span": {
+          "end": 34,
+          "start": 32
+        }
+      },
+      "related": [],
+      "severity": "Error",
+      "tags": []
     }
   ],
   "terminal": {
     "completion": "Complete",
-    "diagnostics": [
+    "failed": true,
+    "findings": [
       {
         "category": "Type",
         "code": "1000",
@@ -62,17 +57,17 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "Expected this to be 'string', but got 'number'",
-        "path": "$ROOT/probe.luau",
-        "range": [
-          32,
-          34
-        ],
+        "primary": {
+          "source": {},
+          "span": {
+            "end": 34,
+            "start": 32
+          }
+        },
         "related": [],
-        "severity": "error",
-        "source": {},
+        "severity": "Error",
         "tags": []
       }
-    ],
-    "status": 1
+    ]
   }
 }

@@ -1,21 +1,23 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
+    slice::from_ref,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
-use instar_lint::RuleIdentity;
+use instar_lint::{Preset, RuleConfiguration, RuleIdentity, RuleSettings};
 
 use instar_project::{
-    ApplyRequest, FixMode, Input, Invocation, LintOverrides, LintPatch, LintRequest, Project,
-    WatchCommandReport, WatchOperation, WatchRequest, WriteAuthorization, WriteOutcome,
+    ApplyRequest, DiagnosticPolicy, FixMode, Input, Invocation, LintOverrides, LintPatch,
+    LintReport, LintRequest, Project, WatchCommandReport, WatchOperation, WatchRequest,
+    WriteAuthorization, WriteOutcome,
 };
 
-use instar_shared::{Completion, EventPayload, Options};
-use serde_json::{Value, json};
+use instar_shared::{Completion, DiagnosticCategory, EventPayload, Options, Severity};
+use serde_json::json;
 
-use super::support::{Fixture, complete, diagnostic, options, snapshot};
+use super::support::{Fixture, attributed, complete, diagnostic, options, snapshot};
 
 #[test]
 fn retained_pairs_preserve_inventory_ranges_and_negative_cases() {
@@ -56,45 +58,79 @@ fn retained_pairs_preserve_inventory_ranges_and_negative_cases() {
 
     for (scenario, rule, range) in cases {
         let fixture = Fixture::new("lint", scenario);
-        let mut arguments = vec!["lint", "positive.luau", "--json", "--rule", rule];
 
-        if scenario == "deprecation" {
-            arguments.extend([
-                "--set",
+        let setting = match scenario {
+            "deprecation" => Some(
                 r#"linting.rules.deprecated={"enabled":true,"severity":"Warning","settings":{"rule":"deprecated","parameters":{"paths":{"old.api":"new.api"}}}}"#,
-            ]);
-        }
+            ),
 
-        if scenario == "restrictions" {
-            arguments.extend([
-                "--set",
+            "restrictions" => Some(
                 r#"linting.rules.restricted_globals={"enabled":true,"severity":"Warning","settings":{"rule":"restricted_globals","parameters":{"names":{"print":"use logging"}}}}"#,
-            ]);
+            ),
+
+            _ => None,
+        };
+
+        let mut arguments = vec!["lint", "positive.luau", "--rule", rule];
+        let mut request = prepare(&fixture, &["positive.luau"], &[rule]);
+
+        if let Some(setting) = setting {
+            arguments.extend(["--set", setting]);
+
+            request.overrides.linting.rules = Some(BTreeMap::from([(
+                RuleIdentity::named(rule).expect("known rule"),
+                serde_json::from_str(setting.split_once('=').expect("setting value").1)
+                    .expect("typed rule configuration"),
+            )]));
         }
 
+        let report = lint(&fixture, request);
         let original = fixture.bytes("positive.luau");
         let output = fixture.run(&arguments);
         assert_eq!(output.status, 0, "{scenario}: {}", output.stderr);
-        let report = output.json();
-        assert_eq!(report["completion"], "Complete", "{scenario}: {report}");
-        let finding = diagnostic(&report, rule, "positive.luau", range);
-        assert_eq!(finding["severity"], "warning");
-        assert_eq!(finding["category"], "Lint");
 
-        let count = report["diagnostics"]
-            .as_array()
-            .expect("diagnostic array")
+        assert_eq!(
+            output.stderr.matches(&format!("warning[{rule}]")).count(),
+            1,
+            "{scenario}: {}",
+            output.stderr
+        );
+
+        assert_eq!(
+            report.completion,
+            Completion::Complete,
+            "{scenario}: {report:?}"
+        );
+
+        let diagnostic = diagnostic(
+            &report.final_findings,
+            &report.snapshot,
+            rule,
+            "positive.luau",
+            range,
+        );
+
+        assert_eq!(diagnostic.severity, Severity::Warning);
+        assert_eq!(diagnostic.category, DiagnosticCategory::Lint);
+
+        let count = report
+            .final_findings
             .iter()
-            .filter(|finding| finding["code"] == rule)
+            .filter(|finding| finding.code == rule)
             .count();
 
         assert_eq!(count, 1, "negative case must not diagnose: {scenario}");
         assert_eq!(fixture.bytes("positive.luau"), original);
 
         if scenario == "arguments" || scenario == "escapes" || scenario == "invariance" {
-            let negative = fixture.run(&["lint", "negative.luau", "--json", "--rule", rule]);
+            let negative = fixture.run(&["lint", "negative.luau", "--rule", rule]);
             assert_eq!(negative.status, 0, "{scenario}: {}", negative.stderr);
-            assert_eq!(negative.json()["diagnostics"], json!([]));
+            assert!(!negative.stderr.contains(&format!("warning[{rule}]")));
+
+            assert_eq!(
+                lint(&fixture, prepare(&fixture, &["negative.luau"], &[rule])).final_findings,
+                []
+            );
         }
     }
 }
@@ -149,22 +185,36 @@ fn native_warning_programs_have_attributed_positive_and_negative_findings() {
             _ => text.len(),
         };
 
-        let output = fixture.run(&["lint", "positive.luau", "--json", "--rule", rule]);
-        assert_eq!(output.status, 0, "{rule}: {}", output.stderr);
-        let report = output.json();
-        assert_eq!(report["completion"], "Complete", "{rule}: {report}");
-        let finding = diagnostic(&report, rule, "positive.luau", [start, start + length]);
-        assert_eq!(finding["severity"], "warning");
-        assert_eq!(finding["category"], "Lint");
-        assert_ne!(finding["message"].as_str().expect("explanation"), "");
-        let negative = fixture.run(&["lint", "negative.luau", "--json", "--rule", rule]);
-        assert_eq!(negative.status, 0, "{rule}: {}", negative.stderr);
-        assert_eq!(negative.json()["diagnostics"], json!([]), "{rule}");
+        let request = prepare(&fixture, &["positive.luau"], &[rule]);
+        let report = lint(&fixture, request);
+        assert!(!report.failed, "{rule}: {report:?}");
+
+        assert_eq!(
+            report.completion,
+            Completion::Complete,
+            "{rule}: {report:?}"
+        );
+
+        let finding = diagnostic(
+            &report.final_findings,
+            &report.snapshot,
+            rule,
+            "positive.luau",
+            [start, start + length],
+        );
+
+        assert_eq!(finding.severity, Severity::Warning);
+        assert_eq!(finding.category, DiagnosticCategory::Lint);
+        assert_ne!(finding.message, "");
+        let request = prepare(&fixture, &["negative.luau"], &[rule]);
+        let negative_report = lint(&fixture, request);
+        assert!(!negative_report.failed, "{rule}: {negative_report:?}");
+        assert_eq!(negative_report.final_findings, [], "{rule}");
 
         reports.push(fixture.normalize(&json!({
-            "rule": rule, "diagnostics": report["diagnostics"], "sources": report["sources"],
-            "availability": report["availability"], "counts": report["counts"],
-            "completion": report["completion"], "status": report["status"],
+            "rule": rule, "findings": attributed(&report.final_findings, &report.snapshot), "sources": report.sources,
+            "availability": report.availability, "counts": report.counts,
+            "completion": report.completion,
         })));
     }
 
@@ -182,18 +232,20 @@ fn native_warning_programs_have_attributed_positive_and_negative_findings() {
             "attribute.luau",
         ),
     ] {
-        let output = fixture.run(&["lint", name, "--json", "--rule", rule]);
-        assert_eq!(output.status, 0, "{}", output.stderr);
-        let report = output.json();
-        diagnostic(&report, rule, name, range);
-        let negative = fixture.run(&["lint", clean, "--json", "--rule", rule]);
-        assert_eq!(negative.status, 0, "{}", negative.stderr);
-        assert_eq!(negative.json()["diagnostics"], json!([]));
+        let request = prepare(&fixture, &[name], &[rule]);
+        let report = lint(&fixture, request);
+        assert!(!report.failed, "{report:?}");
+
+        diagnostic(&report.final_findings, &report.snapshot, rule, name, range);
+        let request = prepare(&fixture, &[clean], &[rule]);
+        let negative_report = lint(&fixture, request);
+        assert!(!negative_report.failed, "{negative_report:?}");
+        assert_eq!(negative_report.final_findings, []);
 
         reports.push(fixture.normalize(&json!({
-            "rule": rule, "diagnostics": report["diagnostics"], "sources": report["sources"],
-            "availability": report["availability"], "counts": report["counts"],
-            "completion": report["completion"], "status": report["status"],
+            "rule": rule, "findings": attributed(&report.final_findings, &report.snapshot), "sources": report.sources,
+            "availability": report.availability, "counts": report.counts,
+            "completion": report.completion,
         })));
     }
 
@@ -209,19 +261,18 @@ fn resolved_signatures_obey_required_optional_method_and_variadic_parameters() {
     for mode in ["strict", "nonstrict", "nocheck"] {
         fixture.write(".luaurc", json!({"languageMode": mode}).to_string());
 
-        let output = fixture.run(&[
-            "lint",
-            "calls.luau",
-            "--json",
-            "--rule",
-            "mismatched_argument_count",
-            "--exclude",
-            "module.luau",
-        ]);
+        let mut request = prepare(&fixture, &["calls.luau"], &["mismatched_argument_count"]);
+        request.overrides.selection.exclude = Some(vec!["module.luau".to_owned()]);
 
-        assert_eq!(output.status, 0, "{mode}: {}", output.stderr);
-        let report = output.json();
-        assert_eq!(report["completion"], "Complete", "{mode}: {report}");
+        let report = lint(&fixture, request);
+
+        assert!(!report.failed, "{mode}: {report:?}");
+
+        assert_eq!(
+            report.completion,
+            Completion::Complete,
+            "{mode}: {report:?}"
+        );
 
         for call in [
             "required(1)",
@@ -233,41 +284,36 @@ fn resolved_signatures_obey_required_optional_method_and_variadic_parameters() {
             let start = source.find(call).expect("literal call");
 
             diagnostic(
-                &report,
+                &report.final_findings,
+                &report.snapshot,
                 "mismatched_argument_count",
                 "calls.luau",
                 [start, start + call.len()],
             );
         }
 
-        assert_eq!(report["diagnostics"].as_array().expect("findings").len(), 5);
-        assert_eq!(report["counts"]["selected"], 1);
-        assert_eq!(report["counts"]["dependencies"], 1);
+        assert_eq!(report.final_findings.len(), 5);
+        assert_eq!(report.counts.selected, 1);
+        assert_eq!(report.counts.dependencies, 1);
 
         assert!(
-            report["diagnostics"]
-                .as_array()
-                .expect("findings")
+            report
+                .final_findings
                 .iter()
-                .all(|finding| finding["category"] != "Type")
+                .all(|finding| finding.category != DiagnosticCategory::Type)
         );
 
-        let valid = fixture.run(&[
-            "lint",
-            "valid.luau",
-            "--json",
-            "--rule",
-            "mismatched_argument_count",
-        ]);
+        let request = prepare(&fixture, &["valid.luau"], &["mismatched_argument_count"]);
+        let valid_report = lint(&fixture, request);
 
-        assert_eq!(valid.status, 0, "{mode}: {}", valid.stderr);
-        assert_eq!(valid.json()["completion"], "Complete");
-        assert_eq!(valid.json()["diagnostics"], json!([]));
+        assert!(!valid_report.failed, "{mode}: {valid_report:?}");
+        assert_eq!(valid_report.completion, Completion::Complete);
+        assert_eq!(valid_report.final_findings, []);
 
         reports.push(fixture.normalize(&json!({
-            "mode": mode, "diagnostics": report["diagnostics"], "sources": report["sources"],
-            "availability": report["availability"], "counts": report["counts"],
-            "completion": report["completion"], "status": report["status"],
+            "mode": mode, "findings": report.final_findings, "sources": report.sources,
+            "availability": report.availability, "counts": report.counts,
+            "completion": report.completion,
         })));
     }
 
@@ -284,63 +330,69 @@ fn declarations_inference_and_type_functions_survive_source_type_errors() {
     for mode in ["strict", "nonstrict", "nocheck"] {
         fixture.write(".luaurc", json!({"languageMode": mode}).to_string());
 
-        let output = fixture.run(&[
-            "lint",
-            "globals.luau",
-            "--json",
-            "--rule",
-            "implicit_any_local",
-            "--rule",
-            "implicit_any_parameter",
-        ]);
+        let request = prepare(
+            &fixture,
+            &["globals.luau"],
+            &["implicit_any_local", "implicit_any_parameter"],
+        );
 
-        assert_eq!(output.status, 0, "{mode}: {}", output.stderr);
-        let report = output.json();
-        assert_eq!(report["completion"], "Complete", "{mode}: {report}");
+        let report = lint(&fixture, request);
+
+        assert!(!report.failed, "{mode}: {report:?}");
+
+        assert_eq!(
+            report.completion,
+            Completion::Complete,
+            "{mode}: {report:?}"
+        );
 
         for (rule, text) in [
             ("implicit_any_local", "inferred"),
             ("implicit_any_parameter", "parameter"),
         ] {
             let start = source.find(text).expect("literal binding");
-            diagnostic(&report, rule, "globals.luau", [start, start + text.len()]);
+
+            diagnostic(
+                &report.final_findings,
+                &report.snapshot,
+                rule,
+                "globals.luau",
+                [start, start + text.len()],
+            );
         }
 
-        assert_eq!(report["diagnostics"].as_array().expect("findings").len(), 2);
+        assert_eq!(report.final_findings.len(), 2);
 
         reports.push(fixture.normalize(&json!({
-            "mode": mode, "diagnostics": report["diagnostics"], "sources": report["sources"],
-            "availability": report["availability"], "counts": report["counts"],
-            "completion": report["completion"], "status": report["status"],
+            "mode": mode, "findings": report.final_findings, "sources": report.sources,
+            "availability": report.availability, "counts": report.counts,
+            "completion": report.completion,
         })));
     }
 
-    let output = fixture.run(&[
-        "lint",
-        "function.luau",
-        "--json",
-        "--rule",
-        "mismatched_argument_count",
-    ]);
+    let request = prepare(&fixture, &["function.luau"], &["mismatched_argument_count"]);
 
-    assert_eq!(output.status, 0, "{}", output.stderr);
-    let report = output.json();
+    let report = lint(&fixture, request);
+
+    assert!(!report.failed, "{report:?}");
+
     let source = fixture.read("function.luau");
     let start = source.find("consume()").expect("typed call");
 
     diagnostic(
-        &report,
+        &report.final_findings,
+        &report.snapshot,
         "mismatched_argument_count",
         "function.luau",
         [start, start + "consume()".len()],
     );
 
-    assert_eq!(report["completion"], "Complete");
+    assert_eq!(report.completion, Completion::Complete);
 
     reports.push(fixture.normalize(&json!({
-        "case": "functions", "diagnostics": report["diagnostics"], "sources": report["sources"],
-        "availability": report["availability"], "counts": report["counts"],
-        "completion": report["completion"], "status": report["status"],
+        "case": "functions", "findings": report.final_findings, "sources": report.sources,
+        "availability": report.availability, "counts": report.counts,
+        "completion": report.completion,
     })));
 
     snapshot(&fixture, "lint", "inference", &json!(reports));
@@ -350,84 +402,81 @@ fn declarations_inference_and_type_functions_survive_source_type_errors() {
 fn recovery_and_missing_prerequisites_retain_useful_findings() {
     let fixture = Fixture::new("cli", "lint");
 
-    let output = fixture.run(&[
-        "lint",
-        "recovered.luau",
-        "--json",
-        "--rule",
-        "divide_by_zero",
-    ]);
+    let request = prepare(&fixture, &["recovered.luau"], &["divide_by_zero"]);
+    let output = fixture.run(&["lint", "recovered.luau", "--rule", "divide_by_zero"]);
+    let report = lint(&fixture, request);
 
     assert_ne!(output.status, 0);
-    let report = output.json();
-    diagnostic(&report, "divide_by_zero", "recovered.luau", [19, 20]);
+
+    diagnostic(
+        &report.final_findings,
+        &report.snapshot,
+        "divide_by_zero",
+        "recovered.luau",
+        [19, 20],
+    );
 
     assert!(
-        report["diagnostics"]
-            .as_array()
-            .expect("findings")
+        report
+            .final_findings
             .iter()
-            .any(|finding| finding["category"] == "Syntax")
+            .any(|finding| finding.category == DiagnosticCategory::Syntax)
     );
 
     assert!(fixture.read("recovered.luau").contains("local ="));
 
     fixture.write("instar.toml", "[linting]\npresets = ['none']\n[[environment.groups]]\nnamespace = '@broken'\ndefinitions = ['invalid.luau']\n");
 
+    let request = prepare(
+        &fixture,
+        &["globals.luau"],
+        &["implicit_any_local", "divide_by_zero"],
+    );
+
     let output = fixture.run(&[
         "lint",
         "globals.luau",
-        "--json",
         "--rule",
         "implicit_any_local",
         "--rule",
         "divide_by_zero",
     ]);
 
+    let report = lint(&fixture, request);
+
     assert_ne!(output.status, 0);
-    let report = output.json();
-    assert_ne!(report["completion"], "Complete");
 
-    assert!(
-        report["diagnostics"]
-            .as_array()
-            .expect("findings")
-            .iter()
-            .any(|finding| finding["path"]
-                .as_str()
-                .is_some_and(|path| path.ends_with("invalid.luau")))
-    );
+    assert_ne!(report.completion, Completion::Complete);
 
-    assert_ne!(
-        report["availability"]
-            .as_array()
-            .expect("coverage")
-            .as_slice(),
-        [] as [Value; 0]
-    );
+    assert!(report.final_findings.iter().any(|finding| {
+        report
+            .snapshot
+            .origin(finding.primary.source.identity)
+            .and_then(|origin| origin.path())
+            .is_some_and(|path| path.ends_with("invalid.luau"))
+    }));
+
+    assert!(!report.availability.is_empty());
 }
 
 #[test]
 fn suppression_scopes_and_mistakes_have_precise_locations() {
     let fixture = Fixture::new("cli", "lint");
 
-    let output = fixture.run(&[
-        "lint",
-        "suppression.luau",
-        "--json",
-        "--rule",
-        "divide_by_zero",
-    ]);
+    let request = prepare(&fixture, &["suppression.luau"], &["divide_by_zero"]);
+    let output = fixture.run(&["lint", "suppression.luau", "--rule", "divide_by_zero"]);
+    let report = lint(&fixture, request);
 
     assert_eq!(output.status, 1, "{}", output.stderr);
-    let report = output.json();
+
     let source = fixture.read("suppression.luau");
 
     for expression in ["3 / 0", "4 / 0"] {
         let start = source.find(expression).expect("visible expression") + 4;
 
         diagnostic(
-            &report,
+            &report.final_findings,
+            &report.snapshot,
             "divide_by_zero",
             "suppression.luau",
             [start, start + 1],
@@ -446,27 +495,37 @@ fn suppression_scopes_and_mistakes_have_precise_locations() {
     ] {
         let start = source.find(directive).expect("directive input");
         let end = start + directive.lines().next().expect("comment").len();
-        let finding = diagnostic(&report, "lint.directive", "suppression.luau", [start, end]);
-        assert_eq!(finding["message"], message);
+
+        let finding = diagnostic(
+            &report.final_findings,
+            &report.snapshot,
+            "lint.directive",
+            "suppression.luau",
+            [start, end],
+        );
+
+        assert_eq!(finding.message, message);
     }
 
-    assert_eq!(report["diagnostics"].as_array().expect("findings").len(), 4);
-    let output = fixture.run(&["lint", "file.luau", "--json", "--rule", "divide_by_zero"]);
+    assert_eq!(report.final_findings.len(), 4);
+    let request = prepare(&fixture, &["file.luau"], &["divide_by_zero"]);
+    let output = fixture.run(&["lint", "file.luau", "--rule", "divide_by_zero"]);
+    let report = lint(&fixture, request);
     assert_eq!(output.status, 0, "{}", output.stderr);
-    assert_eq!(output.json()["diagnostics"], json!([]));
+    assert_eq!(report.final_findings, []);
 }
 
 #[test]
 fn rule_policy_presets_thresholds_and_filters_remain_independent() {
     let fixture = Fixture::new("lint", "bindings");
-    let disabled = fixture.run(&["lint", "positive.luau", "--json", "--preset", "none"]);
+    let disabled = fixture.run(&["lint", "positive.luau", "--preset", "none"]);
     assert_eq!(disabled.status, 0);
-    assert_eq!(disabled.json()["diagnostics"], json!([]));
+    assert!(!disabled.stderr.contains("warning[unused_variable]"));
 
-    for (severity, threshold, status) in [
-        ("Information", "information", 1),
-        ("Warning", "error", 0),
-        ("Error", "error", 1),
+    for (severity, threshold, label, status) in [
+        ("Information", "information", "note", 1),
+        ("Warning", "error", "warning", 0),
+        ("Error", "error", "error", 1),
     ] {
         let setting = format!(
             r#"linting.rules.unused_variable={{"enabled":true,"severity":"{severity}","settings":{{"rule":"unused_variable","parameters":{{}}}}}}"#
@@ -475,7 +534,6 @@ fn rule_policy_presets_thresholds_and_filters_remain_independent() {
         let output = fixture.run(&[
             "lint",
             "positive.luau",
-            "--json",
             "--rule",
             "unused_variable",
             "--set",
@@ -485,17 +543,8 @@ fn rule_policy_presets_thresholds_and_filters_remain_independent() {
         ]);
 
         assert_eq!(output.status, status, "{}", output.stderr);
-        let report = output.json();
-        let finding = diagnostic(&report, "unused_variable", "positive.luau", [9, 15]);
 
-        assert_eq!(
-            finding["severity"],
-            if severity == "Information" {
-                "info".to_owned()
-            } else {
-                severity.to_lowercase()
-            }
-        );
+        assert!(output.stderr.contains(&format!("{label}[unused_variable]")));
     }
 
     for filter in [
@@ -506,7 +555,6 @@ fn rule_policy_presets_thresholds_and_filters_remain_independent() {
         let output = fixture.run(&[
             "lint",
             "positive.luau",
-            "--json",
             "--rule",
             "unused_variable",
             "--warnings-as-errors",
@@ -520,16 +568,12 @@ fn rule_policy_presets_thresholds_and_filters_remain_independent() {
             output.stderr
         );
 
-        let report = output.json();
-        assert_eq!(report["diagnostics"], json!([]));
-        assert_eq!(report["failed"], true);
-        assert_eq!(report["completion"], "Complete");
+        assert!(!output.stderr.contains("warning[unused_variable]"));
     }
 
     let duplicate = fixture.run(&[
         "lint",
         "positive.luau",
-        "--json",
         "--rule",
         "unused_variable",
         "--rule",
@@ -537,14 +581,8 @@ fn rule_policy_presets_thresholds_and_filters_remain_independent() {
     ]);
 
     assert_eq!(duplicate.status, 0);
-
-    assert_eq!(
-        duplicate.json()["diagnostics"]
-            .as_array()
-            .expect("deduplicated findings")
-            .len(),
-        1
-    );
+    assert_eq!(duplicate.stderr.matches("warning[LocalUnused]").count(), 1);
+    assert!(!duplicate.stderr.contains("warning[unused_variable]"));
 
     let fixture = Fixture::new("lint", "shadowing");
     let setting = r#"linting.rules.unused_variable={"enabled":true,"severity":"Warning","settings":{"rule":"unused_variable","parameters":{"parameters":true,"loop_variables":true,"ignore_pattern":"^skip$"}}}"#;
@@ -552,7 +590,6 @@ fn rule_policy_presets_thresholds_and_filters_remain_independent() {
     let output = fixture.run(&[
         "lint",
         "input.luau",
-        "--json",
         "--rule",
         "unused_variable",
         "--set",
@@ -560,57 +597,175 @@ fn rule_policy_presets_thresholds_and_filters_remain_independent() {
     ]);
 
     assert_eq!(output.status, 0);
-    let report = output.json();
+    assert_eq!(output.stderr.matches("warning[unused_variable]").count(), 2);
+
+    let fixture = Fixture::new("lint", "constants");
+
+    for (name, expected) in [
+        ("none", 0),
+        ("correctness", 0),
+        ("recommended", 1),
+        ("all", 1),
+    ] {
+        let output = fixture.run(&["lint", "positive.luau", "--preset", name]);
+        assert_eq!(output.status, 0, "{name}: {}", output.stderr);
+
+        assert_eq!(
+            output.stderr.matches("warning[prefer_const]").count(),
+            expected,
+            "{name}: {}",
+            output.stderr
+        );
+    }
+
+    let setting = r#"linting.rules.prefer_const={"enabled":false,"severity":"Warning","settings":{"rule":"prefer_const","parameters":{}}}"#;
+    let disabled = fixture.run(&["lint", "positive.luau", "--preset", "all", "--set", setting]);
+    assert_eq!(disabled.status, 0);
+    assert!(!disabled.stderr.contains("warning[prefer_const]"));
+}
+
+#[test]
+fn typed_rule_policy_presets_thresholds_and_filters_remain_independent() {
+    let fixture = Fixture::new("lint", "bindings");
+    let mut disabled = prepare(&fixture, &["positive.luau"], &[]);
+    disabled.overrides.linting.presets = Some(vec![Preset::None]);
+    assert_eq!(lint(&fixture, disabled).final_findings, []);
+
+    for (severity, threshold, failed) in [
+        (Severity::Information, Severity::Information, true),
+        (Severity::Warning, Severity::Error, false),
+        (Severity::Error, Severity::Error, true),
+    ] {
+        let mut invocation = prepare(&fixture, &["positive.luau"], &["unused_variable"]);
+        let mut configuration = RuleConfiguration::new(RuleIdentity::UnusedVariable);
+        configuration.enabled = true;
+        configuration.severity = severity;
+
+        invocation.overrides.linting.rules = Some(BTreeMap::from([(
+            RuleIdentity::UnusedVariable,
+            configuration,
+        )]));
+
+        invocation.overrides.diagnostics.threshold = threshold;
+        let report = lint(&fixture, invocation);
+
+        assert_eq!(
+            diagnostic(
+                &report.final_findings,
+                &report.snapshot,
+                "unused_variable",
+                "positive.luau",
+                [9, 15]
+            )
+            .severity,
+            severity
+        );
+
+        assert_eq!(report.failed, failed);
+    }
+
+    for policy in [
+        DiagnosticPolicy {
+            codes: Some(BTreeSet::from(["must_use".to_owned()])),
+            ..DiagnosticPolicy::default()
+        },
+        DiagnosticPolicy {
+            categories: Some(BTreeSet::from([DiagnosticCategory::Syntax])),
+            ..DiagnosticPolicy::default()
+        },
+        DiagnosticPolicy {
+            severities: Some(BTreeSet::from([Severity::Error])),
+            ..DiagnosticPolicy::default()
+        },
+    ] {
+        let mut invocation = prepare(&fixture, &["positive.luau"], &["unused_variable"]);
+        invocation.overrides.diagnostics = policy;
+        invocation.overrides.diagnostics.warnings_as_errors = true;
+        let report = lint(&fixture, invocation);
+        assert_eq!(report.final_findings, []);
+        assert!(report.failed);
+        assert_eq!(report.completion, Completion::Complete);
+    }
+
+    let report = lint(
+        &fixture,
+        prepare(
+            &fixture,
+            &["positive.luau"],
+            &["unused_variable", "LocalUnused"],
+        ),
+    );
+
+    assert_eq!(report.final_findings.len(), 1);
+    let fixture = Fixture::new("lint", "shadowing");
+    let mut invocation = prepare(&fixture, &["input.luau"], &["unused_variable"]);
+    let mut configuration = RuleConfiguration::new(RuleIdentity::UnusedVariable);
+
+    let RuleSettings::UnusedVariable(parameters) = &mut configuration.settings else {
+        panic!("unused binding parameters");
+    };
+
+    parameters.parameters = true;
+    parameters.loop_variables = true;
+    parameters.ignore_pattern = "^skip$".to_owned();
+
+    invocation.overrides.linting.rules = Some(BTreeMap::from([(
+        RuleIdentity::UnusedVariable,
+        configuration,
+    )]));
+
+    let report = lint(&fixture, invocation);
     let source = fixture.read("input.luau");
 
     for text in ["value", "kept"] {
         let start = source.find(text).expect("unread declaration");
 
         diagnostic(
-            &report,
+            &report.final_findings,
+            &report.snapshot,
             "unused_variable",
             "input.luau",
             [start, start + text.len()],
         );
     }
 
-    assert_eq!(report["diagnostics"].as_array().expect("findings").len(), 2);
-
+    assert_eq!(report.final_findings.len(), 2);
     let fixture = Fixture::new("lint", "constants");
 
     for (preset, expected) in [
-        ("none", 0),
-        ("correctness", 0),
-        ("recommended", 1),
-        ("all", 1),
+        (Preset::None, 0),
+        (Preset::Correctness, 0),
+        (Preset::Recommended, 1),
+        (Preset::All, 1),
     ] {
-        let output = fixture.run(&["lint", "positive.luau", "--json", "--preset", preset]);
-        assert_eq!(output.status, 0, "{preset}: {}", output.stderr);
-        let report = output.json();
+        let mut invocation = prepare(&fixture, &["positive.luau"], &[]);
+        invocation.overrides.linting.presets = Some(vec![preset]);
+        let report = lint(&fixture, invocation);
 
-        let count = report["diagnostics"]
-            .as_array()
-            .expect("preset findings")
-            .iter()
-            .filter(|finding| finding["code"] == "prefer_const")
-            .count();
-
-        assert_eq!(count, expected, "{preset}");
+        assert_eq!(
+            report
+                .final_findings
+                .iter()
+                .filter(|finding| finding.code == "prefer_const")
+                .count(),
+            expected,
+            "{preset:?}"
+        );
     }
 
-    let disabled = fixture.run(&[
-        "lint", "positive.luau", "--json", "--preset", "all", "--set",
-        r#"linting.rules.prefer_const={"enabled":false,"severity":"Warning","settings":{"rule":"prefer_const","parameters":{}}}"#,
-    ]);
+    let mut invocation = prepare(&fixture, &["positive.luau"], &[]);
+    invocation.overrides.linting.presets = Some(vec![Preset::All]);
+    let mut configuration = RuleConfiguration::new(RuleIdentity::PreferConst);
+    configuration.enabled = false;
 
-    assert_eq!(disabled.status, 0);
+    invocation.overrides.linting.rules =
+        Some(BTreeMap::from([(RuleIdentity::PreferConst, configuration)]));
 
     assert!(
-        disabled.json()["diagnostics"]
-            .as_array()
-            .expect("findings")
+        lint(&fixture, invocation)
+            .final_findings
             .iter()
-            .all(|finding| finding["code"] != "prefer_const")
+            .all(|finding| finding.code != "prefer_const")
     );
 }
 
@@ -628,7 +783,6 @@ fn explicit_preview_write_and_scoped_fixes_use_final_source_outcomes() {
     let arguments = [
         "lint",
         "fixing.luau",
-        "--json",
         "--rule",
         "self_assignment",
         "--rule",
@@ -636,38 +790,39 @@ fn explicit_preview_write_and_scoped_fixes_use_final_source_outcomes() {
         "--warnings-as-errors",
     ];
 
+    let mut invocation = prepare(
+        &fixture,
+        &["fixing.luau"],
+        &["self_assignment", "parenthesized_conditions"],
+    );
+
+    invocation.overrides.diagnostics.warnings_as_errors = true;
+    let report = lint(&fixture, invocation.clone());
     let analysis = fixture.run(&arguments);
     assert_eq!(analysis.status, 1);
     assert_eq!(fixture.bytes("fixing.luau"), original);
+    assert_eq!(report.fixes.len(), 2);
+    assert!(report.writes.is_empty());
 
-    assert_eq!(
-        analysis.json()["fixes"]
-            .as_array()
-            .expect("suggested fixes")
-            .len(),
-        2
-    );
-
-    assert_eq!(analysis.json()["writes"], json!([]));
     let mut preview_arguments = arguments.to_vec();
     preview_arguments.push("--fix-preview");
+    invocation.fixes = FixMode::Preview;
+    let report = lint(&fixture, invocation.clone());
     let preview = fixture.run(&preview_arguments);
     assert_eq!(preview.status, 1, "{}", preview.stderr);
-    let report = preview.json();
-    assert_eq!(report["completion"], "Complete");
+    assert_eq!(report.completion, Completion::Complete);
     assert_eq!(fixture.bytes("fixing.luau"), original);
+    assert_eq!(report.proposals.len(), 1);
+    assert_ne!(report.previews[0], "");
+    assert!(preview.stderr.contains("---"));
+    assert!(preview.stderr.contains("+++"));
 
-    assert_eq!(
-        report["proposals"]
-            .as_array()
-            .expect("validated proposal")
-            .len(),
-        1
-    );
-
-    assert_ne!(report["previews"][0].as_str().expect("patch"), "");
     let mut write_arguments = arguments.to_vec();
     write_arguments.extend(["--fix", "--fix-rule", "self_assignment"]);
+    invocation.fixes = FixMode::Write;
+    invocation.fix_rules = Some(BTreeSet::from([RuleIdentity::SelfAssignment]));
+    let report = lint(&fixture, invocation.clone());
+    fixture.write("fixing.luau", &original);
     let scoped = fixture.run(&write_arguments);
 
     assert_eq!(
@@ -678,16 +833,13 @@ fn explicit_preview_write_and_scoped_fixes_use_final_source_outcomes() {
 
     assert!(!fixture.read("fixing.luau").contains("value = value"));
     assert!(fixture.read("fixing.luau").contains("if (flag) then"));
-    assert_eq!(scoped.json()["counts"]["fixes"], 1);
+    assert_eq!(report.counts.fixes, 1);
+    assert_eq!(report.final_findings.len(), 1);
+    assert!(scoped.stderr.contains("parenthesized_conditions"));
 
-    assert_eq!(
-        scoped.json()["diagnostics"]
-            .as_array()
-            .expect("remaining findings")
-            .len(),
-        1
-    );
-
+    fixture.write("fixing.luau", &original);
+    invocation.fix_rules = None;
+    let report = lint(&fixture, invocation);
     fixture.write("fixing.luau", &original);
     write_arguments.truncate(arguments.len());
     write_arguments.push("--fix");
@@ -699,11 +851,10 @@ fn explicit_preview_write_and_scoped_fixes_use_final_source_outcomes() {
         fixed.stderr
     );
 
-    let report = fixed.json();
-    assert_eq!(report["completion"], "Complete");
-    assert_eq!(report["diagnostics"], json!([]));
-    assert_eq!(report["counts"]["fixes"], 2);
-    assert_eq!(report["counts"]["written"], 1);
+    assert_eq!(report.completion, Completion::Complete);
+    assert_eq!(report.final_findings, []);
+    assert_eq!(report.counts.fixes, 2);
+    assert_eq!(report.counts.written, 1);
     assert_eq!(fixture.read("fixing.luau"), fixture.read("fixed.luau"));
 }
 
@@ -719,11 +870,24 @@ fn multifile_fixes_and_stdin_never_write_contextual_paths() {
     let original = fixture.bytes("fixing.luau");
     fixture.write("second.luau", &original);
 
+    let mut invocation = prepare(
+        &fixture,
+        &["fixing.luau", "second.luau"],
+        &["self_assignment", "parenthesized_conditions"],
+    );
+
+    invocation.fixes = FixMode::Write;
+    invocation.overrides.diagnostics.warnings_as_errors = true;
+    let report = lint(&fixture, invocation);
+    assert_eq!(report.counts.written, 2);
+    assert_eq!(report.counts.fixes, 4);
+    fixture.write("fixing.luau", &original);
+    fixture.write("second.luau", &original);
+
     let output = fixture.run(&[
         "lint",
         "fixing.luau",
         "second.luau",
-        "--json",
         "--rule",
         "self_assignment",
         "--rule",
@@ -733,12 +897,25 @@ fn multifile_fixes_and_stdin_never_write_contextual_paths() {
     ]);
 
     assert_eq!(output.status, 0, "{}", output.stderr);
-    assert_eq!(output.json()["counts"]["written"], 2);
-    assert_eq!(output.json()["counts"]["fixes"], 4);
     assert_eq!(fixture.read("fixing.luau"), fixture.read("fixed.luau"));
     assert_eq!(fixture.read("second.luau"), fixture.read("fixed.luau"));
     fixture.write("fixing.luau", &original);
     let source = String::from_utf8(original.clone()).expect("Luau source");
+
+    let mut invocation = prepare(
+        &fixture,
+        &[],
+        &["self_assignment", "parenthesized_conditions"],
+    );
+
+    invocation.invocation.inputs = vec![Input::Stdin {
+        text: Arc::from(source.as_str()),
+        context: Some(fixture.path("fixing.luau")),
+    }];
+
+    invocation.fixes = FixMode::Stdin;
+    invocation.overrides.diagnostics.warnings_as_errors = true;
+    let report = lint(&fixture, invocation);
 
     let output = fixture.stdin(
         &[
@@ -751,9 +928,8 @@ fn multifile_fixes_and_stdin_never_write_contextual_paths() {
             "--rule",
             "parenthesized_conditions",
             "--fix-stdin",
-            "--json",
             "--output",
-            "report.json",
+            "report.txt",
             "--warnings-as-errors",
         ],
         &source,
@@ -762,13 +938,10 @@ fn multifile_fixes_and_stdin_never_write_contextual_paths() {
     assert_eq!(output.status, 0, "{}", output.stderr);
     assert_eq!(output.stdout, fixture.read("fixed.luau"));
     assert_eq!(fixture.bytes("fixing.luau"), original);
-
-    let report: Value =
-        serde_json::from_str(&fixture.read("report.json")).expect("report destination");
-
-    assert_eq!(report["completion"], "Complete");
-    assert_eq!(report["counts"]["written"], 0);
-    assert_eq!(report["diagnostics"], json!([]));
+    assert!(fixture.read("report.txt").contains("Linting complete:"));
+    assert_eq!(report.completion, Completion::Complete);
+    assert_eq!(report.counts.written, 0);
+    assert_eq!(report.final_findings, []);
 }
 
 #[test]
@@ -789,29 +962,20 @@ fn selection_combines_inputs_explains_exclusions_and_rejects_missing_targets() {
     }
 
     fixture.write(".ignore", "selected/ignored.luau\n");
-    let default = fixture.run(&["lint", "--json", "--explain-selection"]);
+    let default = fixture.run(&["lint", "--explain-selection"]);
     assert_eq!(default.status, 0, "{}", default.stderr);
-    assert_eq!(default.json()["counts"]["selected"], 3);
+    assert!(default.stderr.contains("Selection:"));
+    let mut invocation = prepare(&fixture, &[], &[]);
+    invocation.invocation.explanations.selection = true;
+    let report = lint(&fixture, invocation);
+    assert_eq!(report.counts.selected, 3);
+    assert!(report.counts.excluded > 0);
 
     assert!(
-        default.json()["counts"]["excluded"]
-            .as_u64()
-            .expect("exclusions")
-            > 0
-    );
-
-    assert!(
-        default.json()["selection"]
-            .as_array()
-            .expect("candidate explanations")
+        report
+            .selection
             .iter()
-            .all(|decision| {
-                decision["selected"].is_boolean()
-                    && !decision["reason"]
-                        .as_str()
-                        .expect("selection reason")
-                        .is_empty()
-            })
+            .all(|decision| !decision.reason.is_empty())
     );
 
     let combined = fixture.run(&[
@@ -819,34 +983,40 @@ fn selection_combines_inputs_explains_exclusions_and_rejects_missing_targets() {
         "selected/one.luau",
         "selected/nested",
         "selected/*.lua",
-        "--json",
     ]);
 
     assert_eq!(combined.status, 0);
-    assert_eq!(combined.json()["counts"]["selected"], 3);
-    let explicit = fixture.run(&["lint", "selected/ignored.luau", "--json"]);
-    assert_eq!(explicit.status, 0);
-    assert_eq!(explicit.json()["counts"]["selected"], 1);
-    let excluded = fixture.run(&["lint", "selected/excluded.luau", "--json"]);
-    assert_eq!(excluded.status, 0);
-    assert_eq!(excluded.json()["counts"]["selected"], 0);
+    let mut invocation = prepare(&fixture, &["selected/one.luau", "selected/nested"], &[]);
 
-    assert!(
-        excluded.json()["selection"]
-            .as_array()
-            .expect("empty selection reasons")
-            .iter()
-            .any(|decision| {
-                decision["selected"] == false
-                    && decision["input"]
-                        .as_str()
-                        .is_some_and(|input| input.ends_with("excluded.luau"))
-                    && !decision["reason"]
-                        .as_str()
-                        .expect("exclusion reason")
-                        .is_empty()
-            })
+    invocation.invocation.inputs.push(Input::Pattern {
+        base: fixture.root().to_path_buf(),
+        pattern: "selected/*.lua".to_owned(),
+    });
+
+    assert_eq!(lint(&fixture, invocation).counts.selected, 3);
+    let explicit = fixture.run(&["lint", "selected/ignored.luau"]);
+    assert_eq!(explicit.status, 0);
+
+    assert_eq!(
+        lint(&fixture, prepare(&fixture, &["selected/ignored.luau"], &[]))
+            .counts
+            .selected,
+        1
     );
+
+    let excluded = fixture.run(&["lint", "selected/excluded.luau"]);
+    assert_eq!(excluded.status, 0);
+
+    let report = lint(
+        &fixture,
+        prepare(&fixture, &["selected/excluded.luau"], &[]),
+    );
+
+    assert_eq!(report.counts.selected, 0);
+
+    assert!(report.selection.iter().any(|decision| !decision.selected
+        && decision.input.ends_with("excluded.luau")
+        && !decision.reason.is_empty()));
 
     let overridden = fixture.run(&[
         "lint",
@@ -855,11 +1025,13 @@ fn selection_combines_inputs_explains_exclusions_and_rejects_missing_targets() {
         "--include",
         "**/*.luau",
         "--override-exclusions",
-        "--json",
     ]);
 
     assert_eq!(overridden.status, 0);
-    assert_eq!(overridden.json()["counts"]["selected"], 2);
+    let mut invocation = prepare(&fixture, &["selected/excluded.luau", "other.luau"], &[]);
+    invocation.overrides.selection.include = Some(vec!["**/*.luau".to_owned()]);
+    invocation.overrides.selection.override_exclusions = true;
+    assert_eq!(lint(&fixture, invocation).counts.selected, 2);
 
     let stdin = fixture.stdin(
         &[
@@ -868,26 +1040,32 @@ fn selection_combines_inputs_explains_exclusions_and_rejects_missing_targets() {
             "selected/one.luau",
             "--stdin-filepath",
             "selected/memory.lua",
-            "--json",
         ],
         &source,
     );
 
     assert_eq!(stdin.status, 0);
-    assert_eq!(stdin.json()["counts"]["selected"], 2);
+    assert!(stdin.stderr.contains("memory.lua"));
+    let mut invocation = prepare(&fixture, &["selected/one.luau"], &[]);
 
-    assert!(
-        stdin.json()["diagnostics"]
-            .as_array()
-            .expect("findings")
-            .iter()
-            .any(|finding| finding["path"]
-                .as_str()
-                .is_some_and(|path| path.ends_with("memory.lua")))
-    );
+    invocation.invocation.inputs.push(Input::Stdin {
+        text: Arc::from(source.as_str()),
+        context: Some(fixture.path("selected/memory.lua")),
+    });
+
+    let report = lint(&fixture, invocation);
+    assert_eq!(report.counts.selected, 2);
+
+    assert!(report.final_findings.iter().any(|finding| {
+        report
+            .snapshot
+            .origin(finding.primary.source.identity)
+            .and_then(|origin| origin.path())
+            .is_some_and(|path| path.ends_with("memory.lua"))
+    }));
 
     for input in ["missing.luau", "selected/*.missing"] {
-        let output = fixture.run(&["lint", input, "--json"]);
+        let output = fixture.run(&["lint", input]);
         assert_eq!(output.status, 2, "{input}: {}", output.stderr);
     }
 }
@@ -918,7 +1096,7 @@ fn invalid_rules_settings_and_write_modes_are_rejected_without_mutation() {
     ];
 
     for extra in cases {
-        let mut arguments = vec!["lint", "fixing.luau", "--json"];
+        let mut arguments = vec!["lint", "fixing.luau"];
         arguments.extend_from_slice(extra);
         let output = fixture.run(&arguments);
         assert_eq!(output.status, 2, "{extra:?}: {}", output.stderr);
@@ -928,7 +1106,6 @@ fn invalid_rules_settings_and_write_modes_are_rejected_without_mutation() {
     let collision = fixture.run(&[
         "lint",
         "fixing.luau",
-        "--json",
         "--rule",
         "self_assignment",
         "--output",
@@ -942,39 +1119,43 @@ fn invalid_rules_settings_and_write_modes_are_rejected_without_mutation() {
 #[test]
 fn reporting_preserves_identity_color_quiet_and_streaming_boundaries() {
     let fixture = Fixture::new("lint", "assignment");
-
-    let report = fixture.run(&[
-        "lint",
-        "positive.luau",
-        "--json",
-        "--rule",
-        "self_assignment",
-    ]);
-
-    let finding = diagnostic(&report.json(), "self_assignment", "positive.luau", [17, 22]).clone();
+    let output = fixture.run(&["lint", "positive.luau", "--rule", "self_assignment"]);
 
     let repeated = fixture.run(&[
         "lint",
         "positive.luau",
-        "--report",
-        "json",
         "--rule",
         "self_assignment",
         "--jobs",
         "1",
     ]);
 
-    assert_eq!(repeated.status, report.status);
+    assert_eq!(repeated.status, output.status);
+    let project = fixture.project();
+    let invocation = prepare(&fixture, &["positive.luau"], &["self_assignment"]);
+    let first = complete(project.lint(invocation.clone(), options())).expect("initial lint");
+    let second = complete(project.lint(invocation, options())).expect("repeated lint");
 
     assert_eq!(
         diagnostic(
-            &repeated.json(),
+            &first.final_findings,
+            &first.snapshot,
             "self_assignment",
             "positive.luau",
             [17, 22]
-        )["identity"],
-        finding["identity"]
+        )
+        .identity,
+        diagnostic(
+            &second.final_findings,
+            &second.snapshot,
+            "self_assignment",
+            "positive.luau",
+            [17, 22]
+        )
+        .identity
     );
+
+    complete(project.finish()).expect("worker cleanup");
 
     for color in ["auto", "never", "always"] {
         let output = fixture.run(&[
@@ -998,33 +1179,22 @@ fn reporting_preserves_identity_color_quiet_and_streaming_boundaries() {
     let streaming = fixture.run(&[
         "lint",
         "positive.luau",
-        "--json",
         "--streaming",
         "--rule",
         "self_assignment",
     ]);
 
     assert_eq!(streaming.status, 0);
+    assert_eq!(streaming.stdout, "");
 
-    let records: Vec<Value> = streaming
-        .stdout
-        .lines()
-        .map(|line| serde_json::from_str(line).expect("streamed JSON record"))
-        .collect();
-
-    assert!(records.len() > 1);
-
-    assert!(
-        records
-            .iter()
-            .any(|record| record.to_string().contains("self_assignment"))
+    assert_eq!(
+        streaming.stderr.matches("warning[self_assignment]").count(),
+        1
     );
 
-    assert_eq!(records.last().expect("terminal record")["event"], "report");
-    let terminal = &records.last().expect("terminal report")["report"];
-    assert_eq!(terminal["completion"], "Complete");
-    assert_eq!(terminal["status"], 0);
-    assert_eq!(terminal["counts"]["findings"], 1);
+    assert!(streaming.stderr.contains("positive.luau"));
+    assert!(streaming.stderr.contains("value=value"));
+    assert!(streaming.stderr.contains("Linting complete:"));
 }
 
 #[test]
@@ -1039,44 +1209,44 @@ fn configuration_inheritance_executable_settings_and_schema_are_real() {
 
     fixture.write("child/input.luau", fixture.bytes("fixing.luau"));
 
+    let mut request = prepare(&fixture, &["fixing.luau", "child/input.luau"], &[]);
+    request.invocation.project_root = Some(fixture.path("."));
+
     let inherited = fixture.run(&[
         "lint",
         "fixing.luau",
         "child/input.luau",
-        "--json",
         "--project-root",
         ".",
     ]);
 
+    let inherited_report = lint(&fixture, request);
+
     assert_eq!(inherited.status, 0);
-    let report = inherited.json();
-    assert_eq!(report["diagnostics"].as_array().expect("findings").len(), 2);
-    let settings = report["settings"].as_array().expect("settings");
+    let report = inherited_report;
+    assert_eq!(report.final_findings.len(), 2);
+    let settings = report.settings;
     assert_eq!(settings.len(), 2);
 
     assert!(settings.iter().any(|effective| {
-        effective["settings"]["linting"]["rules"]["self_assignment"]["enabled"] == true
-            && effective["settings"]["linting"]["rules"]["parenthesized_conditions"]["enabled"]
-                == false
+        effective.settings.linting.rules[&RuleIdentity::SelfAssignment].enabled
+            && !effective.settings.linting.rules[&RuleIdentity::ParenthesizedConditions].enabled
     }));
 
     assert!(settings.iter().any(|effective| {
-        effective["settings"]["linting"]["rules"]["parenthesized_conditions"]["enabled"] == true
-            && effective["settings"]["linting"]["rules"]["self_assignment"]["enabled"] == false
+        effective.settings.linting.rules[&RuleIdentity::ParenthesizedConditions].enabled
+            && !effective.settings.linting.rules[&RuleIdentity::SelfAssignment].enabled
     }));
 
     fixture.write("alternate.toml", "[linting]\npresets = ['none']\n");
 
-    let explicit = fixture.run(&[
-        "lint",
-        "fixing.luau",
-        "--json",
-        "--configuration",
-        "alternate.toml",
-    ]);
+    let mut request = prepare(&fixture, &["fixing.luau"], &[]);
+    request.invocation.configuration = Some(fixture.path("alternate.toml"));
+    let explicit = fixture.run(&["lint", "fixing.luau", "--configuration", "alternate.toml"]);
+    let explicit_report = lint(&fixture, request);
 
     assert_eq!(explicit.status, 0);
-    assert_eq!(explicit.json()["diagnostics"], json!([]));
+    assert_eq!(explicit_report.final_findings, []);
     fixture.write("child/instar.toml", "");
 
     fixture.write(
@@ -1086,39 +1256,26 @@ fn configuration_inheritance_executable_settings_and_schema_are_real() {
 
     fixture.write("child/input.luau", fixture.bytes("globals.luau"));
 
-    let language = fixture.run(&[
-        "lint",
-        "child/input.luau",
-        "--json",
-        "--rule",
-        "UnknownGlobal",
-    ]);
+    let request = prepare(&fixture, &["child/input.luau"], &["UnknownGlobal"]);
+    let language = fixture.run(&["lint", "child/input.luau", "--rule", "UnknownGlobal"]);
+    let language_report = lint(&fixture, request);
 
     assert_eq!(language.status, 0);
-    assert_eq!(language.json()["diagnostics"], json!([]));
+    assert_eq!(language_report.final_findings, []);
 
     fixture.write(
         "executable.luau",
         "return { linting = { selected = { 'self_assignment' } } }\n",
     );
 
-    let executable = fixture.run(&[
-        "lint",
-        "fixing.luau",
-        "--json",
-        "--configuration",
-        "executable.luau",
-    ]);
+    let mut request = prepare(&fixture, &["fixing.luau"], &[]);
+    request.invocation.configuration = Some(fixture.path("executable.luau"));
+    let executable = fixture.run(&["lint", "fixing.luau", "--configuration", "executable.luau"]);
+    let executable_report = lint(&fixture, request);
 
     assert_eq!(executable.status, 0);
 
-    assert_eq!(
-        executable.json()["diagnostics"]
-            .as_array()
-            .expect("configured rule")
-            .len(),
-        1
-    );
+    assert_eq!(executable_report.final_findings.len(), 1);
 
     let schema = Project::configuration_schema();
     assert!(schema.is_object());
@@ -1132,20 +1289,10 @@ fn sandbox_and_type_function_resource_limits_never_report_clean_completion() {
     let fixture = Fixture::new("cli", "lint");
     let mut reports = Vec::new();
 
-    let incomplete = |report: &Value| {
-        matches!(
-            report["completion"].as_str(),
-            Some("TimedOut" | "Cancelled")
-        ) || report["completion"]["Incomplete"]
-            .as_array()
-            .is_some_and(|reasons| !reasons.is_empty())
-    };
-
     for configuration in ["sandbox.luau", "budget.luau"] {
         let mut arguments = vec![
             "lint",
             "fixing.luau",
-            "--json",
             "--configuration",
             configuration,
             "--rule",
@@ -1158,50 +1305,69 @@ fn sandbox_and_type_function_resource_limits_never_report_clean_completion() {
 
         let output = fixture.run(&arguments);
         assert_ne!(output.status, 0, "{configuration}");
-        let report = output.json();
+        let project = fixture.project();
+        let mut invocation = prepare(&fixture, &["fixing.luau"], &["self_assignment"]);
+        invocation.invocation.configuration = Some(fixture.path(configuration));
+
+        let observed = if configuration == "budget.luau" {
+            Options::new(Some(Instant::now() + Duration::from_secs(1)))
+        } else {
+            options()
+        };
+
+        let failure = complete(project.lint(invocation, observed))
+            .expect_err("bounded configuration failure");
 
         assert_ne!(
-            report["completion"], "Complete",
-            "{configuration}: {report}"
+            failure.completion,
+            Completion::Complete,
+            "{configuration}: {failure:?}"
         );
 
-        assert!(incomplete(&report), "{configuration}: {report}");
+        assert!(match &failure.completion {
+            Completion::TimedOut | Completion::Cancelled => true,
+            Completion::Incomplete(reasons) => !reasons.is_empty(),
+            Completion::Complete => false,
+        });
 
         let sandbox = if configuration == "sandbox.luau" {
+            assert!(output.stderr.contains(configuration));
+
+            let captured = project.snapshot();
+
             let finding = diagnostic(
-                &report,
+                &failure.diagnostics,
+                &captured,
                 "configuration",
                 configuration,
                 [0, fixture.bytes(configuration).len()],
             );
 
-            assert_eq!(finding["category"], "Configuration");
-            assert_eq!(finding["severity"], "error");
+            assert_eq!(finding.category, DiagnosticCategory::Configuration);
+            assert_eq!(finding.severity, Severity::Error);
+            assert_ne!(finding.message, "");
+            assert_eq!(finding.identity.location(), finding.primary);
+            assert!(finding.identity.inputs().contains(&finding.primary.source));
 
-            assert_ne!(
-                finding["message"].as_str().expect("sandbox explanation"),
-                ""
+            assert!(
+                failure
+                    .completed_sources
+                    .iter()
+                    .any(|outcome| outcome.source == finding.primary.source)
             );
 
-            Some(json!({
-                "code": finding["code"], "category": finding["category"],
-                "path": finding["path"], "range": finding["range"],
-                "severity": finding["severity"],
-            }))
+            Some(attributed(from_ref(finding), &captured)[0].clone())
         } else {
             None
         };
 
-        reports.push(fixture.normalize(&json!({
-            "case": configuration, "failed": output.status != 0,
-            "incomplete": incomplete(&report), "sandbox": sandbox,
-        })));
+        reports.push(fixture.normalize(&json!({"case": configuration, "failed": output.status != 0, "incomplete": true, "sandbox": sandbox})));
+        complete(project.finish()).expect("worker cleanup");
     }
 
     let output = fixture.run(&[
         "lint",
         "endless.luau",
-        "--json",
         "--rule",
         "mismatched_argument_count",
         "--timeout",
@@ -1209,15 +1375,28 @@ fn sandbox_and_type_function_resource_limits_never_report_clean_completion() {
     ]);
 
     assert_ne!(output.status, 0);
-    let report = output.json();
-    assert_ne!(report["completion"], "Complete");
-    assert!(incomplete(&report), "{report}");
+    let project = fixture.project();
 
-    reports.push(json!({
-        "case": "functions", "failed": output.status != 0,
-        "incomplete": incomplete(&report),
-    }));
+    let result = complete(project.lint(
+        prepare(&fixture, &["endless.luau"], &["mismatched_argument_count"]),
+        Options::new(Some(Instant::now() + Duration::from_secs(1))),
+    ));
 
+    let completion = match result {
+        Ok(report) => report.completion,
+        Err(failure) => failure.completion,
+    };
+
+    assert_ne!(completion, Completion::Complete);
+
+    assert!(match &completion {
+        Completion::TimedOut | Completion::Cancelled => true,
+        Completion::Incomplete(reasons) => !reasons.is_empty(),
+        Completion::Complete => false,
+    });
+
+    reports.push(json!({"case": "functions", "failed": output.status != 0, "incomplete": true}));
+    complete(project.finish()).expect("worker cleanup");
     snapshot(&fixture, "lint", "resources", &json!(reports));
 }
 
@@ -1225,10 +1404,18 @@ fn sandbox_and_type_function_resource_limits_never_report_clean_completion() {
 fn dependencies_are_linted_even_when_excluded() {
     let fixture = Fixture::new("cli", "lint");
 
+    let mut request = prepare(
+        &fixture,
+        &["imported.luau"],
+        &["unused_variable", "mismatched_argument_count"],
+    );
+
+    request.overrides.selection.exclude = Some(vec!["dependency.luau".to_owned()]);
+    request.invocation.explanations.dependencies = true;
+
     let output = fixture.run(&[
         "lint",
         "imported.luau",
-        "--json",
         "--rule",
         "unused_variable",
         "--rule",
@@ -1238,13 +1425,22 @@ fn dependencies_are_linted_even_when_excluded() {
         "--explain-dependencies",
     ]);
 
+    let report = lint(&fixture, request);
+
     assert_eq!(output.status, 0, "{}", output.stderr);
-    let report = output.json();
+    assert!(output.stderr.contains("Dependencies:"));
+    assert!(output.stderr.contains("Imports:"));
+    assert!(output.stderr.contains("warning[unused_variable]"));
+    assert!(output.stderr.contains("warning[mismatched_argument_count]"));
+    assert!(output.stderr.contains("dependency.luau"));
+    assert!(output.stderr.contains("imported.luau"));
+
     let dependency = fixture.read("dependency.luau");
     let start = dependency.find("unused").expect("dependency binding");
 
     diagnostic(
-        &report,
+        &report.final_findings,
+        &report.snapshot,
         "unused_variable",
         "dependency.luau",
         [start, start + 6],
@@ -1254,15 +1450,16 @@ fn dependencies_are_linted_even_when_excluded() {
     let start = source.find("dependency()").expect("resolved call");
 
     diagnostic(
-        &report,
+        &report.final_findings,
+        &report.snapshot,
         "mismatched_argument_count",
         "imported.luau",
         [start, start + 12],
     );
 
-    assert_eq!(report["counts"]["selected"], 1);
-    assert_eq!(report["counts"]["dependencies"], 1);
-    assert_eq!(report["completion"], "Complete");
+    assert_eq!(report.counts.selected, 1);
+    assert_eq!(report.counts.dependencies, 1);
+    assert_eq!(report.completion, Completion::Complete);
 }
 
 #[test]
@@ -1270,10 +1467,21 @@ fn import_restrictions_and_shadowed_builtins_use_actual_bindings() {
     let fixture = Fixture::new("cli", "lint");
     let setting = r#"linting.rules.restricted_module_paths={"enabled":true,"severity":"Warning","settings":{"rule":"restricted_module_paths","parameters":{"paths":{"./dependency":"use the public module"}}}}"#;
 
+    let mut request = prepare(
+        &fixture,
+        &["restricted.luau"],
+        &["non_const_require", "restricted_module_paths"],
+    );
+
+    request.overrides.linting.rules = Some(BTreeMap::from([(
+        RuleIdentity::named("restricted_module_paths").expect("known rule"),
+        serde_json::from_str(setting.split_once('=').expect("setting value").1)
+            .expect("typed rule configuration"),
+    )]));
+
     let output = fixture.run(&[
         "lint",
         "restricted.luau",
-        "--json",
         "--rule",
         "non_const_require",
         "--rule",
@@ -1282,12 +1490,16 @@ fn import_restrictions_and_shadowed_builtins_use_actual_bindings() {
         setting,
     ]);
 
-    let report = output.json();
+    let report = lint(&fixture, request);
+    assert_eq!(output.stdout, "");
+    assert!(output.stderr.contains("restricted_module_paths"));
+
     let source = fixture.read("restricted.luau");
     let start = source.find("path").expect("dynamic require argument");
 
     diagnostic(
-        &report,
+        &report.final_findings,
+        &report.snapshot,
         "non_const_require",
         "restricted.luau",
         [start, start + 4],
@@ -1297,14 +1509,15 @@ fn import_restrictions_and_shadowed_builtins_use_actual_bindings() {
     let start = source.find(text).expect("restricted require argument");
 
     let finding = diagnostic(
-        &report,
+        &report.final_findings,
+        &report.snapshot,
         "restricted_module_paths",
         "restricted.luau",
         [start, start + text.len()],
     );
 
     assert_eq!(
-        finding["message"],
+        finding.message,
         "module path ./dependency is restricted: use the public module"
     );
 
@@ -1315,14 +1528,16 @@ fn import_restrictions_and_shadowed_builtins_use_actual_bindings() {
         ("function.luau", "mismatched_argument_count"),
     ] {
         let original = fixture.bytes(name);
-        let output = fixture.run(&["lint", name, "--json", "--rule", rule]);
+        let request = prepare(&fixture, &[name], &[rule]);
+        let output = fixture.run(&["lint", name, "--rule", rule]);
+        let report = lint(&fixture, request);
+        assert_eq!(output.stdout, "");
 
         assert!(
-            output.json()["diagnostics"]
-                .as_array()
-                .expect("findings")
+            report
+                .final_findings
                 .iter()
-                .all(|finding| finding["code"] != rule)
+                .all(|finding| finding.code != rule)
         );
 
         assert_eq!(fixture.bytes(name), original);
@@ -1333,16 +1548,12 @@ fn import_restrictions_and_shadowed_builtins_use_actual_bindings() {
 fn source_pragmas_disable_type_diagnostics_without_disabling_semantic_rules() {
     let fixture = Fixture::new("cli", "lint");
 
-    let output = fixture.run(&[
-        "lint",
-        "pragmas.luau",
-        "--json",
-        "--rule",
-        "implicit_any_parameter",
-    ]);
+    let request = prepare(&fixture, &["pragmas.luau"], &["implicit_any_parameter"]);
+    let output = fixture.run(&["lint", "pragmas.luau", "--rule", "implicit_any_parameter"]);
+    let report = lint(&fixture, request);
 
     assert_eq!(output.status, 0, "{}", output.stderr);
-    let report = output.json();
+
     let source = fixture.read("pragmas.luau");
 
     let start = source
@@ -1350,14 +1561,15 @@ fn source_pragmas_disable_type_diagnostics_without_disabling_semantic_rules() {
         .expect("contextually inferred any parameter");
 
     diagnostic(
-        &report,
+        &report.final_findings,
+        &report.snapshot,
         "implicit_any_parameter",
         "pragmas.luau",
         [start, start + 9],
     );
 
-    assert_eq!(report["diagnostics"].as_array().expect("findings").len(), 1);
-    assert_eq!(report["completion"], "Complete");
+    assert_eq!(report.final_findings.len(), 1);
+    assert_eq!(report.completion, Completion::Complete);
 }
 
 #[test]
@@ -1417,10 +1629,13 @@ fn roblox_pairs_use_offline_assets_and_preserve_local_shadowing() {
             json!(fixture.path("assets"))
         );
 
+        let mut request = prepare(&fixture, &[name], &[rule]);
+        request.overrides.environment.roblox = Some(true);
+        request.overrides.environment.asset_directory = Some(fixture.path("assets"));
+
         let output = fixture.run(&[
             "lint",
             name,
-            "--json",
             "--rule",
             rule,
             "--set",
@@ -1429,28 +1644,24 @@ fn roblox_pairs_use_offline_assets_and_preserve_local_shadowing() {
             &directory,
         ]);
 
+        let report = lint(&fixture, request);
+
         assert_eq!(output.status, 0, "{}", output.stderr);
-        let report = output.json();
-        assert_eq!(report["completion"], "Complete");
+
+        assert_eq!(report.completion, Completion::Complete);
 
         if let Some(range) = range {
-            diagnostic(&report, rule, name, range);
+            diagnostic(&report.final_findings, &report.snapshot, rule, name, range);
 
-            assert_eq!(
-                report["diagnostics"]
-                    .as_array()
-                    .expect("paired finding")
-                    .len(),
-                1
-            );
+            assert_eq!(report.final_findings.len(), 1);
         } else {
-            assert_eq!(report["diagnostics"], json!([]));
+            assert_eq!(report.final_findings, []);
         }
 
         reports.push(fixture.normalize(&json!({
-            "scenario": scenario, "rule": rule, "diagnostics": report["diagnostics"],
-            "sources": report["sources"], "availability": report["availability"],
-            "counts": report["counts"], "completion": report["completion"], "status": report["status"],
+            "scenario": scenario, "rule": rule, "findings": report.final_findings,
+            "sources": report.sources, "availability": report.availability,
+            "counts": report.counts, "completion": report.completion,
         })));
     }
 
@@ -1725,49 +1936,48 @@ fn shared_project_exports_and_ordered_declarations_supply_real_signatures() {
     fixture.write("declaration.luau", inputs.bytes("numbers.luau"));
     fixture.write("instar.toml", format!("{}\n[[environment.groups]]\nnamespace = '@additional'\ndefinitions = ['declaration.luau']\n", fixture.read("instar.toml")));
 
+    let mut request = prepare(&fixture, &["shared.luau"], &["mismatched_argument_count"]);
+    request.invocation.explanations.dependencies = true;
+
     let output = fixture.run(&[
         "lint",
         "shared.luau",
-        "--json",
         "--rule",
         "mismatched_argument_count",
         "--explain-dependencies",
     ]);
 
+    let report = lint(&fixture, request);
+
     assert_eq!(output.status, 0, "{}", output.stderr);
-    let report = output.json();
-    assert_eq!(report["completion"], "Complete");
+    assert!(output.stderr.contains("Dependencies:"));
+    assert!(output.stderr.contains("Imports:"));
+
+    assert_eq!(report.completion, Completion::Complete);
     let source = fixture.read("shared.luau");
 
     for call in ["input.count(1)", "library.double(1, 2)", "documented()"] {
         let start = source.find(call).expect("shared resolved call");
 
         diagnostic(
-            &report,
+            &report.final_findings,
+            &report.snapshot,
             "mismatched_argument_count",
             "shared.luau",
             [start, start + call.len()],
         );
     }
 
-    assert_eq!(
-        report["diagnostics"]
-            .as_array()
-            .expect("real signature findings")
-            .len(),
-        3
-    );
+    assert_eq!(report.final_findings.len(), 3);
 
-    assert_eq!(report["counts"]["dependencies"], 2);
+    assert_eq!(report.counts.dependencies, 2);
 
-    for settings in report["settings"].as_array().expect("settings") {
-        let groups = settings["settings"]["environment"]["groups"]
-            .as_array()
-            .expect("ordered declaration groups");
+    for settings in report.settings {
+        let groups = settings.settings.environment.groups;
 
         assert_eq!(groups.len(), 2);
-        assert_eq!(groups[0]["namespace"], "@contract");
-        assert_eq!(groups[1]["namespace"], "@additional");
+        assert_eq!(groups[0].namespace, "@contract");
+        assert_eq!(groups[1].namespace, "@additional");
     }
 }
 
@@ -1793,10 +2003,13 @@ fn mapped_instances_resolve_distinct_dependencies_without_duplicating_findings()
         json!(fixture.path("assets"))
     );
 
+    let mut request = prepare(&fixture, &["shared.luau"], &["divide_by_zero"]);
+    request.invocation.explanations.dependencies = true;
+    request.overrides.environment.asset_directory = Some(fixture.path("assets"));
+
     let output = fixture.run(&[
         "lint",
         "shared.luau",
-        "--json",
         "--rule",
         "divide_by_zero",
         "--explain-dependencies",
@@ -1804,41 +2017,45 @@ fn mapped_instances_resolve_distinct_dependencies_without_duplicating_findings()
         &directory,
     ]);
 
+    let report = lint(&fixture, request);
+
     assert_eq!(output.status, 0, "{}", output.stderr);
-    let report = output.json();
-    assert_eq!(report["completion"], "Complete");
-    diagnostic(&report, "divide_by_zero", "shared.luau", [40, 41]);
-    diagnostic(&report, "divide_by_zero", "first.luau", [9, 10]);
-    diagnostic(&report, "divide_by_zero", "second.luau", [9, 10]);
+    assert!(output.stderr.contains("Dependencies:"));
+    assert!(output.stderr.contains("Imports:"));
 
-    assert_eq!(
-        report["diagnostics"]
-            .as_array()
-            .expect("physical findings")
-            .len(),
-        3
+    assert_eq!(report.completion, Completion::Complete);
+
+    diagnostic(
+        &report.final_findings,
+        &report.snapshot,
+        "divide_by_zero",
+        "shared.luau",
+        [40, 41],
     );
 
-    assert_eq!(
-        report["modules"].as_array().expect("module contexts").len(),
-        4
+    diagnostic(
+        &report.final_findings,
+        &report.snapshot,
+        "divide_by_zero",
+        "first.luau",
+        [9, 10],
     );
 
-    assert_eq!(
-        report["sources"]
-            .as_array()
-            .expect("physical sources")
-            .len(),
-        3
+    diagnostic(
+        &report.final_findings,
+        &report.snapshot,
+        "divide_by_zero",
+        "second.luau",
+        [9, 10],
     );
 
-    assert_eq!(
-        report["dependencies"]
-            .as_array()
-            .expect("resolved edges")
-            .len(),
-        2
-    );
+    assert_eq!(report.final_findings.len(), 3);
+
+    assert_eq!(report.modules.len(), 4);
+
+    assert_eq!(report.sources.len(), 3);
+
+    assert_eq!(report.dependencies.len(), 2);
 }
 
 #[test]
@@ -1858,65 +2075,56 @@ fn related_shadow_locations_explain_the_original_declaration() {
         .expect("shadow declaration")
         .0;
 
-    let output = fixture.run(&["lint", "positive.luau", "--json", "--rule", "LocalShadow"]);
+    let request = prepare(&fixture, &["positive.luau"], &["LocalShadow"]);
+    let output = fixture.run(&["lint", "positive.luau", "--rule", "LocalShadow"]);
+    let report = lint(&fixture, request);
     assert_eq!(output.status, 0, "{}", output.stderr);
-    let report = output.json();
 
     let finding = diagnostic(
-        &report,
+        &report.final_findings,
+        &report.snapshot,
         "LocalShadow",
         "positive.luau",
         [shadow, shadow + 6],
     );
 
-    assert!(
-        finding["related"]
-            .as_array()
-            .expect("secondary declaration locations")
-            .iter()
-            .any(|related| {
-                related["range"] == json!([original, original + 6])
-                    && related["source"] == finding["source"]
-                    && related["path"] == finding["path"]
-                    && !related["message"]
-                        .as_str()
-                        .expect("declaration explanation")
-                        .is_empty()
-            })
-    );
+    assert!(finding.related.iter().any(|related| {
+        [related.location.span.start, related.location.span.end] == [original, original + 6]
+            && related.location.source == finding.primary.source
+            && !related.message.is_empty()
+    }));
 }
 
 #[test]
-fn operational_logging_is_separate_from_the_machine_readable_report() {
+fn operational_logging_preserves_human_diagnostics() {
     let fixture = Fixture::new("lint", "division");
 
     let output = fixture.run(&[
         "lint",
         "positive.luau",
-        "--json",
         "--rule",
         "divide_by_zero",
         "--verbose",
     ]);
 
     assert_eq!(output.status, 0);
-    let report = output.json();
-    diagnostic(&report, "divide_by_zero", "positive.luau", [12, 16]);
+    assert_eq!(output.stdout, "");
+    assert!(output.stderr.contains("divide_by_zero"));
+    assert!(output.stderr.contains("positive.luau"));
+    assert!(output.stderr.contains("DEBUG"));
 
-    let logs: Vec<Value> = output
-        .stderr
-        .lines()
-        .map(|line| serde_json::from_str(line).expect("operational JSON log"))
-        .collect();
-
-    assert_ne!(logs, [] as [Value; 0]);
-
-    assert!(
-        logs.iter()
-            .all(|record| record.get("diagnostics").is_none())
+    let report = lint(
+        &fixture,
+        prepare(&fixture, &["positive.luau"], &["divide_by_zero"]),
     );
 
-    assert!(logs.iter().any(|record| record["level"] == "DEBUG"));
+    diagnostic(
+        &report.final_findings,
+        &report.snapshot,
+        "divide_by_zero",
+        "positive.luau",
+        [12, 16],
+    );
 }
 
 #[test]
@@ -1924,36 +2132,62 @@ fn immutable_binding_exemptions_respect_actual_shadowed_mutation() {
     let fixture = Fixture::new("lint", "shadowing");
     let setting = r#"linting.rules.prefer_const={"enabled":true,"severity":"Warning","settings":{"rule":"prefer_const","parameters":{"mutated_tables_stay_local":true}}}"#;
 
+    let mut request = prepare(&fixture, &["table.luau"], &["prefer_const"]);
+
+    request.overrides.linting.rules = Some(BTreeMap::from([(
+        RuleIdentity::named("prefer_const").expect("known rule"),
+        serde_json::from_str(setting.split_once('=').expect("setting value").1)
+            .expect("typed rule configuration"),
+    )]));
+
     let shadow = fixture.run(&[
         "lint",
         "table.luau",
-        "--json",
         "--rule",
         "prefer_const",
         "--set",
         setting,
     ]);
 
+    let report = lint(&fixture, request);
+
     assert_eq!(shadow.status, 0);
-    let report = shadow.json();
-    diagnostic(&report, "prefer_const", "table.luau", [6, 7]);
+
+    diagnostic(
+        &report.final_findings,
+        &report.snapshot,
+        "prefer_const",
+        "table.luau",
+        [6, 7],
+    );
+
+    let mut request = prepare(&fixture, &["mutation.luau"], &["prefer_const"]);
+
+    request.overrides.linting.rules = Some(BTreeMap::from([(
+        RuleIdentity::named("prefer_const").expect("known rule"),
+        serde_json::from_str(setting.split_once('=').expect("setting value").1)
+            .expect("typed rule configuration"),
+    )]));
 
     let mutation = fixture.run(&[
         "lint",
         "mutation.luau",
-        "--json",
         "--rule",
         "prefer_const",
         "--set",
         setting,
     ]);
 
+    let mutation_report = lint(&fixture, request);
+
     assert_eq!(mutation.status, 0);
-    assert_eq!(mutation.json()["diagnostics"], json!([]));
+    assert_eq!(mutation_report.final_findings, []);
     let fixture = Fixture::new("lint", "escapes");
-    let bytes = fixture.run(&["lint", "byte.luau", "--json", "--rule", "bad_string_escape"]);
+    let request = prepare(&fixture, &["byte.luau"], &["bad_string_escape"]);
+    let bytes = fixture.run(&["lint", "byte.luau", "--rule", "bad_string_escape"]);
+    let bytes_report = lint(&fixture, request);
     assert_eq!(bytes.status, 0);
-    assert_eq!(bytes.json()["diagnostics"], json!([]));
+    assert_eq!(bytes_report.final_findings, []);
 }
 
 #[test]
@@ -1964,30 +2198,33 @@ fn declared_globals_and_warning_modes_follow_source_policy() {
     for (mode, unknown, implicit) in [("strict", 0, 0), ("nonstrict", 0, 1), ("nocheck", 1, 1)] {
         fixture.write(".luaurc", json!({"languageMode": mode}).to_string());
 
+        let request = prepare(
+            &fixture,
+            &["positive.luau"],
+            &["UnknownGlobal", "ImplicitReturn"],
+        );
+
         let output = fixture.run(&[
             "lint",
             "positive.luau",
-            "--json",
             "--rule",
             "UnknownGlobal",
             "--rule",
             "ImplicitReturn",
         ]);
 
+        let report = lint(&fixture, request);
+
         assert_eq!(output.status, 0, "{mode}: {}", output.stdout);
-        let report = output.json();
-        assert_eq!(report["completion"], "Complete");
 
-        assert_eq!(
-            report["diagnostics"].as_array().expect("warnings").len(),
-            unknown + implicit
-        );
+        assert_eq!(report.completion, Completion::Complete);
 
-        let count = report["diagnostics"]
-            .as_array()
-            .expect("warnings")
+        assert_eq!(report.final_findings.len(), unknown + implicit);
+
+        let count = report
+            .final_findings
             .iter()
-            .filter(|finding| finding["code"] == "UnknownGlobal")
+            .filter(|finding| finding.code == "UnknownGlobal")
             .count();
 
         assert_eq!(count, unknown, "{mode}");
@@ -1996,7 +2233,8 @@ fn declared_globals_and_warning_modes_follow_source_policy() {
             let start = source.find("missing").expect("unknown reference");
 
             diagnostic(
-                &report,
+                &report.final_findings,
+                &report.snapshot,
                 "UnknownGlobal",
                 "positive.luau",
                 [start, start + 7],
@@ -2008,7 +2246,8 @@ fn declared_globals_and_warning_modes_follow_source_policy() {
             let start = source.find(text).expect("fallthrough branch");
 
             diagnostic(
-                &report,
+                &report.final_findings,
+                &report.snapshot,
                 "ImplicitReturn",
                 "positive.luau",
                 [start, start + text.len()],
@@ -2018,28 +2257,61 @@ fn declared_globals_and_warning_modes_follow_source_policy() {
 
     fixture.write(".luaurc", r#"{"languageMode":"nocheck"}"#);
 
+    let mut request = prepare(&fixture, &["positive.luau"], &["UnknownGlobal"]);
+    request.overrides.environment.globals = Some(vec!["missing".to_owned()]);
+
     let output = fixture.run(&[
         "lint",
         "positive.luau",
-        "--json",
         "--rule",
         "UnknownGlobal",
         "--set",
         r#"environment.globals=["missing"]"#,
     ]);
 
-    assert_eq!(output.status, 0);
-    assert_eq!(output.json()["diagnostics"], json!([]));
+    let output_report = lint(&fixture, request);
 
-    let deprecated = fixture.run(&[
-        "lint",
-        "negative.luau",
-        "--json",
-        "--rule",
-        "DeprecatedGlobal",
-    ]);
+    assert_eq!(output.status, 0);
+    assert_eq!(output_report.final_findings, []);
+
+    let request = prepare(&fixture, &["negative.luau"], &["DeprecatedGlobal"]);
+    let deprecated = fixture.run(&["lint", "negative.luau", "--rule", "DeprecatedGlobal"]);
+    let deprecated_report = lint(&fixture, request);
 
     assert_eq!(deprecated.status, 0);
-    assert_eq!(deprecated.json()["completion"], "Complete");
-    assert_eq!(deprecated.json()["diagnostics"], json!([]));
+    assert_eq!(deprecated_report.completion, Completion::Complete);
+    assert_eq!(deprecated_report.final_findings, []);
+}
+
+fn lint(fixture: &Fixture, request: LintRequest) -> LintReport {
+    let project = fixture.project();
+    let report = complete(project.lint(request, options())).expect("typed lint report");
+    complete(project.finish()).expect("worker cleanup");
+
+    report
+}
+
+fn prepare(fixture: &Fixture, paths: &[&str], rules: &[&str]) -> LintRequest {
+    LintRequest {
+        invocation: Invocation {
+            inputs: paths
+                .iter()
+                .map(|path| Input::Path(fixture.path(path)))
+                .collect(),
+            ..Invocation::default()
+        },
+        overrides: LintOverrides {
+            linting: LintPatch {
+                selected: (!rules.is_empty()).then(|| {
+                    rules
+                        .iter()
+                        .map(|rule| RuleIdentity::named(rule).expect("known rule"))
+                        .collect()
+                }),
+                ..LintPatch::default()
+            },
+            ..LintOverrides::default()
+        },
+        ..LintRequest::default()
+    }
 }

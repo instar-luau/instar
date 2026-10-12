@@ -1,6 +1,5 @@
 ---
 source: crates/cli/tests/contracts/support/snapshots.rs
-assertion_line: 17
 ---
 {
   "completion": "Complete",
@@ -95,6 +94,5 @@ assertion_line: 17
     {},
     {},
     {}
-  ],
-  "status": 0
+  ]
 }

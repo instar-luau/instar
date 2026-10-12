@@ -1,6 +1,5 @@
 ---
 source: crates/cli/tests/contracts/support/snapshots.rs
-assertion_line: 17
 ---
 [
   {
@@ -26,7 +25,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "UnknownGlobal",
@@ -46,14 +45,19 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "Unknown global 'missing'; consider assigning to it first",
-        "path": "$ROOT/positive.luau",
-        "range": [
-          13,
-          20
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/positive.luau"
+            }
+          },
+          "span": {
+            "end": 20,
+            "start": 13
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
@@ -61,8 +65,7 @@ assertion_line: 17
     "sources": [
       {},
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -87,7 +90,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "GlobalUsedAsLocal",
@@ -107,14 +110,19 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "Global 'created' is only used in the enclosing function 'create'; consider changing it to local",
-        "path": "$ROOT/positive.luau",
-        "range": [
-          92,
-          99
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/positive.luau"
+            }
+          },
+          "span": {
+            "end": 99,
+            "start": 92
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
@@ -122,8 +130,7 @@ assertion_line: 17
     "sources": [
       {},
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -148,7 +155,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "LocalShadow",
@@ -168,24 +175,34 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "Variable 'shadow' shadows previous declaration at line 15",
-        "path": "$ROOT/positive.luau",
-        "range": [
-          197,
-          203
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/positive.luau"
+            }
+          },
+          "span": {
+            "end": 203,
+            "start": 197
+          }
+        },
         "related": [
           {
-            "message": "previous declaration",
-            "path": "$ROOT/positive.luau",
-            "range": [
-              165,
-              171
-            ],
-            "source": {}
+            "location": {
+              "source": {
+                "origin": {
+                  "Disk": "$ROOT/positive.luau"
+                }
+              },
+              "span": {
+                "end": 171,
+                "start": 165
+              }
+            },
+            "message": "previous declaration"
           }
         ],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       },
       {
@@ -207,24 +224,34 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "Variable 'duplicate' shadows previous declaration at line 69",
-        "path": "$ROOT/positive.luau",
-        "range": [
-          933,
-          942
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/positive.luau"
+            }
+          },
+          "span": {
+            "end": 942,
+            "start": 933
+          }
+        },
         "related": [
           {
-            "message": "previous declaration",
-            "path": "$ROOT/positive.luau",
-            "range": [
-              922,
-              931
-            ],
-            "source": {}
+            "location": {
+              "source": {
+                "origin": {
+                  "Disk": "$ROOT/positive.luau"
+                }
+              },
+              "span": {
+                "end": 931,
+                "start": 922
+              }
+            },
+            "message": "previous declaration"
           }
         ],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
@@ -232,8 +259,7 @@ assertion_line: 17
     "sources": [
       {},
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -258,7 +284,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "SameLineStatement",
@@ -278,14 +304,19 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "A new statement is on the same line; add semi-colon on previous statement to silence",
-        "path": "$ROOT/positive.luau",
-        "range": [
-          276,
-          284
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/positive.luau"
+            }
+          },
+          "span": {
+            "end": 284,
+            "start": 276
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
@@ -293,8 +324,7 @@ assertion_line: 17
     "sources": [
       {},
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -319,7 +349,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "MultiLineStatement",
@@ -339,14 +369,19 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "Statement spans multiple lines; use indentation to silence",
-        "path": "$ROOT/positive.luau",
-        "range": [
-          314,
-          315
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/positive.luau"
+            }
+          },
+          "span": {
+            "end": 315,
+            "start": 314
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
@@ -354,8 +389,7 @@ assertion_line: 17
     "sources": [
       {},
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -380,7 +414,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "LocalUnused",
@@ -400,14 +434,19 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "Variable 'unused' is never used; prefix with '_' to silence",
-        "path": "$ROOT/positive.luau",
-        "range": [
-          354,
-          360
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/positive.luau"
+            }
+          },
+          "span": {
+            "end": 360,
+            "start": 354
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": [
           "Unnecessary"
         ]
@@ -431,14 +470,19 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "Variable 'duplicate' is never used; prefix with '_' to silence",
-        "path": "$ROOT/positive.luau",
-        "range": [
-          922,
-          931
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/positive.luau"
+            }
+          },
+          "span": {
+            "end": 931,
+            "start": 922
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": [
           "Unnecessary"
         ]
@@ -448,8 +492,7 @@ assertion_line: 17
     "sources": [
       {},
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -474,7 +517,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "FunctionUnused",
@@ -494,14 +537,19 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "Function 'unusedfunction' is never used; prefix with '_' to silence",
-        "path": "$ROOT/positive.luau",
-        "range": [
-          391,
-          405
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/positive.luau"
+            }
+          },
+          "span": {
+            "end": 405,
+            "start": 391
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": [
           "Unnecessary"
         ]
@@ -511,8 +559,7 @@ assertion_line: 17
     "sources": [
       {},
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -537,7 +584,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "ImportUnused",
@@ -557,14 +604,19 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "Import 'module' is never used; prefix with '_' to silence",
-        "path": "$ROOT/positive.luau",
-        "range": [
-          438,
-          444
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/positive.luau"
+            }
+          },
+          "span": {
+            "end": 444,
+            "start": 438
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": [
           "Unnecessary"
         ]
@@ -574,8 +626,7 @@ assertion_line: 17
     "sources": [
       {},
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -600,7 +651,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "BuiltinGlobalWrite",
@@ -620,14 +671,19 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "Built-in global 'math' is overwritten here; consider using a local or changing the name",
-        "path": "$ROOT/positive.luau",
-        "range": [
-          478,
-          482
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/positive.luau"
+            }
+          },
+          "span": {
+            "end": 482,
+            "start": 478
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
@@ -635,8 +691,7 @@ assertion_line: 17
     "sources": [
       {},
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -661,7 +716,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "PlaceholderRead",
@@ -681,14 +736,19 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "Placeholder value '_' is read here; consider using a named variable",
-        "path": "$ROOT/positive.luau",
-        "range": [
-          521,
-          522
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/positive.luau"
+            }
+          },
+          "span": {
+            "end": 522,
+            "start": 521
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
@@ -696,8 +756,7 @@ assertion_line: 17
     "sources": [
       {},
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -722,7 +781,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "UnreachableCode",
@@ -742,14 +801,19 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "Unreachable code (previous statement always breaks)",
-        "path": "$ROOT/positive.luau",
-        "range": [
-          599,
-          619
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/positive.luau"
+            }
+          },
+          "span": {
+            "end": 619,
+            "start": 599
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": [
           "Unnecessary"
         ]
@@ -759,8 +823,7 @@ assertion_line: 17
     "sources": [
       {},
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -785,7 +848,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "UnknownType",
@@ -805,14 +868,19 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "Unknown type 'integer'",
-        "path": "$ROOT/positive.luau",
-        "range": [
-          653,
-          662
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/positive.luau"
+            }
+          },
+          "span": {
+            "end": 662,
+            "start": 653
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
@@ -820,8 +888,7 @@ assertion_line: 17
     "sources": [
       {},
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -846,7 +913,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "ForRange",
@@ -866,14 +933,19 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "For loop should iterate backwards; did you forget to specify -1 as step?",
-        "path": "$ROOT/positive.luau",
-        "range": [
-          704,
-          708
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/positive.luau"
+            }
+          },
+          "span": {
+            "end": 708,
+            "start": 704
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
@@ -881,8 +953,7 @@ assertion_line: 17
     "sources": [
       {},
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -907,7 +978,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "UnbalancedAssignment",
@@ -927,14 +998,19 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "Assigning 1 values to 2 variables initializes extra variables with nil; add 'nil' to value list to silence",
-        "path": "$ROOT/positive.luau",
-        "range": [
-          740,
-          763
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/positive.luau"
+            }
+          },
+          "span": {
+            "end": 763,
+            "start": 740
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
@@ -942,8 +1018,7 @@ assertion_line: 17
     "sources": [
       {},
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -968,7 +1043,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "ImplicitReturn",
@@ -988,14 +1063,19 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "Function 'partial' can implicitly return no values even though there's an explicit return at line 64; add explicit return to silence",
-        "path": "$ROOT/positive.luau",
-        "range": [
-          846,
-          871
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/positive.luau"
+            }
+          },
+          "span": {
+            "end": 871,
+            "start": 846
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
@@ -1003,8 +1083,7 @@ assertion_line: 17
     "sources": [
       {},
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -1029,7 +1108,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "DuplicateLocal",
@@ -1049,24 +1128,34 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "Variable 'duplicate' already defined on column 11",
-        "path": "$ROOT/positive.luau",
-        "range": [
-          933,
-          942
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/positive.luau"
+            }
+          },
+          "span": {
+            "end": 942,
+            "start": 933
+          }
+        },
         "related": [
           {
-            "message": "previous declaration",
-            "path": "$ROOT/positive.luau",
-            "range": [
-              922,
-              931
-            ],
-            "source": {}
+            "location": {
+              "source": {
+                "origin": {
+                  "Disk": "$ROOT/positive.luau"
+                }
+              },
+              "span": {
+                "end": 931,
+                "start": 922
+              }
+            },
+            "message": "previous declaration"
           }
         ],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
@@ -1074,8 +1163,7 @@ assertion_line: 17
     "sources": [
       {},
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -1100,7 +1188,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "FormatString",
@@ -1120,14 +1208,19 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "Invalid format string: unfinished format specifier",
-        "path": "$ROOT/positive.luau",
-        "range": [
-          1002,
-          1008
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/positive.luau"
+            }
+          },
+          "span": {
+            "end": 1008,
+            "start": 1002
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
@@ -1135,8 +1228,7 @@ assertion_line: 17
     "sources": [
       {},
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -1161,7 +1253,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "TableLiteral",
@@ -1181,14 +1273,19 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "Table field 'key' is a duplicate; previously defined at line 76",
-        "path": "$ROOT/positive.luau",
-        "range": [
-          1038,
-          1041
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/positive.luau"
+            }
+          },
+          "span": {
+            "end": 1041,
+            "start": 1038
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
@@ -1196,8 +1293,7 @@ assertion_line: 17
     "sources": [
       {},
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -1222,7 +1318,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "UninitializedLocal",
@@ -1242,14 +1338,19 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "Variable 'second' defined at line 59 is never initialized or assigned; initialize with 'nil' to silence",
-        "path": "$ROOT/positive.luau",
-        "range": [
-          781,
-          787
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/positive.luau"
+            }
+          },
+          "span": {
+            "end": 787,
+            "start": 781
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       },
       {
@@ -1271,14 +1372,19 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "Variable 'uninitialized' defined at line 79 is never initialized or assigned; initialize with 'nil' to silence",
-        "path": "$ROOT/positive.luau",
-        "range": [
-          1089,
-          1102
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/positive.luau"
+            }
+          },
+          "span": {
+            "end": 1102,
+            "start": 1089
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
@@ -1286,8 +1392,7 @@ assertion_line: 17
     "sources": [
       {},
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -1312,7 +1417,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "DuplicateFunction",
@@ -1332,14 +1437,19 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "Duplicate function definition: 'object.method' also defined on line 84",
-        "path": "$ROOT/positive.luau",
-        "range": [
-          1188,
-          1201
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/positive.luau"
+            }
+          },
+          "span": {
+            "end": 1201,
+            "start": 1188
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
@@ -1347,8 +1457,7 @@ assertion_line: 17
     "sources": [
       {},
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -1373,7 +1482,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "DeprecatedApi",
@@ -1393,14 +1502,19 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "Function 'getfenv' is deprecated; consider using 'debug.info' instead",
-        "path": "$ROOT/positive.luau",
-        "range": [
-          1261,
-          1271
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/positive.luau"
+            }
+          },
+          "span": {
+            "end": 1271,
+            "start": 1261
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": [
           "Deprecated"
         ]
@@ -1410,8 +1524,7 @@ assertion_line: 17
     "sources": [
       {},
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -1436,7 +1549,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "TableOperations",
@@ -1456,14 +1569,19 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "table.insert uses index 0 but arrays are 1-based; did you mean 1 instead?",
-        "path": "$ROOT/positive.luau",
-        "range": [
-          1329,
-          1330
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/positive.luau"
+            }
+          },
+          "span": {
+            "end": 1330,
+            "start": 1329
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
@@ -1471,8 +1589,7 @@ assertion_line: 17
     "sources": [
       {},
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -1497,7 +1614,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "DuplicateCondition",
@@ -1517,14 +1634,19 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "Condition has already been checked on column 8",
-        "path": "$ROOT/positive.luau",
-        "range": [
-          1414,
-          1418
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/positive.luau"
+            }
+          },
+          "span": {
+            "end": 1418,
+            "start": 1414
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
@@ -1532,8 +1654,7 @@ assertion_line: 17
     "sources": [
       {},
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -1558,7 +1679,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "MisleadingAndOr",
@@ -1578,14 +1699,19 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "The and-or expression always evaluates to the second alternative because the first alternative is false; consider using if-then-else expression instead",
-        "path": "$ROOT/positive.luau",
-        "range": [
-          1476,
-          1495
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/positive.luau"
+            }
+          },
+          "span": {
+            "end": 1495,
+            "start": 1476
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
@@ -1593,8 +1719,7 @@ assertion_line: 17
     "sources": [
       {},
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -1619,7 +1744,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "IntegerParsing",
@@ -1639,14 +1764,19 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "Number literal exceeded available precision and was truncated to closest representable number",
-        "path": "$ROOT/positive.luau",
-        "range": [
-          1514,
-          1530
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/positive.luau"
+            }
+          },
+          "span": {
+            "end": 1530,
+            "start": 1514
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
@@ -1654,8 +1784,7 @@ assertion_line: 17
     "sources": [
       {},
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -1680,7 +1809,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "ComparisonPrecedence",
@@ -1700,14 +1829,19 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "not X == Y is equivalent to (not X) == Y; consider using X ~= Y, or add parentheses to silence",
-        "path": "$ROOT/positive.luau",
-        "range": [
-          1580,
-          1599
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/positive.luau"
+            }
+          },
+          "span": {
+            "end": 1599,
+            "start": 1580
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
@@ -1715,8 +1849,7 @@ assertion_line: 17
     "sources": [
       {},
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -1737,7 +1870,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "CommentDirective",
@@ -1756,22 +1889,26 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "Unknown comment directive 'strictt'; did you mean 'strict'?",
-        "path": "$ROOT/directive.luau",
-        "range": [
-          0,
-          10
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/directive.luau"
+            }
+          },
+          "span": {
+            "end": 10,
+            "start": 0
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
     "rule": "CommentDirective",
     "sources": [
       {}
-    ],
-    "status": 0
+    ]
   },
   {
     "availability": [
@@ -1792,7 +1929,7 @@ assertion_line: 17
       "unsuccessful": 0,
       "written": 0
     },
-    "diagnostics": [
+    "findings": [
       {
         "category": "Lint",
         "code": "RedundantNativeAttribute",
@@ -1811,21 +1948,25 @@ assertion_line: 17
           "producer": "luau"
         },
         "message": "native attribute on a function is redundant in a native module; consider removing it",
-        "path": "$ROOT/native.luau",
-        "range": [
-          10,
-          17
-        ],
+        "primary": {
+          "source": {
+            "origin": {
+              "Disk": "$ROOT/native.luau"
+            }
+          },
+          "span": {
+            "end": 17,
+            "start": 10
+          }
+        },
         "related": [],
-        "severity": "warning",
-        "source": {},
+        "severity": "Warning",
         "tags": []
       }
     ],
     "rule": "RedundantNativeAttribute",
     "sources": [
       {}
-    ],
-    "status": 0
+    ]
   }
 ]

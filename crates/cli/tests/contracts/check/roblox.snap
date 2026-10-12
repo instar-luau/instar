@@ -1,6 +1,5 @@
 ---
 source: crates/cli/tests/contracts/support/snapshots.rs
-assertion_line: 17
 ---
 {
   "capabilities": [
@@ -24,14 +23,19 @@ assertion_line: 17
         "producer": "luau"
       },
       "message": "Property Name of type 'Part' is read-only",
-      "path": "$ROOT/input.luau",
-      "range": [
-        40,
-        49
-      ],
+      "primary": {
+        "source": {
+          "origin": {
+            "Disk": "$ROOT/input.luau"
+          }
+        },
+        "span": {
+          "end": 49,
+          "start": 40
+        }
+      },
       "related": [],
-      "severity": "error",
-      "source": {},
+      "severity": "Error",
       "tags": []
     },
     {
@@ -54,14 +58,19 @@ assertion_line: 17
         "producer": "luau"
       },
       "message": "Instance.new does not support class 'DataModel'",
-      "path": "$ROOT/input.luau",
-      "range": [
-        91,
-        102
-      ],
+      "primary": {
+        "source": {
+          "origin": {
+            "Disk": "$ROOT/input.luau"
+          }
+        },
+        "span": {
+          "end": 102,
+          "start": 91
+        }
+      },
       "related": [],
-      "severity": "error",
-      "source": {},
+      "severity": "Error",
       "tags": []
     }
   ],
@@ -131,14 +140,19 @@ assertion_line: 17
         "producer": "luau"
       },
       "message": "Unknown type 'Part'",
-      "path": "$ROOT/plain/input.luau",
-      "range": [
-        12,
-        16
-      ],
+      "primary": {
+        "source": {
+          "origin": {
+            "Disk": "$ROOT/plain/input.luau"
+          }
+        },
+        "span": {
+          "end": 16,
+          "start": 12
+        }
+      },
       "related": [],
-      "severity": "error",
-      "source": {},
+      "severity": "Error",
       "tags": []
     },
     {
@@ -159,14 +173,19 @@ assertion_line: 17
         "producer": "luau"
       },
       "message": "Unknown global 'Instance'; consider assigning to it first",
-      "path": "$ROOT/plain/input.luau",
-      "range": [
-        19,
-        27
-      ],
+      "primary": {
+        "source": {
+          "origin": {
+            "Disk": "$ROOT/plain/input.luau"
+          }
+        },
+        "span": {
+          "end": 27,
+          "start": 19
+        }
+      },
       "related": [],
-      "severity": "error",
-      "source": {},
+      "severity": "Error",
       "tags": []
     }
   ],
