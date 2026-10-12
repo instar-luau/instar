@@ -1,12 +1,12 @@
-#include "analysis.hpp"
 #include "linting.hpp"
-#include "parsing.hpp"
 
 #include "Luau/Ast.h"
 #include "Luau/Linter.h"
 #include "Luau/Module.h"
 #include "Luau/Scope.h"
 #include "Luau/TypeArena.h"
+#include "analysis.hpp"
+#include "parsing.hpp"
 
 #include <map>
 #include <set>

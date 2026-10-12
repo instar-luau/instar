@@ -1,10 +1,10 @@
 #include "configuration.hpp"
-#include "lualib.h"
 
 #include "Luau/Compiler.h"
 #include "Luau/Config.h"
 #include "instar-luau/src/boundary/mod.rs.h"
 #include "lua.h"
+#include "lualib.h"
 
 #include <cmath>
 #include <cstdlib>

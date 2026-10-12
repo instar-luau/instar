@@ -2,7 +2,7 @@
 
 use std::{
     error::Error,
-    io::{self, Write},
+    io::{self, Write as _},
 };
 
 use instar_project::Project;

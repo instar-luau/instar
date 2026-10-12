@@ -1,7 +1,7 @@
-#include "analysis.hpp"
 #include "parsing.hpp"
 
 #include "Luau/Ast.h"
+#include "analysis.hpp"
 
 #include <map>
 #include <optional>
@@ -75,7 +75,9 @@ namespace instar::native {
                 return true;
             }
 
-            bool visit(Luau::AstStatTypeFunction *) override { return false; }
+            bool visit(Luau::AstStatTypeFunction *) override {
+                return false;
+            }
 
             void assigned(const Luau::AstExpr *expression) {
                 if (const auto *local = expression->as<Luau::AstExprLocal>()) {
@@ -85,9 +87,13 @@ namespace instar::native {
                 }
             }
 
-            bool visit(Luau::AstType *) override { return true; }
+            bool visit(Luau::AstType *) override {
+                return true;
+            }
 
-            bool visit(Luau::AstTypePack *) override { return true; }
+            bool visit(Luau::AstTypePack *) override {
+                return true;
+            }
         };
 
         const Luau::AstExpr *initializer(const Luau::AstExpr *expression, const Calls &calls, size_t depth = 0) {
@@ -266,7 +272,9 @@ namespace instar::native {
         struct Reset {
             Resolver &resolver;
 
-            ~Reset() { resolver.host = nullptr; }
+            ~Reset() {
+                resolver.host = nullptr;
+            }
         } reset{state.resolver};
 
         std::vector<Luau::ModuleName> modules;

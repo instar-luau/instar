@@ -1,6 +1,4 @@
-#include "analysis.hpp"
 #include "completion.hpp"
-#include "parsing.hpp"
 
 #include "Luau/AstQuery.h"
 #include "Luau/Autocomplete.h"
@@ -11,7 +9,9 @@
 #include "Luau/StringUtils.h"
 #include "Luau/ToString.h"
 #include "Luau/Type.h"
+#include "analysis.hpp"
 #include "instar-luau/src/boundary/mod.rs.h"
+#include "parsing.hpp"
 
 #include <algorithm>
 #include <map>

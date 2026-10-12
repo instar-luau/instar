@@ -1,6 +1,4 @@
-#include "analysis.hpp"
 #include "environment.hpp"
-#include "parsing.hpp"
 
 #include "Luau/Ast.h"
 #include "Luau/BuiltinDefinitions.h"
@@ -13,7 +11,9 @@
 #include "Luau/TypeArena.h"
 #include "Luau/TypePack.h"
 #include "Luau/TypeUtils.h"
+#include "analysis.hpp"
 #include "instar-luau/src/boundary/mod.rs.h"
+#include "parsing.hpp"
 
 #include <cstdint>
 #include <map>
@@ -671,8 +671,9 @@ namespace instar::native {
 
         auto &frontend = state.frontend;
         const std::string signature(input.environment_signature);
+        const auto found = state.environments.find(signature);
 
-        if (const auto found = state.environments.find(signature); found != state.environments.end()) {
+        if (found != state.environments.end()) {
             state.resolver.environments.insert_or_assign(name, found->second);
             state.outcomes.at(name).environment_available = true;
 
