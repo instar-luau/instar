@@ -72,6 +72,7 @@ fn main() {
         println!("cargo:rustc-link-lib=static={library}");
     }
 
+    println!("cargo:rerun-if-env-changed=CARGO_TARGET_DIR");
     println!("cargo:rerun-if-changed=CMakeLists.txt");
     println!("cargo:rerun-if-changed=src/boundary");
     println!("cargo:rerun-if-changed=native");
