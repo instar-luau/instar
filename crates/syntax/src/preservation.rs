@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, mem};
+use std::{collections::BTreeSet, io::Write as _, mem};
 
 use instar_shared::{Completion, Options, Reason, Span};
 use serde::{Deserialize, Serialize};
@@ -277,16 +277,40 @@ fn fingerprint(
     ordering: bool,
     options: &Options,
 ) -> Option<Vec<u8>> {
+    let mut result = Vec::new();
+    write_fingerprint(tree, index, bindings, ordering, options, &mut result)?;
+
+    Some(result)
+}
+
+fn write_fingerprint(
+    tree: &SyntaxTree<'_>,
+    index: NodeIndex,
+    bindings: &BindingResult,
+    ordering: bool,
+    options: &Options,
+    result: &mut Vec<u8>,
+) -> Option<()> {
     if options.interrupted().is_some() {
         return None;
     }
 
     let node = tree.node(index);
-    let mut result = format!("{:?}", mem::discriminant(&node.kind)).into_bytes();
-    let children = tree.children(index);
+    write!(result, "{:?}", mem::discriminant(&node.kind)).ok()?;
 
     if let NodeKind::Block { statements } = &node.kind {
         let entries = tree.list(statements);
+
+        if !ordering {
+            for entry in entries {
+                framed(result, |result| {
+                    write_fingerprint(tree, entry.node, bindings, ordering, options, result)
+                })?;
+            }
+
+            return Some(());
+        }
+
         let mut units = Vec::new();
 
         for entry in entries {
@@ -298,7 +322,7 @@ fn fingerprint(
         let mut start = 0;
 
         while start < units.len() {
-            if !ordering || units[start].1.is_none() {
+            if units[start].1.is_none() {
                 start += 1;
                 continue;
             }
@@ -322,45 +346,50 @@ fn fingerprint(
         }
 
         for (value, _) in units {
-            append(&mut result, &value);
+            append(result, &value);
         }
 
-        return Some(result);
+        return Some(());
     }
 
     let mut position = node.tokens.start.get();
 
-    for child in children {
+    for child in tree.children(index) {
         let child_node = tree.node(child);
 
         if child_node.tokens.start.get() < position {
             return None;
         }
 
-        append(
-            &mut result,
-            &normalized_tokens(tree, position, child_node.tokens.start.get())?,
-        );
+        framed(result, |result| {
+            write_tokens(tree, position, child_node.tokens.start.get(), result)
+        })?;
 
-        append(
-            &mut result,
-            &fingerprint(tree, child, bindings, ordering, options)?,
-        );
+        framed(result, |result| {
+            write_fingerprint(tree, child, bindings, ordering, options, result)
+        })?;
 
         position = child_node.tokens.end.get();
     }
 
-    append(
-        &mut result,
-        &normalized_tokens(tree, position, node.tokens.end.get())?,
-    );
-
-    Some(result)
+    framed(result, |result| {
+        write_tokens(tree, position, node.tokens.end.get(), result)
+    })
 }
 
 fn normalized_tokens(tree: &SyntaxTree<'_>, start: usize, end: usize) -> Option<Vec<u8>> {
     let mut result = Vec::new();
+    write_tokens(tree, start, end, &mut result)?;
 
+    Some(result)
+}
+
+fn write_tokens(
+    tree: &SyntaxTree<'_>,
+    start: usize,
+    end: usize,
+    result: &mut Vec<u8>,
+) -> Option<()> {
     for token in &tree.tokens[start..end] {
         if matches!(
             token.kind,
@@ -375,22 +404,28 @@ fn normalized_tokens(tree: &SyntaxTree<'_>, start: usize, end: usize) -> Option<
 
         let bytes = token.bytes(tree.source);
 
-        let value = match token.kind {
-            TokenKind::QuotedString | TokenKind::RawString => literal::decode(bytes)?,
-            _ => bytes.to_vec(),
-        };
-
-        let kind = if matches!(token.kind, TokenKind::QuotedString | TokenKind::RawString) {
-            "string".to_owned()
+        if matches!(token.kind, TokenKind::QuotedString | TokenKind::RawString) {
+            let value = literal::decode(bytes)?;
+            append(result, b"string");
+            append(result, &value);
         } else {
-            format!("{:?}", token.kind)
-        };
-
-        append(&mut result, kind.as_bytes());
-        append(&mut result, &value);
+            framed(result, |result| write!(result, "{:?}", token.kind).ok())?;
+            append(result, bytes);
+        }
     }
 
-    Some(result)
+    Some(())
+}
+
+fn framed(output: &mut Vec<u8>, write: impl FnOnce(&mut Vec<u8>) -> Option<()>) -> Option<()> {
+    let start = output.len();
+    let prefix = start + mem::size_of::<usize>();
+    output.resize(prefix, 0);
+    write(output)?;
+    let length = output.len() - prefix;
+    output[start..prefix].copy_from_slice(&length.to_le_bytes());
+
+    Some(())
 }
 
 fn sortable(tree: &SyntaxTree<'_>, index: NodeIndex, bindings: &BindingResult) -> Option<Vec<u8>> {
