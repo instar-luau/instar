@@ -911,7 +911,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "instar-cli"
+name = "instar"
 version = "0.1.0"
 dependencies = [
  "clap",
@@ -921,12 +921,10 @@ dependencies = [
  "eyre",
  "indicatif",
  "insta",
- "instar-format",
- "instar-lint",
+ "instar-configuration",
  "instar-luau",
- "instar-project",
- "instar-server",
- "instar-shared",
+ "instar-workspace",
+ "notify",
  "serde_json",
  "similar 3.2.0",
  "tempfile",

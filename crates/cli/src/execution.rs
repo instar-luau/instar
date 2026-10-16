@@ -1,0 +1,201 @@
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    env, io, mem,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Instant,
+};
+
+use eyre::{Result, bail};
+
+use instar_workspace::{Access, Purpose, Workspace};
+
+use super::{
+    arguments::{Arguments, Options},
+    reporting,
+    watching::{Change, Watcher},
+    workers,
+};
+
+pub(super) struct Project {
+    pub(super) workspace: Workspace,
+    pub(super) selected: BTreeMap<String, PathBuf>,
+    pub(super) stdin: Option<(PathBuf, Arc<str>)>,
+    pub(super) jobs: usize,
+}
+
+pub(super) fn run(arguments: &Arguments) -> Result<u8> {
+    let options = arguments.command.options();
+
+    let root = options
+        .project_root
+        .clone()
+        .map_or_else(env::current_dir, Ok)?
+        .canonicalize()?;
+
+    if !root.is_dir() {
+        bail!("{}: expected a project directory", root.display());
+    }
+
+    let stdin_count = options
+        .inputs
+        .iter()
+        .filter(|path| path.as_os_str() == "-")
+        .count();
+
+    if stdin_count > 1 {
+        bail!("stdin (-) may only be selected once");
+    }
+
+    if stdin_count == 0 && arguments.stdin_filepath.is_some() {
+        bail!("--stdin-filepath requires stdin (-) as an input");
+    }
+
+    if options.watch && stdin_count != 0 {
+        bail!("--watch cannot be used with stdin (-)");
+    }
+
+    let overrides = arguments.command.overrides()?;
+
+    let stdin = if stdin_count == 1 {
+        Some((
+            arguments
+                .stdin_filepath
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("stdin.luau")),
+            Arc::from(io::read_to_string(io::stdin().lock())?),
+        ))
+    } else {
+        None
+    };
+
+    let mut watcher = options
+        .watch
+        .then(|| Watcher::new(&root, options, arguments.quiet))
+        .transpose()?;
+
+    loop {
+        let started = Instant::now();
+
+        let result = prepare(arguments, &root, &overrides, stdin.as_ref()).and_then(|project| {
+            workers::run(arguments, &project, &overrides, watcher.as_mut(), started)
+        });
+
+        let Some(watcher) = &mut watcher else {
+            return result;
+        };
+
+        if let Err(error) = result {
+            reporting::failure(&error);
+            watcher.wait()?;
+        }
+    }
+}
+
+pub(super) fn session(
+    arguments: &Arguments,
+    project: &Project,
+    mut watcher: Option<&mut Watcher>,
+    mut started: Instant,
+    pool: &workers::Pool,
+) -> Result<u8> {
+    let mut dirty = BTreeSet::new();
+
+    if let Some(watcher) = &mut watcher {
+        watcher.begin(project.workspace.dependencies())?;
+    }
+
+    loop {
+        tracing::debug!(
+            files = project.selected.len(),
+            workers = project.jobs,
+            "Processing batch"
+        );
+
+        let progress = reporting::progress(arguments, &project.workspace, &project.selected)?;
+        let result = pool.execute(&dirty, &progress);
+        progress.finish_and_clear();
+
+        let workers::Response::Completed(mut batch) = result? else {
+            return Ok(0);
+        };
+
+        if let Some(watcher) = &mut watcher {
+            watcher.observe(mem::take(&mut batch.dependencies))?;
+        }
+
+        let summary = batch.report(project)?;
+
+        summary.report(arguments, project.selected.len(), started, project.jobs);
+        let status = summary.status();
+
+        let Some(watcher) = &mut watcher else {
+            return Ok(status);
+        };
+
+        match watcher.changed(&project.workspace)? {
+            Change::Reload => return Ok(status),
+
+            Change::Sources(changed) => {
+                dirty = changed;
+
+                for module in &dirty {
+                    project.workspace.invalidate(module);
+                }
+            }
+        }
+
+        started = Instant::now();
+    }
+}
+
+pub(super) fn open(
+    root: &Path,
+    options: &Options,
+    overrides: &[String],
+    stdin: Option<&(PathBuf, Arc<str>)>,
+) -> Result<(Workspace, Option<String>)> {
+    let mut workspace = Workspace::new(root, &options.configuration, overrides)?;
+
+    let module = stdin
+        .map(|(path, source)| workspace.set_source(path, Arc::clone(source)))
+        .transpose()?;
+
+    Ok((workspace, module))
+}
+
+fn prepare(
+    arguments: &Arguments,
+    root: &Path,
+    overrides: &[String],
+    stdin: Option<&(PathBuf, Arc<str>)>,
+) -> Result<Project> {
+    let options = arguments.command.options();
+    let (workspace, stdin_module) = open(root, options, overrides, stdin)?;
+
+    let inputs: Vec<_> = options
+        .inputs
+        .iter()
+        .filter(|path| path.as_os_str() != "-")
+        .cloned()
+        .collect();
+
+    let mut selected = if stdin.is_some() && inputs.is_empty() {
+        BTreeMap::new()
+    } else {
+        workspace.select(&inputs, Purpose::Check, Access::Read)?
+    };
+
+    if let Some(module) = &stdin_module {
+        selected.insert(module.clone(), PathBuf::from(module));
+    }
+
+    let jobs = workers::count(options.jobs, selected.len());
+
+    Ok(Project {
+        workspace,
+        selected,
+        stdin: stdin.cloned(),
+        jobs,
+    })
+}
