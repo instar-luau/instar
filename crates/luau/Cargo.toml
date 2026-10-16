@@ -1,19 +1,15 @@
 [package]
 name = "instar-luau"
+description = "Native Luau analysis for Instar"
 version.workspace = true
 edition.workspace = true
-description = "Native Luau bridge"
 repository.workspace = true
 license.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-instar-shared.workspace = true
-
 cxx.workspace = true
-serde.workspace = true
-serde_json.workspace = true
 
 [build-dependencies]
 cmake.workspace = true

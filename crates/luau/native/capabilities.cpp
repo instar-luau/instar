@@ -1,0 +1,529 @@
+#include "capabilities.hpp"
+
+#include "Luau/Ast.h"
+#include "Luau/BuiltinDefinitions.h"
+#include "Luau/ConstraintSolver.h"
+#include "Luau/Error.h"
+#include "Luau/LValue.h"
+#include "Luau/Scope.h"
+#include "Luau/Type.h"
+#include "Luau/TypeArena.h"
+#include "Luau/TypePack.h"
+#include "Luau/TypeUtils.h"
+#include "instances.hpp"
+#include "instar-luau/src/bridge.rs.h"
+
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+
+LUAU_FASTFLAG(LuauCyclicRequireTypeInference)
+
+namespace instar::luau {
+    namespace {
+        enum class MagicKind : std::uint8_t {
+            Constructor,
+            Service,
+            IsA,
+            ChildClass,
+            ChildType,
+            AncestorClass,
+            AncestorType,
+            ChildName,
+            AncestorName,
+        };
+
+        struct Description {
+            Luau::TypeId type;
+            bool service;
+            bool creatable;
+        };
+
+        struct Metadata {
+            std::unordered_map<std::string, Description> classes;
+        };
+
+        std::optional<std::string> argument(const Luau::AstExprCall &call) {
+            if (call.args.size == 0) {
+                return std::nullopt;
+            }
+
+            const auto *value = call.args.data[0]->as<Luau::AstExprConstantString>();
+
+            return value ? std::optional<std::string>(std::string(value->value.data, value->value.size)) : std::nullopt;
+        }
+
+        std::optional<Luau::TypeId>
+        class_type(const Metadata &metadata, const std::string &name, MagicKind kind = MagicKind::IsA) {
+            const auto found = metadata.classes.find(name);
+
+            if (found == metadata.classes.end() || (kind == MagicKind::Constructor && !found->second.creatable) ||
+                (kind == MagicKind::Service && !found->second.service)) {
+                return std::nullopt;
+            }
+
+            return found->second.type;
+        }
+
+        std::string invalid_message(MagicKind kind, std::string_view name) {
+            switch (kind) {
+            case MagicKind::Constructor:
+                return "Instance.new does not support class '" + std::string(name) + "'";
+
+            case MagicKind::Service:
+                return "GetService does not support service '" + std::string(name) + "'";
+
+            case MagicKind::IsA:
+                return "IsA does not support class '" + std::string(name) + "'";
+
+            default:
+                return "instance lookup does not support class '" + std::string(name) + "'";
+            }
+        }
+
+        void report_new(
+            const Luau::MagicFunctionCallContext &context, const Luau::AstExpr &expression, std::string message
+        ) {
+            if (FFlag::LuauCyclicRequireTypeInference) {
+                context.solver->reportError(
+                    Luau::GenericError{std::move(message)},
+                    expression.location,
+                    *context.constraint->moduleName
+                );
+            } else {
+                context.solver->DEPRECATED_reportError(
+                    Luau::TypeError{expression.location, Luau::GenericError{std::move(message)}}
+                );
+            }
+        }
+
+        class MagicFunction final : public Luau::MagicFunction {
+        public:
+            MagicFunction(MagicKind kind, std::shared_ptr<const Metadata> metadata)
+                : kind(kind), metadata(std::move(metadata)) {}
+
+            std::optional<Luau::WithPredicate<Luau::TypePackId>> handleOldSolver(
+                Luau::TypeChecker &, const Luau::ScopePtr &, const Luau::AstExprCall &,
+                Luau::WithPredicate<Luau::TypePackId>
+            ) override {
+                throw std::logic_error("old solver is not supported");
+            }
+
+            bool infer(const Luau::MagicFunctionCallContext &context) override {
+                if (kind == MagicKind::ChildName || kind == MagicKind::AncestorName) {
+                    return infer_instance(context);
+                }
+
+                if (kind == MagicKind::IsA && context.callSite->args.size == 1) {
+                    const std::optional<std::string> name = argument(*context.callSite);
+
+                    if (name && !class_type(*metadata, *name)) {
+                        report_new(context, *context.callSite->args.data[0], invalid_message(kind, *name));
+                        set_error(context);
+
+                        return true;
+                    }
+
+                    return false;
+                }
+
+                if (context.callSite->args.size == 0 || context.callSite->args.size > maximum_arguments()) {
+                    return false;
+                }
+
+                const std::optional<std::string> name = argument(*context.callSite);
+                const std::optional<Luau::TypeId> type = name ? class_type(*metadata, *name, kind) : std::nullopt;
+
+                if (!type) {
+                    if (name) {
+                        report_new(context, *context.callSite->args.data[0], invalid_message(kind, *name));
+                        set_error(context);
+                    }
+
+                    return name.has_value();
+                }
+
+                Luau::TypeId result = *type;
+
+                if (kind == MagicKind::Service && context.callSite->self) {
+                    if (const auto receiver = Luau::first(context.arguments)) {
+                        if (const auto *instance = Luau::get<Luau::ExternType>(Luau::follow(*receiver))) {
+                            Luau::TypeId service = nullptr;
+
+                            for (const auto &[name, property] : instance->props) {
+                                if (name != "Parent" && property.readTy &&
+                                    Luau::isSubclass(
+                                        Luau::get<Luau::ExternType>(Luau::follow(*property.readTy)),
+                                        Luau::get<Luau::ExternType>(*type)
+                                    )) {
+                                    if (!service) {
+                                        service = *property.readTy;
+                                    } else if (service != *property.readTy) {
+                                        service = context.solver->arena->addType(
+                                            Luau::UnionType{{service, *property.readTy}}
+                                        );
+                                    }
+                                }
+                            }
+
+                            if (service) {
+                                result = service;
+                            }
+                        }
+                    }
+
+                    if (const auto receiver = Luau::first(context.arguments)) {
+                        if (const auto service = lookup_instance(*receiver, InstanceQuery::Service, *name)) {
+                            result = *service;
+                        }
+                    }
+                }
+
+                if (returns_optional()) {
+                    result = Luau::makeOption(context.solver->builtinTypes, *context.solver->arena, result);
+                }
+
+                Luau::asMutable(context.result)
+                    ->ty.emplace<Luau::BoundTypePack>(context.solver->arena->addTypePack({result}));
+
+                return true;
+            }
+
+            void refine(const Luau::MagicRefinementContext &context) override {
+                if (kind != MagicKind::IsA || context.callSite->args.size != 1 || context.discriminantTypes.empty()) {
+                    return;
+                }
+
+                const auto *index = context.callSite->func->as<Luau::AstExprIndexName>();
+                const std::optional<std::string> name = argument(*context.callSite);
+
+                if (!index || !name) {
+                    return;
+                }
+
+                const std::optional<Luau::TypeId> type = class_type(*metadata, *name);
+                const std::optional<Luau::LValue> lvalue = Luau::tryGetLValue(*index->expr);
+                const std::optional<Luau::TypeId> discriminant = context.discriminantTypes[0];
+
+                if (!type || !lvalue || !discriminant || !Luau::get<Luau::BlockedType>(*discriminant)) {
+                    return;
+                }
+
+                Luau::asMutable(*discriminant)->ty.emplace<Luau::BoundType>(*type);
+            }
+
+        private:
+            bool infer_instance(const Luau::MagicFunctionCallContext &context) const {
+                const auto &call = *context.callSite;
+                const size_t maximum = kind == MagicKind::AncestorName ? 1 : 2;
+
+                if (!call.self || call.args.size == 0 || call.args.size > maximum) {
+                    return false;
+                }
+
+                const auto name = argument(call);
+                const auto receiver = Luau::first(context.arguments);
+
+                if (!name || !receiver) {
+                    return false;
+                }
+
+                auto query = kind == MagicKind::AncestorName ? InstanceQuery::Ancestor : InstanceQuery::Child;
+
+                if (kind == MagicKind::ChildName && call.args.size == 2) {
+                    const auto *recursive = call.args.data[1]->as<Luau::AstExprConstantBool>();
+
+                    if (recursive && recursive->value) {
+                        query = InstanceQuery::Descendant;
+                    }
+                }
+
+                auto result = lookup_instance(*receiver, query, *name);
+
+                if (!result) {
+                    return false;
+                }
+
+                result = Luau::makeOption(context.solver->builtinTypes, *context.solver->arena, *result);
+
+                Luau::asMutable(context.result)
+                    ->ty.emplace<Luau::BoundTypePack>(context.solver->arena->addTypePack({*result}));
+
+                return true;
+            }
+
+            size_t maximum_arguments() const {
+                return kind == MagicKind::Constructor || kind == MagicKind::ChildType ? 2 : 1;
+            }
+
+            bool returns_optional() const {
+                return kind == MagicKind::ChildClass || kind == MagicKind::ChildType ||
+                       kind == MagicKind::AncestorClass || kind == MagicKind::AncestorType;
+            }
+
+            void set_error(const Luau::MagicFunctionCallContext &context) const {
+                Luau::asMutable(context.result)
+                    ->ty.emplace<Luau::BoundTypePack>(context.solver->builtinTypes->errorTypePack);
+            }
+
+            MagicKind kind;
+            std::shared_ptr<const Metadata> metadata;
+        };
+
+        void attach(Luau::TypeId type, const std::shared_ptr<Luau::MagicFunction> &magic, const char *tag) {
+            type = Luau::follow(type);
+
+            if (auto *function = Luau::getMutable<Luau::FunctionType>(type)) {
+                if (magic) {
+                    function->magic = magic;
+                }
+
+                function->tags.emplace_back(tag);
+            } else if (const auto *intersection = Luau::get<Luau::IntersectionType>(type)) {
+                for (Luau::TypeId part : intersection->parts) {
+                    attach(part, magic, tag);
+                }
+            }
+        }
+
+        template <typename Properties>
+        void attach_property(
+            Properties &properties, const char *name, const std::shared_ptr<Luau::MagicFunction> &magic, const char *tag
+        ) {
+            const auto found = properties.find(name);
+
+            if (found != properties.end()) {
+                const auto readable = found->second.readTy;
+
+                if (readable) {
+                    attach(*readable, magic, tag);
+                }
+            }
+        }
+
+        void attach_global(
+            Luau::GlobalTypes &globals, const char *global, const std::shared_ptr<Luau::MagicFunction> &magic,
+            const char *property, const char *tag
+        ) {
+            const std::optional<Luau::Binding> binding = Luau::tryGetGlobalBinding(globals, global);
+
+            if (!binding) {
+                return;
+            }
+
+            if (auto *table = Luau::getMutable<Luau::TableType>(Luau::follow(binding->typeId))) {
+                attach_property(table->props, property, magic, tag);
+            }
+        }
+
+        void attach_extern(
+            Luau::GlobalTypes &globals, const char *type, const std::shared_ptr<Luau::MagicFunction> &magic,
+            const char *property, const char *tag
+        ) {
+            const std::optional<Luau::TypeFun> found = globals.globalScope->lookupType(type);
+
+            if (!found) {
+                return;
+            }
+
+            if (auto *extern_type = Luau::getMutable<Luau::ExternType>(Luau::follow(found->type))) {
+                attach_property(extern_type->props, property, magic, tag);
+            }
+        }
+
+        void share_metatable(Luau::GlobalTypes &globals, const char *base_name) {
+            const std::optional<Luau::TypeFun> base = globals.globalScope->lookupType(base_name);
+
+            if (!base) {
+                return;
+            }
+
+            const auto *base_extern = Luau::get<Luau::ExternType>(Luau::follow(base->type));
+
+            if (!base_extern || !base_extern->metatable) {
+                return;
+            }
+
+            for (auto &[_, type_function] : globals.globalScope->exportedTypeBindings) {
+                auto *extern_type = Luau::getMutable<Luau::ExternType>(Luau::follow(type_function.type));
+
+                if (extern_type && Luau::isSubclass(extern_type, base_extern)) {
+                    extern_type->metatable = base_extern->metatable;
+                }
+            }
+        }
+
+        void add_enum_type_aliases(Luau::GlobalTypes &globals) {
+            const auto enum_item = globals.globalScope->lookupType("EnumItem");
+
+            if (!enum_item) {
+                return;
+            }
+
+            const auto *base = Luau::get<Luau::ExternType>(Luau::follow(enum_item->type));
+            auto &aliases = globals.globalScope->importedTypeBindings["Enum"];
+
+            for (const auto &[name, type_function] : globals.globalScope->exportedTypeBindings) {
+                if (name.size() > 4 && name.rfind("Enum", 0) == 0 && name != "EnumItem" &&
+                    Luau::isSubclass(Luau::get<Luau::ExternType>(Luau::follow(type_function.type)), base)) {
+                    aliases.insert_or_assign(name.substr(4), type_function);
+                }
+            }
+        }
+
+        void add_instance_is_a(Luau::GlobalTypes &globals) {
+            const std::optional<Luau::TypeFun> instance = globals.globalScope->lookupType("Instance");
+
+            if (!instance) {
+                return;
+            }
+
+            auto *instance_type = Luau::getMutable<Luau::ExternType>(Luau::follow(instance->type));
+
+            if (!instance_type || instance_type->props.find("IsA") != instance_type->props.end()) {
+                return;
+            }
+
+            const Luau::TypeId function = Luau::makeFunction(
+                globals.globalTypes,
+                instance->type,
+                {globals.builtinTypes->stringType},
+                {globals.builtinTypes->booleanType}
+            );
+
+            instance_type->props.emplace("IsA", Luau::Property::readonly(function));
+        }
+
+        void register_magic(
+            Luau::GlobalTypes &globals, const std::shared_ptr<const Metadata> &metadata, MagicKind kind,
+            const char *type, const char *property, bool global
+        ) {
+            const auto magic = std::make_shared<MagicFunction>(kind, metadata);
+
+            const char *tag = kind == MagicKind::Constructor    ? "instar.creatable"
+                              : kind == MagicKind::Service      ? "instar.service"
+                              : kind == MagicKind::ChildName    ? "instar.child"
+                              : kind == MagicKind::AncestorName ? "instar.ancestor"
+                                                                : "instar.class";
+
+            if (global) {
+                attach_global(globals, type, magic, property, tag);
+            } else {
+                attach_extern(globals, type, magic, property, tag);
+            }
+        }
+
+    }
+
+    void apply(Luau::GlobalTypes &globals, rust::Slice<const Class> classes) {
+        std::unordered_set<std::string> names;
+
+        for (const Class &definition : classes) {
+            const std::string name(definition.name);
+
+            if (name.empty()) {
+                throw std::invalid_argument("empty Roblox class name");
+            }
+
+            if (!names.insert(name).second) {
+                throw std::invalid_argument("duplicate Roblox class flags: " + name);
+            }
+
+            std::unordered_set<std::string> properties;
+
+            for (const Property &property : definition.properties) {
+                if (!properties.insert(std::string(property.name)).second) {
+                    throw std::invalid_argument(
+                        "duplicate property capability: " + name + "." + std::string(property.name)
+                    );
+                }
+            }
+        }
+
+        auto metadata = std::make_shared<Metadata>();
+        metadata->classes.reserve(classes.size());
+        auto base = globals.globalScope->lookupType("Object");
+
+        if (!base) {
+            base = globals.globalScope->lookupType("Instance");
+        }
+
+        const auto *base_type = base ? Luau::get<Luau::ExternType>(Luau::follow(base->type)) : nullptr;
+
+        if (!base_type) {
+            throw std::invalid_argument("Roblox class magic requires Object or Instance declarations");
+        }
+
+        for (const auto &[name, type_function] : globals.globalScope->exportedTypeBindings) {
+            const auto type = Luau::follow(type_function.type);
+
+            if (Luau::isSubclass(Luau::get<Luau::ExternType>(type), base_type)) {
+                metadata->classes.emplace(name, Description{type, false, false});
+                Luau::getMutable<Luau::ExternType>(type)->tags.emplace_back("instar.class");
+            }
+        }
+
+        for (size_t index = 0; index < classes.size(); ++index) {
+            const std::string name(classes[index].name);
+            const auto type = metadata->classes.find(name);
+
+            if (type == metadata->classes.end()) {
+                throw std::invalid_argument("Roblox class has no declaration: " + name);
+            }
+
+            type->second.service = classes[index].service;
+            type->second.creatable = classes[index].creatable;
+            auto *declaration = Luau::getMutable<Luau::ExternType>(type->second.type);
+
+            for (const Property &access : classes[index].properties) {
+                const auto property = declaration->props.find(std::string(access.name));
+
+                if (property == declaration->props.end()) {
+                    throw std::invalid_argument(
+                        "Roblox property metadata has no declaration: " + name + "." + std::string(access.name)
+                    );
+                }
+
+                if (!access.read && !access.write) {
+                    declaration->tags.emplace_back("instar.property." + std::string(access.name));
+                    declaration->props.erase(property);
+                } else if (!access.read) {
+                    property->second.readTy.reset();
+                } else if (!access.write) {
+                    property->second.writeTy.reset();
+                }
+            }
+
+            if (classes[index].service) {
+                declaration->tags.emplace_back("instar.service");
+            }
+
+            if (classes[index].creatable) {
+                declaration->tags.emplace_back("instar.creatable");
+            }
+        }
+
+        add_enum_type_aliases(globals);
+        share_metatable(globals, "Instance");
+        share_metatable(globals, "Enum");
+        share_metatable(globals, "EnumItem");
+        add_instance_is_a(globals);
+
+        register_magic(globals, metadata, MagicKind::Constructor, "Instance", "new", true);
+        register_magic(globals, metadata, MagicKind::Service, "ServiceProvider", "GetService", false);
+        register_magic(globals, metadata, MagicKind::IsA, "Instance", "IsA", false);
+        register_magic(globals, metadata, MagicKind::ChildClass, "Instance", "FindFirstChildOfClass", false);
+        register_magic(globals, metadata, MagicKind::ChildType, "Instance", "FindFirstChildWhichIsA", false);
+        register_magic(globals, metadata, MagicKind::AncestorClass, "Instance", "FindFirstAncestorOfClass", false);
+        register_magic(globals, metadata, MagicKind::AncestorType, "Instance", "FindFirstAncestorWhichIsA", false);
+        register_magic(globals, metadata, MagicKind::ChildName, "Instance", "FindFirstChild", false);
+        attach_extern(globals, "Instance", nullptr, "WaitForChild", "instar.child");
+        register_magic(globals, metadata, MagicKind::AncestorName, "Instance", "FindFirstAncestor", false);
+    }
+}

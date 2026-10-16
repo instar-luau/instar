@@ -1,50 +1,27 @@
-//! Captured Luau analysis, guarded semantic queries and isolated configuration evaluation.
+//! Persistent native Luau analysis over host-provided sources and configuration.
 
-#[expect(
-    clippy::absolute_paths,
-    clippy::arbitrary_source_item_ordering,
-    reason = "CXX generates fully qualified paths and pointer trait implementations after factory functions"
-)]
 #[expect(
     unsafe_code,
     unreachable_pub,
-    reason = "CXX generates public unsafe declarations inside this private native boundary"
+    clippy::absolute_paths,
+    clippy::inline_modules,
+    reason = "CXX generates public FFI items, unsafe code, absolute paths, and an inline module"
 )]
-mod boundary;
+mod bridge;
 
 mod configuration;
+mod environment;
+mod error;
+mod flags;
+mod frontend;
+mod host;
+mod instances;
 
-#[path = "boundary/conversion.rs"]
-mod conversion;
-
-pub mod flags;
-mod native;
-mod worker;
-
-pub use configuration::{
-    ConfigurationContext, ConfigurationEntry, ConfigurationEvaluator, ConfigurationInput,
-    ConfigurationKey, ConfigurationLimits, ConfigurationResult, ConfigurationValue,
-    run_configuration_worker,
-};
-
-pub use flags::{FlagValue, LanguageProfile, SolverMode};
-
-pub use native::{
-    AnalysisIdentity, AnalysisPurpose, AnalysisReference, AnalysisRequest, AnalysisResult,
-    ArgumentRelation, BindingFact, BindingKind, CallFact, CallableSignature, Capabilities,
-    ClassCapability, ClosureIdentity, CompletionCandidate, CompletionContext, CompletionKind,
-    Completions, ConstantValue, ControlFlow, CycleEdge, CyclePath, DeclarationGroup, Definition,
-    Determinism, EffectFact, EnvironmentIdentity, EnvironmentInput, EnvironmentMetadata,
-    ExpressionFact, FactsInput, FactsResult, FunctionFact, ImportIdentity, ImportOutcome,
-    ImportRequest, ImportSite, InferenceMode, InferenceSettings, InheritanceFact, InspectionResult,
-    InstanceEnvironment, InstancePath, InstanceRecord, InstanceRoot, InstanceStep,
-    LanguageFeatures, LanguageIdentity, LanguageMode, LintInput, LintResult, ModuleAnalysis,
-    ModuleIdentity, ModuleInput, Native, NominalFact, Notation, OccurrenceAccess, OccurrenceFact,
-    OccurrenceRole, Parentheses, ParsedMetadata, PositionFacts, PositionInput, PropertyCapability,
-    ReportingSettings, ResolvedImport, ScopeFact, SemanticAvailability, SemanticCategory,
-    SemanticFacts, SemanticIdentity, SemanticKind, SignatureParameter, SourceDirective,
-    SourceInput, TypeFact, UpstreamFinding, UpstreamWarningIdentity, UpstreamWarningSettings,
-    WarningAvailability,
-};
-
-pub use worker::run_worker;
+pub use bridge::bindings::Diagnostic;
+pub use configuration::{Configuration, Mode};
+pub use environment::{Class, Definition, Environment, Property};
+pub use error::{Error, HostError, Operation};
+pub use flags::Flag;
+pub use frontend::Frontend;
+pub use host::{Context, Host, Navigation};
+pub use instances::{Instance, Location};

@@ -1,18 +1,23 @@
-#ifndef INSTAR_ENVIRONMENT_HEADER
-#define INSTAR_ENVIRONMENT_HEADER
+#ifndef INSTAR_LUAU_NATIVE_ENVIRONMENT
+#define INSTAR_LUAU_NATIVE_ENVIRONMENT
 
-#include "instar-luau/src/boundary/mod.rs.h"
+#include "Luau/Frontend.h"
+#include "rust/cxx.h"
 
-namespace instar::native {
-    struct AnalysisState;
+#include <exception>
+#include <string>
 
-    struct EnvironmentPreparation {
-        rust::Vec<NativeDiagnostic> diagnostics;
-        NativeCompletion completion;
+namespace instar::luau {
+    struct Diagnostic;
+    struct Environment;
+
+    struct DeclarationFailure : std::exception {
+        explicit DeclarationFailure(const rust::Vec<Diagnostic> &diagnostics) noexcept;
+
+        const rust::Vec<Diagnostic> &diagnostics;
     };
 
-    EnvironmentPreparation
-    prepare_environment(AnalysisState &state, const NativeModuleInput &input, const NativeOperation &operation);
+    rust::Vec<Diagnostic> prepare(Luau::Frontend &frontend, const std::string &name, const Environment &environment);
 }
 
 #endif

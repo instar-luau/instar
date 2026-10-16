@@ -1,128 +1,146 @@
 #include "flags.hpp"
 
 #include "Luau/Common.h"
-#include "instar-luau/src/boundary/mod.rs.h"
+#include "Luau/Flags.h"
+#include "instar-luau/src/bridge.rs.h"
 
-#include <map>
+#include <mutex>
 #include <stdexcept>
-#include <string>
-#include <unordered_set>
+#include <utility>
 #include <vector>
 
-namespace instar {
+namespace instar::luau {
     namespace {
-        struct ResolvedFlag {
-            const NativeFlag &value;
-            Luau::FValue<bool> *boolean;
-            Luau::FValue<int> *integer;
+        using Value = std::variant<bool, int>;
+        using Values = std::map<std::string, Value>;
+
+        struct State {
+            std::mutex mutex;
+            std::size_t users = 0;
+            Values active;
+            std::vector<std::pair<Luau::FValue<bool> *, bool>> booleans;
+            std::vector<std::pair<Luau::FValue<int> *, int>> integers;
+
+            State() {
+                setLuauFlagsDefault();
+
+                for (auto *flag = Luau::FValue<bool>::list; flag; flag = flag->next) {
+                    booleans.emplace_back(flag, flag->value);
+                }
+
+                for (auto *flag = Luau::FValue<int>::list; flag; flag = flag->next) {
+                    integers.emplace_back(flag, flag->value);
+                }
+            }
         };
 
-        template <typename Value> Luau::FValue<Value> *registered_flag(const std::string &name) {
-            for (auto *flag = Luau::FValue<Value>::list; flag; flag = flag->next) {
-                if (name == flag->name ||
-                    (flag->version != 0 && name == std::string(flag->name) + std::to_string(flag->version))) {
-                    return flag;
+        State &state() {
+            static State instance;
+
+            return instance;
+        }
+
+        Value value(const Flag &flag) {
+            switch (flag.kind) {
+            case FlagKind::Boolean:
+                return flag.boolean;
+
+            case FlagKind::Integer:
+                return flag.integer;
+            }
+
+            throw std::invalid_argument("invalid native flag kind");
+        }
+
+        template <typename Type>
+        const std::pair<Luau::FValue<Type> *, Type> &
+        registered(const std::string &name, const std::vector<std::pair<Luau::FValue<Type> *, Type>> &defaults) {
+            for (const auto &entry : defaults) {
+                if (name == entry.first->name) {
+                    return entry;
                 }
             }
 
-            return nullptr;
+            throw std::invalid_argument("unregistered Luau flag or incorrect value type: " + name);
         }
 
-        std::vector<ResolvedFlag> validate_flags(rust::Slice<const NativeFlag> flags) {
-            static const std::unordered_set<std::string> stdout_flags{
-                "DebugLuauLogSolver",
-                "DebugLuauLogBindings",
-                "DebugLuauLogSolverToJson",
-                "DebugLuauLogCFG",
-                "DebugLuauDumpCFGJson",
-                "DebugLuauLogTypeFamilies",
-                "DebugLuauMagicTypes",
-            };
+        Values normalize(rust::Slice<const Flag> flags, const State &shared) {
+            Values values;
 
-            std::unordered_set<const void *> registered;
-            std::vector<ResolvedFlag> resolved;
-            resolved.reserve(flags.size());
-
-            for (const auto &flag : flags) {
+            for (const Flag &flag : flags) {
                 const std::string name(flag.name);
 
-                auto *boolean = flag.is_boolean ? registered_flag<bool>(name) : nullptr;
-                auto *integer = flag.is_boolean ? nullptr : registered_flag<int>(name);
-
-                const void *found =
-                    flag.is_boolean ? static_cast<const void *>(boolean) : static_cast<const void *>(integer);
-
-                if (!found) {
-                    throw std::invalid_argument("unknown Luau flag or incorrect value type: " + name);
+                if (!values.emplace(name, value(flag)).second) {
+                    throw std::invalid_argument("duplicate Luau flag: " + name);
                 }
-
-                if (!registered.insert(found).second) {
-                    throw std::invalid_argument("duplicate Luau flag alias: " + name);
-                }
-
-                if (boolean && flag.boolean && stdout_flags.find(boolean->name) != stdout_flags.end()) {
-                    throw std::invalid_argument("Luau flag writes to stdout and is unavailable: " + name);
-                }
-
-                resolved.push_back({flag, boolean, integer});
             }
 
-            return resolved;
-        }
+            for (auto setting = values.begin(); setting != values.end();) {
+                const Value initial = std::holds_alternative<bool>(setting->second)
+                                          ? Value(registered(setting->first, shared.booleans).second)
+                                          : Value(registered(setting->first, shared.integers).second);
 
-        const std::map<std::string, NativeFlag> &registry_defaults() {
-            static const auto defaults = [] {
-                std::map<std::string, NativeFlag> values;
-                for (auto *flag = Luau::FValue<bool>::list; flag; flag = flag->next) {
-                    values.emplace(flag->name, NativeFlag{rust::String(flag->name), flag->value, 0, true});
+                if (setting->second == initial) {
+                    setting = values.erase(setting);
+                } else {
+                    ++setting;
                 }
-                for (auto *flag = Luau::FValue<int>::list; flag; flag = flag->next) {
-                    values.emplace(flag->name, NativeFlag{rust::String(flag->name), false, flag->value, false});
-                }
-                return values;
-            }();
+            }
 
-            return defaults;
+            return values;
         }
     }
 
-    void apply_flags(rust::Slice<const NativeFlag> flags) {
-        const auto resolved = validate_flags(flags);
-        static_cast<void>(registry_defaults());
+    Flags::Flags(rust::Slice<const Flag> flags) : mutex(state().mutex), users(state().users) {
+        State &shared = state();
+        std::lock_guard<std::mutex> lock(shared.mutex);
+        values = normalize(flags, shared);
 
-        for (const auto &flag : resolved) {
-            if (flag.boolean) {
-                flag.boolean->value = flag.value.boolean;
-            } else {
-                flag.integer->value = flag.value.integer;
-            }
+        if (shared.users != 0 && values != shared.active) {
+            throw std::invalid_argument("different Luau flag settings are already in use by another frontend");
         }
+
+        if (shared.users == 0) {
+            for (const auto &[flag, initial] : shared.booleans) {
+                flag->value = initial;
+            }
+
+            for (const auto &[flag, initial] : shared.integers) {
+                flag->value = initial;
+            }
+
+            for (const auto &[name, setting] : values) {
+                if (const auto *boolean = std::get_if<bool>(&setting)) {
+                    registered(name, shared.booleans).first->value = *boolean;
+                } else {
+                    registered(name, shared.integers).first->value = std::get<int>(setting);
+                }
+            }
+
+            shared.active = values;
+        }
+
+        ++shared.users;
     }
 
-    rust::Vec<NativeFlag> normalize_flags(rust::Slice<const NativeFlag> flags) {
-        const auto resolved = validate_flags(flags);
-        auto effective = registry_defaults();
+    Flags::~Flags() {
+        std::lock_guard<std::mutex> lock(mutex);
+        --users;
+    }
 
-        for (const auto &flag : resolved) {
-            if (flag.boolean) {
-                effective.insert_or_assign(
-                    flag.boolean->name,
-                    NativeFlag{rust::String(flag.boolean->name), flag.value.boolean, 0, true}
-                );
-            } else {
-                effective.insert_or_assign(
-                    flag.integer->name,
-                    NativeFlag{rust::String(flag.integer->name), false, flag.value.integer, false}
-                );
+    void Flags::require(rust::Slice<const Flag> flags) const {
+        const Values normalized = normalize(flags, state());
+
+        if (normalized.size() != values.size()) {
+            throw std::invalid_argument("module flags differ from the frontend flag settings");
+        }
+
+        for (const auto &[name, setting] : normalized) {
+            const auto found = values.find(name);
+
+            if (found == values.end() || found->second != setting) {
+                throw std::invalid_argument("module flags differ from the frontend flag settings: " + name);
             }
         }
-
-        rust::Vec<NativeFlag> result;
-
-        for (auto &[name, flag] : effective) {
-            result.push_back(std::move(flag));
-        }
-
-        return result;
     }
 }

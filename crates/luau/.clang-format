@@ -1,3 +1,4 @@
+AccessModifierOffset: -4
 AlignAfterOpenBracket: DontAlign
 AllowAllArgumentsOnNextLine: false
 AllowShortFunctionsOnASingleLine: Empty

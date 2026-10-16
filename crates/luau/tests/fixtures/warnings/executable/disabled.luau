@@ -1,1 +1,0 @@
-return { linting = { enabled = false } }

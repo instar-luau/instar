@@ -1,1 +1,0 @@
-return { linting = { enabled = true, rules = { ["unused-local"] = { severity = "error" } } } }

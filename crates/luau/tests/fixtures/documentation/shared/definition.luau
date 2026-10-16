@@ -1,1 +1,0 @@
-declare value: string
