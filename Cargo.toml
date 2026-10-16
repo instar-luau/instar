@@ -19,6 +19,7 @@ instar-project = { path = "crates/project" }
 instar-server = { path = "crates/server" }
 instar-shared = { path = "crates/shared" }
 instar-syntax = { path = "crates/syntax" }
+instar-workspace = { path = "crates/workspace" }
 
 clap = { version = "4", features = ["derive"] }
 cmake = "0.1"
@@ -37,6 +38,7 @@ insta = { version = "1", features = ["json"] }
 notify = "8"
 petgraph = { version = "0.8", default-features = false, features = ["graphmap", "std"] }
 regex = "1"
+same-file = "1"
 schemars = "1"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"

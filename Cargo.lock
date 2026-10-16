@@ -1043,6 +1043,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "instar-workspace"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "figment",
+ "globset",
+ "ignore",
+ "instar-configuration",
+ "instar-luau",
+ "same-file",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "is_terminal_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
