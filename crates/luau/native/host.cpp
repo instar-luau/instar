@@ -13,11 +13,12 @@ namespace instar::luau {
     namespace {
         class Navigation final : public Luau::Require::NavigationContext {
         public:
-            Navigation(const Context &context, std::string requirer)
-                : context(context), requirer(std::move(requirer)) {}
+            Navigation(const Context &context, Frontend &frontend, const Luau::ModuleInfo &requirer, std::string source)
+                : context(context), frontend(frontend), requirer(requirer), source(std::move(source)) {}
 
             NavigateResult resetToRequirer() override {
-                current = requirer;
+                current = source;
+                hierarchy = nullptr;
 
                 return NavigateResult::Success;
             }
@@ -28,12 +29,22 @@ namespace instar::luau {
 
             NavigateResult toAliasOverride(const std::string &name) override {
                 rust::String destination;
-                const Status status = context.alias(requirer, name, destination);
+                const Status status = context.alias(source, name, destination);
+
+                if (status == Status::Missing && name == "game") {
+                    hierarchy = frontend.hierarchy(requirer.name);
+
+                    return move(hierarchy ? hierarchy->global(InstanceQuery::Game, std::nullopt) : std::nullopt);
+                }
 
                 return move(status, destination);
             }
 
             NavigateResult toParent() override {
+                if (hierarchy) {
+                    return move(hierarchy->resolve(current, InstanceQuery::Parent, {}));
+                }
+
                 rust::String destination;
                 const Status status = context.parent(current, destination);
 
@@ -41,6 +52,10 @@ namespace instar::luau {
             }
 
             NavigateResult toChild(const std::string &name) override {
+                if (hierarchy) {
+                    return move(hierarchy->resolve(current, InstanceQuery::Child, name));
+                }
+
                 rust::String destination;
                 const Status status = context.child(current, name, destination);
 
@@ -67,8 +82,21 @@ namespace instar::luau {
                 throw std::invalid_argument("Invalid Luau navigation status");
             }
 
+            NavigateResult move(std::optional<std::string> destination) {
+                if (!destination) {
+                    return NavigateResult::NotFound;
+                }
+
+                current = std::move(*destination);
+
+                return NavigateResult::Success;
+            }
+
             const Context &context;
-            const std::string requirer;
+            Frontend &frontend;
+            const Luau::ModuleInfo &requirer;
+            const std::string source;
+            const Instances *hierarchy = nullptr;
         };
     }
 
@@ -112,7 +140,7 @@ namespace instar::luau {
         }
 
         if (const auto *literal = expression->as<Luau::AstExprConstantString>()) {
-            Navigation navigation(callbacks, getHumanReadableModuleName(context->name));
+            Navigation navigation(callbacks, frontend, *context, getHumanReadableModuleName(context->name));
             Luau::Require::ErrorHandler errors;
             Luau::Require::Navigator navigator(navigation, errors);
 
