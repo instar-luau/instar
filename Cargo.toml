@@ -11,6 +11,7 @@ keywords = ["formatter", "linter", "lsp", "luau", "roblox"]
 categories = ["development-tools"]
 
 [workspace.dependencies]
+instar-configuration = { path = "crates/configuration" }
 instar-format = { path = "crates/format" }
 instar-lint = { path = "crates/lint" }
 instar-luau = { path = "crates/luau" }
@@ -28,6 +29,7 @@ cxx = "1"
 cxx-build = "1"
 dirs = "7"
 eyre = "0.6"
+figment = "0.10"
 globset = "0.4"
 ignore = "0.4"
 indicatif = "0.18"
