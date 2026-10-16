@@ -11,9 +11,10 @@ use indicatif::ProgressBar;
 use instar_workspace::Workspace;
 
 use super::{
-    arguments::Arguments,
+    arguments::{Arguments, Command},
     checking,
     execution::{self, Project},
+    formatting,
     reporting::Batch,
     watching::Watcher,
 };
@@ -129,7 +130,10 @@ pub(super) fn run(
         let _entered = span.enter();
         let (workspace, _) = execution::open(root, options, overrides, stdin)?;
 
-        checking::run(&workspace, worker)
+        match arguments.command {
+            Command::Check(_) => checking::run(&workspace, worker),
+            Command::Format(_) => formatting::run(&workspace, worker),
+        }
     };
 
     thread::scope(|scope| {

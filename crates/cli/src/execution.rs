@@ -11,7 +11,7 @@ use eyre::{Result, bail};
 use instar_workspace::{Access, Purpose, Workspace};
 
 use super::{
-    arguments::{Arguments, Options},
+    arguments::{Arguments, Command, Options},
     reporting,
     watching::{Change, Watcher},
     workers,
@@ -20,6 +20,7 @@ use super::{
 pub(super) struct Project {
     pub(super) workspace: Workspace,
     pub(super) selected: BTreeMap<String, PathBuf>,
+    pub(super) stdin_module: Option<String>,
     pub(super) stdin: Option<(PathBuf, Arc<str>)>,
     pub(super) jobs: usize,
 }
@@ -124,10 +125,10 @@ pub(super) fn session(
             watcher.observe(mem::take(&mut batch.dependencies))?;
         }
 
-        let summary = batch.report(project)?;
+        let summary = batch.report(arguments, project)?;
 
         summary.report(arguments, project.selected.len(), started, project.jobs);
-        let status = summary.status();
+        let status = summary.status(&arguments.command);
 
         let Some(watcher) = &mut watcher else {
             return Ok(status);
@@ -180,10 +181,15 @@ fn prepare(
         .cloned()
         .collect();
 
+    let (purpose, access) = match arguments.command {
+        Command::Check(_) => (Purpose::Check, Access::Read),
+        Command::Format(_) => (Purpose::Format, Access::Write),
+    };
+
     let mut selected = if stdin.is_some() && inputs.is_empty() {
         BTreeMap::new()
     } else {
-        workspace.select(&inputs, Purpose::Check, Access::Read)?
+        workspace.select(&inputs, purpose, access)?
     };
 
     if let Some(module) = &stdin_module {
@@ -195,6 +201,7 @@ fn prepare(
     Ok(Project {
         workspace,
         selected,
+        stdin_module,
         stdin: stdin.cloned(),
         jobs,
     })

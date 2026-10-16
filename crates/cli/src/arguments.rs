@@ -3,7 +3,7 @@ use std::{num::NonZeroUsize, path::PathBuf};
 use clap::{ColorChoice, Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(version, about = "Check Luau projects")]
+#[command(version, about = "Check and format Luau projects")]
 pub(super) struct Arguments {
     #[arg(
         long,
@@ -41,6 +41,9 @@ pub(super) struct Arguments {
 pub(super) enum Command {
     #[command(about = "Check files, directories, patterns, or stdin (-)")]
     Check(Check),
+
+    #[command(about = "Format files, directories, patterns, or stdin (-)")]
+    Format(Format),
 }
 
 #[derive(clap::Args)]
@@ -107,19 +110,45 @@ pub(super) struct Check {
     pub(super) mode: Option<String>,
 }
 
+#[derive(clap::Args)]
+pub(super) struct Format {
+    #[command(flatten)]
+    pub(super) options: Options,
+
+    #[arg(
+        long,
+        conflicts_with = "preview",
+        help = "Report unformatted files without writing"
+    )]
+    pub(super) check: bool,
+
+    #[arg(long, help = "Print a unified diff without writing")]
+    pub(super) preview: bool,
+}
+
 impl Command {
     pub(super) fn options(&self) -> &Options {
-        let Self::Check(check) = self;
-        &check.options
+        match self {
+            Self::Check(check) => &check.options,
+            Self::Format(format) => &format.options,
+        }
     }
 
     pub(super) fn overrides(&self) -> Result<Vec<String>, serde_json::Error> {
         let options = self.options();
         let mut overrides = options.set.clone();
 
+        let purpose = match self {
+            Self::Check(_) => "check",
+            Self::Format(_) => "format",
+        };
+
         for (field, values) in [("include", &options.include), ("exclude", &options.exclude)] {
             if !values.is_empty() {
-                overrides.push(format!("check.{field}={}", serde_json::to_string(values)?));
+                overrides.push(format!(
+                    "{purpose}.{field}={}",
+                    serde_json::to_string(values)?
+                ));
             }
         }
 

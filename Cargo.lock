@@ -922,6 +922,7 @@ dependencies = [
  "indicatif",
  "insta",
  "instar-configuration",
+ "instar-format",
  "instar-luau",
  "instar-workspace",
  "notify",
@@ -949,12 +950,10 @@ dependencies = [
 name = "instar-format"
 version = "0.1.0"
 dependencies = [
- "globset",
- "instar-shared",
- "instar-syntax",
- "schemars",
- "serde",
+ "instar-configuration",
+ "toml",
  "unicode-width",
+ "vermis",
 ]
 
 [[package]]

@@ -1,21 +1,20 @@
 [package]
 name = "instar-format"
+description = "Validated Luau source formatting"
 version.workspace = true
 edition.workspace = true
-description = "Luau source formatting"
 repository.workspace = true
 license.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-instar-shared.workspace = true
-instar-syntax.workspace = true
-
-globset.workspace = true
-schemars.workspace = true
-serde.workspace = true
+instar-configuration.workspace = true
 unicode-width.workspace = true
+vermis.workspace = true
+
+[dev-dependencies]
+toml.workspace = true
 
 [lints]
 workspace = true

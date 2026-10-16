@@ -1,30 +1,31 @@
-use std::io;
+use std::ops::Range;
 
-use instar_shared::{Completion, Options, Reason, SourceSnapshot};
+use instar_configuration::formatting::{Configuration, Indentation, LineEnding};
 use unicode_width::UnicodeWidthStr;
 
-use instar_syntax::{
-    Tree as SnapshotTree,
+use vermis::{
     emitter::{Emitter, LineEnding as EmittedLineEnding},
-    parse,
-    token::{Keyword, Symbol, TokenKind},
+    token::{Symbol, TokenKind},
     tree::{TokenIndex, Tree},
 };
+
+use crate::{Error, formatting::parse};
 
 use super::{
     document::{Document, Layout},
     planning::Plan,
 };
 
-use crate::settings::{FormatSettings, IndentStyle, LineEnding};
+struct Replacement<'source> {
+    tree: Tree<'source>,
+    token: TokenIndex,
+}
 
 struct Renderer<'tree, 'source> {
     tree: &'tree Tree<'source>,
-    configuration: &'tree FormatSettings,
-    options: &'tree Options,
-    interruption: Option<Completion>,
+    configuration: &'tree Configuration,
     emitter: Option<Emitter<'source>>,
-    replacements: &'tree [Option<Box<(SnapshotTree<'source>, TokenIndex)>>],
+    replacements: &'tree [Option<Box<Replacement<'source>>>],
     indentation: usize,
     column: usize,
     lines: usize,
@@ -37,17 +38,13 @@ struct Renderer<'tree, 'source> {
 impl Renderer<'_, '_> {
     fn render(&mut self, document: &[Document], flat: bool) {
         for item in document {
-            self.interruption = self
-                .interruption
-                .clone()
-                .or_else(|| self.options.interrupted());
-
-            if self.interruption.is_some() || self.exceeded {
+            if self.exceeded {
                 return;
             }
 
             match item {
                 Document::Token(index) => self.token(*index),
+                Document::Verbatim(range) => self.verbatim(range.clone()),
 
                 Document::Symbol(symbol) => {
                     self.separate();
@@ -134,8 +131,6 @@ impl Renderer<'_, '_> {
         let mut probe = Renderer {
             tree: self.tree,
             configuration: self.configuration,
-            options: self.options,
-            interruption: None,
             emitter: None,
             replacements: self.replacements,
             indentation: self.indentation,
@@ -149,7 +144,7 @@ impl Renderer<'_, '_> {
 
         probe.render(document, true);
 
-        !probe.exceeded && probe.interruption.is_none()
+        !probe.exceeded
     }
 
     fn token(&mut self, index: TokenIndex) {
@@ -157,7 +152,9 @@ impl Renderer<'_, '_> {
 
         let (tree, token) = self.replacements[index.get()]
             .as_deref()
-            .map_or((self.tree, index), |(tree, token)| (tree.syntax(), *token));
+            .map_or((self.tree, index), |replacement| {
+                (&replacement.tree, replacement.token)
+            });
 
         if let Some(emitter) = &mut self.emitter {
             emitter.token(tree, token);
@@ -174,6 +171,28 @@ impl Renderer<'_, '_> {
         self.emitted = true;
     }
 
+    fn verbatim(&mut self, range: Range<usize>) {
+        self.separate();
+
+        if let Some(emitter) = &mut self.emitter {
+            for position in range.clone() {
+                emitter.token(self.tree, TokenIndex::new(position));
+            }
+        }
+
+        let start = self.tree.tokens[range.start].span.start;
+        let end = self.tree.tokens[range.end - 1].span.end;
+        let bytes = &self.tree.source[start..end];
+        let (column, maximum) = columns(bytes, self.column, self.configuration.indent_width.get());
+        self.column = column;
+
+        self.exceeded |= self.emitter.is_none()
+            && (maximum > self.configuration.width.get()
+                || matches!(self.measurement, Some(Layout::Fit)) && bytes.contains(&b'\n'));
+
+        self.emitted = true;
+    }
+
     fn separate(&mut self) {
         if self.lines > 0 || !self.emitted {
             if let Some(emitter) = &mut self.emitter {
@@ -184,9 +203,9 @@ impl Renderer<'_, '_> {
                 }
 
                 match self.configuration.indent_style {
-                    IndentStyle::Tabs => emitter.tabs(self.indentation),
+                    Indentation::Tabs => emitter.tabs(self.indentation),
 
-                    IndentStyle::Spaces => {
+                    Indentation::Spaces => {
                         emitter.spaces(self.indentation * self.configuration.indent_width.get());
                     }
                 }
@@ -234,91 +253,60 @@ fn columns(bytes: &[u8], mut column: usize, tab_width: usize) -> (usize, usize) 
 }
 
 pub(crate) fn emit(
-    snapshot: &SnapshotTree<'_>,
-    configuration: &FormatSettings,
+    tree: &Tree<'_>,
+    configuration: &Configuration,
     plan: &Plan,
-    options: &Options,
-) -> Result<Vec<u8>, Completion> {
-    let tree = snapshot.syntax();
-
+) -> Result<Vec<u8>, Error> {
     let line_ending = match configuration.line_ending {
-        LineEnding::Lf => EmittedLineEnding::LineFeed,
-        LineEnding::Crlf => EmittedLineEnding::CarriageReturnLineFeed,
+        LineEnding::LineFeed => EmittedLineEnding::LineFeed,
+        LineEnding::CarriageReturnLineFeed => EmittedLineEnding::CarriageReturnLineFeed,
     };
 
-    let mut sources = Vec::new();
+    let sources: Vec<_> = plan
+        .quotes
+        .iter()
+        .map(|quote| {
+            quote.as_ref().map(|quote| {
+                let mut source = b"return ".to_vec();
+                source.extend_from_slice(quote);
 
-    for quote in &plan.quotes {
-        if let Some(reason) = options.interrupted() {
-            return Err(reason);
-        }
+                source
+            })
+        })
+        .collect();
 
-        sources.push(
-            quote
+    let replacements = sources
+        .iter()
+        .map(|source| {
+            source
                 .as_ref()
-                .map(|quote| {
-                    let mut emitter = Emitter::new(line_ending);
-                    emitter.keyword(Keyword::Return);
-                    emitter.spaces(1);
-                    let mut source = emitter.finish().into_owned();
-                    source.extend_from_slice(quote);
+                .map(|source| {
+                    let tree =
+                        parse(source).map_err(|error| Error::internal(0..0, error.message))?;
 
-                    SourceSnapshot::from_bytes(snapshot.snapshot().version, &source).map_err(
-                        |error| {
-                            Completion::Incomplete(vec![match error.kind() {
-                                io::ErrorKind::InvalidData => Reason::UnsupportedSyntax,
-                                _ => Reason::FailedPrerequisite,
-                            }])
-                        },
-                    )
+                    let token = tree
+                        .tokens
+                        .iter()
+                        .position(|token| token.kind == TokenKind::QuotedString)
+                        .ok_or_else(|| {
+                            Error::internal(0..0, "formatted string has no quoted token")
+                        })?;
+
+                    Ok(Box::new(Replacement {
+                        tree,
+                        token: TokenIndex::new(token),
+                    }))
                 })
-                .transpose()?,
-        );
-    }
-
-    let mut replacements = Vec::new();
-
-    for source in &sources {
-        if let Some(reason) = options.interrupted() {
-            return Err(reason);
-        }
-
-        let Some(source) = source else {
-            replacements.push(None);
-            continue;
-        };
-
-        let replacement = parse(source, snapshot.settings(), options);
-
-        if replacement.completion != Completion::Complete {
-            return Err(replacement.completion);
-        }
-
-        if !replacement.diagnostics.is_empty() {
-            return Err(Completion::Incomplete(vec![Reason::UnsupportedSyntax]));
-        }
-
-        let Some(token) = replacement
-            .tree
-            .syntax()
-            .tokens
-            .iter()
-            .position(|token| token.kind == TokenKind::QuotedString)
-        else {
-            return Err(Completion::Incomplete(vec![Reason::UnsupportedSyntax]));
-        };
-
-        replacements.push(Some(Box::new((replacement.tree, TokenIndex::new(token)))));
-    }
+                .transpose()
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
 
     let mut renderer = Renderer {
         tree,
         configuration,
-        options,
-        interruption: None,
         emitter: Some(Emitter::from_tree(tree, line_ending)),
         replacements: &replacements,
-        indentation: plan.indentation,
+        indentation: 0,
         column: 0,
         lines: 0,
         space: false,
@@ -329,11 +317,7 @@ pub(crate) fn emit(
 
     renderer.render(&plan.document, false);
 
-    if let Some(reason) = renderer.interruption.or_else(|| options.interrupted()) {
-        return Err(reason);
-    }
-
-    if renderer.emitted {
+    if renderer.emitted && plan.final_newline {
         renderer
             .emitter
             .as_mut()

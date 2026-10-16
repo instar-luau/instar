@@ -1,24 +1,14 @@
-use instar_shared::{Options, Reason};
+use instar_configuration::formatting::Quotes;
 
-use crate::settings::QuoteStyle;
-
-pub(super) fn quote(
-    bytes: &[u8],
-    style: QuoteStyle,
-    options: &Options,
-) -> Result<Option<Vec<u8>>, Reason> {
-    if style == QuoteStyle::Preserve {
-        return Ok(None);
+pub(super) fn quote(bytes: &[u8], style: Quotes) -> Option<Vec<u8>> {
+    if style == Quotes::Preserve {
+        return None;
     }
 
     let mut content = Vec::new();
     let mut position = 1;
 
     while position + 1 < bytes.len() {
-        if let Some(reason) = options.interrupted().map(|_| Reason::FailedPrerequisite) {
-            return Err(reason);
-        }
-
         let byte = bytes[position];
 
         if byte == b'\\' && position + 2 < bytes.len() {
@@ -41,10 +31,10 @@ pub(super) fn quote(
     let double = content.contains(&b'"');
 
     let delimiter = match style {
-        QuoteStyle::Single => b'\'',
-        QuoteStyle::Double | QuoteStyle::Preserve => b'"',
+        Quotes::Single => b'\'',
+        Quotes::Double | Quotes::Preserve => b'"',
 
-        QuoteStyle::PreferSingle => {
+        Quotes::PreferSingle => {
             if single && !double {
                 b'"'
             } else {
@@ -52,7 +42,7 @@ pub(super) fn quote(
             }
         }
 
-        QuoteStyle::PreferDouble => {
+        Quotes::PreferDouble => {
             if double && !single {
                 b'\''
             } else {
@@ -65,10 +55,6 @@ pub(super) fn quote(
     let mut position = 0;
 
     while position < content.len() {
-        if let Some(reason) = options.interrupted().map(|_| Reason::FailedPrerequisite) {
-            return Err(reason);
-        }
-
         let byte = content[position];
 
         if byte == b'\\' && position + 1 < content.len() {
@@ -86,5 +72,5 @@ pub(super) fn quote(
 
     result.push(delimiter);
 
-    Ok((result.as_slice() != bytes).then_some(result))
+    (result.as_slice() != bytes).then_some(result)
 }

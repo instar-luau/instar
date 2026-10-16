@@ -1,4 +1,6 @@
-use instar_syntax::{
+use std::ops::Range;
+
+use vermis::{
     token::Symbol,
     tree::{TokenIndex, Tree},
 };
@@ -12,6 +14,7 @@ pub(super) enum Layout {
 
 pub(super) enum Document {
     Token(TokenIndex),
+    Verbatim(Range<usize>),
     Symbol(Symbol),
     Space,
     Line(usize),
@@ -39,6 +42,10 @@ impl Document {
             } => true,
 
             Self::Token(index) => tree.token(*index).bytes(tree.source).contains(&b'\n'),
+
+            Self::Verbatim(range) => tree.tokens[range.clone()]
+                .iter()
+                .any(|token| token.bytes(tree.source).contains(&b'\n')),
 
             Self::Group { content, .. } | Self::Indent { content, .. } => {
                 content.iter().any(|item| item.multiline(tree))

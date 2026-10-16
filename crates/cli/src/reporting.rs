@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io,
+    io::{self, Write as _},
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -21,8 +21,12 @@ use color_eyre::config::{HookBuilder, Theme};
 use eyre::{Report, Result};
 use indicatif::{ProgressBar, ProgressStyle};
 use instar_workspace::Workspace;
+use similar::TextDiff;
 
-use super::{arguments::Arguments, execution::Project};
+use super::{
+    arguments::{Arguments, Command, Format},
+    execution::Project,
+};
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct Source {
@@ -32,10 +36,16 @@ pub(super) struct Source {
 
 pub(super) type Finding = Diagnostic<Source>;
 
+pub(super) struct Output {
+    pub(super) source: Source,
+    pub(super) text: String,
+}
+
 #[derive(Default)]
 pub(super) struct Batch {
     pub(super) findings: Vec<Finding>,
     failures: Vec<Report>,
+    pub(super) outputs: Vec<Output>,
     pub(super) dependencies: BTreeSet<PathBuf>,
 }
 
@@ -43,6 +53,7 @@ pub(super) struct Batch {
 pub(super) struct Summary {
     errors: usize,
     failures: usize,
+    changed: usize,
 }
 
 impl Batch {
@@ -68,10 +79,11 @@ impl Batch {
     pub(super) fn append(&mut self, batch: Self) {
         self.findings.extend(batch.findings);
         self.failures.extend(batch.failures);
+        self.outputs.extend(batch.outputs);
         self.dependencies.extend(batch.dependencies);
     }
 
-    pub(super) fn report(self, project: &Project) -> Result<Summary> {
+    pub(super) fn report(self, arguments: &Arguments, project: &Project) -> Result<Summary> {
         let mut summary = render(&project.selected, self.findings)?;
         summary.failures += self.failures.len();
 
@@ -79,16 +91,23 @@ impl Batch {
             failure(error);
         }
 
+        if let Command::Format(format) = &arguments.command {
+            publish(format, project, self.outputs, &mut summary)?;
+        }
+
         Ok(summary)
     }
 }
 
 impl Summary {
-    pub(super) fn status(&self) -> u8 {
+    pub(super) fn status(&self, command: &Command) -> u8 {
         if self.failures != 0 {
             2
         } else {
-            u8::from(self.errors != 0)
+            u8::from(
+                self.errors != 0
+                    || matches!(command, Command::Format(format) if format.check && self.changed != 0),
+            )
         }
     }
 
@@ -105,10 +124,26 @@ impl Summary {
 
         let errors = self.errors + self.failures;
 
-        eprintln!(
-            "{} {files} files; {errors} errors",
-            console::style("Checked").for_stderr().bold()
-        );
+        match &arguments.command {
+            Command::Check(_) => eprintln!(
+                "{} {files} files; {errors} errors",
+                console::style("Checked").for_stderr().bold()
+            ),
+
+            Command::Format(format) => {
+                let action = if format.check || format.preview {
+                    "Inspected"
+                } else {
+                    "Formatted"
+                };
+
+                eprintln!(
+                    "{} {files} files; {} changed; {errors} errors",
+                    console::style(action).for_stderr().bold(),
+                    self.changed
+                );
+            }
+        }
 
         if arguments.verbose {
             eprintln!("Finished in {:.2?}; worker limit {jobs}", started.elapsed());
@@ -152,7 +187,10 @@ pub(super) fn progress(
     workspace: &Workspace,
     selected: &BTreeMap<String, PathBuf>,
 ) -> Result<ProgressBar> {
-    let action = "Checking";
+    let action = match arguments.command {
+        Command::Check(_) => "Checking",
+        Command::Format(_) => "Formatting",
+    };
 
     if arguments.verbose {
         eprintln!("Project: {}", workspace.directory().display());
@@ -257,6 +295,54 @@ fn render(inputs: &BTreeMap<String, PathBuf>, mut findings: Vec<Finding>) -> Res
     }
 
     Ok(summary)
+}
+
+fn publish(
+    format: &Format,
+    project: &Project,
+    outputs: Vec<Output>,
+    summary: &mut Summary,
+) -> Result<()> {
+    let mut output = io::stdout().lock();
+
+    for proposed in outputs {
+        let path = path(&proposed.source.module, &project.selected);
+        let different = proposed.text != proposed.source.text.as_ref();
+        summary.changed += usize::from(different);
+
+        if format.preview && different {
+            let name = path.display().to_string();
+
+            write!(
+                output,
+                "{}",
+                TextDiff::from_lines(proposed.source.text.as_ref(), &proposed.text)
+                    .unified_diff()
+                    .header(&name, &name)
+            )?;
+        } else if format.check {
+            if different {
+                eprintln!("Would format {}", path.display());
+            }
+        } else if !format.preview {
+            if project.stdin_module.as_ref() == Some(&proposed.source.module) {
+                output.write_all(proposed.text.as_bytes())?;
+            } else if different
+                && let Err(error) = project.workspace.write(
+                    &proposed.source.module,
+                    &proposed.source.text,
+                    &proposed.text,
+                )
+            {
+                summary.failures += 1;
+                failure(&Report::new(error));
+            }
+        }
+    }
+
+    output.flush()?;
+
+    Ok(())
 }
 
 fn path(module: &str, inputs: &BTreeMap<String, PathBuf>) -> PathBuf {

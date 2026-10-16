@@ -1,14 +1,12 @@
-//! Isolated, validated syntax-only Luau formatting.
+//! Validated, lossless Luau source formatting.
 
-mod client;
+mod directives;
+mod error;
+mod formatting;
+mod imports;
 mod layout;
-mod request;
-mod result;
-pub mod settings;
-mod worker;
+mod literal;
+mod preservation;
 
-pub use client::Formatter;
-pub use request::{FormatInput, FormatScope};
-pub use result::{FormatOutcome, FormatResult, FormatSelection, SelectionOutcome, ValidatedFormat};
-pub use settings::{FormatOverrides, FormatSettings};
-pub use worker::run_worker;
+pub use error::{Error, Kind};
+pub use formatting::format;
