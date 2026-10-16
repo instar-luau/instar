@@ -3,7 +3,6 @@ use std::{
     num::NonZeroUsize,
     sync::mpsc::{self, Receiver, Sender},
     thread,
-    time::Instant,
 };
 
 use eyre::{Report, Result, eyre};
@@ -11,22 +10,14 @@ use indicatif::ProgressBar;
 use instar_workspace::Workspace;
 
 use super::{
-    arguments::{Arguments, Command},
-    checking,
-    execution::{self, Project},
-    formatting,
+    arguments::Arguments,
+    execution::{self, Project, Response},
     reporting::Batch,
-    watching::Watcher,
 };
 
 struct Request {
     dirty: BTreeSet<String>,
     progress: ProgressBar,
-}
-
-pub(super) enum Response {
-    Completed(Batch),
-    Reload,
 }
 
 pub(super) struct Worker<'modules> {
@@ -48,7 +39,7 @@ impl Worker<'_> {
     pub(super) fn run(
         self,
         workspace: &Workspace,
-        mut execute: impl FnMut(&[String], &BTreeSet<String>, &ProgressBar) -> Result<Batch>,
+        mut execute: impl FnMut(&[String], &ProgressBar) -> Result<Batch>,
     ) -> Result<()> {
         for request in self.requests {
             for module in &request.dirty {
@@ -61,7 +52,7 @@ impl Worker<'_> {
                 workspace.invalidate(module);
             }
 
-            let mut batch = execute(self.modules, &request.dirty, &request.progress)?;
+            let mut batch = execute(self.modules, &request.progress)?;
             batch.dependencies = workspace.dependencies();
 
             if self.responses.send(Response::Completed(batch)).is_err() {
@@ -104,36 +95,37 @@ impl Pool {
     }
 }
 
-pub(super) fn count(requested: Option<NonZeroUsize>, inputs: usize) -> usize {
-    requested
-        .or_else(|| thread::available_parallelism().ok())
-        .unwrap_or(NonZeroUsize::MIN)
-        .get()
-        .min(inputs)
-        .max(1)
-}
-
 pub(super) fn run(
     arguments: &Arguments,
     project: &Project,
     overrides: &[String],
-    watcher: Option<&mut Watcher>,
-    started: Instant,
+    requested: Option<NonZeroUsize>,
+    execute: fn(&Workspace, Worker<'_>) -> Result<()>,
+    session: impl FnOnce(&Pool) -> Result<u8>,
 ) -> Result<u8> {
     let modules: Vec<_> = project.selected.keys().cloned().collect();
+
+    let jobs = requested
+        .or_else(|| thread::available_parallelism().ok())
+        .unwrap_or(NonZeroUsize::MIN)
+        .get()
+        .min(modules.len())
+        .max(1);
+
     let root = project.workspace.directory();
     let options = arguments.command.options();
     let stdin = project.stdin.as_ref();
+
+    if arguments.verbose {
+        eprintln!("Worker limit {jobs}");
+    }
 
     let operation = |worker: Worker<'_>| -> Result<()> {
         let span = tracing::debug_span!("worker", files = worker.modules.len());
         let _entered = span.enter();
         let (workspace, _) = execution::open(root, options, overrides, stdin)?;
 
-        match arguments.command {
-            Command::Check(_) => checking::run(&workspace, worker),
-            Command::Format(_) => formatting::run(&workspace, worker),
-        }
+        execute(&workspace, worker)
     };
 
     thread::scope(|scope| {
@@ -146,7 +138,7 @@ pub(super) fn run(
             };
 
             for modules in modules
-                .chunks(modules.len().div_ceil(project.jobs).max(1))
+                .chunks(modules.len().div_ceil(jobs).max(1))
                 .chain(modules.is_empty().then_some(modules.as_slice()))
             {
                 let (requests, incoming) = mpsc::channel();
@@ -180,7 +172,7 @@ pub(super) fn run(
             if failure.is_some() {
                 Ok(0)
             } else {
-                execution::session(arguments, project, watcher, started, &pool)
+                session(&pool)
             }
         };
 

@@ -9,7 +9,7 @@ use super::{
 };
 
 pub(super) fn run(workspace: &Workspace, worker: Worker<'_>) -> Result<()> {
-    worker.run(workspace, |modules, _, progress| {
+    worker.run(workspace, |modules, progress| {
         Ok(Batch::collect(modules, progress, |module| {
             process(workspace, module)
         }))

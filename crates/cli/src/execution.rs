@@ -7,12 +7,14 @@ use std::{
 };
 
 use eyre::{Result, bail};
+use indicatif::ProgressBar;
 
 use instar_workspace::{Access, Purpose, Workspace};
 
 use super::{
     arguments::{Arguments, Command, Options},
-    reporting,
+    checking, formatting,
+    reporting::{self, Batch},
     watching::{Change, Watcher},
     workers,
 };
@@ -22,7 +24,11 @@ pub(super) struct Project {
     pub(super) selected: BTreeMap<String, PathBuf>,
     pub(super) stdin_module: Option<String>,
     pub(super) stdin: Option<(PathBuf, Arc<str>)>,
-    pub(super) jobs: usize,
+}
+
+pub(super) enum Response {
+    Completed(Batch),
+    Reload,
 }
 
 pub(super) fn run(arguments: &Arguments) -> Result<u8> {
@@ -79,7 +85,26 @@ pub(super) fn run(arguments: &Arguments) -> Result<u8> {
         let started = Instant::now();
 
         let result = prepare(arguments, &root, &overrides, stdin.as_ref()).and_then(|project| {
-            workers::run(arguments, &project, &overrides, watcher.as_mut(), started)
+            match &arguments.command {
+                Command::Check(_) => checking::run(arguments, &project, watcher.as_mut(), started),
+
+                Command::Format(format) => workers::run(
+                    arguments,
+                    &project,
+                    &overrides,
+                    format.jobs,
+                    formatting::run,
+                    |pool| {
+                        session(
+                            arguments,
+                            &project,
+                            watcher.as_mut(),
+                            started,
+                            |dirty, progress| pool.execute(dirty, progress),
+                        )
+                    },
+                ),
+            }
         });
 
         let Some(watcher) = &mut watcher else {
@@ -98,7 +123,7 @@ pub(super) fn session(
     project: &Project,
     mut watcher: Option<&mut Watcher>,
     mut started: Instant,
-    pool: &workers::Pool,
+    mut execute: impl FnMut(&BTreeSet<String>, &ProgressBar) -> Result<Response>,
 ) -> Result<u8> {
     let mut dirty = BTreeSet::new();
 
@@ -107,27 +132,24 @@ pub(super) fn session(
     }
 
     loop {
-        tracing::debug!(
-            files = project.selected.len(),
-            workers = project.jobs,
-            "Processing batch"
-        );
+        tracing::debug!(files = project.selected.len(), "Processing batch");
 
         let progress = reporting::progress(arguments, &project.workspace, &project.selected)?;
-        let result = pool.execute(&dirty, &progress);
+        let result = execute(&dirty, &progress);
         progress.finish_and_clear();
 
-        let workers::Response::Completed(mut batch) = result? else {
+        let Response::Completed(mut batch) = result? else {
             return Ok(0);
         };
 
         if let Some(watcher) = &mut watcher {
+            batch.dependencies.extend(project.workspace.dependencies());
             watcher.observe(mem::take(&mut batch.dependencies))?;
         }
 
         let summary = batch.report(arguments, project)?;
 
-        summary.report(arguments, project.selected.len(), started, project.jobs);
+        summary.report(arguments, project.selected.len(), started);
         let status = summary.status(&arguments.command);
 
         let Some(watcher) = &mut watcher else {
@@ -196,13 +218,10 @@ fn prepare(
         selected.insert(module.clone(), PathBuf::from(module));
     }
 
-    let jobs = workers::count(options.jobs, selected.len());
-
     Ok(Project {
         workspace,
         selected,
         stdin_module,
         stdin: stdin.cloned(),
-        jobs,
     })
 }

@@ -111,13 +111,7 @@ impl Summary {
         }
     }
 
-    pub(super) fn report(
-        &self,
-        arguments: &Arguments,
-        files: usize,
-        started: Instant,
-        jobs: usize,
-    ) {
+    pub(super) fn report(&self, arguments: &Arguments, files: usize, started: Instant) {
         if arguments.quiet {
             return;
         }
@@ -146,7 +140,7 @@ impl Summary {
         }
 
         if arguments.verbose {
-            eprintln!("Finished in {:.2?}; worker limit {jobs}", started.elapsed());
+            eprintln!("Finished in {:.2?}", started.elapsed());
         }
     }
 }

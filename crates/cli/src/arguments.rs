@@ -54,13 +54,6 @@ pub(super) struct Options {
     )]
     pub(super) inputs: Vec<PathBuf>,
 
-    #[arg(
-        long,
-        value_name = "COUNT",
-        help = "Worker limit; defaults to available parallelism"
-    )]
-    pub(super) jobs: Option<NonZeroUsize>,
-
     #[arg(long, help = "Run again after filesystem changes")]
     pub(super) watch: bool,
 
@@ -114,6 +107,13 @@ pub(super) struct Check {
 pub(super) struct Format {
     #[command(flatten)]
     pub(super) options: Options,
+
+    #[arg(
+        long,
+        value_name = "COUNT",
+        help = "Worker limit; defaults to available parallelism"
+    )]
+    pub(super) jobs: Option<NonZeroUsize>,
 
     #[arg(
         long,

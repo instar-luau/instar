@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, btree_map::Entry},
     sync::Arc,
+    time::Instant,
 };
 
 use codespan_reporting::{
@@ -13,24 +14,35 @@ use instar_luau::{Context, Frontend};
 use instar_workspace::Workspace;
 
 use super::{
+    arguments::Arguments,
+    execution::{self, Project, Response},
     reporting::{Batch, Source},
-    workers::Worker,
+    watching::Watcher,
 };
 
-pub(super) fn run(workspace: &Workspace, worker: Worker<'_>) -> Result<()> {
+pub(super) fn run(
+    arguments: &Arguments,
+    project: &Project,
+    watcher: Option<&mut Watcher>,
+    started: Instant,
+) -> Result<u8> {
+    let workspace = &project.workspace;
     let context = Context::new(workspace);
     let mut frontend = Frontend::new(&context, false)?;
+    let modules: Vec<_> = project.selected.keys().cloned().collect();
 
-    worker.run(workspace, |modules, dirty, progress| {
+    execution::session(arguments, project, watcher, started, |dirty, progress| {
         for module in dirty {
             frontend.invalidate(module)?;
         }
 
         let mut files = BTreeMap::new();
 
-        Ok(Batch::collect(modules, progress, |module| {
-            process(workspace, &mut frontend, module, &mut files)
-        }))
+        Ok(Response::Completed(Batch::collect(
+            &modules,
+            progress,
+            |module| process(workspace, &mut frontend, module, &mut files),
+        )))
     })
 }
 
