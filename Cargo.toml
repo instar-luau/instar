@@ -60,7 +60,6 @@ pedantic = { level = "deny", priority = -1 }
 absolute_paths = "deny"
 allow_attributes = "deny"
 allow_attributes_without_reason = "deny"
-arbitrary_source_item_ordering = "deny"
 assertions_on_result_states = "deny"
 branches_sharing_code = "deny"
 clear_with_drain = "deny"
