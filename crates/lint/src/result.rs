@@ -1,51 +1,53 @@
-use instar_shared::{Availability, Completion, Diagnostic};
-use serde::Serialize;
+use std::{error, fmt, ops::Range};
 
-use crate::{RuleFix, RuleIdentity};
+use instar_configuration::linting::Severity;
 
-/// Coverage established by one selected rule.
-#[derive(Clone, Debug, Serialize)]
-pub struct RuleAvailability {
-    /// Catalog identity whose coverage is described.
-    pub rule: RuleIdentity,
+/// A byte-range replacement guarded by its original source text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Edit {
+    /// Half-open UTF-8 byte range in the original source.
+    pub range: Range<usize>,
 
-    /// Established coverage or its explicit missing prerequisite.
-    pub status: Availability,
+    /// Required original contents of the range.
+    pub expected: String,
+
+    /// Replacement source text.
+    pub replacement: String,
 }
 
-/// Findings and proposals retained even when requested coverage is incomplete.
+/// A configured finding and its validated correction proposals.
 #[derive(Clone, Debug)]
-pub struct RuleResult {
-    /// Revision-anchored findings and prerequisite diagnostics.
-    pub findings: Vec<Diagnostic>,
+pub struct Finding {
+    /// Canonical lint rule name.
+    pub rule: String,
 
-    /// Guarded correction proposals without write authority.
-    pub fixes: Vec<RuleFix>,
+    /// Configured diagnostic severity.
+    pub severity: Severity,
 
-    /// Coverage of each selected Instar producer.
-    pub availability: Vec<RuleAvailability>,
+    /// Half-open source byte range.
+    pub range: Range<usize>,
 
-    /// Completion independent of finding severity.
-    pub completion: Completion,
+    /// Human-readable diagnostic.
+    pub message: String,
+
+    /// Source-guarded corrections, if supported by the rule.
+    pub edits: Vec<Edit>,
 }
 
-impl Default for RuleResult {
-    fn default() -> Self {
-        Self {
-            findings: Vec::new(),
-            fixes: Vec::new(),
-            availability: Vec::new(),
-            completion: Completion::Complete,
-        }
+/// Invalid input syntax or a rejected correction.
+#[derive(Debug)]
+pub struct Error {
+    /// Source range involved in the failure.
+    pub range: Range<usize>,
+
+    /// Explanation of the rejected input or correction.
+    pub message: String,
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
     }
 }
 
-impl RuleResult {
-    /// Retains another producer's findings, proposals, coverage, and completion.
-    pub fn combine(&mut self, mut other: Self) {
-        self.findings.append(&mut other.findings);
-        self.fixes.append(&mut other.fixes);
-        self.availability.append(&mut other.availability);
-        self.completion = self.completion.clone().combine(other.completion);
-    }
-}
+impl error::Error for Error {}

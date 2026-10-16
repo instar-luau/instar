@@ -17,6 +17,9 @@ pub enum Purpose {
 
     /// Apply formatting inclusion and exclusion patterns.
     Format,
+
+    /// Apply lint inclusion and exclusion patterns.
+    Lint,
 }
 
 /// The access required by the operation selecting sources.
@@ -161,6 +164,7 @@ fn walk(
             && match purpose {
                 Purpose::Check => workspace.scope(path)?.checking.matches(path),
                 Purpose::Format => workspace.scope(path)?.formatting.matches(path),
+                Purpose::Lint => workspace.scope(path)?.linting.matches(path),
             }
         {
             selected

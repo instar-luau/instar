@@ -14,6 +14,7 @@ figment.workspace = true
 globset.workspace = true
 ignore.workspace = true
 instar-configuration.workspace = true
+instar-lint.workspace = true
 instar-luau.workspace = true
 same-file.workspace = true
 serde.workspace = true

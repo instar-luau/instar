@@ -17,11 +17,11 @@ mod frontend;
 mod host;
 mod instances;
 
-pub use bridge::bindings::Diagnostic;
+pub use bridge::bindings::{Analysis, Diagnostic, Warning};
 pub use configuration::{Configuration, Mode};
 pub use environment::{Class, Definition, Environment, Property};
 pub use error::{Error, HostError, Operation};
 pub use flags::Flag;
-pub use frontend::Frontend;
+pub use frontend::{Frontend, warnings};
 pub use host::{Context, Host, Navigation};
 pub use instances::{Instance, Location};

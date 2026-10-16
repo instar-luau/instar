@@ -1,284 +1,233 @@
-use std::{collections::BTreeMap, io};
+use std::collections::{BTreeMap, BTreeSet};
 
-use instar_luau::UpstreamWarningIdentity;
-use instar_shared::{Availability, Severity, error::invalid};
-use instar_syntax::identifier;
+use figment::{Figment, providers::Serialized};
+use instar_configuration::linting::{Configuration, Preset, Severity};
 use regex::Regex;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, de::DeserializeOwned};
 
-use crate::{
-    Preset, RuleDefinition, RuleIdentity, RuleProducer, rules,
-    rules::{
-        bindings::{DeprecatedSymbols, ImmutableBindings, RestrictedGlobals, UnusedBindings},
-        calls::RestrictedImports,
-    },
-};
+use crate::catalog::RULES;
 
-macro_rules! define_settings {
-    ($(
-        $identity:ident, $name:literal, $parameters:ty, $schema:ident,
-        $summary:literal,
-        $category:ident, $prerequisites:expr, $fixes:ident, $producer:ident $(($evaluator:path))?;
-    )*) => {
-        /// Typed parameters for each catalog identity.
-        #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-        #[serde(tag = "rule", content = "parameters")]
-        pub enum RuleSettings {
-            $(
-                #[doc = concat!("Parameters for `", stringify!($identity), "`.")]
-                #[serde(rename = $name)]
-                $identity($parameters),
-            )*
-        }
-
-        impl RuleSettings {
-            /// Constructs default typed parameters for a catalog identity.
-            #[must_use]
-            pub fn for_rule(rule: RuleIdentity) -> Self {
-                match rule { $(RuleIdentity::$identity => Self::$identity(<$parameters>::default()),)* }
-            }
-
-            /// Returns the only identity accepting these parameters.
-            #[must_use]
-            pub const fn identity(&self) -> RuleIdentity {
-                match self { $(Self::$identity(..) => RuleIdentity::$identity,)* }
-            }
-        }
-    };
+/// Validated rule policies for one configuration scope.
+#[derive(Clone, Debug)]
+pub struct Prepared {
+    pub(crate) rules: BTreeMap<String, Policy>,
+    pub(crate) unused: Unused,
+    pub(crate) ignored: Regex,
+    pub(crate) immutable: Immutable,
+    pub(crate) deprecated: Deprecated,
+    pub(crate) globals: BTreeMap<String, String>,
+    pub(crate) imports: BTreeMap<String, String>,
 }
 
-/// Parameterless rule settings.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct BasicSettings {}
+#[derive(Clone, Debug)]
+pub(crate) struct Policy {
+    pub(crate) enabled: bool,
+    pub(crate) severity: Severity,
+}
 
-inventory!(define_settings);
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct Unused {
+    pub(crate) parameters: bool,
+    pub(crate) loop_variables: bool,
+    pub(crate) ignore_pattern: String,
+}
 
-impl RuleSettings {
-    /// Validates all rule-specific parameters before evaluation.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct Immutable {
+    pub(crate) mutated_tables_stay_local: bool,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct Deprecated {
+    pub(crate) paths: BTreeMap<String, String>,
+    pub(crate) ambiguous_methods: bool,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct Globals {
+    names: BTreeMap<String, String>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct Imports {
+    paths: BTreeMap<String, String>,
+}
+
+impl Default for Unused {
+    fn default() -> Self {
+        Self {
+            parameters: false,
+            loop_variables: false,
+            ignore_pattern: "^_".to_owned(),
+        }
+    }
+}
+
+impl Prepared {
+    /// Validate and resolve the complete rule catalog for a configuration scope.
     ///
     /// # Errors
-    /// Rejects malformed names, paths, reasons, replacements, and regular expressions.
-    pub fn validate(&self) -> io::Result<()> {
-        match self {
-            Self::UnusedVariable(settings) => {
-                Regex::new(&settings.ignore_pattern).map_err(|error| {
-                    invalid(format!(
-                        "unused_variable.ignore_pattern: invalid regular expression: {error}"
-                    ))
-                })?;
+    /// Rejects unknown rules, mismatched settings, invalid parameters, and invalid patterns.
+    pub fn new(configuration: &Configuration) -> Result<Self, Box<figment::Error>> {
+        let mut rules: BTreeMap<_, _> = RULES
+            .iter()
+            .map(|definition| {
+                (
+                    definition.name.clone(),
+                    Policy {
+                        enabled: definition.enabled,
+                        severity: if definition.upstream && configuration.upstream_errors {
+                            Severity::Error
+                        } else {
+                            Severity::Warning
+                        },
+                    },
+                )
+            })
+            .collect();
+
+        for preset in &configuration.presets {
+            for definition in RULES.iter() {
+                if let Some(policy) = rules.get_mut(&definition.name) {
+                    policy.enabled = match preset {
+                        Preset::None => false,
+                        Preset::All => true,
+                        Preset::Correctness => definition.enabled,
+                        Preset::Recommended => definition.enabled || definition.recommended,
+                    };
+                }
+            }
+        }
+
+        for (name, settings) in &configuration.rules {
+            let policy = rules
+                .get_mut(name)
+                .ok_or_else(|| invalid(format!("unknown lint rule {name}")))?;
+
+            if let Some(enabled) = settings.enabled {
+                policy.enabled = enabled;
             }
 
-            Self::Deprecated(settings) => validate_map(&settings.paths, true)?,
+            if let Some(severity) = settings.severity {
+                policy.severity = severity;
+            }
 
-            Self::RestrictedGlobals(settings) => {
-                validate_map(&settings.names, false)?;
+            if let Some(parameters) = &settings.settings {
+                if parameters.rule != *name {
+                    return Err(invalid(format!("settings identity does not match {name}")));
+                }
 
-                for name in settings.names.keys() {
-                    if !identifier(name) {
-                        return Err(invalid(format!("invalid restricted global name {name}")));
-                    }
+                if !matches!(
+                    name.as_str(),
+                    "unused_variable"
+                        | "prefer_const"
+                        | "deprecated"
+                        | "restricted_globals"
+                        | "restricted_module_paths"
+                ) && !parameters.parameters.is_empty()
+                {
+                    return Err(invalid(format!("{name} does not accept parameters")));
+                }
+            }
+        }
+
+        if let Some(selected) = &configuration.selected {
+            for name in selected {
+                if !rules.contains_key(name) {
+                    return Err(invalid(format!("unknown lint rule {name}")));
                 }
             }
 
-            Self::RestrictedModulePaths(settings) => validate_map(&settings.paths, false)?,
-            _ => {}
+            let selected: BTreeSet<_> = selected.iter().collect();
+
+            for (name, policy) in &mut rules {
+                policy.enabled = selected.contains(name);
+            }
         }
 
-        Ok(())
-    }
-}
+        let unused: Unused = parameters(configuration, "unused_variable")?;
 
-/// One rule's effective enablement, severity, and typed parameters.
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct RuleConfiguration {
-    /// Whether the caller selected this rule.
-    pub enabled: bool,
+        let ignored = Regex::new(&unused.ignore_pattern)
+            .map_err(|error| invalid(format!("unused_variable.ignore_pattern: {error}")))?;
 
-    /// Effective reporting severity, independent of enablement.
-    pub severity: Severity,
+        let immutable = parameters(configuration, "prefer_const")?;
+        let deprecated: Deprecated = parameters(configuration, "deprecated")?;
+        let globals: Globals = parameters(configuration, "restricted_globals")?;
+        let imports: Imports = parameters(configuration, "restricted_module_paths")?;
 
-    /// Identity-specific parameters.
-    pub settings: RuleSettings,
-}
-
-impl RuleConfiguration {
-    /// Constructs source-verified enablement and warning severity defaults.
-    #[must_use]
-    pub fn new(rule: RuleIdentity) -> Self {
-        let enabled = !matches!(
-            rule,
-            RuleIdentity::ImplicitAnyLocal
-                | RuleIdentity::ImplicitAnyParameter
-                | RuleIdentity::AndOrConditional
-                | RuleIdentity::CollapsibleIf
-                | RuleIdentity::ElseAfterReturn
-                | RuleIdentity::IfExpressionAssignment
-                | RuleIdentity::NegatedCondition
-                | RuleIdentity::NonConstRequire
-                | RuleIdentity::ParenthesizedConditions
-                | RuleIdentity::GlobalUsage
-                | RuleIdentity::TypeCheckInsideCall
-                | RuleIdentity::LoopInvariantCall
-                | RuleIdentity::ManualTableClone
-                | RuleIdentity::StringConcatInLoop
-                | RuleIdentity::PreferConst
-        );
-
-        Self {
-            enabled,
-            severity: Severity::Warning,
-            settings: RuleSettings::for_rule(rule),
-        }
-    }
-}
-
-/// Effective, caller-supplied policy; no discovery or configuration evaluation occurs here.
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-#[serde(default, deny_unknown_fields)]
-pub struct LintSettings {
-    /// Named rule policies after inheritance and invocation overrides.
-    pub rules: BTreeMap<RuleIdentity, RuleConfiguration>,
-
-    /// Environment-declared globals for unscoped assignment checks.
-    pub globals: Vec<String>,
-
-    /// Whether Roblox-specific lexical rules are applicable.
-    pub roblox: bool,
-
-    #[serde(skip)]
-    #[schemars(skip)]
-    /// Coverage of the caller-established language environment.
-    pub environment: Availability,
-}
-
-impl Default for LintSettings {
-    fn default() -> Self {
-        Self {
-            rules: rules()
-                .iter()
-                .map(|rule| (rule.identity, RuleConfiguration::new(rule.identity)))
-                .collect(),
-            globals: Vec::new(),
-            roblox: false,
-            environment: Availability::Available,
-        }
-    }
-}
-
-impl LintSettings {
-    /// Validates identity/parameter agreement and effective rule settings.
-    ///
-    /// # Errors
-    /// Rejects mismatched typed settings and invalid rule-specific values.
-    pub fn validate(&self) -> io::Result<()> {
-        for (identity, configuration) in &self.rules {
-            if configuration.settings.identity() != *identity {
+        for (name, replacement) in &deprecated.paths {
+            if !name.split('.').all(identifier)
+                || replacement.trim().is_empty()
+                || replacement.contains('\0')
+            {
                 return Err(invalid(format!(
-                    "settings identity does not match {identity}"
+                    "invalid deprecated symbol or replacement: {name}"
                 )));
             }
-
-            configuration.settings.validate()?;
         }
 
-        for name in &self.globals {
-            if !identifier(name) {
-                return Err(invalid("invalid declared global name"));
+        for (name, reason) in globals.names.iter().chain(&imports.paths) {
+            if name.trim().is_empty()
+                || name.trim() != name
+                || name.contains('\0')
+                || reason.trim().is_empty()
+                || reason.contains('\0')
+            {
+                return Err(invalid("restricted names and reasons must be nonempty"));
             }
         }
 
-        Ok(())
-    }
+        if globals.names.keys().any(|name| !identifier(name)) {
+            return Err(invalid("invalid restricted global name"));
+        }
 
-    /// Iterates selected definitions and their validated policy.
-    pub fn enabled(&self) -> impl Iterator<Item = (&'static RuleDefinition, &RuleConfiguration)> {
-        rules().iter().filter_map(|definition| {
-            self.rules
-                .get(&definition.identity)
-                .filter(|configuration| configuration.enabled)
-                .map(|configuration| (definition, configuration))
+        Ok(Self {
+            rules,
+            unused,
+            ignored,
+            immutable,
+            deprecated,
+            globals: globals.names,
+            imports: imports.paths,
         })
     }
 
-    /// Applies a named group without changing typed parameters or severities.
-    pub fn apply_preset(&mut self, preset: Preset) {
-        for definition in rules() {
-            let configuration = self
-                .rules
-                .entry(definition.identity)
-                .or_insert_with(|| RuleConfiguration::new(definition.identity));
-
-            configuration.enabled = match preset {
-                Preset::None => false,
-                Preset::All => true,
-                Preset::Correctness => RuleConfiguration::new(definition.identity).enabled,
-
-                Preset::Recommended => {
-                    RuleConfiguration::new(definition.identity).enabled
-                        || matches!(
-                            definition.identity,
-                            RuleIdentity::PreferConst
-                                | RuleIdentity::NonConstRequire
-                                | RuleIdentity::TypeCheckInsideCall
-                        )
-                }
-            };
-        }
-    }
-
-    /// Applies a validated named override map atomically.
-    ///
-    /// # Errors
-    /// Rejects unknown names, mismatched parameters, and invalid settings.
-    pub fn override_named(
-        &mut self,
-        overrides: BTreeMap<String, RuleConfiguration>,
-    ) -> io::Result<()> {
-        let mut proposed = self.clone();
-
-        for (name, configuration) in overrides {
-            let identity = RuleIdentity::named(&name)
-                .ok_or_else(|| invalid(format!("unknown lint rule {name}")))?;
-
-            proposed.rules.insert(identity, configuration);
-        }
-
-        proposed.validate()?;
-        *self = proposed;
-
-        Ok(())
-    }
-
-    /// Iterates selected Luau warning identities for an explicit native request.
-    pub fn upstream(&self) -> impl Iterator<Item = &UpstreamWarningIdentity> {
-        self.enabled()
-            .filter_map(|(definition, _)| match &definition.producer {
-                RuleProducer::Upstream(identity) => Some(identity),
-                RuleProducer::Instar(_) => None,
-            })
+    pub(crate) fn enabled(&self, name: &str) -> Option<&Policy> {
+        self.rules.get(name).filter(|policy| policy.enabled)
     }
 }
 
-fn validate_map(values: &BTreeMap<String, String>, symbols: bool) -> io::Result<()> {
-    for (name, reason) in values {
-        if name.is_empty()
-            || name.trim() != name
-            || name.contains('\0')
-            || reason.trim().is_empty()
-            || reason.contains('\0')
-        {
-            return Err(invalid(
-                "lint named settings require nonempty names and reasons",
-            ));
-        }
+fn parameters<Value: Default + DeserializeOwned>(
+    configuration: &Configuration,
+    name: &str,
+) -> Result<Value, Box<figment::Error>> {
+    let Some(settings) = configuration
+        .rules
+        .get(name)
+        .and_then(|rule| rule.settings.as_ref())
+    else {
+        return Ok(Value::default());
+    };
 
-        if symbols && name.split('.').any(|component| !identifier(component)) {
-            return Err(invalid(format!("invalid deprecated symbol path {name}")));
-        }
-    }
+    Figment::from(Serialized::defaults(&settings.parameters))
+        .extract()
+        .map_err(|error| invalid(format!("{name}: {error}")))
+}
 
-    Ok(())
+fn invalid(message: impl Into<String>) -> Box<figment::Error> {
+    Box::new(figment::Error::from(message.into()))
+}
+
+fn identifier(name: &str) -> bool {
+    let mut bytes = name.bytes();
+
+    bytes
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }

@@ -24,7 +24,7 @@ use instar_workspace::Workspace;
 use similar::TextDiff;
 
 use super::{
-    arguments::{Arguments, Command, Format},
+    arguments::{Arguments, Command},
     execution::Project,
 };
 
@@ -46,6 +46,7 @@ pub(super) struct Batch {
     pub(super) findings: Vec<Finding>,
     failures: Vec<Report>,
     pub(super) outputs: Vec<Output>,
+    pub(super) lint: Vec<(Source, Vec<instar_lint::Finding>)>,
     pub(super) dependencies: BTreeSet<PathBuf>,
 }
 
@@ -53,6 +54,7 @@ pub(super) struct Batch {
 pub(super) struct Summary {
     errors: usize,
     failures: usize,
+    warnings: usize,
     changed: usize,
 }
 
@@ -80,6 +82,7 @@ impl Batch {
         self.findings.extend(batch.findings);
         self.failures.extend(batch.failures);
         self.outputs.extend(batch.outputs);
+        self.lint.extend(batch.lint);
         self.dependencies.extend(batch.dependencies);
     }
 
@@ -91,8 +94,20 @@ impl Batch {
             failure(error);
         }
 
-        if let Command::Format(format) = &arguments.command {
-            publish(format, project, self.outputs, &mut summary)?;
+        match &arguments.command {
+            Command::Format(format) => publish(
+                format.check,
+                format.preview,
+                project,
+                self.outputs,
+                &mut summary,
+            )?,
+
+            Command::Lint(lint) if lint.fix || lint.fix_preview => {
+                publish(false, lint.fix_preview, project, self.outputs, &mut summary)?;
+            }
+
+            Command::Check(_) | Command::Lint(_) => {}
         }
 
         Ok(summary)
@@ -137,6 +152,13 @@ impl Summary {
                     self.changed
                 );
             }
+
+            Command::Lint(_) => eprintln!(
+                "{} {files} files; {} changed; {errors} errors; {} warnings",
+                console::style("Linted").for_stderr().bold(),
+                self.changed,
+                self.warnings,
+            ),
         }
 
         if arguments.verbose {
@@ -184,6 +206,7 @@ pub(super) fn progress(
     let action = match arguments.command {
         Command::Check(_) => "Checking",
         Command::Format(_) => "Formatting",
+        Command::Lint(_) => "Linting",
     };
 
     if arguments.verbose {
@@ -254,7 +277,8 @@ fn render(inputs: &BTreeMap<String, PathBuf>, mut findings: Vec<Finding>) -> Res
         match finding.severity {
             Severity::Bug => summary.failures += 1,
             Severity::Error => summary.errors += 1,
-            Severity::Warning | Severity::Note | Severity::Help => {}
+            Severity::Warning => summary.warnings += 1,
+            Severity::Note | Severity::Help => {}
         }
 
         let labels = finding
@@ -292,7 +316,8 @@ fn render(inputs: &BTreeMap<String, PathBuf>, mut findings: Vec<Finding>) -> Res
 }
 
 fn publish(
-    format: &Format,
+    check: bool,
+    preview: bool,
     project: &Project,
     outputs: Vec<Output>,
     summary: &mut Summary,
@@ -304,7 +329,7 @@ fn publish(
         let different = proposed.text != proposed.source.text.as_ref();
         summary.changed += usize::from(different);
 
-        if format.preview && different {
+        if preview && different {
             let name = path.display().to_string();
 
             write!(
@@ -314,11 +339,11 @@ fn publish(
                     .unified_diff()
                     .header(&name, &name)
             )?;
-        } else if format.check {
+        } else if check {
             if different {
                 eprintln!("Would format {}", path.display());
             }
-        } else if !format.preview {
+        } else if !preview {
             if project.stdin_module.as_ref() == Some(&proposed.source.module) {
                 output.write_all(proposed.text.as_bytes())?;
             } else if different

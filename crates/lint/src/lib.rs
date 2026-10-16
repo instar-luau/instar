@@ -1,26 +1,16 @@
-//! Catalog-driven Luau lint rules over caller-supplied snapshots and evidence.
+//! Configured lint rules and validated source corrections.
 
-#[macro_use]
 mod catalog;
-
+mod directives;
 mod fixes;
-mod request;
+mod native;
 mod result;
-mod rules;
 mod settings;
+mod syntax;
 
-pub use catalog::{
-    FixSupport, Prerequisites, Preset, RuleCategory, RuleDefinition, RuleIdentity, RuleProducer,
-    RuleSchema, rules,
-};
-
-pub use fixes::{FixValidation, RuleFix, collect_fixes};
-pub use request::{ResolvedDependency, RuleInput, run};
-pub use result::{RuleAvailability, RuleResult};
-
-pub use rules::{
-    bindings::{DeprecatedSymbols, ImmutableBindings, RestrictedGlobals, UnusedBindings},
-    calls::RestrictedImports,
-};
-
-pub use settings::{BasicSettings, LintSettings, RuleConfiguration, RuleSettings};
+pub use directives::suppress;
+pub use fixes::apply;
+pub use native::analyze;
+pub use result::{Edit, Error, Finding};
+pub use settings::Prepared;
+pub use syntax::lint;

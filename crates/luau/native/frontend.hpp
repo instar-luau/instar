@@ -10,14 +10,16 @@
 #include <unordered_map>
 
 namespace instar::luau {
+    struct Analysis;
     struct Diagnostic;
     struct Flag;
+    struct Warning;
 
     class Frontend {
     public:
         Frontend(const Context &context, rust::Slice<const Flag> flags, const Luau::FrontendOptions &options);
 
-        rust::Vec<Diagnostic> check(rust::Str module);
+        Analysis analyze(rust::Str module, bool lint);
         void invalidate(rust::Str module);
         void clear();
         void environment(const std::string &name);
@@ -29,11 +31,14 @@ namespace instar::luau {
         Flags flags;
         Host host;
         Luau::FrontendOptions options;
+        bool linting = false;
         std::unique_ptr<Luau::Frontend> frontend;
         std::unordered_map<std::string, rust::Vec<Diagnostic>> environments;
+        std::unordered_map<std::string, rust::Vec<Warning>> findings;
     };
 
     std::unique_ptr<Frontend> create(const Context &host, bool retainTypes);
+    rust::Vec<rust::String> warnings();
 }
 
 #endif

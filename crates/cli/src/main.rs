@@ -4,6 +4,7 @@ mod arguments;
 mod checking;
 mod execution;
 mod formatting;
+mod linting;
 mod reporting;
 mod watching;
 mod workers;

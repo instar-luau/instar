@@ -13,7 +13,7 @@ use instar_workspace::{Access, Purpose, Workspace};
 
 use super::{
     arguments::{Arguments, Command, Options},
-    checking, formatting,
+    checking, formatting, linting,
     reporting::{self, Batch},
     watching::{Change, Watcher},
     workers,
@@ -103,6 +103,15 @@ pub(super) fn run(arguments: &Arguments) -> Result<u8> {
                             |dirty, progress| pool.execute(dirty, progress),
                         )
                     },
+                ),
+
+                Command::Lint(lint) => workers::run(
+                    arguments,
+                    &project,
+                    &overrides,
+                    lint.jobs,
+                    linting::syntax,
+                    |pool| linting::run(arguments, &project, watcher.as_mut(), started, pool),
                 ),
             }
         });
@@ -203,9 +212,18 @@ fn prepare(
         .cloned()
         .collect();
 
-    let (purpose, access) = match arguments.command {
+    let (purpose, access) = match &arguments.command {
         Command::Check(_) => (Purpose::Check, Access::Read),
         Command::Format(_) => (Purpose::Format, Access::Write),
+
+        Command::Lint(lint) => (
+            Purpose::Lint,
+            if lint.fix || lint.fix_preview {
+                Access::Write
+            } else {
+                Access::Read
+            },
+        ),
     };
 
     let mut selected = if stdin.is_some() && inputs.is_empty() {

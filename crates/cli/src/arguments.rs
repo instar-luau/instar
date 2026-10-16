@@ -3,7 +3,7 @@ use std::{num::NonZeroUsize, path::PathBuf};
 use clap::{ColorChoice, Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(version, about = "Check and format Luau projects")]
+#[command(version, about = "Check, format, and lint Luau projects")]
 pub(super) struct Arguments {
     #[arg(
         long,
@@ -44,6 +44,9 @@ pub(super) enum Command {
 
     #[command(about = "Format files, directories, patterns, or stdin (-)")]
     Format(Format),
+
+    #[command(about = "Lint files, directories, patterns, or stdin (-)")]
+    Lint(Lint),
 }
 
 #[derive(clap::Args)]
@@ -126,11 +129,37 @@ pub(super) struct Format {
     pub(super) preview: bool,
 }
 
+#[derive(clap::Args)]
+pub(super) struct Lint {
+    #[command(flatten)]
+    pub(super) options: Options,
+
+    #[arg(
+        long,
+        value_name = "COUNT",
+        help = "Vermis worker limit; defaults to available parallelism"
+    )]
+    pub(super) jobs: Option<NonZeroUsize>,
+
+    #[arg(long, value_name = "RULE", num_args = 1.., help = "Select only these lint rules")]
+    pub(super) rule: Vec<String>,
+
+    #[arg(long, conflicts_with = "fix_preview", help = "Apply safe corrections")]
+    pub(super) fix: bool,
+
+    #[arg(
+        long,
+        help = "Print safe corrections as a unified diff without writing"
+    )]
+    pub(super) fix_preview: bool,
+}
+
 impl Command {
     pub(super) fn options(&self) -> &Options {
         match self {
             Self::Check(check) => &check.options,
             Self::Format(format) => &format.options,
+            Self::Lint(lint) => &lint.options,
         }
     }
 
@@ -141,6 +170,7 @@ impl Command {
         let purpose = match self {
             Self::Check(_) => "check",
             Self::Format(_) => "format",
+            Self::Lint(_) => "lint",
         };
 
         for (field, values) in [("include", &options.include), ("exclude", &options.exclude)] {
@@ -157,6 +187,15 @@ impl Command {
         }) = self
         {
             overrides.push(format!("check.mode={}", serde_json::to_string(mode)?));
+        }
+
+        if let Self::Lint(lint) = self
+            && !lint.rule.is_empty()
+        {
+            overrides.push(format!(
+                "lint.selected={}",
+                serde_json::to_string(&lint.rule)?
+            ));
         }
 
         Ok(overrides)

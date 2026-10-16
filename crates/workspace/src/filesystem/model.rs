@@ -38,6 +38,8 @@ pub(super) struct Scope {
     pub(super) checking: Selection,
     pub(super) formatting: Selection,
     pub(super) format: Arc<formatting::Prepared>,
+    pub(super) linting: Selection,
+    pub(super) lint: Arc<instar_lint::Prepared>,
     pub(super) environments: RefCell<BTreeMap<bool, Option<String>>>,
 }
 
@@ -163,6 +165,14 @@ impl Workspace {
         Ok(Arc::clone(&self.scope(Path::new(module))?.format))
     }
 
+    /// Return the effective lint policies for a module.
+    ///
+    /// # Errors
+    /// Returns inaccessible configuration or invalid scoped settings.
+    pub fn linting(&self, module: &str) -> Result<Arc<instar_lint::Prepared>, Error> {
+        Ok(Arc::clone(&self.scope(Path::new(module))?.lint))
+    }
+
     /// Look up a configured documentation symbol in the module's environment.
     ///
     /// # Errors
@@ -243,6 +253,12 @@ impl Scope {
                 Error::Configuration(error)
             })?;
 
+        let lint = instar_lint::Prepared::new(&configuration.lint).map_err(|mut error| {
+            error.path.insert(0, "lint".to_owned());
+
+            Error::Configuration(error)
+        })?;
+
         let checking = Selection::new(
             base,
             configuration
@@ -271,12 +287,28 @@ impl Scope {
                 .or(configuration.exclude.as_deref()),
         )?;
 
+        let linting = Selection::new(
+            base,
+            configuration
+                .lint
+                .include
+                .as_deref()
+                .or(configuration.include.as_deref()),
+            configuration
+                .lint
+                .exclude
+                .as_deref()
+                .or(configuration.exclude.as_deref()),
+        )?;
+
         Ok(Self {
             layers,
             configuration,
             checking,
             formatting,
             format: Arc::new(format),
+            linting,
+            lint: Arc::new(lint),
             environments: RefCell::new(BTreeMap::new()),
         })
     }

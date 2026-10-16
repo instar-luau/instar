@@ -41,20 +41,19 @@ pub(super) fn run(
         Ok(Response::Completed(Batch::collect(
             &modules,
             progress,
-            |module| process(workspace, &mut frontend, module, &mut files),
+            |module| diagnostics(workspace, frontend.check(module)?, &mut files),
         )))
     })
 }
 
-fn process(
+pub(super) fn diagnostics(
     workspace: &Workspace,
-    frontend: &mut Frontend<'_>,
-    module: &str,
+    diagnostics: impl IntoIterator<Item = instar_luau::Diagnostic>,
     files: &mut BTreeMap<String, SimpleFile<String, Arc<str>>>,
 ) -> Result<Batch> {
     let mut batch = Batch::default();
 
-    for diagnostic in frontend.check(module)? {
+    for diagnostic in diagnostics {
         let mut finding = Diagnostic::error()
             .with_code(diagnostic.code.to_string())
             .with_message(diagnostic.message);

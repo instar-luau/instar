@@ -923,6 +923,7 @@ dependencies = [
  "insta",
  "instar-configuration",
  "instar-format",
+ "instar-lint",
  "instar-luau",
  "instar-workspace",
  "notify",
@@ -960,12 +961,12 @@ dependencies = [
 name = "instar-lint"
 version = "0.1.0"
 dependencies = [
+ "figment",
+ "instar-configuration",
  "instar-luau",
- "instar-shared",
- "instar-syntax",
  "regex",
- "schemars",
  "serde",
+ "vermis",
 ]
 
 [[package]]
@@ -1048,6 +1049,7 @@ dependencies = [
  "globset",
  "ignore",
  "instar-configuration",
+ "instar-lint",
  "instar-luau",
  "same-file",
  "serde",

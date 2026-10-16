@@ -1,8 +1,0 @@
-[deprecated.paths]
-"old.api" = "new.api"
-
-[restricted_globals.names]
-print = "use logging"
-
-[restricted_module_paths.paths]
-"./blocked" = "blocked"

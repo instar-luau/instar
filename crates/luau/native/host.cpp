@@ -124,7 +124,13 @@ namespace instar::luau {
             return std::nullopt;
         }
 
-        return Luau::SourceCode{std::string(source.value), type};
+        std::string text(source.value);
+
+        if (text.compare(0, 3, "\xef\xbb\xbf") == 0) {
+            text.replace(0, 3, "   ");
+        }
+
+        return Luau::SourceCode{std::move(text), type};
     }
 
     std::string Host::getHumanReadableModuleName(const Luau::ModuleName &name) const {

@@ -1,2 +1,0 @@
---!strictt
-return 1

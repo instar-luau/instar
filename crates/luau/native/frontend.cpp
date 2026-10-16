@@ -6,6 +6,7 @@
 #include "diagnostic.hpp"
 #include "environment.hpp"
 #include "instar-luau/src/bridge.rs.h"
+#include "linting.hpp"
 
 #include <optional>
 #include <stdexcept>
@@ -18,6 +19,12 @@ namespace instar::luau {
     }
 
     void Frontend::initialize() {
+        options.customModuleCheck = [this](const Luau::SourceModule &source, const Luau::Module &module) {
+            if (linting) {
+                findings[source.name] = lint(source, module, host, frontend->globals.globalScope);
+            }
+        };
+
         auto initialized = std::make_unique<Luau::Frontend>(Luau::SolverMode::New, &host, &host, options);
         Luau::registerBuiltinGlobals(*initialized, initialized->globals);
         Luau::freeze(initialized->globals.globalTypes);
@@ -29,9 +36,14 @@ namespace instar::luau {
         frontend = std::move(initialized);
     }
 
-    rust::Vec<Diagnostic> Frontend::check(rust::Str module) {
+    Analysis Frontend::analyze(rust::Str module, bool lint) {
+        if (linting != lint) {
+            linting = lint;
+            clear();
+        }
+
         try {
-            rust::Vec<Diagnostic> diagnostics;
+            Analysis analysis;
 
             for (const std::string &name : host.modules(std::string(module))) {
                 std::optional<Luau::CheckResult> result = frontend->getCheckResult(name, true);
@@ -59,13 +71,38 @@ namespace instar::luau {
                 }
 
                 for (const Luau::TypeError &error : result->errors) {
-                    diagnostics.push_back(diagnose(error, host));
+                    analysis.diagnostics.push_back(diagnose(error, host));
+
+                    if (const auto *syntax = Luau::get<Luau::SyntaxError>(error);
+                        lint && error.moduleName == name && syntax &&
+                        syntax->message.find("malformed escape sequence") != std::string::npos) {
+                        analysis.warnings.push_back(
+                            Warning{analysis.diagnostics[analysis.diagnostics.size() - 1],
+                                "bad_string_escape",
+                                {},
+                                {},
+                                false}
+                        );
+                    }
+                }
+
+                if (const auto found = findings.find(name); found != findings.end()) {
+                    for (const auto &warning : found->second) {
+                        analysis.warnings.push_back(warning);
+                    }
                 }
             }
 
-            return diagnostics;
+            return analysis;
         } catch (const DeclarationFailure &failure) {
-            return failure.diagnostics;
+            Analysis analysis;
+            analysis.diagnostics = failure.diagnostics;
+
+            for (auto &diagnostic : analysis.diagnostics) {
+                diagnostic.blocking = true;
+            }
+
+            return analysis;
         } catch (...) {
             clear();
             throw;
@@ -88,6 +125,7 @@ namespace instar::luau {
         initialize();
         environments.clear();
         host.clear();
+        findings.clear();
     }
 
     void Frontend::environment(const std::string &name) {
@@ -113,5 +151,15 @@ namespace instar::luau {
         options.retainFullTypeGraphs = retainTypes;
 
         return std::make_unique<Frontend>(host, rust::Slice<const Flag>{flags.data(), flags.size()}, options);
+    }
+
+    rust::Vec<rust::String> warnings() {
+        rust::Vec<rust::String> names;
+
+        for (int code = 1; code < Luau::LintWarning::Code__Count; ++code) {
+            names.push_back(Luau::LintWarning::getName(static_cast<Luau::LintWarning::Code>(code)));
+        }
+
+        return names;
     }
 }

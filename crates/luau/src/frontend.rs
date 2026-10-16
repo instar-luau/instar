@@ -1,6 +1,6 @@
 use cxx::UniquePtr;
 
-use crate::bridge::bindings::{self, Diagnostic};
+use crate::bridge::bindings::{self, Analysis, Diagnostic};
 use crate::error::Error;
 use crate::host::Context;
 
@@ -26,7 +26,19 @@ impl<'host> Frontend<'host> {
     /// # Errors
     /// Returns an operational host error or native analysis failure.
     pub fn check(&mut self, module: &str) -> Result<Vec<Diagnostic>, Error> {
-        let result = self.native.pin_mut().check(module);
+        let result = self.native.pin_mut().analyze(module, false);
+
+        self.context
+            .complete(result)
+            .map(|analysis| analysis.diagnostics)
+    }
+
+    /// Lint a module using the same persistent dependency and declaration state.
+    ///
+    /// # Errors
+    /// Returns an operational host error or native analysis failure.
+    pub fn lint(&mut self, module: &str) -> Result<Analysis, Error> {
+        let result = self.native.pin_mut().analyze(module, true);
 
         self.context.complete(result)
     }
@@ -55,4 +67,10 @@ impl<'host> Frontend<'host> {
 
         Ok(())
     }
+}
+
+/// Return the canonical names of the bundled Luau warnings.
+#[must_use]
+pub fn warnings() -> Vec<String> {
+    bindings::warnings()
 }

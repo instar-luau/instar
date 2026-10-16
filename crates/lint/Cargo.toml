@@ -1,21 +1,20 @@
 [package]
 name = "instar-lint"
+description = "Configured Luau and lossless syntax linting"
 version.workspace = true
 edition.workspace = true
-description = "Luau source linting"
 repository.workspace = true
 license.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+figment.workspace = true
+instar-configuration.workspace = true
 instar-luau.workspace = true
-instar-shared.workspace = true
-instar-syntax.workspace = true
-
 regex.workspace = true
-schemars.workspace = true
 serde.workspace = true
+vermis.workspace = true
 
 [lints]
 workspace = true
