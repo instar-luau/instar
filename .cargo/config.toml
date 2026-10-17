@@ -1,5 +1,0 @@
-[build]
-rustflags = ["-Z", "unstable-options", "--jobs-frontend=0"]
-
-[env]
-CARGO_TARGET_DIR = { value = "target", relative = true }
