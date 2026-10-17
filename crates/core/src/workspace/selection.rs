@@ -55,7 +55,7 @@ impl Selection {
         self.include
             .as_ref()
             .is_none_or(|include| include.is_match(path))
-            && !self.exclude.is_match(path)
+            && !path.ancestors().any(|path| self.exclude.is_match(path))
     }
 }
 
