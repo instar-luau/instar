@@ -38,21 +38,31 @@ pub(super) fn root(workspace: &Workspace) -> Result<Scope, Error> {
 }
 
 pub(super) fn directory(workspace: &Workspace, directory: &Path) -> Result<Rc<Scope>, Error> {
-    if !directory.starts_with(&workspace.root) || !workspace.files.is_empty() {
+    if !workspace.files.is_empty() {
         return Ok(workspace.root());
     }
 
     let mut pending = Vec::new();
-    let mut scope = workspace.root();
+    let mut scope = None;
 
     for ancestor in directory.ancestors() {
         if let Some(existing) = workspace.scopes.borrow().get(ancestor) {
-            scope = Rc::clone(existing);
+            scope = Some(Rc::clone(existing));
             break;
         }
 
         pending.push(ancestor);
     }
+
+    let mut scope = match scope {
+        Some(scope) => scope,
+
+        None => Rc::new(Scope::new(
+            &workspace.root,
+            defaults(),
+            &workspace.overrides,
+        )?),
+    };
 
     for directory in pending.into_iter().rev() {
         let file = directory.join(CONFIGURATION);
