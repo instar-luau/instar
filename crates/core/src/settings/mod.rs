@@ -9,10 +9,12 @@ pub mod resolution;
 mod load;
 mod model;
 mod paths;
+mod patterns;
 mod schema;
 mod source;
 
 pub use self::{
     load::{defaults, layer, load, resolve},
     model::{Configuration, Flag, Selection},
+    patterns::Patterns,
 };

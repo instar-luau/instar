@@ -202,6 +202,17 @@ impl Workspace {
         selection::select(self, inputs, purpose, access)
     }
 
+    /// Return whether the command's effective exclusions suppress this module.
+    ///
+    /// # Errors
+    /// Returns inaccessible configuration or invalid selection rules.
+    pub fn excluded(&self, module: &str, purpose: Purpose) -> Result<bool, Error> {
+        let path = Path::new(module);
+        let scope = self.scope(path)?;
+
+        Ok(Selection::new(&scope.configuration, purpose).excluded(path))
+    }
+
     /// Return the effective formatting configuration for a module.
     ///
     /// # Errors
@@ -283,10 +294,7 @@ impl Workspace {
 pub(super) struct Scope {
     pub(super) layers: Figment,
     pub(super) configuration: Configuration,
-    pub(super) checking: Selection,
-    pub(super) formatting: Selection,
     pub(super) format: Arc<format::Prepared>,
-    pub(super) linting: Selection,
     pub(super) lint: Arc<lint::Prepared>,
     pub(super) environments: RefCell<BTreeMap<bool, Option<String>>>,
     builtins: RefCell<Option<Arc<str>>>,
@@ -309,55 +317,10 @@ impl Scope {
             Error::Configuration(error)
         })?;
 
-        let checking = Selection::new(
-            base,
-            configuration
-                .check
-                .include
-                .as_deref()
-                .or(configuration.include.as_deref()),
-            configuration
-                .check
-                .exclude
-                .as_deref()
-                .or(configuration.exclude.as_deref()),
-        )?;
-
-        let formatting = Selection::new(
-            base,
-            configuration
-                .format
-                .include
-                .as_deref()
-                .or(configuration.include.as_deref()),
-            configuration
-                .format
-                .exclude
-                .as_deref()
-                .or(configuration.exclude.as_deref()),
-        )?;
-
-        let linting = Selection::new(
-            base,
-            configuration
-                .lint
-                .include
-                .as_deref()
-                .or(configuration.include.as_deref()),
-            configuration
-                .lint
-                .exclude
-                .as_deref()
-                .or(configuration.exclude.as_deref()),
-        )?;
-
         Ok(Self {
             layers,
             configuration,
-            checking,
-            formatting,
             format: Arc::new(format),
-            linting,
             lint: Arc::new(lint),
             environments: RefCell::new(BTreeMap::new()),
             builtins: RefCell::new(None),

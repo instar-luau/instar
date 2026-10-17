@@ -6,19 +6,17 @@ use figment::value::Value;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::schema;
+use super::{Patterns, schema};
 
 /// Lint settings and file selection.
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Configuration {
     /// Replacement inclusion patterns.
-    #[schemars(extend("items" = schema::pattern()))]
-    pub include: Option<Vec<String>>,
+    pub include: Option<Patterns>,
 
     /// Replacement exclusion patterns.
-    #[schemars(extend("items" = schema::pattern()))]
-    pub exclude: Option<Vec<String>>,
+    pub exclude: Option<Patterns>,
 
     /// Presets applied in order over the rule catalog's defaults.
     pub presets: Vec<Preset>,

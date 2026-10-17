@@ -4,10 +4,11 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use globset::{Glob, GlobBuilder, GlobMatcher, GlobSet, GlobSetBuilder, escape};
+use globset::{Glob, GlobBuilder, GlobMatcher, escape};
 use ignore::WalkBuilder;
 
 use super::{Error, Workspace, paths};
+use crate::settings::{Configuration, Patterns};
 
 /// The command whose file-selection settings apply during discovery.
 #[derive(Copy, Clone)]
@@ -32,30 +33,34 @@ pub enum Access {
     Write,
 }
 
-pub(super) struct Selection {
-    include: Option<GlobSet>,
-    exclude: GlobSet,
+pub(super) struct Selection<'configuration> {
+    include: Option<&'configuration Patterns>,
+    exclude: Option<&'configuration Patterns>,
 }
 
-impl Selection {
-    pub(super) fn new(
-        base: &Path,
-        include: Option<&[String]>,
-        exclude: Option<&[String]>,
-    ) -> Result<Self, Error> {
-        Ok(Self {
-            include: include
-                .map(|patterns| compile(base, patterns))
-                .transpose()?,
-            exclude: compile(base, exclude.unwrap_or_default())?,
-        })
+impl<'configuration> Selection<'configuration> {
+    pub(super) fn new(configuration: &'configuration Configuration, purpose: Purpose) -> Self {
+        let (include, exclude) = match purpose {
+            Purpose::Check => (&configuration.check.include, &configuration.check.exclude),
+            Purpose::Format => (&configuration.format.include, &configuration.format.exclude),
+            Purpose::Lint => (&configuration.lint.include, &configuration.lint.exclude),
+        };
+
+        Self {
+            include: include.as_ref().or(configuration.include.as_ref()),
+            exclude: exclude.as_ref().or(configuration.exclude.as_ref()),
+        }
     }
 
     fn matches(&self, path: &Path) -> bool {
         self.include
-            .as_ref()
-            .is_none_or(|include| include.is_match(path))
-            && !path.ancestors().any(|path| self.exclude.is_match(path))
+            .is_none_or(|include| include.matches(path, true))
+            && !self.excluded(path)
+    }
+
+    pub(super) fn excluded(&self, path: &Path) -> bool {
+        self.exclude
+            .is_some_and(|exclude| exclude.matches(path, false))
     }
 }
 
@@ -161,11 +166,7 @@ fn walk(
         if entry.file_type().is_some_and(|kind| kind.is_file())
             && paths::source(path)
             && pattern.is_none_or(|pattern| pattern.is_match(path))
-            && match purpose {
-                Purpose::Check => workspace.scope(path)?.checking.matches(path),
-                Purpose::Format => workspace.scope(path)?.formatting.matches(path),
-                Purpose::Lint => workspace.scope(path)?.linting.matches(path),
-            }
+            && Selection::new(&workspace.scope(path)?.configuration, purpose).matches(path)
         {
             selected
                 .entry(workspace.module(path)?)
@@ -174,16 +175,6 @@ fn walk(
     }
 
     Ok(())
-}
-
-fn compile(base: &Path, patterns: &[String]) -> Result<GlobSet, Error> {
-    let mut builder = GlobSetBuilder::new();
-
-    for input in patterns {
-        builder.add(pattern(base, input)?);
-    }
-
-    builder.build().map_err(Error::Pattern)
 }
 
 fn pattern(base: &Path, input: &str) -> Result<Glob, Error> {

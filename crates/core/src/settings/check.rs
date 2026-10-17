@@ -3,19 +3,17 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::schema;
+use super::Patterns;
 
 /// Type-checking settings and file selection.
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Configuration {
     /// Replacement inclusion patterns.
-    #[schemars(extend("items" = schema::pattern()))]
-    pub include: Option<Vec<String>>,
+    pub include: Option<Patterns>,
 
     /// Replacement exclusion patterns.
-    #[schemars(extend("items" = schema::pattern()))]
-    pub exclude: Option<Vec<String>>,
+    pub exclude: Option<Patterns>,
 
     /// Checking mode for sources without an overriding directive.
     pub mode: Mode,

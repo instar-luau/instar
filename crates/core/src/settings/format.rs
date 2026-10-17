@@ -5,19 +5,17 @@ use std::num::NonZeroUsize;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::schema;
+use super::{Patterns, schema};
 
 /// Formatting settings and file selection.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Configuration {
     /// Replacement inclusion patterns.
-    #[schemars(extend("items" = schema::pattern()))]
-    pub include: Option<Vec<String>>,
+    pub include: Option<Patterns>,
 
     /// Replacement exclusion patterns.
-    #[schemars(extend("items" = schema::pattern()))]
-    pub exclude: Option<Vec<String>>,
+    pub exclude: Option<Patterns>,
 
     /// Positive target line width.
     pub width: NonZeroUsize,

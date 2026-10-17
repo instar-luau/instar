@@ -1,7 +1,6 @@
-use std::path::{MAIN_SEPARATOR, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use figment::Error;
-use globset::escape;
 
 use super::{Configuration, source::Source};
 
@@ -47,24 +46,7 @@ pub(super) fn resolve(
         ),
     ] {
         if let Some(patterns) = patterns {
-            for (index, pattern) in patterns.iter_mut().enumerate() {
-                let field = field.field(&index.to_string());
-
-                if !Path::new(pattern).is_absolute() {
-                    let directory = field
-                        .base(base)
-                        .to_str()
-                        .ok_or_else(|| field.error("glob base directories must be UTF-8"))?;
-
-                    let directory = escape(&directory.replace(MAIN_SEPARATOR, "/"));
-                    let anchored = Path::new(&directory).join(&*pattern);
-
-                    *pattern = anchored
-                        .to_str()
-                        .ok_or_else(|| field.error("glob patterns must be UTF-8"))?
-                        .replace(MAIN_SEPARATOR, "/");
-                }
-            }
+            patterns.resolve(&field, base)?;
         }
     }
 

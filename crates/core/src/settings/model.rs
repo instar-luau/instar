@@ -3,19 +3,17 @@ use std::collections::BTreeMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{check, environment, format, lint, resolution, schema};
+use super::{Patterns, check, environment, format, lint, resolution, schema};
 
 /// Project configuration; generate its JSON Schema with `schemars::schema_for!`.
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Configuration {
     /// Shared inclusion patterns, relative to their defining configuration file.
-    #[schemars(extend("items" = schema::pattern()))]
-    pub include: Option<Vec<String>>,
+    pub include: Option<Patterns>,
 
     /// Shared exclusion patterns, relative to their defining configuration file.
-    #[schemars(extend("items" = schema::pattern()))]
-    pub exclude: Option<Vec<String>>,
+    pub exclude: Option<Patterns>,
 
     /// Luau flag overrides; the engine owns registration and application.
     #[schemars(extend("propertyNames" = schema::identifier()))]
@@ -45,12 +43,10 @@ pub struct Configuration {
 #[serde(default, deny_unknown_fields)]
 pub struct Selection {
     /// Replacement inclusion patterns.
-    #[schemars(extend("items" = schema::pattern()))]
-    pub include: Option<Vec<String>>,
+    pub include: Option<Patterns>,
 
     /// Replacement exclusion patterns.
-    #[schemars(extend("items" = schema::pattern()))]
-    pub exclude: Option<Vec<String>>,
+    pub exclude: Option<Patterns>,
 }
 
 /// A boolean or signed 32-bit Luau flag value.

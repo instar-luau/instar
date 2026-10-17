@@ -10,7 +10,7 @@ use codespan_reporting::{
 };
 
 use eyre::{Result, WrapErr as _, eyre};
-use instar_core::workspace::Workspace;
+use instar_core::workspace::{Purpose, Workspace};
 use instar_luau::{Context, Frontend, Progress};
 
 use super::{
@@ -81,6 +81,12 @@ fn process(
     let mut batch = Batch::default();
 
     for diagnostic in frontend.check(module)? {
+        if !diagnostic.module.is_empty()
+            && workspace.excluded(&diagnostic.module, Purpose::Check)?
+        {
+            continue;
+        }
+
         let mut finding = Diagnostic::error()
             .with_code(diagnostic.code.to_string())
             .with_message(diagnostic.message);
