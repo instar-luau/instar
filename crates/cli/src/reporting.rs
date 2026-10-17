@@ -7,6 +7,7 @@ use std::{
 };
 
 use clap::ColorChoice;
+
 use codespan_reporting::{
     diagnostic::{Diagnostic, Label, Severity},
     files::SimpleFiles,
@@ -15,7 +16,12 @@ use codespan_reporting::{
         termcolor::{ColorChoice as TerminalColor, StandardStream},
     },
 };
-use color_eyre::config::{HookBuilder, Theme};
+
+use color_eyre::{
+    Handler,
+    config::{HookBuilder, Theme},
+};
+
 use eyre::{Report, Result};
 use indicatif::{ProgressBar, ProgressStyle};
 use instar_core::{lint, workspace::Workspace};
@@ -26,7 +32,7 @@ use super::{
     execution::Project,
 };
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
 pub(super) struct Source {
     pub(super) module: String,
     pub(super) text: Arc<str>,
@@ -42,18 +48,10 @@ pub(super) struct Output {
 #[derive(Default)]
 pub(super) struct Batch {
     pub(super) findings: Vec<Finding>,
-    failures: Vec<Report>,
     pub(super) outputs: Vec<Output>,
     pub(super) lint: Vec<(Source, Vec<lint::Finding>)>,
     pub(super) dependencies: BTreeSet<PathBuf>,
-}
-
-#[derive(Default)]
-pub(super) struct Summary {
-    errors: usize,
-    failures: usize,
-    warnings: usize,
-    changed: usize,
+    failures: Vec<Report>,
 }
 
 impl Batch {
@@ -101,8 +99,8 @@ impl Batch {
                 &mut summary,
             )?,
 
-            Command::Lint(lint) if lint.fix || lint.fix_preview => {
-                publish(false, lint.fix_preview, project, self.outputs, &mut summary)?;
+            Command::Lint(lint) if lint.fix => {
+                publish(false, lint.preview, project, self.outputs, &mut summary)?;
             }
 
             Command::Check(_) | Command::Lint(_) => {}
@@ -110,6 +108,14 @@ impl Batch {
 
         Ok(summary)
     }
+}
+
+#[derive(Default)]
+pub(super) struct Summary {
+    errors: usize,
+    failures: usize,
+    warnings: usize,
+    changed: usize,
 }
 
 impl Summary {
@@ -134,14 +140,14 @@ impl Summary {
         match &arguments.command {
             Command::Check(_) => eprintln!(
                 "{} {files} files; {errors} errors",
-                console::style("Checked").for_stderr().bold()
+                console::style("checked").for_stderr().bold()
             ),
 
             Command::Format(format) => {
                 let action = if format.check || format.preview {
-                    "Inspected"
+                    "inspected"
                 } else {
-                    "Formatted"
+                    "formatted"
                 };
 
                 eprintln!(
@@ -153,14 +159,14 @@ impl Summary {
 
             Command::Lint(_) => eprintln!(
                 "{} {files} files; {} changed; {errors} errors; {} warnings",
-                console::style("Linted").for_stderr().bold(),
+                console::style("linted").for_stderr().bold(),
                 self.changed,
                 self.warnings,
             ),
         }
 
         if arguments.verbose {
-            eprintln!("Finished in {:.2?}", started.elapsed());
+            eprintln!("finished in {:.2?}", started.elapsed());
         }
     }
 }
@@ -202,13 +208,13 @@ pub(super) fn progress(
     selected: &BTreeMap<String, PathBuf>,
 ) -> Result<ProgressBar> {
     let action = match arguments.command {
-        Command::Check(_) => "Checking",
-        Command::Format(_) => "Formatting",
-        Command::Lint(_) => "Linting",
+        Command::Check(_) => "checking",
+        Command::Format(_) => "formatting",
+        Command::Lint(_) => "linting",
     };
 
     if arguments.verbose {
-        eprintln!("Project: {}", workspace.directory().display());
+        eprintln!("root: {}", workspace.directory().display());
 
         for module in selected.keys() {
             eprintln!("{action} {}", path(module, selected).display());
@@ -235,7 +241,29 @@ pub(super) fn progress(
 }
 
 pub(super) fn failure(error: &Report) {
-    eprintln!("{error:?}");
+    let mut notes: Vec<_> = error
+        .chain()
+        .skip(1)
+        .map(|cause| format!("caused by: {cause}"))
+        .collect();
+
+    if let Some(handler) = error.handler().downcast_ref::<Handler>() {
+        if let Some(trace) = handler.span_trace() {
+            notes.push(format!("span trace:\n{trace}"));
+        }
+
+        if let Some(trace) = handler.backtrace() {
+            notes.push(format!("backtrace:\n{trace:?}"));
+        }
+    }
+
+    let diagnostic = Diagnostic::error()
+        .with_message(error.to_string())
+        .with_notes(notes);
+
+    if let Err(source) = render(&BTreeMap::new(), vec![diagnostic]) {
+        eprintln!("error: {error:#}\nerror: cannot render diagnostic: {source}");
+    }
 }
 
 fn render(inputs: &BTreeMap<String, PathBuf>, mut findings: Vec<Finding>) -> Result<Summary> {
@@ -339,7 +367,7 @@ fn publish(
             )?;
         } else if check {
             if different {
-                eprintln!("Would format {}", path.display());
+                eprintln!("would format `{}`", path.display());
             }
         } else if !preview {
             if project.stdin_module.as_ref() == Some(&proposed.source.module) {

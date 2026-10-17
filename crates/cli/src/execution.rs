@@ -12,14 +12,14 @@ use instar_core::workspace::{Access, Purpose, Workspace};
 
 use super::{
     arguments::{Arguments, Command, Options},
-    checking, formatting, linting,
+    check, format, lint,
     reporting::{self, Batch},
     watching::{Change, Watcher},
-    workers,
 };
 
 pub(super) struct Project {
     pub(super) workspace: Workspace,
+    pub(super) overrides: Vec<String>,
     pub(super) selected: BTreeMap<String, PathBuf>,
     pub(super) stdin_module: Option<String>,
     pub(super) stdin: Option<(PathBuf, Arc<str>)>,
@@ -34,7 +34,7 @@ pub(super) fn run(arguments: &Arguments) -> Result<u8> {
     let options = arguments.command.options();
 
     let root = options
-        .project_root
+        .root
         .clone()
         .map_or_else(env::current_dir, Ok)?
         .canonicalize()?;
@@ -85,37 +85,10 @@ pub(super) fn run(arguments: &Arguments) -> Result<u8> {
 
         let result = prepare(arguments, &root, &overrides, stdin.as_ref()).and_then(|project| {
             match &arguments.command {
-                Command::Check(_) => checking::run(arguments, &project, watcher.as_mut(), started),
+                Command::Check(_) => check::run(arguments, &project, watcher.as_mut(), started),
 
-                Command::Format(format) => workers::run(
-                    arguments,
-                    &project,
-                    &overrides,
-                    format.jobs,
-                    formatting::run,
-                    |pool| {
-                        session(
-                            arguments,
-                            &project,
-                            watcher.as_mut(),
-                            started,
-                            |dirty, progress| pool.execute(dirty, progress),
-                        )
-                    },
-                ),
-
-                Command::Lint(lint) => {
-                    let environments = linting::prepare(&project);
-
-                    workers::run(
-                        arguments,
-                        &project,
-                        &overrides,
-                        lint.jobs,
-                        |workspace, worker| linting::syntax(workspace, worker, &environments),
-                        |pool| linting::run(arguments, &project, watcher.as_mut(), started, pool),
-                    )
-                }
+                Command::Format(_) => format::run(arguments, &project, watcher.as_mut(), started),
+                Command::Lint(_) => lint::run(arguments, &project, watcher.as_mut(), started),
             }
         });
 
@@ -144,7 +117,7 @@ pub(super) fn session(
     }
 
     loop {
-        tracing::debug!(files = project.selected.len(), "Processing batch");
+        tracing::debug!(files = project.selected.len(), "processing batch");
 
         let progress = reporting::progress(arguments, &project.workspace, &project.selected)?;
         let result = execute(&dirty, &progress);
@@ -221,7 +194,7 @@ fn prepare(
 
         Command::Lint(lint) => (
             Purpose::Lint,
-            if lint.fix || lint.fix_preview {
+            if lint.fix {
                 Access::Write
             } else {
                 Access::Read
@@ -241,6 +214,7 @@ fn prepare(
 
     Ok(Project {
         workspace,
+        overrides: overrides.to_owned(),
         selected,
         stdin_module,
         stdin: stdin.cloned(),

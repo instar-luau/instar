@@ -8,6 +8,7 @@ use codespan_reporting::{
     diagnostic::{Diagnostic, Label},
     files::{Files as _, SimpleFile},
 };
+
 use eyre::{Result, eyre};
 use instar_core::workspace::Workspace;
 use instar_luau::{Context, Frontend};
@@ -40,19 +41,20 @@ pub(super) fn run(
         Ok(Response::Completed(Batch::collect(
             &modules,
             progress,
-            |module| diagnostics(workspace, frontend.check(module)?, &mut files),
+            |module| process(workspace, module, &mut frontend, &mut files),
         )))
     })
 }
 
-pub(super) fn diagnostics(
+fn process(
     workspace: &Workspace,
-    diagnostics: impl IntoIterator<Item = instar_luau::Diagnostic>,
+    module: &str,
+    frontend: &mut Frontend<'_>,
     files: &mut BTreeMap<String, SimpleFile<String, Arc<str>>>,
 ) -> Result<Batch> {
     let mut batch = Batch::default();
 
-    for diagnostic in diagnostics {
+    for diagnostic in frontend.check(module)? {
         let mut finding = Diagnostic::error()
             .with_code(diagnostic.code.to_string())
             .with_message(diagnostic.message);
@@ -63,7 +65,7 @@ pub(super) fn diagnostics(
 
                 Entry::Vacant(entry) => {
                     let source = workspace.snapshot(&diagnostic.module).ok_or_else(|| {
-                        eyre!("Diagnostic source is unavailable: {}", diagnostic.module)
+                        eyre!("cannot read diagnostic source `{}`", diagnostic.module)
                     })?;
 
                     entry.insert(SimpleFile::new(diagnostic.module.clone(), source))

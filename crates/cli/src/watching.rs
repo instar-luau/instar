@@ -170,7 +170,7 @@ impl Watcher {
 
     pub(super) fn wait(&self) -> Result<Vec<Event>> {
         if !self.quiet {
-            eprintln!("Watching for changes");
+            eprintln!("watching for changes");
         }
 
         let mut events = Vec::new();

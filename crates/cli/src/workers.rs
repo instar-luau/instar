@@ -10,7 +10,7 @@ use indicatif::ProgressBar;
 use instar_core::workspace::Workspace;
 
 use super::{
-    arguments::Arguments,
+    arguments::{Arguments, Command},
     execution::{self, Project, Response},
     reporting::Batch,
 };
@@ -24,15 +24,6 @@ pub(super) struct Worker<'modules> {
     modules: &'modules [String],
     requests: Receiver<Request>,
     responses: Sender<Response>,
-}
-
-struct Connection {
-    requests: Sender<Request>,
-    responses: Receiver<Response>,
-}
-
-pub(super) struct Pool {
-    connections: Vec<Connection>,
 }
 
 impl Worker<'_> {
@@ -62,6 +53,15 @@ impl Worker<'_> {
 
         Ok(())
     }
+}
+
+struct Connection {
+    requests: Sender<Request>,
+    responses: Receiver<Response>,
+}
+
+pub(super) struct Pool {
+    connections: Vec<Connection>,
 }
 
 impl Pool {
@@ -98,26 +98,30 @@ impl Pool {
 pub(super) fn run(
     arguments: &Arguments,
     project: &Project,
-    overrides: &[String],
-    requested: Option<NonZeroUsize>,
     execute: impl Fn(&Workspace, Worker<'_>) -> Result<()> + Sync,
     session: impl FnOnce(&Pool) -> Result<u8>,
 ) -> Result<u8> {
+    let requested = match &arguments.command {
+        Command::Check(_) => None,
+        Command::Format(format) => format.jobs,
+        Command::Lint(lint) => lint.jobs,
+    };
+
     let modules: Vec<_> = project.selected.keys().cloned().collect();
 
     let jobs = requested
         .or_else(|| thread::available_parallelism().ok())
-        .unwrap_or(NonZeroUsize::MIN)
-        .get()
+        .map_or(1, NonZeroUsize::get)
         .min(modules.len())
         .max(1);
 
     let root = project.workspace.directory();
     let options = arguments.command.options();
+    let overrides = &project.overrides;
     let stdin = project.stdin.as_ref();
 
     if arguments.verbose {
-        eprintln!("Worker limit {jobs}");
+        eprintln!("worker limit: {jobs}");
     }
 
     let operation = |worker: Worker<'_>| -> Result<()> {

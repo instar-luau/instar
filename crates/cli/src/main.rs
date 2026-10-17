@@ -1,19 +1,18 @@
 //! Instar's command-line interface.
 
 mod arguments;
-mod checking;
+mod check;
 mod execution;
-mod formatting;
-mod linting;
+mod format;
+mod lint;
 mod reporting;
 mod watching;
 mod workers;
 
 use std::process::ExitCode;
 
-use clap::Parser as _;
-
 use arguments::Arguments;
+use clap::Parser as _;
 
 fn main() -> ExitCode {
     let arguments = Arguments::parse();

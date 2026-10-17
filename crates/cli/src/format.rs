@@ -1,21 +1,43 @@
+use std::time::Instant;
+
 use codespan_reporting::diagnostic::{Diagnostic, Label};
 use eyre::{Result, eyre};
+
 use instar_core::{
     format::{self, Kind},
     workspace::Workspace,
 };
 
 use super::{
+    arguments::Arguments,
+    execution::{self, Project},
     reporting::{Batch, Output, Source},
-    workers::Worker,
+    watching::Watcher,
+    workers,
 };
 
-pub(super) fn run(workspace: &Workspace, worker: Worker<'_>) -> Result<()> {
-    worker.run(workspace, |modules, progress| {
-        Ok(Batch::collect(modules, progress, |module| {
-            process(workspace, module)
-        }))
-    })
+pub(super) fn run(
+    arguments: &Arguments,
+    project: &Project,
+    watcher: Option<&mut Watcher>,
+    started: Instant,
+) -> Result<u8> {
+    workers::run(
+        arguments,
+        project,
+        |workspace, worker| {
+            worker.run(workspace, |modules, progress| {
+                Ok(Batch::collect(modules, progress, |module| {
+                    process(workspace, module)
+                }))
+            })
+        },
+        |pool| {
+            execution::session(arguments, project, watcher, started, |dirty, progress| {
+                pool.execute(dirty, progress)
+            })
+        },
+    )
 }
 
 fn process(workspace: &Workspace, module: &str) -> Result<Batch> {
@@ -25,7 +47,7 @@ fn process(workspace: &Workspace, module: &str) -> Result<Batch> {
         module: module.to_owned(),
         text: workspace
             .source(module)?
-            .ok_or_else(|| eyre!("{module}: source is unavailable"))?,
+            .ok_or_else(|| eyre!("cannot read source `{module}`"))?,
     };
 
     let configuration = workspace.formatting(module)?;
