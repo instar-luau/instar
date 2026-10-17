@@ -1,6 +1,7 @@
 use std::{collections::BTreeMap, num::NonZeroUsize, path::PathBuf};
 
 use clap::{ColorChoice, Parser, Subcommand};
+use instar_core::lint;
 
 #[derive(Parser)]
 #[command(version, about = "Check, format, and lint Luau projects")]
@@ -192,7 +193,7 @@ impl Command {
         if let Self::Lint(lint) = self
             && !lint.rule.is_empty()
         {
-            let rules: BTreeMap<_, _> = instar_lint::rules()
+            let rules: BTreeMap<_, _> = lint::rules()
                 .map(str::to_owned)
                 .chain(lint.rule.iter().cloned())
                 .map(|name| {

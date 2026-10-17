@@ -7,7 +7,6 @@ use std::{
 };
 
 use clap::ColorChoice;
-
 use codespan_reporting::{
     diagnostic::{Diagnostic, Label, Severity},
     files::SimpleFiles,
@@ -16,11 +15,10 @@ use codespan_reporting::{
         termcolor::{ColorChoice as TerminalColor, StandardStream},
     },
 };
-
 use color_eyre::config::{HookBuilder, Theme};
 use eyre::{Report, Result};
 use indicatif::{ProgressBar, ProgressStyle};
-use instar_workspace::Workspace;
+use instar_core::{lint, workspace::Workspace};
 use similar::TextDiff;
 
 use super::{
@@ -46,7 +44,7 @@ pub(super) struct Batch {
     pub(super) findings: Vec<Finding>,
     failures: Vec<Report>,
     pub(super) outputs: Vec<Output>,
-    pub(super) lint: Vec<(Source, Vec<instar_lint::Finding>)>,
+    pub(super) lint: Vec<(Source, Vec<lint::Finding>)>,
     pub(super) dependencies: BTreeSet<PathBuf>,
 }
 

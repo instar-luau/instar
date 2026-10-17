@@ -3,9 +3,11 @@ use std::{collections::BTreeMap, mem, sync::Arc, time::Instant};
 use codespan_reporting::diagnostic::{Diagnostic, Label};
 use eyre::{Result, eyre};
 use indicatif::ProgressBar;
-use instar_configuration::linting::Severity;
-use instar_lint::Symbols;
-use instar_workspace::{Error, Workspace};
+use instar_core::{
+    lint::{self, Symbols},
+    settings::lint::Severity,
+    workspace::{Error, Workspace},
+};
 
 use super::{
     arguments::{Arguments, Command},
@@ -89,7 +91,7 @@ pub(super) fn syntax(
                 }
             };
 
-            match instar_lint::lint(&source.text, &settings, symbols) {
+            match lint::lint(&source.text, &settings, symbols) {
                 Ok(findings) => batch.lint.push((source, findings)),
 
                 Err(error) => batch.findings.push(
@@ -123,7 +125,7 @@ pub(super) fn run(
         for (source, mut findings) in mem::take(&mut batch.lint) {
             let mut completed = Batch::default();
 
-            if let Err(error) = instar_lint::suppress(&source.text, &mut findings) {
+            if let Err(error) = lint::suppress(&source.text, &mut findings) {
                 completed.findings.push(
                     Diagnostic::error()
                         .with_code("lint")
@@ -136,7 +138,7 @@ pub(super) fn run(
             }
 
             if corrections {
-                let text = instar_lint::apply(&source.text, &findings)?;
+                let text = lint::apply(&source.text, &findings)?;
 
                 completed.outputs.push(Output {
                     source: source.clone(),

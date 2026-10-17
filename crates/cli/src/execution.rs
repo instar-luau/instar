@@ -8,8 +8,7 @@ use std::{
 
 use eyre::{Result, bail};
 use indicatif::ProgressBar;
-
-use instar_workspace::{Access, Purpose, Workspace};
+use instar_core::workspace::{Access, Purpose, Workspace};
 
 use super::{
     arguments::{Arguments, Command, Options},

@@ -7,7 +7,7 @@ use std::{
 
 use eyre::{Report, Result, eyre};
 use indicatif::ProgressBar;
-use instar_workspace::Workspace;
+use instar_core::workspace::Workspace;
 
 use super::{
     arguments::Arguments,

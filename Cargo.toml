@@ -11,11 +11,8 @@ keywords = ["formatter", "linter", "lsp", "luau", "roblox"]
 categories = ["development-tools"]
 
 [workspace.dependencies]
-instar-configuration = { path = "crates/configuration" }
-instar-format = { path = "crates/format" }
-instar-lint = { path = "crates/lint" }
+instar-core = { path = "crates/core" }
 instar-luau = { path = "crates/luau" }
-instar-workspace = { path = "crates/workspace" }
 
 clap = { version = "4", features = ["derive"] }
 cmake = "0.1"
@@ -42,6 +39,7 @@ serde_path_to_error = "0.1"
 sha2 = "0.11"
 similar = "3"
 tempfile = "3"
+thiserror = "2"
 tokio = "1"
 toml = "1"
 tower-lsp-server = { version = "0.24.0-rc.1", features = ["url-url"] }

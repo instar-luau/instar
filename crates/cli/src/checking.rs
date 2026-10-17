@@ -8,10 +8,9 @@ use codespan_reporting::{
     diagnostic::{Diagnostic, Label},
     files::{Files as _, SimpleFile},
 };
-
 use eyre::{Result, eyre};
+use instar_core::workspace::Workspace;
 use instar_luau::{Context, Frontend};
-use instar_workspace::Workspace;
 
 use super::{
     arguments::Arguments,

@@ -7,9 +7,7 @@ use std::{
 };
 
 use eyre::Result;
-
-use instar_workspace::Workspace;
-
+use instar_core::workspace::Workspace;
 use notify::{
     Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _, event::ModifyKind,
 };

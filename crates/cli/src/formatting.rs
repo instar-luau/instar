@@ -1,7 +1,9 @@
 use codespan_reporting::diagnostic::{Diagnostic, Label};
 use eyre::{Result, eyre};
-use instar_format::Kind;
-use instar_workspace::Workspace;
+use instar_core::{
+    format::{self, Kind},
+    workspace::Workspace,
+};
 
 use super::{
     reporting::{Batch, Output, Source},
@@ -29,7 +31,7 @@ fn process(workspace: &Workspace, module: &str) -> Result<Batch> {
     let configuration = workspace.formatting(module)?;
     let mut batch = Batch::default();
 
-    match instar_format::format(&source.text, &configuration) {
+    match format::format(&source.text, &configuration) {
         Ok(text) => batch.outputs.push(Output { source, text }),
 
         Err(error) => {

@@ -649,11 +649,8 @@ dependencies = [
  "eyre",
  "indicatif",
  "insta",
- "instar-configuration",
- "instar-format",
- "instar-lint",
+ "instar-core",
  "instar-luau",
- "instar-workspace",
  "notify",
  "serde_json",
  "similar 3.2.0",
@@ -664,35 +661,24 @@ dependencies = [
 ]
 
 [[package]]
-name = "instar-configuration"
+name = "instar-core"
 version = "0.1.0"
 dependencies = [
+ "dirs",
  "figment",
  "globset",
+ "ignore",
+ "instar-luau",
+ "regex",
+ "same-file",
  "schemars",
  "serde",
  "serde_json",
- "toml",
-]
-
-[[package]]
-name = "instar-format"
-version = "0.1.0"
-dependencies = [
- "instar-configuration",
+ "sha2",
+ "tempfile",
+ "thiserror",
  "toml",
  "unicode-width",
- "vermis",
-]
-
-[[package]]
-name = "instar-lint"
-version = "0.1.0"
-dependencies = [
- "figment",
- "instar-configuration",
- "regex",
- "serde",
  "vermis",
 ]
 
@@ -703,24 +689,6 @@ dependencies = [
  "cmake",
  "cxx",
  "cxx-build",
-]
-
-[[package]]
-name = "instar-workspace"
-version = "0.1.0"
-dependencies = [
- "dirs",
- "figment",
- "globset",
- "ignore",
- "instar-configuration",
- "instar-lint",
- "instar-luau",
- "same-file",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
 ]
 
 [[package]]
