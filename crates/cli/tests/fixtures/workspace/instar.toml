@@ -1,8 +1,0 @@
-[environment]
-roblox = false
-
-[editing]
-diagnostic_scope = "workspace"
-
-[selection.index]
-exclude = ["excluded.luau"]

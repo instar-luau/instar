@@ -1,6 +1,0 @@
-[environment]
-roblox = false
-
-[[environment.groups]]
-namespace = "@hierarchy"
-definitions = ["definitions.luau"]

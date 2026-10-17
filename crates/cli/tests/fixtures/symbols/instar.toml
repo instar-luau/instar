@@ -1,9 +1,0 @@
-[environment]
-roblox = false
-
-[selection.index]
-exclude = ["**/excluded.luau"]
-
-[[environment.groups]]
-namespace = "@unavailable"
-definitions = ["missing.luau"]

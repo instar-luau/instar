@@ -1,4 +1,0 @@
-[selection]
-include=['selected/**']
-[environment]
-roblox=false

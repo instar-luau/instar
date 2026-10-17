@@ -16,7 +16,6 @@ instar-format = { path = "crates/format" }
 instar-lint = { path = "crates/lint" }
 instar-luau = { path = "crates/luau" }
 instar-project = { path = "crates/project" }
-instar-server = { path = "crates/server" }
 instar-shared = { path = "crates/shared" }
 instar-syntax = { path = "crates/syntax" }
 instar-workspace = { path = "crates/workspace" }

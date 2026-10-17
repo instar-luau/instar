@@ -1,7 +1,0 @@
-[
-  {"configuration":"[environment]\nroblox=false\n", "available":true},
-  {"configuration":"[environment]\nroblox=false\n[selection.imports]\nexclude=['dependency.luau']\n", "available":false},
-  {"configuration":"[environment]\nroblox=false\n[selection.imports]\ninclude=['different.luau']\n", "available":false},
-  {"configuration":"[environment]\nroblox=false\n[selection.index]\nexclude=['dependency.luau']\n[selection.imports]\ninclude=['dependency.luau']\nexclude=[]\n", "available":false},
-  {"configuration":"[environment]\nroblox=false\n[selection.imports]\ninclude=[]\nexclude=[]\n", "available":true}
-]

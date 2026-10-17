@@ -1,6 +1,0 @@
-[
-  {"name":"text","label":": string"},
-  {"name":"count","label":": number"},
-  {"name":"value","label":": number"},
-  {"name":"result","label":": number"}
-]

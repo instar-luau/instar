@@ -1,6 +1,0 @@
-[environment]
-roblox=false
-[linting.rules.unused_variable]
-enabled=true
-severity="Information"
-settings={rule="unused_variable",parameters={}}

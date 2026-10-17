@@ -1,7 +1,0 @@
-[environment]
-roblox = false
-
-[linting.rules.parenthesized_conditions]
-enabled = true
-severity = "Warning"
-settings = { rule = "parenthesized_conditions", parameters = {} }

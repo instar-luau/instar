@@ -1,4 +1,0 @@
-[selection.formatting]
-exclude=['nested/**']
-[environment]
-roblox=false
