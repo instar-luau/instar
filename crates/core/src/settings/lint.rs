@@ -1,9 +1,9 @@
 //! Lint selection and rule configuration.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, mem};
 
-use figment::value::Value;
-use schemars::JsonSchema;
+use figment::value::{Dict, Value};
+use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
 use super::{Patterns, schema};
@@ -22,7 +22,7 @@ pub struct Configuration {
     pub presets: Vec<Preset>,
 
     /// Named rule overrides, merged by rule and parameter name.
-    #[schemars(extend("propertyNames" = schema::identifier()))]
+    #[schemars(schema_with = "rules", extend("propertyNames" = schema::identifier()))]
     pub rules: BTreeMap<String, Rule>,
 }
 
@@ -79,11 +79,55 @@ pub enum Severity {
     Error,
 
     /// Warning diagnostic.
+    #[serde(rename = "warn")]
     Warning,
 
     /// Informational diagnostic.
+    #[serde(rename = "info")]
     Information,
 
     /// Hint diagnostic.
     Hint,
+}
+
+pub(super) fn normalize(values: &mut Dict) {
+    let Some(Value::Dict(_, lint)) = values.get_mut("lint") else {
+        return;
+    };
+
+    let Some(Value::Dict(_, rules)) = lint.get_mut("rules") else {
+        return;
+    };
+
+    for rule in rules.values_mut() {
+        if let Value::String(tag, severity) = rule {
+            *rule = Value::Dict(
+                *tag,
+                Dict::from([
+                    ("enabled".to_owned(), Value::Bool(*tag, true)),
+                    (
+                        "severity".to_owned(),
+                        Value::String(*tag, mem::take(severity)),
+                    ),
+                ]),
+            );
+        }
+    }
+}
+
+fn rules(generator: &mut SchemaGenerator) -> Schema {
+    let mut schema = BTreeMap::<String, Rule>::json_schema(generator);
+
+    schema.insert(
+        "additionalProperties".to_owned(),
+        json_schema!({
+            "anyOf": [
+                generator.subschema_for::<Severity>(),
+                generator.subschema_for::<Rule>()
+            ]
+        })
+        .into(),
+    );
+
+    schema
 }

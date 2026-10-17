@@ -11,7 +11,7 @@ use figment::{
 
 use serde_json::Value;
 
-use super::{Configuration, paths, resolution, source::Source};
+use super::{Configuration, lint, paths, resolution, source::Source};
 
 struct File<'path>(&'path Path);
 
@@ -24,6 +24,7 @@ impl Provider for File<'_> {
         let text = fs::read_to_string(self.0).map_err(|error| Error::from(error.to_string()))?;
         let mut values = toml::from_str(&text).map_err(|error| Error::from(error.to_string()))?;
         resolution::normalize(&mut values).map_err(|error| *error)?;
+        lint::normalize(&mut values);
 
         Ok(Profile::Default.collect(values))
     }
@@ -58,6 +59,7 @@ impl Provider for Override<'_> {
 
         for dictionary in values.values_mut() {
             resolution::normalize(dictionary).map_err(|error| *error)?;
+            lint::normalize(dictionary);
         }
 
         Ok(values)
