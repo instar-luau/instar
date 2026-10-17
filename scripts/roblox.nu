@@ -197,6 +197,7 @@ def member [value: record, mappings: record]: nothing -> string {
 
     match $value.MemberType {
         Property => $"($name): ($value.ValueType | resolve $mappings)"
+
         Function => {
             let arguments = $value.Parameters | parameters $mappings
 
@@ -204,10 +205,12 @@ def member [value: record, mappings: record]: nothing -> string {
 
             $"function ($name)\(($arguments)\): (returns $value $mappings)"
         }
+
         Callback => {
             let arguments = $value.Parameters | parameters $mappings | str replace --all '...: ' ...
             $"($name): \(($arguments)\) -> (returns $value $mappings)"
         }
+
         Event => {
             let payload = returns {
                 TupleReturns: ($value.Parameters | get Type)
@@ -215,6 +218,7 @@ def member [value: record, mappings: record]: nothing -> string {
 
             $"($name): RBXScriptSignal<($payload)>"
         }
+
         _ => { error make $"unsupported member kind `($value.MemberType)`" }
     }
 }
@@ -616,11 +620,13 @@ def main [
     mut metadata = {
         revision: $revision
         properties: {}
+
         services: (
             $classes
             | where ('Service' in ($it.Tags? | default []))
             | get Name
         )
+
         creatable_instances: (
             $classes
             | where ('NotCreatable' not-in ($it.Tags? | default []) and 'Service' not-in ($it.Tags? | default []))
