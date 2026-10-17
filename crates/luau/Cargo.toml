@@ -1,8 +1,8 @@
 [package]
 name = "instar-luau"
-description = "Native Luau analysis for Instar"
 version.workspace = true
 edition.workspace = true
+description = "Native Luau analysis for Instar"
 repository.workspace = true
 license.workspace = true
 keywords.workspace = true
