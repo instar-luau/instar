@@ -1,1 +1,0 @@
-environment = { "groups" = [{ "namespace" = "@custom", "definitions" = ["types.luau", "globals.luau"] }] }

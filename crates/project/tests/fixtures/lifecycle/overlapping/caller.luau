@@ -1,1 +1,0 @@
-require(game:GetService('Workspace'):WaitForChild('Target'))

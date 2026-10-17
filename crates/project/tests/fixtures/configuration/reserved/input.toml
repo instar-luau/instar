@@ -1,1 +1,0 @@
-formatting = { "requires" = { "groups" = [{ "name" = "alias", "patterns" = ["**"] }] } }

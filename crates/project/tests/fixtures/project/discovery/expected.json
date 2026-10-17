@@ -1,6 +1,0 @@
-{
-  "/settings/environment/roblox": true,
-  "/settings/resolution/sourcemaps": [
-    "$ROOT/child/sourcemap.json"
-  ]
-}

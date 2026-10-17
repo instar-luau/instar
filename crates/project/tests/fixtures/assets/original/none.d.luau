@@ -1,1 +1,0 @@
-declare none: string

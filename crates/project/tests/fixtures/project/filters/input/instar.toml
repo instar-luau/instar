@@ -1,1 +1,0 @@
-selection = { "include" = ["root/**"], "exclude" = ["generated/**"], "formatting" = { "include" = ["formatted/**"] }, "imports" = { "exclude" = ["private/**"] } }

@@ -1,5 +1,0 @@
-[
-  {
-    "error": "$ROOT/caller.luau: require \"@bad\": $ROOT/.luaurc: invalid module alias name bad/name"
-  }
-]

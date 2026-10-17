@@ -1,5 +1,0 @@
-[
-  {
-    "error": "$ROOT/caller.luau: require \"@missing\": $ROOT: instar.toml and instar.luau are competing definitions"
-  }
-]

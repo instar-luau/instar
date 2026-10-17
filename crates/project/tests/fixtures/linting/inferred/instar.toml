@@ -1,1 +1,0 @@
-linting = { "selected" = ["implicit_any_parameter", "implicit_any_local"] }

@@ -1,3 +1,0 @@
-linting = { "selected" = ["implicit_any_local", "unscoped_variables"] }
-environment = { "roblox" = false }
-selection = { "exclude" = ["dependency/"] }

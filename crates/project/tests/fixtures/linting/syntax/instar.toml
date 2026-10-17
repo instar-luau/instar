@@ -1,2 +1,0 @@
-environment = { "groups" = [{ "namespace" = "@custom", "definitions" = ["missing.luau"] }] }
-linting = { "selected" = ["divide_by_zero"] }

@@ -1,5 +1,0 @@
-formatting = { "width" = 100, "requires" = { "order" = "grouped", "groups" = ["alias", "other"] } }
-linting = { "rules" = { "restricted_globals" = { "enabled" = true, "severity" = "Warning", "settings" = { "rule" = "restricted_globals", "parameters" = { "names" = { "old" = "root", "kept" = "root" } } } } } }
-environment = { "groups" = [{ "namespace" = "@root", "definitions" = ["types.luau"], "documentation" = ["docs.json"] }] }
-editing = { "hints" = { "variable_types" = true } }
-selection = { "include" = ["source/**"], "exclude" = ["generated/**"] }

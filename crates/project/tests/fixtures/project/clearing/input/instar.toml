@@ -1,2 +1,0 @@
-resolution = { "sourcemaps" = ["maps.json"] }
-environment = { "groups" = [{ "namespace" = "@custom", "definitions" = ["types.luau"] }] }
