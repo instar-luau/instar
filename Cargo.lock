@@ -626,19 +626,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "insta"
-version = "1.49.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b67d3d2e287e4b86c10b3f3b641033d1f89b74bdb39d05f34952e2b9a6fe21cd"
-dependencies = [
- "console",
- "once_cell",
- "serde",
- "similar 2.7.0",
- "tempfile",
-]
-
-[[package]]
 name = "instar"
 version = "0.1.0"
 dependencies = [
@@ -648,14 +635,12 @@ dependencies = [
  "console",
  "eyre",
  "indicatif",
- "insta",
  "instar-core",
  "instar-luau",
  "notify",
  "serde_json",
- "similar 3.2.0",
+ "similar",
  "tempfile",
- "tokio",
  "tracing",
  "tracing-subscriber",
 ]
@@ -1123,22 +1108,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
-name = "signal-hook-registry"
-version = "1.4.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
-dependencies = [
- "errno",
- "libc",
-]
-
-[[package]]
-name = "similar"
-version = "2.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
-
-[[package]]
 name = "similar"
 version = "3.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1219,19 +1188,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ad99c4c6d32803332c548b1af0540b357b3f5fc0be8f6c6bfe8b2e6ae784070"
 dependencies = [
  "cfg-if",
-]
-
-[[package]]
-name = "tokio"
-version = "1.53.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e"
-dependencies = [
- "libc",
- "mio",
- "pin-project-lite",
- "signal-hook-registry",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
