@@ -95,6 +95,48 @@ impl Workspace {
         let mut dependencies = self.reload_dependencies();
         dependencies.extend(self.observed_paths.borrow().iter().cloned());
 
+        dependencies.extend(
+            self.scopes
+                .borrow()
+                .values()
+                .flat_map(|scope| scope.configuration.resolve.aliases.values().cloned()),
+        );
+
+        dependencies
+    }
+
+    /// Return configuration and environment inputs whose changes invalidate native state.
+    #[must_use]
+    pub fn reload_dependencies(&self) -> BTreeSet<PathBuf> {
+        let mut dependencies: BTreeSet<_> = discovery::configuration_files(&self.root, &self.files)
+            .into_iter()
+            .collect();
+
+        let scopes = self.scopes.borrow();
+
+        if self.files.is_empty() {
+            dependencies.extend(
+                scopes
+                    .keys()
+                    .map(|directory| directory.join(discovery::CONFIGURATION)),
+            );
+        }
+
+        for scope in scopes.values() {
+            let configuration = &scope.configuration;
+            dependencies.extend(configuration.resolve.sourcemaps.iter().flatten().cloned());
+            dependencies.extend(configuration.environment.asset_directory.iter().cloned());
+            dependencies.extend(configuration.environment.capabilities.iter().cloned());
+
+            for group in &configuration.environment.groups {
+                dependencies.extend(group.definitions.iter().cloned());
+                dependencies.extend(group.documentation.iter().cloned());
+            }
+        }
+
+        self.instances.borrow().dependencies(&mut dependencies);
+        self.environments.borrow().dependencies(&mut dependencies);
+
         dependencies
     }
 
@@ -114,6 +156,14 @@ impl Workspace {
         }
 
         Ok(false)
+    }
+
+    /// Normalize a path relative to the root without accessing the filesystem.
+    ///
+    /// # Errors
+    /// Returns non-UTF-8 paths.
+    pub fn normalize(&self, path: &Path) -> Result<String, Error> {
+        paths::text(&self.root.join(path))
     }
 
     /// Identify an existing `.luau` or `.lua` source relative to the workspace root.
@@ -227,41 +277,6 @@ impl Workspace {
 
     pub(super) fn root(&self) -> Rc<Scope> {
         Rc::clone(&self.scopes.borrow()[&self.root])
-    }
-
-    fn reload_dependencies(&self) -> BTreeSet<PathBuf> {
-        let mut dependencies = BTreeSet::new();
-        let scopes = self.scopes.borrow();
-
-        if self.files.is_empty() {
-            dependencies.extend(
-                self.root
-                    .ancestors()
-                    .map(|directory| directory.join("instar.toml")),
-            );
-
-            dependencies.extend(scopes.keys().map(|directory| directory.join("instar.toml")));
-        } else {
-            dependencies.extend(self.files.iter().map(|file| self.root.join(file)));
-        }
-
-        for scope in scopes.values() {
-            let configuration = &scope.configuration;
-            dependencies.extend(configuration.resolve.aliases.values().cloned());
-            dependencies.extend(configuration.resolve.sourcemaps.iter().flatten().cloned());
-            dependencies.extend(configuration.environment.asset_directory.iter().cloned());
-            dependencies.extend(configuration.environment.capabilities.iter().cloned());
-
-            for group in &configuration.environment.groups {
-                dependencies.extend(group.definitions.iter().cloned());
-                dependencies.extend(group.documentation.iter().cloned());
-            }
-        }
-
-        self.instances.borrow().dependencies(&mut dependencies);
-        self.environments.borrow().dependencies(&mut dependencies);
-
-        dependencies
     }
 }
 

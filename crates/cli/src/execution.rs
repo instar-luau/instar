@@ -101,7 +101,8 @@ pub(super) fn run(arguments: &Arguments) -> Result<u8> {
 
         if let Err(error) = result {
             report::failure(&error);
-            watcher.wait()?;
+            watcher.ready();
+            watcher.wait(true)?;
         }
     }
 }
@@ -111,19 +112,26 @@ pub(super) fn session(
     project: &Project,
     mut watcher: Option<&mut Watcher>,
     mut started: Instant,
-    mut execute: impl FnMut(&BTreeSet<String>, &ProgressBar) -> Result<Response>,
+    mut execute: impl FnMut(
+        &BTreeMap<String, PathBuf>,
+        &BTreeSet<String>,
+        bool,
+        &ProgressBar,
+    ) -> Result<Response>,
 ) -> Result<u8> {
     let mut dirty = BTreeSet::new();
+    let mut selected = project.selected.clone();
+    let mut discovery = false;
 
     if let Some(watcher) = &mut watcher {
-        watcher.begin(project.workspace.dependencies())?;
+        watcher.begin(&project.workspace)?;
     }
 
     loop {
-        tracing::debug!(files = project.selected.len(), "processing batch");
+        tracing::debug!(files = selected.len(), "processing batch");
 
-        let progress = report::progress(arguments, &project.workspace, &project.selected)?;
-        let result = execute(&dirty, &progress);
+        let progress = report::progress(arguments, &project.workspace, &selected)?;
+        let result = execute(&selected, &dirty, discovery, &progress);
         progress.finish_and_clear();
 
         let Response::Completed(mut batch) = result? else {
@@ -132,28 +140,79 @@ pub(super) fn session(
 
         if let Some(watcher) = &mut watcher {
             batch.dependencies.extend(project.workspace.dependencies());
-            watcher.observe(mem::take(&mut batch.dependencies))?;
+            watcher.observe(project.workspace.reload_dependencies(), true)?;
+            watcher.observe(mem::take(&mut batch.dependencies), false)?;
         }
 
-        let summary = batch.report(arguments, project)?;
+        let summary = batch.report(arguments, project, &selected)?;
 
-        summary.report(arguments, project.selected.len(), started);
+        summary.report(arguments, selected.len(), started);
         let status = summary.status(&arguments.command);
 
         let Some(watcher) = &mut watcher else {
             return Ok(status);
         };
 
-        match watcher.changed(&project.workspace)? {
-            Change::Reload => return Ok(status),
+        watcher.ready();
 
-            Change::Sources(changed) => {
-                dirty = changed;
+        loop {
+            let Change::Sources {
+                paths,
+                discovery: structural,
+            } = watcher.changed(&project.workspace)?
+            else {
+                return Ok(status);
+            };
 
-                for module in &dirty {
-                    project.workspace.invalidate(module);
+            let previous = if structural {
+                mem::replace(
+                    &mut selected,
+                    select(
+                        arguments,
+                        &project.workspace,
+                        project.stdin_module.as_deref(),
+                    )?,
+                )
+            } else {
+                BTreeMap::new()
+            };
+
+            let mut candidates = project.workspace.dependencies();
+            candidates.extend(selected.keys().chain(previous.keys()).map(PathBuf::from));
+            dirty.clear();
+            discovery = false;
+
+            for candidate in candidates {
+                let module = project.workspace.normalize(&candidate)?;
+
+                let membership =
+                    structural && selected.contains_key(&module) != previous.contains_key(&module);
+
+                if !membership && !paths.iter().any(|path| candidate.starts_with(path)) {
+                    continue;
+                }
+
+                discovery |= structural;
+
+                if candidate
+                    .extension()
+                    .is_some_and(|extension| extension == "lua" || extension == "luau")
+                    && !candidate.is_dir()
+                    && (project.workspace.refresh(&module)? || membership)
+                {
+                    dirty.insert(module);
                 }
             }
+
+            if !dirty.is_empty() || discovery || (structural && selected != previous) {
+                if structural {
+                    watcher.begin(&project.workspace)?;
+                }
+
+                break;
+            }
+
+            tracing::debug!("ignoring filesystem changes outside active inputs");
         }
 
         started = Instant::now();
@@ -183,6 +242,23 @@ fn prepare(
 ) -> Result<Project> {
     let options = arguments.command.options();
     let (workspace, stdin_module) = open(root, options, overrides, stdin)?;
+    let selected = select(arguments, &workspace, stdin_module.as_deref())?;
+
+    Ok(Project {
+        workspace,
+        overrides: overrides.to_owned(),
+        selected,
+        stdin_module,
+        stdin: stdin.cloned(),
+    })
+}
+
+fn select(
+    arguments: &Arguments,
+    workspace: &Workspace,
+    stdin_module: Option<&str>,
+) -> Result<BTreeMap<String, PathBuf>> {
+    let options = arguments.command.options();
 
     let inputs: Vec<_> = options
         .inputs
@@ -205,21 +281,15 @@ fn prepare(
         ),
     };
 
-    let mut selected = if stdin.is_some() && inputs.is_empty() {
+    let mut selected = if stdin_module.is_some() && inputs.is_empty() {
         BTreeMap::new()
     } else {
         workspace.select(&inputs, purpose, access)?
     };
 
-    if let Some(module) = &stdin_module {
-        selected.insert(module.clone(), PathBuf::from(module));
+    if let Some(module) = stdin_module {
+        selected.insert(module.to_owned(), PathBuf::from(module));
     }
 
-    Ok(Project {
-        workspace,
-        overrides: overrides.to_owned(),
-        selected,
-        stdin_module,
-        stdin: stdin.cloned(),
-    })
+    Ok(selected)
 }

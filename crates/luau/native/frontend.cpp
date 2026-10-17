@@ -2,6 +2,7 @@
 
 #include "Luau/BuiltinDefinitions.h"
 #include "Luau/Error.h"
+#include "Luau/RequireTracer.h"
 #include "Luau/TypeArena.h"
 #include "diagnostic.hpp"
 #include "environment.hpp"
@@ -10,6 +11,7 @@
 #include <optional>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 namespace instar::luau {
     Frontend::Frontend(const Context &context, rust::Slice<const Flag> settings, const Luau::FrontendOptions &options)
@@ -60,6 +62,10 @@ namespace instar::luau {
         }
     }
 
+    std::size_t Frontend::checks() const {
+        return frontend->stats.filesStrict + frontend->stats.filesNonstrict;
+    }
+
     void Frontend::invalidate(rust::Str module) {
         const std::string name(module);
 
@@ -70,6 +76,28 @@ namespace instar::luau {
 
         frontend->markDirty(name);
         host.invalidate(name);
+    }
+
+    void Frontend::refresh() {
+        std::vector<std::string> changed;
+
+        for (const auto &[name, source] : frontend->sourceModules) {
+            if (!source->root || frontend->isDirty(name)) {
+                continue;
+            }
+
+            const auto current = Luau::traceRequires(&host, source->root, name, {});
+            const auto previous = frontend->requireTrace.find(name);
+
+            if (previous == frontend->requireTrace.end() || current.requireList != previous->second.requireList) {
+                changed.push_back(name);
+            }
+        }
+
+        for (const auto &name : changed) {
+            frontend->markDirty(name);
+            host.invalidate(name);
+        }
     }
 
     void Frontend::clear() {

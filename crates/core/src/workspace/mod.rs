@@ -12,6 +12,7 @@ mod source;
 mod write;
 
 pub use self::{
+    discovery::configuration_files,
     error::Error,
     model::Workspace,
     selection::{Access, Purpose},

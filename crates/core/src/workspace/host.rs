@@ -22,7 +22,7 @@ impl Host for Workspace {
         };
 
         logical(target)
-            .and_then(|path| resolve(&path))
+            .and_then(|path| resolve(self, &path))
             .map_err(|error| failure(module, Operation::Alias, error))
     }
 
@@ -34,12 +34,7 @@ impl Host for Workspace {
         }
 
         logical(Path::new(module))
-            .and_then(|path| {
-                let target = path.join(name);
-                self.observed_paths.borrow_mut().insert(target.clone());
-
-                resolve(&target)
-            })
+            .and_then(|path| resolve(self, &path.join(name)))
             .map_err(|error| failure(module, Operation::Child, error))
     }
 
@@ -114,7 +109,7 @@ impl Host for Workspace {
                 return Ok(Navigation::Missing);
             }
 
-            match directory(parent)? {
+            match directory(self, parent)? {
                 Navigation::Ambiguous => found(parent),
                 navigation => Ok(navigation),
             }
@@ -157,7 +152,12 @@ fn logical(path: &Path) -> Result<PathBuf, Error> {
     Ok(path.to_owned())
 }
 
-fn resolve(path: &Path) -> Result<Navigation, Error> {
+fn resolve(workspace: &Workspace, path: &Path) -> Result<Navigation, Error> {
+    workspace
+        .observed_paths
+        .borrow_mut()
+        .insert(path.to_owned());
+
     let mut candidate = None;
 
     if path.file_name().is_none_or(|name| name != "init") {
@@ -165,6 +165,7 @@ fn resolve(path: &Path) -> Result<Navigation, Error> {
             let mut file = path.as_os_str().to_owned();
             file.push(suffix);
             let file = PathBuf::from(file);
+            workspace.observed_paths.borrow_mut().insert(file.clone());
 
             if paths::metadata(&file)?.is_some_and(|metadata| metadata.is_file()) {
                 if candidate.is_some() {
@@ -181,17 +182,18 @@ fn resolve(path: &Path) -> Result<Navigation, Error> {
             return Ok(Navigation::Ambiguous);
         }
 
-        return directory(path);
+        return directory(workspace, path);
     }
 
     candidate.as_deref().map_or(Ok(Navigation::Missing), found)
 }
 
-fn directory(path: &Path) -> Result<Navigation, Error> {
+fn directory(workspace: &Workspace, path: &Path) -> Result<Navigation, Error> {
     let mut candidate = None;
 
     for name in ["init.luau", "init.lua"] {
         let file = path.join(name);
+        workspace.observed_paths.borrow_mut().insert(file.clone());
 
         if paths::metadata(&file)?.is_some_and(|metadata| metadata.is_file()) {
             if candidate.is_some() {

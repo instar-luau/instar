@@ -5,6 +5,7 @@
 #include "host.hpp"
 #include "rust/cxx.h"
 
+#include <cstddef>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -18,7 +19,9 @@ namespace instar::luau {
         Frontend(const Context &context, rust::Slice<const Flag> settings, const Luau::FrontendOptions &options);
 
         rust::Vec<Diagnostic> analyze(rust::Str module);
+        std::size_t checks() const;
         void invalidate(rust::Str module);
+        void refresh();
         void clear();
         void environment(const std::string &name);
         const Instances *hierarchy(const std::string &name);

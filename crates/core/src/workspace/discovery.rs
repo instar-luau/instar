@@ -1,25 +1,36 @@
-use std::{path::Path, rc::Rc};
+use std::{
+    path::{Path, PathBuf},
+    rc::Rc,
+};
 
 use super::{Error, Workspace, model::Scope, paths};
 use crate::settings::{defaults, layer};
 
+pub(super) const CONFIGURATION: &str = "instar.toml";
+
+/// Return configuration paths in precedence order, including missing discovery candidates.
+#[must_use]
+pub fn configuration_files(root: &Path, files: &[PathBuf]) -> Vec<PathBuf> {
+    if files.is_empty() {
+        let mut paths: Vec<_> = root
+            .ancestors()
+            .map(|directory| directory.join(CONFIGURATION))
+            .collect();
+
+        paths.reverse();
+
+        paths
+    } else {
+        files.iter().map(|file| root.join(file)).collect()
+    }
+}
+
 pub(super) fn root(workspace: &Workspace) -> Result<Scope, Error> {
     let mut layers = defaults();
 
-    if workspace.files.is_empty() {
-        let mut ancestors: Vec<_> = workspace.root.ancestors().collect();
-        ancestors.reverse();
-
-        for directory in ancestors {
-            let file = directory.join("instar.toml");
-
-            if paths::metadata(&file)?.is_some() {
-                layers = layer(layers, &file);
-            }
-        }
-    } else {
-        for file in &workspace.files {
-            layers = layer(layers, &workspace.root.join(file));
+    for file in configuration_files(&workspace.root, &workspace.files) {
+        if !workspace.files.is_empty() || paths::metadata(&file)?.is_some() {
+            layers = layer(layers, &file);
         }
     }
 
@@ -44,7 +55,7 @@ pub(super) fn directory(workspace: &Workspace, directory: &Path) -> Result<Rc<Sc
     }
 
     for directory in pending.into_iter().rev() {
-        let file = directory.join("instar.toml");
+        let file = directory.join(CONFIGURATION);
 
         if paths::metadata(&file)?.is_some() {
             scope = Rc::new(Scope::new(

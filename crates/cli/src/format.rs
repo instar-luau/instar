@@ -33,9 +33,19 @@ pub(super) fn run(
             })
         },
         |pool| {
-            execution::session(arguments, project, watcher, started, |dirty, progress| {
-                pool.execute(dirty, progress)
-            })
+            execution::session(
+                arguments,
+                project,
+                watcher,
+                started,
+                |selected, dirty, _, progress| {
+                    if selected != &project.selected {
+                        return Ok(execution::Response::Reload);
+                    }
+
+                    pool.execute(dirty, progress)
+                },
+            )
         },
     )
 }

@@ -1,22 +1,28 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::ErrorKind,
+    iter,
     path::{Component, Path, PathBuf},
     sync::mpsc::{self, Receiver, RecvTimeoutError},
     time::{Duration, Instant},
 };
 
 use eyre::{Result, WrapErr as _};
-use instar_core::workspace::Workspace;
+use instar_core::workspace::{Workspace, configuration_files};
 
 use notify::{
-    Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _, event::ModifyKind,
+    ErrorKind as WatchErrorKind, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _,
+    event::ModifyKind,
 };
 
 use super::arguments::Options;
 
 pub(super) enum Change {
-    Sources(BTreeSet<String>),
+    Sources {
+        paths: BTreeSet<String>,
+        discovery: bool,
+    },
+
     Reload,
 }
 
@@ -24,7 +30,9 @@ pub(super) struct Watcher {
     subscription: RecommendedWatcher,
     receiver: Receiver<notify::Result<Event>>,
     directories: BTreeMap<PathBuf, bool>,
-    observed: BTreeSet<PathBuf>,
+    roots: BTreeSet<PathBuf>,
+    reload: BTreeMap<PathBuf, bool>,
+    observed: BTreeMap<PathBuf, PathBuf>,
     debounce: Duration,
     quiet: bool,
 }
@@ -33,13 +41,7 @@ impl Watcher {
     pub(super) fn new(root: &Path, options: &Options, quiet: bool) -> Result<Self> {
         let mut directories = BTreeMap::from([(root.to_owned(), true)]);
 
-        if options.configuration.is_empty() {
-            for ancestor in root.ancestors().skip(1) {
-                directories.insert(ancestor.to_owned(), false);
-            }
-        }
-
-        for input in options.inputs.iter().chain(&options.configuration) {
+        for input in &options.inputs {
             let path = root.join(input);
 
             if path.starts_with(root)
@@ -77,38 +79,42 @@ impl Watcher {
                 .wrap_err_with(|| format!("cannot watch `{}`", directory.display()))?;
         }
 
-        Ok(Self {
+        let roots = directories.keys().cloned().collect();
+
+        let mut watcher = Self {
             subscription,
             receiver,
             directories,
-            observed: BTreeSet::new(),
+            roots,
+            reload: BTreeMap::new(),
+            observed: BTreeMap::new(),
             debounce: Duration::from_millis(options.debounce),
             quiet,
-        })
+        };
+
+        watcher.observe(configuration_files(root, &options.configuration), true)?;
+
+        Ok(watcher)
     }
 
-    pub(super) fn begin(&mut self, paths: impl IntoIterator<Item = PathBuf>) -> Result<()> {
+    pub(super) fn begin(&mut self, workspace: &Workspace) -> Result<()> {
         self.observed.clear();
+        self.reload.clear();
 
-        self.observe(paths)?;
+        self.observe(workspace.reload_dependencies(), true)?;
+        self.observe(workspace.dependencies(), false)?;
 
         Ok(())
     }
 
-    pub(super) fn observe(&mut self, paths: impl IntoIterator<Item = PathBuf>) -> Result<()> {
+    pub(super) fn observe(
+        &mut self,
+        paths: impl IntoIterator<Item = PathBuf>,
+        reload: bool,
+    ) -> Result<()> {
         for path in paths {
-            let discovery = path
-                .file_name()
-                .is_some_and(|name| name == "instar.toml" || name == "sourcemap.json");
-
-            if !path
-                .components()
-                .any(|component| component == Component::ParentDir)
-                && self.directories.iter().any(|(directory, recursive)| {
-                    (*recursive && path.starts_with(directory))
-                        || (discovery && path.parent() == Some(directory.as_path()))
-                })
-                || !self.observed.insert(path.clone())
+            if let Some(target) = self.observed.get(&path)
+                && (!reload || self.reload.contains_key(target))
             {
                 continue;
             }
@@ -121,134 +127,223 @@ impl Watcher {
                 format!("cannot resolve watch directory `{}`", ancestor.display())
             })?;
 
-            let discovery = discovery && path.parent() == Some(ancestor);
+            let target = directory.join(
+                path.strip_prefix(ancestor)
+                    .wrap_err("internal error: watched path is outside its ancestor")?,
+            );
 
-            if self.directories.iter().any(|(watched, recursive)| {
-                (*recursive && directory.starts_with(watched))
-                    || (discovery && &directory == watched)
-            }) {
-                continue;
+            let recursive =
+                target.parent() != Some(directory.as_path()) || self.roots.contains(&directory);
+
+            self.observed.insert(path.clone(), target.clone());
+            let canonical = canonical(&path)?;
+
+            if reload {
+                self.reload.insert(target.clone(), canonical.is_some());
             }
 
-            if self.directories.contains_key(&directory) {
+            let parent = target.parent().filter(|_| ancestor == path.as_path());
+
+            for (directory, recursive) in parent
+                .map(|parent| (parent.to_owned(), false))
+                .into_iter()
+                .chain(iter::once((directory, recursive)))
+            {
+                if self.directories.iter().any(|(watched, subtree)| {
+                    (*subtree && directory.starts_with(watched))
+                        || (!recursive && &directory == watched)
+                }) {
+                    continue;
+                }
+
+                if self.directories.contains_key(&directory) {
+                    self.unwatch(&directory)?;
+                }
+
                 self.subscription
-                    .unwatch(&directory)
-                    .wrap_err_with(|| format!("cannot stop watching `{}`", directory.display()))?;
+                    .watch(
+                        &directory,
+                        if recursive {
+                            RecursiveMode::Recursive
+                        } else {
+                            RecursiveMode::NonRecursive
+                        },
+                    )
+                    .wrap_err_with(|| format!("cannot watch `{}`", directory.display()))?;
+
+                self.directories.insert(directory, recursive);
             }
 
-            self.subscription
-                .watch(
-                    &directory,
-                    if discovery {
-                        RecursiveMode::NonRecursive
-                    } else {
-                        RecursiveMode::Recursive
-                    },
-                )
-                .wrap_err_with(|| format!("cannot watch `{}`", directory.display()))?;
-
-            self.directories.insert(directory, !discovery);
+            if let Some(canonical) = canonical
+                && canonical != target
+            {
+                self.observe([canonical], reload)?;
+            }
         }
 
         Ok(())
     }
 
-    pub(super) fn changed(&self, workspace: &Workspace) -> Result<Change> {
-        let mut dirty = BTreeSet::new();
+    pub(super) fn changed(&mut self, workspace: &Workspace) -> Result<Change> {
+        let mut paths = BTreeSet::new();
+        let mut discovery = false;
 
-        for event in self.wait()? {
-            if event.need_rescan() || event.paths.is_empty() || !modified(&event) {
+        for event in self.wait(false)? {
+            tracing::debug!(kind = ?event.kind, paths = ?event.paths, "processing filesystem event");
+
+            if event.need_rescan() || event.paths.is_empty() {
+                tracing::debug!("reloading after filesystem rescan request");
+
                 return Ok(Change::Reload);
             }
 
+            let structural = !modified(&event);
+
             for path in event.paths {
-                if path.is_dir() {
-                    continue;
-                }
+                for (dependency, existed) in &self.reload {
+                    if path.starts_with(dependency)
+                        || (dependency.starts_with(&path)
+                            && (*existed || canonical(dependency)?.is_some()))
+                        || (dependency.parent() == path.parent()
+                            && canonical(dependency)?.as_ref() == Some(&path))
+                    {
+                        tracing::debug!(path = %path.display(), "reloading for workspace dependency");
 
-                if !path
-                    .extension()
-                    .is_some_and(|extension| extension == "lua" || extension == "luau")
-                {
-                    return Ok(Change::Reload);
-                }
-
-                let module = workspace.module(&path)?;
-
-                if workspace.requires_reload(&module)? {
-                    return Ok(Change::Reload);
-                }
-
-                dirty.insert(module);
-            }
-        }
-
-        Ok(Change::Sources(dirty))
-    }
-
-    pub(super) fn wait(&self) -> Result<Vec<Event>> {
-        if !self.quiet {
-            eprintln!("watching for changes");
-        }
-
-        let mut events = Vec::new();
-
-        loop {
-            let event = self
-                .receiver
-                .recv()
-                .wrap_err("cannot receive filesystem changes")?
-                .wrap_err("cannot observe filesystem changes")?;
-
-            if self.relevant(&event) {
-                events.push(event);
-                break;
-            }
-        }
-
-        let mut updated = Instant::now();
-
-        loop {
-            match self
-                .receiver
-                .recv_timeout(self.debounce.saturating_sub(updated.elapsed()))
-            {
-                Ok(event) => {
-                    let event = event.wrap_err("cannot observe filesystem changes")?;
-
-                    if self.relevant(&event) {
-                        events.push(event);
-                        updated = Instant::now();
+                        return Ok(Change::Reload);
                     }
                 }
 
-                Err(RecvTimeoutError::Timeout) => return Ok(events),
-                Err(error) => return Err(error).wrap_err("cannot receive filesystem changes"),
+                if !self.observed.values().any(|observed| observed == &path) {
+                    for (original, observed) in &self.observed {
+                        if observed.parent() == path.parent()
+                            && canonical(observed)?.as_ref() == Some(&path)
+                        {
+                            paths.insert(workspace.normalize(original)?);
+                        }
+                    }
+                }
+
+                discovery |= structural;
+                paths.insert(workspace.normalize(&path)?);
             }
+        }
+
+        Ok(Change::Sources { paths, discovery })
+    }
+
+    pub(super) fn ready(&self) {
+        if !self.quiet {
+            eprintln!("watching for changes");
         }
     }
 
-    fn relevant(&self, event: &Event) -> bool {
-        if event.need_rescan() {
-            return true;
+    pub(super) fn wait(&mut self, recovery: bool) -> Result<Vec<Event>> {
+        let mut events = Vec::new();
+        let mut updated = Instant::now();
+
+        loop {
+            let event = if events.is_empty() {
+                self.receiver
+                    .recv()
+                    .wrap_err("cannot receive filesystem changes")?
+            } else {
+                match self
+                    .receiver
+                    .recv_timeout(self.debounce.saturating_sub(updated.elapsed()))
+                {
+                    Ok(event) => event,
+                    Err(RecvTimeoutError::Timeout) => break,
+                    Err(error) => return Err(error).wrap_err("cannot receive filesystem changes"),
+                }
+            }
+            .wrap_err("cannot observe filesystem changes")?;
+
+            if self.relevant(&event, recovery)? {
+                events.push(event);
+                updated = Instant::now();
+            }
+        }
+
+        let removed: Vec<_> = self
+            .directories
+            .keys()
+            .filter(|directory| {
+                events.iter().any(|event| {
+                    matches!(
+                        event.kind,
+                        EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_))
+                    ) && event.paths.iter().any(|path| directory.starts_with(path))
+                })
+            })
+            .cloned()
+            .collect();
+
+        for directory in removed {
+            self.unwatch(&directory)?;
+        }
+
+        Ok(events)
+    }
+
+    fn unwatch(&mut self, directory: &Path) -> Result<()> {
+        match self.subscription.unwatch(directory) {
+            Ok(()) => {}
+            Err(error) if matches!(error.kind, WatchErrorKind::WatchNotFound) => {}
+
+            Err(error) => {
+                return Err(error)
+                    .wrap_err_with(|| format!("cannot stop watching `{}`", directory.display()));
+            }
+        }
+
+        self.directories.remove(directory);
+
+        Ok(())
+    }
+
+    fn relevant(&self, event: &Event, recovery: bool) -> Result<bool> {
+        if event.need_rescan() || event.paths.is_empty() {
+            return Ok(true);
         }
 
         if matches!(event.kind, EventKind::Access(_)) {
-            return false;
+            return Ok(false);
         }
 
-        event.paths.iter().any(|path| {
-            self.directories.iter().any(|(directory, recursive)| {
-                if *recursive {
-                    path.starts_with(directory)
-                } else {
-                    path.parent() == Some(directory.as_path())
-                        && path
-                            .file_name()
-                            .is_some_and(|name| name == "instar.toml" || name == "sourcemap.json")
+        for path in &event.paths {
+            let directory = path.is_dir();
+
+            if !recovery && modified(event) && directory {
+                continue;
+            }
+
+            let source = path
+                .extension()
+                .is_some_and(|extension| extension == "lua" || extension == "luau")
+                && !directory;
+
+            if ((recovery || source || directory)
+                && self.roots.iter().any(|root| path.starts_with(root)))
+                || self.observed.values().any(|observed| {
+                    observed.starts_with(path) || (source && path.starts_with(observed))
+                })
+                || self
+                    .reload
+                    .keys()
+                    .any(|dependency| path.starts_with(dependency))
+            {
+                return Ok(true);
+            }
+
+            for observed in self.observed.values() {
+                if observed.parent() == path.parent() && canonical(observed)?.as_ref() == Some(path)
+                {
+                    return Ok(true);
                 }
-            }) && (!modified(event) || !path.is_dir())
-        })
+            }
+        }
+
+        Ok(false)
     }
 }
 
@@ -269,6 +364,20 @@ fn directory(path: &Path) -> Result<Option<&Path>> {
     }
 
     Ok(None)
+}
+
+fn canonical(path: &Path) -> Result<Option<PathBuf>> {
+    match path.canonicalize() {
+        Ok(path) => Ok(Some(path)),
+
+        Err(error) if matches!(error.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => {
+            Ok(None)
+        }
+
+        Err(error) => {
+            Err(error).wrap_err_with(|| format!("cannot resolve watched path `{}`", path.display()))
+        }
+    }
 }
 
 fn modified(event: &Event) -> bool {

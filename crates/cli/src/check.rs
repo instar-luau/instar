@@ -26,24 +26,39 @@ pub(super) fn run(
     watcher: Option<&mut Watcher>,
     started: Instant,
 ) -> Result<u8> {
+    tracing::debug!("creating native frontend");
     let workspace = &project.workspace;
     let context = Context::new(workspace);
     let mut frontend = Frontend::new(&context, false)?;
-    let modules: Vec<_> = project.selected.keys().cloned().collect();
 
-    execution::session(arguments, project, watcher, started, |dirty, progress| {
-        for module in dirty {
-            frontend.invalidate(module)?;
-        }
+    execution::session(
+        arguments,
+        project,
+        watcher,
+        started,
+        |selected, dirty, discovery, progress| {
+            let checks = frontend.checks();
 
-        let mut files = BTreeMap::new();
+            for module in dirty {
+                frontend.invalidate(module)?;
+            }
 
-        Ok(Response::Completed(Batch::collect(
-            &modules,
-            progress,
-            |module| process(workspace, module, &mut frontend, &mut files),
-        )))
-    })
+            if discovery {
+                frontend.refresh()?;
+            }
+
+            let mut files = BTreeMap::new();
+            let modules: Vec<_> = selected.keys().cloned().collect();
+
+            let batch = Batch::collect(&modules, progress, |module| {
+                process(workspace, module, &mut frontend, &mut files)
+            });
+
+            tracing::debug!(checks = ?frontend.checks().checked_sub(checks), "completed native checks");
+
+            Ok(Response::Completed(batch))
+        },
+    )
 }
 
 fn process(

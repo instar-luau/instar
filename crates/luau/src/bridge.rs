@@ -147,9 +147,13 @@ pub(crate) mod bindings {
 
         fn analyze(self: Pin<&mut Frontend<'_>>, module: &str) -> Result<Vec<Diagnostic>>;
 
+        fn checks(self: &Frontend<'_>) -> usize;
+
         fn builtins(host: &Context<'_>, flags: &[Flag]) -> Result<String>;
 
         fn invalidate(self: Pin<&mut Frontend<'_>>, module: &str) -> Result<()>;
+
+        fn refresh(self: Pin<&mut Frontend<'_>>) -> Result<()>;
 
         fn clear(self: Pin<&mut Frontend<'_>>) -> Result<()>;
     }

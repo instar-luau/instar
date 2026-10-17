@@ -33,15 +33,29 @@ impl<'host> Frontend<'host> {
         self.context.complete(result)
     }
 
+    /// Return the number of native type checks since construction or clearing.
+    #[must_use]
+    pub fn checks(&self) -> usize {
+        self.native.checks()
+    }
+
     /// Invalidate a changed module and its transitive dependents.
-    ///
-    /// Use [`Self::clear`] when navigation, aliases, shared configuration,
-    /// or the module inventory changes.
     ///
     /// # Errors
     /// Returns a native invalidation failure.
     pub fn invalidate(&mut self, module: &str) -> Result<(), Error> {
         let result = self.native.pin_mut().invalidate(module);
+        self.context.complete(result)?;
+
+        Ok(())
+    }
+
+    /// Re-resolve cached imports after source additions, removals, or renames.
+    ///
+    /// # Errors
+    /// Returns a host navigation error or native invalidation failure.
+    pub fn refresh(&mut self) -> Result<(), Error> {
+        let result = self.native.pin_mut().refresh();
         self.context.complete(result)?;
 
         Ok(())

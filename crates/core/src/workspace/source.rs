@@ -71,6 +71,17 @@ impl Workspace {
         self.snapshots.borrow_mut().remove(module);
     }
 
+    /// Refresh a source snapshot and report whether its contents changed.
+    ///
+    /// # Errors
+    /// Returns inaccessible paths or non-UTF-8 source contents.
+    pub fn refresh(&self, module: &str) -> Result<bool, Error> {
+        let previous = self.snapshot(module);
+        self.invalidate(module);
+
+        Ok(previous != self.source(module)?)
+    }
+
     /// Replace a source snapshot without writing it to disk.
     ///
     /// New files require an existing parent directory. The snapshot survives reloads.

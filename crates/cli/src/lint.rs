@@ -39,13 +39,23 @@ pub(super) fn run(
             })
         },
         |pool| {
-            execution::session(arguments, project, watcher, started, |dirty, progress| {
-                let Response::Completed(batch) = pool.execute(dirty, progress)? else {
-                    return Ok(Response::Reload);
-                };
+            execution::session(
+                arguments,
+                project,
+                watcher,
+                started,
+                |selected, dirty, _, progress| {
+                    if selected != &project.selected {
+                        return Ok(Response::Reload);
+                    }
 
-                Ok(Response::Completed(complete(batch, corrections)?))
-            })
+                    let Response::Completed(batch) = pool.execute(dirty, progress)? else {
+                        return Ok(Response::Reload);
+                    };
+
+                    Ok(Response::Completed(complete(batch, corrections)?))
+                },
+            )
         },
     )
 }

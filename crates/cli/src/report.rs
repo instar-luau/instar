@@ -87,8 +87,13 @@ impl Batch {
         self.dependencies.extend(batch.dependencies);
     }
 
-    pub(super) fn report(self, arguments: &Arguments, project: &Project) -> Result<Summary> {
-        let mut summary = render(&project.selected, self.findings)?;
+    pub(super) fn report(
+        self,
+        arguments: &Arguments,
+        project: &Project,
+        selected: &BTreeMap<String, PathBuf>,
+    ) -> Result<Summary> {
+        let mut summary = render(selected, self.findings)?;
         summary.failures += self.failures.len();
 
         for error in &self.failures {
