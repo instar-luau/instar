@@ -11,11 +11,12 @@ use codespan_reporting::{
 
 use eyre::{Result, WrapErr as _, eyre};
 use instar_core::workspace::Workspace;
-use instar_luau::{Context, Frontend};
+use instar_luau::{Context, Frontend, Progress};
 
 use super::{
     arguments::Arguments,
     execution::{self, Project, Response},
+    interrupt,
     report::{Batch, Source},
     watch::Watcher,
 };
@@ -28,7 +29,17 @@ pub(super) fn run(
 ) -> Result<u8> {
     tracing::debug!("creating native frontend");
     let workspace = &project.workspace;
-    let context = Context::new(workspace);
+
+    let update = |module: &str, stage| {
+        match stage {
+            Progress::Started => project.progress.start(module),
+            Progress::Finished => project.progress.finish(module),
+        }
+
+        !interrupt::requested()
+    };
+
+    let context = Context::new(workspace).with_progress(&update);
     let mut frontend = Frontend::new(&context, false)?;
 
     execution::session(
@@ -36,7 +47,7 @@ pub(super) fn run(
         project,
         watcher,
         started,
-        |selected, dirty, discovery, progress| {
+        |selected, dirty, discovery, _| {
             let checks = frontend.checks();
 
             for module in dirty {
@@ -50,9 +61,9 @@ pub(super) fn run(
             let mut files = BTreeMap::new();
             let modules: Vec<_> = selected.keys().cloned().collect();
 
-            let batch = Batch::collect(&modules, progress, |module| {
+            let batch = Batch::collect(&modules, |module| {
                 process(workspace, module, &mut frontend, &mut files)
-            });
+            })?;
 
             tracing::debug!(checks = ?frontend.checks().checked_sub(checks), "completed native checks");
 

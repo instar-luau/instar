@@ -33,9 +33,9 @@ pub(super) fn run(
         project,
         |workspace, worker| {
             worker.run(workspace, |modules, progress| {
-                Ok(Batch::collect(modules, progress, |module| {
-                    process(workspace, module, &environments)
-                }))
+                Batch::collect(modules, |module| {
+                    progress.process(module, || process(workspace, module, &environments))
+                })
             })
         },
         |pool| {

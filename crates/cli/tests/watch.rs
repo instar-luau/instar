@@ -135,6 +135,20 @@ fn checks(output: &str, expected: usize) {
         output.contains(&format!("checks=Some({expected})")),
         "{output}"
     );
+
+    assert!(
+        output.contains(&format!("checked {expected} files;")),
+        "{output}"
+    );
+
+    assert_eq!(
+        output
+            .lines()
+            .filter(|line| line.starts_with("checking `"))
+            .count(),
+        expected,
+        "{output}"
+    );
 }
 
 #[test]

@@ -15,7 +15,7 @@ use notify::{
     event::ModifyKind,
 };
 
-use super::arguments::Options;
+use super::{arguments::Options, interrupt};
 
 pub(super) enum Change {
     Sources {
@@ -233,7 +233,11 @@ impl Watcher {
 
     pub(super) fn ready(&self) {
         if !self.quiet {
-            eprintln!("watching for changes");
+            eprintln!(
+                "{} {}",
+                console::style("watching").for_stderr().cyan().bold(),
+                console::style("for changes").for_stderr().dim()
+            );
         }
     }
 
@@ -242,21 +246,29 @@ impl Watcher {
         let mut updated = Instant::now();
 
         loop {
-            let event = if events.is_empty() {
-                self.receiver
-                    .recv()
-                    .wrap_err("cannot receive filesystem changes")?
+            interrupt::check()?;
+
+            let remaining = self.debounce.saturating_sub(updated.elapsed());
+
+            let timeout = if events.is_empty() {
+                interrupt::INTERVAL
             } else {
-                match self
-                    .receiver
-                    .recv_timeout(self.debounce.saturating_sub(updated.elapsed()))
-                {
-                    Ok(event) => event,
-                    Err(RecvTimeoutError::Timeout) => break,
-                    Err(error) => return Err(error).wrap_err("cannot receive filesystem changes"),
+                remaining.min(interrupt::INTERVAL)
+            };
+
+            let event = match self.receiver.recv_timeout(timeout) {
+                Ok(event) => event.wrap_err("cannot observe filesystem changes")?,
+
+                Err(RecvTimeoutError::Timeout) => {
+                    if !events.is_empty() && updated.elapsed() >= self.debounce {
+                        break;
+                    }
+
+                    continue;
                 }
-            }
-            .wrap_err("cannot observe filesystem changes")?;
+
+                Err(error) => return Err(error).wrap_err("cannot receive filesystem changes"),
+            };
 
             if self.relevant(&event, recovery)? {
                 events.push(event);

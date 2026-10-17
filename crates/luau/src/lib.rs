@@ -24,6 +24,6 @@ pub use self::{
     error::{Error, HostError, Operation},
     flags::Flag,
     frontend::Frontend,
-    host::{Context, Host, Navigation},
+    host::{Context, Host, Navigation, Progress},
     instances::{Instance, Location},
 };

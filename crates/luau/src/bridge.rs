@@ -132,6 +132,8 @@ pub(crate) mod bindings {
         fn flags(self: &Context<'_>) -> Result<Vec<Flag>>;
 
         fn hierarchy(self: &Context<'_>, name: &str) -> Result<Vec<Instance>>;
+
+        fn progress(self: &Context<'_>, module: &str, completed: bool) -> bool;
     }
 
     unsafe extern "C++" {

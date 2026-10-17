@@ -15,7 +15,7 @@
 
 namespace instar::luau {
     Frontend::Frontend(const Context &context, rust::Slice<const Flag> settings, const Luau::FrontendOptions &options)
-        : flags(settings), host(context, flags, *this), options(options) {
+        : callbacks(context), flags(settings), host(context, flags, *this), options(options) {
         initialize();
     }
 
@@ -32,6 +32,10 @@ namespace instar::luau {
                     for (const std::string &checked_name : frontend->checkQueuedModules()) {
                         if (const auto checked = frontend->moduleResolver.getModule(checked_name)) {
                             attribute(*checked);
+                        }
+
+                        if (!callbacks.progress(host.getHumanReadableModuleName(checked_name), true)) {
+                            throw std::runtime_error("analysis interrupted");
                         }
                     }
 
@@ -129,6 +133,10 @@ namespace instar::luau {
         Luau::freeze(initialized->globals.globalTypes);
 
         initialized->prepareModuleScope = [this](const Luau::ModuleName &name, const Luau::ScopePtr &scope, bool) {
+            if (!callbacks.progress(host.getHumanReadableModuleName(name), false)) {
+                throw std::runtime_error("analysis interrupted");
+            }
+
             host.prepare(*frontend, name, scope);
         };
 

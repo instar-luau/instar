@@ -78,10 +78,21 @@ pub enum Navigation {
     Ambiguous,
 }
 
+/// A native module's analysis progress.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Progress {
+    /// Analysis is beginning for this module.
+    Started,
+
+    /// Analysis has completed for this module.
+    Finished,
+}
+
 /// Borrows the host callbacks used by native frontends.
 pub struct Context<'host> {
     host: &'host dyn Host,
     error: Cell<Option<HostError>>,
+    progress: Option<&'host dyn Fn(&str, Progress) -> bool>,
 }
 
 impl<'host> Context<'host> {
@@ -89,7 +100,19 @@ impl<'host> Context<'host> {
     pub fn new(host: &'host dyn Host) -> Self {
         let error = Cell::new(None);
 
-        Self { host, error }
+        Self {
+            host,
+            error,
+            progress: None,
+        }
+    }
+
+    /// Report native module progress, returning false to interrupt analysis.
+    #[must_use]
+    pub fn with_progress(mut self, progress: &'host dyn Fn(&str, Progress) -> bool) -> Self {
+        self.progress = Some(progress);
+
+        self
     }
 
     /// Return built-in declaration syntax using validated host and scope flags.
@@ -149,6 +172,19 @@ impl<'host> Context<'host> {
 
     pub(crate) fn source(&self, module: &str) -> Result<bindings::Text, &'static str> {
         self.capture(self.host.source(module)).map(Into::into)
+    }
+
+    pub(crate) fn progress(&self, module: &str, completed: bool) -> bool {
+        self.progress.is_none_or(|progress| {
+            progress(
+                module,
+                if completed {
+                    Progress::Finished
+                } else {
+                    Progress::Started
+                },
+            )
+        })
     }
 
     pub(crate) fn complete<Value>(&self, result: Result<Value, Exception>) -> Result<Value, Error> {

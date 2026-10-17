@@ -29,6 +29,7 @@ namespace instar::luau {
     private:
         void initialize();
 
+        const Context &callbacks;
         Flags flags;
         Host host;
         Luau::FrontendOptions options;

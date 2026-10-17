@@ -3,7 +3,7 @@ use std::{
     io::{self, Write as _},
     path::{Path, PathBuf},
     sync::Arc,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use clap::ColorChoice;
@@ -23,18 +23,15 @@ use color_eyre::{
 };
 
 use eyre::{Report, Result, WrapErr as _};
-use indicatif::{ProgressBar, ProgressStyle};
 
-use instar_core::{
-    lint,
-    workspace::{Error as WorkspaceError, Workspace},
-};
+use instar_core::{lint, workspace::Error as WorkspaceError};
 
 use similar::TextDiff;
 
 use super::{
     arguments::{Arguments, Command},
     execution::Project,
+    interrupt,
 };
 
 #[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
@@ -62,21 +59,22 @@ pub(super) struct Batch {
 impl Batch {
     pub(super) fn collect(
         modules: &[String],
-        progress: &ProgressBar,
         mut process: impl FnMut(&str) -> Result<Self>,
-    ) -> Self {
+    ) -> Result<Self> {
         let mut batch = Self::default();
 
         for module in modules {
+            interrupt::check()?;
+
             match process(module) {
                 Ok(completed) => batch.append(completed),
                 Err(error) => batch.failures.push(error),
             }
 
-            progress.inc(1);
+            interrupt::check()?;
         }
 
-        batch
+        Ok(batch)
     }
 
     pub(super) fn append(&mut self, batch: Self) {
@@ -147,36 +145,74 @@ impl Summary {
 
         let errors = self.errors + self.failures;
 
+        let action = match &arguments.command {
+            Command::Check(_) => "checked",
+            Command::Format(format) if format.check || format.preview => "inspected",
+            Command::Format(_) => "formatted",
+            Command::Lint(_) => "linted",
+        };
+
+        let action = console::style(action).for_stderr().bold();
+
+        let action = if errors != 0 {
+            action.red()
+        } else if matches!(&arguments.command, Command::Format(format) if format.check)
+            && self.changed != 0
+        {
+            action.yellow()
+        } else {
+            action.green()
+        };
+
+        let files = format!(
+            "{} {}",
+            console::style(files).for_stderr().cyan().bold(),
+            console::style("files").for_stderr().dim()
+        );
+
+        let errors = format!(
+            "{} {}",
+            if errors == 0 {
+                console::style(errors).for_stderr().green()
+            } else {
+                console::style(errors).for_stderr().red().bold()
+            },
+            console::style("errors").for_stderr().dim()
+        );
+
+        let changed = format!(
+            "{} {}",
+            if self.changed == 0 {
+                console::style(self.changed).for_stderr().dim()
+            } else {
+                console::style(self.changed).for_stderr().yellow().bold()
+            },
+            console::style("changed").for_stderr().dim()
+        );
+
         match &arguments.command {
-            Command::Check(_) => eprintln!(
-                "{} {files} files; {errors} errors",
-                console::style("checked").for_stderr().bold()
-            ),
-
-            Command::Format(format) => {
-                let action = if format.check || format.preview {
-                    "inspected"
-                } else {
-                    "formatted"
-                };
-
-                eprintln!(
-                    "{} {files} files; {} changed; {errors} errors",
-                    console::style(action).for_stderr().bold(),
-                    self.changed
-                );
-            }
+            Command::Check(_) => eprintln!("{action} {files}; {errors}"),
+            Command::Format(_) => eprintln!("{action} {files}; {changed}; {errors}"),
 
             Command::Lint(_) => eprintln!(
-                "{} {files} files; {} changed; {errors} errors; {} warnings",
-                console::style("linted").for_stderr().bold(),
-                self.changed,
-                self.warnings,
+                "{action} {files}; {changed}; {errors}; {} {}",
+                if self.warnings == 0 {
+                    console::style(self.warnings).for_stderr().dim()
+                } else {
+                    console::style(self.warnings).for_stderr().yellow().bold()
+                },
+                console::style("warnings").for_stderr().dim()
             ),
         }
 
         if arguments.verbose {
-            eprintln!("finished in {:.2?}", started.elapsed());
+            eprintln!(
+                "{} {}",
+                console::style("finished in").for_stderr().dim(),
+                console::style(format!("{:.2?}", started.elapsed()))
+                    .for_stderr()
+                    .cyan()
+            );
         }
     }
 }
@@ -215,48 +251,30 @@ pub(super) fn initialize(arguments: &Arguments) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn progress(
-    arguments: &Arguments,
-    workspace: &Workspace,
-    selected: &BTreeMap<String, PathBuf>,
-) -> Result<ProgressBar> {
-    let action = match arguments.command {
-        Command::Check(_) => "checking",
-        Command::Format(_) => "formatting",
-        Command::Lint(_) => "linting",
-    };
-
-    if arguments.verbose {
-        eprintln!("root: `{}`", workspace.directory().display());
-
-        for module in selected.keys() {
-            eprintln!("{action} `{}`", path(module, selected).display());
-        }
+pub(super) fn interrupted(arguments: &Arguments) {
+    if arguments.quiet {
+        return;
     }
 
-    let progress = if arguments.quiet {
-        ProgressBar::hidden()
+    if arguments.command.options().watch {
+        eprintln!(
+            "{} {}",
+            console::style("stopped").for_stderr().green().bold(),
+            console::style("watching").for_stderr().dim()
+        );
     } else {
-        ProgressBar::new(
-            selected
-                .len()
-                .try_into()
-                .wrap_err("cannot count selected files")?,
-        )
-    };
+        let command = match arguments.command {
+            Command::Check(_) => "check",
+            Command::Format(_) => "format",
+            Command::Lint(_) => "lint",
+        };
 
-    let progress = progress.with_style(
-        ProgressStyle::with_template("{spinner} {prefix} {pos}/{len}")
-            .wrap_err("cannot configure progress display")?,
-    );
-
-    progress.set_prefix(console::style(action).for_stderr().bold().to_string());
-
-    if !progress.is_hidden() {
-        progress.enable_steady_tick(Duration::from_millis(100));
+        eprintln!(
+            "{} {}",
+            console::style("interrupted").for_stderr().yellow().bold(),
+            console::style(command).for_stderr().cyan()
+        );
     }
-
-    Ok(progress)
 }
 
 pub(super) fn failure(error: &Report) {
@@ -388,6 +406,7 @@ fn publish(
     let mut output = io::stdout().lock();
 
     for proposed in outputs {
+        interrupt::check()?;
         let path = path(&proposed.source.module, &project.selected);
         let different = proposed.text != proposed.source.text.as_ref();
         summary.changed += usize::from(different);
@@ -405,7 +424,11 @@ fn publish(
             .wrap_err("cannot write preview to stdout")?;
         } else if check {
             if different {
-                eprintln!("would format `{}`", path.display());
+                eprintln!(
+                    "{} `{}`",
+                    console::style("would format").for_stderr().yellow(),
+                    console::style(path.display()).for_stderr().magenta()
+                );
             }
         } else if !preview {
             if project.stdin_module.as_ref() == Some(&proposed.source.module) {
@@ -451,7 +474,7 @@ fn path(module: &str, inputs: &BTreeMap<String, PathBuf>) -> PathBuf {
     )
 }
 
-fn relative(path: &Path, root: &Path) -> PathBuf {
+pub(super) fn relative(path: &Path, root: &Path) -> PathBuf {
     let mut prefix = PathBuf::new();
 
     for ancestor in root.ancestors() {

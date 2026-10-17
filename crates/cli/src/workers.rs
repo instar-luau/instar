@@ -6,18 +6,18 @@ use std::{
 };
 
 use eyre::{Report, Result, WrapErr as _, eyre};
-use indicatif::ProgressBar;
 use instar_core::workspace::Workspace;
 
 use super::{
     arguments::{Arguments, Command},
     execution::{self, Project, Response},
+    progress::Progress,
     report::Batch,
 };
 
 struct Request {
     dirty: BTreeSet<String>,
-    progress: ProgressBar,
+    progress: Progress,
 }
 
 pub(super) struct Worker<'modules> {
@@ -30,7 +30,7 @@ impl Worker<'_> {
     pub(super) fn run(
         self,
         workspace: &Workspace,
-        mut execute: impl FnMut(&[String], &ProgressBar) -> Result<Batch>,
+        mut execute: impl FnMut(&[String], &Progress) -> Result<Batch>,
     ) -> Result<()> {
         for request in self.requests {
             for module in &request.dirty {
@@ -70,7 +70,7 @@ impl Pool {
     pub(super) fn execute(
         &self,
         dirty: &BTreeSet<String>,
-        progress: &ProgressBar,
+        progress: &Progress,
     ) -> Result<Response> {
         for connection in &self.connections {
             connection
@@ -130,7 +130,11 @@ pub(super) fn run(
     let stdin = project.stdin.as_ref();
 
     if arguments.verbose {
-        eprintln!("worker limit: {jobs}");
+        eprintln!(
+            "{}: {}",
+            console::style("worker limit").for_stderr().dim(),
+            console::style(jobs).for_stderr().blue().bold()
+        );
     }
 
     let operation = |worker: Worker<'_>| -> Result<()> {

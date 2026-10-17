@@ -2,17 +2,21 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env, io, mem,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        mpsc::{self, RecvTimeoutError},
+    },
+    thread,
     time::Instant,
 };
 
 use eyre::{Result, WrapErr as _, bail};
-use indicatif::ProgressBar;
 use instar_core::workspace::{Access, Purpose, Workspace};
 
 use super::{
     arguments::{Arguments, Command, Options},
-    check, format, lint,
+    check, format, interrupt, lint,
+    progress::Progress,
     report::{self, Batch},
     watch::{Change, Watcher},
 };
@@ -23,6 +27,7 @@ pub(super) struct Project {
     pub(super) selected: BTreeMap<String, PathBuf>,
     pub(super) stdin_module: Option<String>,
     pub(super) stdin: Option<(PathBuf, Arc<str>)>,
+    pub(super) progress: Progress,
 }
 
 pub(super) enum Response {
@@ -73,7 +78,7 @@ pub(super) fn run(arguments: &Arguments) -> Result<u8> {
                 .stdin_filepath
                 .clone()
                 .unwrap_or_else(|| PathBuf::from("stdin.luau")),
-            Arc::from(io::read_to_string(io::stdin().lock()).wrap_err("cannot read stdin")?),
+            Arc::from(input()?),
         ))
     } else {
         None
@@ -85,6 +90,7 @@ pub(super) fn run(arguments: &Arguments) -> Result<u8> {
         .transpose()?;
 
     loop {
+        interrupt::check()?;
         let started = Instant::now();
 
         let result = prepare(arguments, &root, &overrides, stdin.as_ref()).and_then(|project| {
@@ -94,6 +100,8 @@ pub(super) fn run(arguments: &Arguments) -> Result<u8> {
                 Command::Lint(_) => lint::run(arguments, &project, watcher.as_mut(), started),
             }
         });
+
+        interrupt::check()?;
 
         let Some(watcher) = &mut watcher else {
             return result;
@@ -116,7 +124,7 @@ pub(super) fn session(
         &BTreeMap<String, PathBuf>,
         &BTreeSet<String>,
         bool,
-        &ProgressBar,
+        &Progress,
     ) -> Result<Response>,
 ) -> Result<u8> {
     let mut dirty = BTreeSet::new();
@@ -128,11 +136,13 @@ pub(super) fn session(
     }
 
     loop {
-        tracing::debug!(files = selected.len(), "processing batch");
+        tracing::debug!("processing batch");
 
-        let progress = report::progress(arguments, &project.workspace, &selected)?;
-        let result = execute(&selected, &dirty, discovery, &progress);
-        progress.finish_and_clear();
+        let progress = &project.progress;
+        progress.reset();
+        let result = execute(&selected, &dirty, discovery, progress);
+        progress.clear();
+        interrupt::check()?;
 
         let Response::Completed(mut batch) = result? else {
             return Ok(0);
@@ -146,7 +156,7 @@ pub(super) fn session(
 
         let summary = batch.report(arguments, project, &selected)?;
 
-        summary.report(arguments, selected.len(), started);
+        summary.report(arguments, progress.files(), started);
         let status = summary.status(&arguments.command);
 
         let Some(watcher) = &mut watcher else {
@@ -219,6 +229,28 @@ pub(super) fn session(
     }
 }
 
+fn input() -> Result<String> {
+    let (sender, receiver) = mpsc::channel();
+
+    drop(
+        thread::Builder::new()
+            .spawn(move || {
+                drop(sender.send(io::read_to_string(io::stdin().lock())));
+            })
+            .wrap_err("cannot start stdin reader")?,
+    );
+
+    loop {
+        interrupt::check()?;
+
+        match receiver.recv_timeout(interrupt::INTERVAL) {
+            Ok(result) => return result.wrap_err("cannot read stdin"),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(error) => return Err(error).wrap_err("cannot receive stdin"),
+        }
+    }
+}
+
 pub(super) fn open(
     root: &Path,
     options: &Options,
@@ -243,6 +275,7 @@ fn prepare(
     let options = arguments.command.options();
     let (workspace, stdin_module) = open(root, options, overrides, stdin)?;
     let selected = select(arguments, &workspace, stdin_module.as_deref())?;
+    let progress = Progress::new(arguments, workspace.directory())?;
 
     Ok(Project {
         workspace,
@@ -250,6 +283,7 @@ fn prepare(
         selected,
         stdin_module,
         stdin: stdin.cloned(),
+        progress,
     })
 }
 
