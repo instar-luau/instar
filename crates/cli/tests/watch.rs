@@ -137,7 +137,7 @@ fn checks(output: &str, expected: usize) {
     );
 
     assert!(
-        output.contains(&format!("checked {expected} files;")),
+        output.contains(&format!("checked {expected} files in ")),
         "{output}"
     );
 

@@ -165,9 +165,12 @@ impl Summary {
         };
 
         let files = format!(
-            "{} {}",
+            "{} {} {}",
             console::style(files).for_stderr().cyan().bold(),
-            console::style("files").for_stderr().dim()
+            console::style("files in").for_stderr().dim(),
+            console::style(format!("{:.2?}", started.elapsed()))
+                .for_stderr()
+                .cyan()
         );
 
         let errors = format!(
@@ -203,16 +206,6 @@ impl Summary {
                 },
                 console::style("warnings").for_stderr().dim()
             ),
-        }
-
-        if arguments.verbose {
-            eprintln!(
-                "{} {}",
-                console::style("finished in").for_stderr().dim(),
-                console::style(format!("{:.2?}", started.elapsed()))
-                    .for_stderr()
-                    .cyan()
-            );
         }
     }
 }
