@@ -1,21 +1,36 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use instar_luau::{Instance, Location};
 use serde::Deserialize;
 
 use super::{Error, Workspace, model::Scope, paths};
+use crate::settings::resolution::Generator;
 
 #[derive(Default)]
 pub(super) struct Registry {
     automatic: BTreeMap<PathBuf, Option<PathBuf>>,
     inputs: BTreeMap<(PathBuf, PathBuf), usize>,
+    generated: BTreeMap<Generator, Arc<str>>,
+    generators: BTreeMap<Generator, usize>,
     maps: Vec<Map>,
 }
 
 impl Registry {
+    pub(super) fn generated(&self) -> BTreeMap<Generator, Arc<str>> {
+        self.generated.clone()
+    }
+
+    pub(super) fn set_generated(&mut self, generated: BTreeMap<Generator, Arc<str>>) {
+        *self = Self {
+            generated,
+            ..Self::default()
+        };
+    }
+
     pub(super) fn dependencies(&self, dependencies: &mut BTreeSet<PathBuf>) {
         dependencies.extend(
             self.automatic
@@ -73,18 +88,39 @@ impl Registry {
                 source,
             })?;
 
-        let mut map = Map {
-            instances: Vec::new(),
-            modules: BTreeMap::new(),
-        };
-
-        if let Some(root) = root {
-            map.insert(root, None, base)?;
-        }
-
+        let map = Map::new(root, base)?;
         let index = self.maps.len();
         self.maps.push(map);
         self.inputs.insert(key, index);
+
+        Ok(index)
+    }
+
+    fn generate(&mut self, workspace: &Workspace, generator: &Generator) -> Result<usize, Error> {
+        if let Some(index) = self.generators.get(generator) {
+            return Ok(*index);
+        }
+
+        let source = if let Some(source) = self.generated.get(generator) {
+            Arc::clone(source)
+        } else {
+            let source = workspace.generate(generator)?;
+
+            self.generated
+                .insert(generator.clone(), Arc::clone(&source));
+
+            source
+        };
+
+        let root = serde_json::from_str(&source).map_err(|source| Error::GeneratedData {
+            executable: generator.command.first().cloned().unwrap_or_default(),
+            source,
+        })?;
+
+        let map = Map::new(root, &generator.directory)?;
+        let index = self.maps.len();
+        self.maps.push(map);
+        self.generators.insert(generator.clone(), index);
 
         Ok(index)
     }
@@ -96,6 +132,19 @@ struct Map {
 }
 
 impl Map {
+    fn new(root: Option<Node>, base: &Path) -> Result<Self, Error> {
+        let mut map = Self {
+            instances: Vec::new(),
+            modules: BTreeMap::new(),
+        };
+
+        if let Some(root) = root {
+            map.insert(root, None, base)?;
+        }
+
+        Ok(map)
+    }
+
     fn insert(&mut self, node: Node, parent: Option<usize>, base: &Path) -> Result<(), Error> {
         let index = self.instances.len();
         let mut sources = BTreeSet::new();
@@ -150,12 +199,18 @@ struct Node {
     children: Vec<Self>,
 }
 
+pub(super) fn validate(source: &str) -> Result<(), serde_json::Error> {
+    let _root: Option<Node> = serde_json::from_str(source)?;
+
+    Ok(())
+}
+
 pub(super) fn enabled(workspace: &Workspace, scope: &Scope, module: &Path) -> Result<bool, Error> {
     if let Some(enabled) = scope.configuration.environment.roblox {
         return Ok(enabled);
     }
 
-    Ok(!inputs(workspace, scope, module)?.is_empty())
+    Ok(generator(scope).is_some() || !inputs(workspace, scope, module)?.is_empty())
 }
 
 pub(super) fn configuration(
@@ -169,13 +224,21 @@ pub(super) fn configuration(
 
     let inputs = inputs(workspace, scope, module)?;
     let mut registry = workspace.instances.borrow_mut();
+    let mut indices = Vec::new();
+
+    if let Some(generator) = generator(scope) {
+        indices.push(registry.generate(workspace, generator)?);
+    }
+
+    for (path, base) in inputs {
+        indices.push(registry.load(&path, &base)?);
+    }
+
     let mut maps = BTreeSet::new();
     let mut locations = Vec::new();
     let module_name = paths::text(module)?;
 
-    for (path, base) in inputs {
-        let index = registry.load(&path, &base)?;
-
+    for index in indices {
         if !maps.insert(index) {
             continue;
         }
@@ -212,6 +275,10 @@ fn inputs(
             .collect());
     }
 
+    if generator(scope).is_some() {
+        return Ok(Vec::new());
+    }
+
     Ok(workspace
         .instances
         .borrow_mut()
@@ -223,4 +290,13 @@ fn inputs(
         })
         .into_iter()
         .collect())
+}
+
+fn generator(scope: &Scope) -> Option<&Generator> {
+    scope
+        .configuration
+        .resolve
+        .generator
+        .as_ref()
+        .filter(|generator| !generator.command.is_empty())
 }

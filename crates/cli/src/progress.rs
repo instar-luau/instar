@@ -9,7 +9,7 @@ use eyre::{Result, WrapErr as _};
 use indicatif::{ProgressBar, ProgressStyle};
 
 use super::{
-    arguments::{Arguments, Command},
+    arguments::{Arguments, Operation},
     report,
 };
 
@@ -30,11 +30,11 @@ struct State {
 }
 
 impl Progress {
-    pub(super) fn new(arguments: &Arguments, root: &Path) -> Result<Self> {
-        let action = match arguments.command {
-            Command::Check(_) => "checking",
-            Command::Format(_) => "formatting",
-            Command::Lint(_) => "linting",
+    pub(super) fn new(arguments: &Arguments, operation: &Operation, root: &Path) -> Result<Self> {
+        let action = match operation {
+            Operation::Check(_) => "checking",
+            Operation::Format(_) => "formatting",
+            Operation::Lint(_) => "linting",
         };
 
         let bar = if arguments.quiet {
@@ -79,7 +79,7 @@ impl Progress {
             root: root.to_owned(),
             action,
             verbose: arguments.verbose,
-            concurrent: !matches!(arguments.command, Command::Check(_)),
+            concurrent: !matches!(operation, Operation::Check(_)),
         })
     }
 

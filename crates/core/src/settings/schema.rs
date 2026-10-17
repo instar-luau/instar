@@ -1,4 +1,13 @@
+use schemars::{Schema, schema_for};
 use serde_json::{Value, json};
+
+use super::Configuration;
+
+/// Generate the configuration schema accepted by this version of Instar.
+#[must_use]
+pub fn schema() -> Schema {
+    schema_for!(Configuration)
+}
 
 pub(super) fn identifier() -> Value {
     json!({

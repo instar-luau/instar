@@ -3,12 +3,19 @@ use std::{
     io::ErrorKind,
     iter,
     path::{Component, Path, PathBuf},
-    sync::mpsc::{self, Receiver, RecvTimeoutError},
+    sync::{
+        Arc,
+        mpsc::{self, Receiver, RecvTimeoutError},
+    },
     time::{Duration, Instant},
 };
 
 use eyre::{Result, WrapErr as _};
-use instar_core::workspace::{Workspace, configuration_files};
+
+use instar_core::{
+    settings::resolution::Generator,
+    workspace::{Workspace, configuration_files},
+};
 
 use notify::{
     ErrorKind as WatchErrorKind, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _,
@@ -21,9 +28,13 @@ pub(super) enum Change {
     Sources {
         paths: BTreeSet<String>,
         discovery: bool,
+        started: Instant,
     },
 
-    Reload,
+    Reload {
+        generated: BTreeMap<Generator, Arc<str>>,
+        started: Instant,
+    },
 }
 
 pub(super) struct Watcher {
@@ -33,6 +44,7 @@ pub(super) struct Watcher {
     roots: BTreeSet<PathBuf>,
     reload: BTreeMap<PathBuf, bool>,
     observed: BTreeMap<PathBuf, PathBuf>,
+    generators: BTreeMap<Generator, Arc<str>>,
     debounce: Duration,
     quiet: bool,
 }
@@ -88,6 +100,7 @@ impl Watcher {
             roots,
             reload: BTreeMap::new(),
             observed: BTreeMap::new(),
+            generators: BTreeMap::new(),
             debounce: Duration::from_millis(options.debounce),
             quiet,
         };
@@ -101,8 +114,23 @@ impl Watcher {
         self.observed.clear();
         self.reload.clear();
 
+        self.generators.clear();
+        self.generated(workspace.generated())?;
         self.observe(workspace.reload_dependencies(), true)?;
         self.observe(workspace.dependencies(), false)?;
+
+        Ok(())
+    }
+
+    pub(super) fn generated(&mut self, generators: BTreeMap<Generator, Arc<str>>) -> Result<()> {
+        self.observe(
+            generators
+                .keys()
+                .flat_map(|generator| generator.inputs.iter().cloned()),
+            false,
+        )?;
+
+        self.generators.extend(generators);
 
         Ok(())
     }
@@ -185,16 +213,21 @@ impl Watcher {
     }
 
     pub(super) fn changed(&mut self, workspace: &Workspace) -> Result<Change> {
+        let events = self.wait(false)?;
+        let started = Instant::now();
         let mut paths = BTreeSet::new();
         let mut discovery = false;
 
-        for event in self.wait(false)? {
+        for event in events {
             tracing::debug!(kind = ?event.kind, paths = ?event.paths, "processing filesystem event");
 
             if event.need_rescan() || event.paths.is_empty() {
                 tracing::debug!("reloading after filesystem rescan request");
 
-                return Ok(Change::Reload);
+                return Ok(Change::Reload {
+                    generated: BTreeMap::new(),
+                    started,
+                });
             }
 
             let structural = !modified(&event);
@@ -209,7 +242,10 @@ impl Watcher {
                     {
                         tracing::debug!(path = %path.display(), "reloading for workspace dependency");
 
-                        return Ok(Change::Reload);
+                        return Ok(Change::Reload {
+                            generated: BTreeMap::new(),
+                            started,
+                        });
                     }
                 }
 
@@ -228,7 +264,38 @@ impl Watcher {
             }
         }
 
-        Ok(Change::Sources { paths, discovery })
+        let mut generated = self.generators.clone();
+        let mut changed = false;
+
+        for (generator, previous) in &mut generated {
+            let mut regenerate = discovery;
+
+            for input in &generator.inputs {
+                let input = workspace.normalize(self.observed.get(input).unwrap_or(input))?;
+
+                regenerate |= paths.iter().any(|path| {
+                    Path::new(path).starts_with(&input) || Path::new(&input).starts_with(path)
+                });
+            }
+
+            if regenerate {
+                let source = workspace.generate(generator)?;
+                changed |= source != *previous;
+                *previous = source;
+            }
+        }
+
+        if changed {
+            tracing::debug!("reloading for generated sourcemaps");
+
+            return Ok(Change::Reload { generated, started });
+        }
+
+        Ok(Change::Sources {
+            paths,
+            discovery,
+            started,
+        })
     }
 
     pub(super) fn ready(&self) {
@@ -337,12 +404,22 @@ impl Watcher {
             if ((recovery || source || directory)
                 && self.roots.iter().any(|root| path.starts_with(root)))
                 || self.observed.values().any(|observed| {
-                    observed.starts_with(path) || (source && path.starts_with(observed))
+                    observed.starts_with(path)
+                        || ((recovery || source) && path.starts_with(observed))
                 })
                 || self
                     .reload
                     .keys()
                     .any(|dependency| path.starts_with(dependency))
+                || self
+                    .generators
+                    .keys()
+                    .flat_map(|generator| &generator.inputs)
+                    .any(|input| {
+                        let input = self.observed.get(input).unwrap_or(input);
+
+                        path.starts_with(input) || input.starts_with(path)
+                    })
             {
                 return Ok(true);
             }

@@ -14,6 +14,37 @@ pub enum Error {
         source: io::Error,
     },
 
+    /// A workspace operation was cancelled.
+    #[error("workspace operation cancelled")]
+    Cancelled,
+
+    /// A release asset could not be downloaded.
+    #[error("cannot download `{url}`")]
+    Download {
+        /// The release asset URL.
+        url: String,
+        /// The process, network, or HTTP failure.
+        source: io::Error,
+    },
+
+    /// A sourcemap generator could not run successfully.
+    #[error("cannot generate sourcemap with `{executable}`")]
+    Generate {
+        /// The generator executable.
+        executable: String,
+        /// The process or output failure.
+        source: io::Error,
+    },
+
+    /// A generator returned an invalid sourcemap.
+    #[error("invalid sourcemap from `{executable}`")]
+    GeneratedData {
+        /// The generator executable.
+        executable: String,
+        /// The JSON decoding failure.
+        source: serde_json::Error,
+    },
+
     /// A directory traversal failed.
     #[error("cannot traverse workspace")]
     Traversal(#[source] ignore::Error),

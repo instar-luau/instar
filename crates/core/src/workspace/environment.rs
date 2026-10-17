@@ -16,7 +16,7 @@ use serde::{
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
-use super::{Error, Workspace, instances, model::Scope, paths};
+use super::{Error, Workspace, assets, instances, model::Scope, paths};
 
 use crate::{
     lint::Symbols,
@@ -341,14 +341,7 @@ pub(super) fn identity(
                 let directory = match &settings.environment.asset_directory {
                     Some(directory) => directory.clone(),
 
-                    None => dirs::cache_dir()
-                        .ok_or_else(|| Error::Path {
-                            path: workspace.root.clone(),
-                            reason: "the operating system cache directory is unavailable",
-                        })?
-                        .join("instar")
-                        .join("roblox")
-                        .join(env!("CARGO_PKG_VERSION")),
+                    None => assets::directory(workspace)?,
                 };
 
                 Some((paths::canonical(&directory)?, settings.environment.security))
@@ -422,6 +415,30 @@ fn prepare(inputs: &Inputs) -> Result<Prepared, Error> {
     }
 
     Ok(prepared)
+}
+
+pub(super) fn validate(directory: &Path, cancelled: fn() -> bool) -> Result<(), Error> {
+    for security in [
+        Security::None,
+        Security::Local,
+        Security::Plugin,
+        Security::Roblox,
+    ] {
+        if cancelled() {
+            return Err(Error::Cancelled);
+        }
+
+        assets(
+            directory,
+            security,
+            &mut Prepared {
+                native: Environment::default(),
+                documentation: None,
+            },
+        )?;
+    }
+
+    Ok(())
 }
 
 fn assets(directory: &Path, security: Security, prepared: &mut Prepared) -> Result<(), Error> {

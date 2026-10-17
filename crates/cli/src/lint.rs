@@ -10,8 +10,8 @@ use instar_core::{
 };
 
 use super::{
-    arguments::{Arguments, Command},
-    execution::{self, Project, Response},
+    arguments::{Arguments, Operation},
+    execution::{self, Outcome, Project, Response},
     report::{Batch, Output, Source},
     watch::Watcher,
     workers,
@@ -21,15 +21,17 @@ type Environments = BTreeMap<String, Result<Arc<Symbols>, Arc<Error>>>;
 
 pub(super) fn run(
     arguments: &Arguments,
+    operation: &Operation,
     project: &Project,
     watcher: Option<&mut Watcher>,
     started: Instant,
-) -> Result<u8> {
+) -> Result<Outcome> {
     let environments = prepare(project);
-    let corrections = matches!(&arguments.command, Command::Lint(lint) if lint.fix);
+    let corrections = matches!(operation, Operation::Lint(lint) if lint.fix);
 
     workers::run(
         arguments,
+        operation,
         project,
         |workspace, worker| {
             worker.run(workspace, |modules, progress| {
@@ -41,6 +43,7 @@ pub(super) fn run(
         |pool| {
             execution::session(
                 arguments,
+                operation,
                 project,
                 watcher,
                 started,

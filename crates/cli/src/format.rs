@@ -9,8 +9,8 @@ use instar_core::{
 };
 
 use super::{
-    arguments::Arguments,
-    execution::{self, Project},
+    arguments::{Arguments, Operation},
+    execution::{self, Outcome, Project},
     report::{Batch, Output, Source},
     watch::Watcher,
     workers,
@@ -18,12 +18,14 @@ use super::{
 
 pub(super) fn run(
     arguments: &Arguments,
+    operation: &Operation,
     project: &Project,
     watcher: Option<&mut Watcher>,
     started: Instant,
-) -> Result<u8> {
+) -> Result<Outcome> {
     workers::run(
         arguments,
+        operation,
         project,
         |workspace, worker| {
             worker.run(workspace, |modules, progress| {
@@ -35,6 +37,7 @@ pub(super) fn run(
         |pool| {
             execution::session(
                 arguments,
+                operation,
                 project,
                 watcher,
                 started,

@@ -17,4 +17,5 @@ pub use self::{
     load::{defaults, layer, load, resolve},
     model::{Configuration, Flag, Selection},
     patterns::Patterns,
+    schema::schema,
 };

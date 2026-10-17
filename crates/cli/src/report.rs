@@ -24,12 +24,12 @@ use color_eyre::{
 
 use eyre::{Report, Result, WrapErr as _};
 
-use instar_core::{lint, workspace::Error as WorkspaceError};
+use instar_core::{lint, settings::resolution::Generator, workspace::Error as WorkspaceError};
 
 use similar::TextDiff;
 
 use super::{
-    arguments::{Arguments, Command},
+    arguments::{Arguments, Operation},
     execution::Project,
     interrupt,
 };
@@ -53,6 +53,7 @@ pub(super) struct Batch {
     pub(super) outputs: Vec<Output>,
     pub(super) lint: Vec<(Source, Vec<lint::Finding>)>,
     pub(super) dependencies: BTreeSet<PathBuf>,
+    pub(super) generators: BTreeMap<Generator, Arc<str>>,
     failures: Vec<Report>,
 }
 
@@ -83,11 +84,12 @@ impl Batch {
         self.outputs.extend(batch.outputs);
         self.lint.extend(batch.lint);
         self.dependencies.extend(batch.dependencies);
+        self.generators.extend(batch.generators);
     }
 
     pub(super) fn report(
         self,
-        arguments: &Arguments,
+        operation: &Operation,
         project: &Project,
         selected: &BTreeMap<String, PathBuf>,
     ) -> Result<Summary> {
@@ -98,8 +100,8 @@ impl Batch {
             failure(error);
         }
 
-        match &arguments.command {
-            Command::Format(format) => publish(
+        match operation {
+            Operation::Format(format) => publish(
                 format.check,
                 format.preview,
                 project,
@@ -107,11 +109,11 @@ impl Batch {
                 &mut summary,
             )?,
 
-            Command::Lint(lint) if lint.fix => {
+            Operation::Lint(lint) if lint.fix => {
                 publish(false, lint.preview, project, self.outputs, &mut summary)?;
             }
 
-            Command::Check(_) | Command::Lint(_) => {}
+            Operation::Check(_) | Operation::Lint(_) => {}
         }
 
         Ok(summary)
@@ -127,36 +129,42 @@ pub(super) struct Summary {
 }
 
 impl Summary {
-    pub(super) fn status(&self, command: &Command) -> u8 {
+    pub(super) fn status(&self, operation: &Operation) -> u8 {
         if self.failures != 0 {
             2
         } else {
             u8::from(
                 self.errors != 0
-                    || matches!(command, Command::Format(format) if format.check && self.changed != 0),
+                    || matches!(operation, Operation::Format(format) if format.check && self.changed != 0),
             )
         }
     }
 
-    pub(super) fn report(&self, arguments: &Arguments, files: usize, started: Instant) {
+    pub(super) fn report(
+        &self,
+        arguments: &Arguments,
+        operation: &Operation,
+        files: usize,
+        started: Instant,
+    ) {
         if arguments.quiet {
             return;
         }
 
         let errors = self.errors + self.failures;
 
-        let action = match &arguments.command {
-            Command::Check(_) => "checked",
-            Command::Format(format) if format.check || format.preview => "inspected",
-            Command::Format(_) => "formatted",
-            Command::Lint(_) => "linted",
+        let action = match operation {
+            Operation::Check(_) => "checked",
+            Operation::Format(format) if format.check || format.preview => "inspected",
+            Operation::Format(_) => "formatted",
+            Operation::Lint(_) => "linted",
         };
 
         let action = console::style(action).for_stderr().bold();
 
         let action = if errors != 0 {
             action.red()
-        } else if matches!(&arguments.command, Command::Format(format) if format.check)
+        } else if matches!(operation, Operation::Format(format) if format.check)
             && self.changed != 0
         {
             action.yellow()
@@ -193,11 +201,11 @@ impl Summary {
             console::style("changed").for_stderr().dim()
         );
 
-        match &arguments.command {
-            Command::Check(_) => eprintln!("{action} {files}; {errors}"),
-            Command::Format(_) => eprintln!("{action} {files}; {changed}; {errors}"),
+        match operation {
+            Operation::Check(_) => eprintln!("{action} {files}; {errors}"),
+            Operation::Format(_) => eprintln!("{action} {files}; {changed}; {errors}"),
 
-            Command::Lint(_) => eprintln!(
+            Operation::Lint(_) => eprintln!(
                 "{action} {files}; {changed}; {errors}; {} {}",
                 if self.warnings == 0 {
                     console::style(self.warnings).for_stderr().dim()
@@ -210,8 +218,8 @@ impl Summary {
     }
 }
 
-pub(super) fn initialize(arguments: &Arguments) -> Result<()> {
-    match arguments.color.unwrap_or_default() {
+pub(super) fn initialize(color: Option<ColorChoice>, verbose: bool) -> Result<()> {
+    match color.unwrap_or_default() {
         ColorChoice::Always => console::set_colors_enabled_stderr(true),
         ColorChoice::Never => console::set_colors_enabled_stderr(false),
         ColorChoice::Auto => {}
@@ -229,7 +237,7 @@ pub(super) fn initialize(arguments: &Arguments) -> Result<()> {
         .install()
         .wrap_err("cannot initialize error reporting")?;
 
-    if arguments.verbose {
+    if verbose {
         tracing_subscriber::fmt()
             .without_time()
             .with_target(false)
@@ -244,22 +252,22 @@ pub(super) fn initialize(arguments: &Arguments) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn interrupted(arguments: &Arguments) {
+pub(super) fn interrupted(arguments: &Arguments, operation: &Operation) {
     if arguments.quiet {
         return;
     }
 
-    if arguments.command.options().watch {
+    if operation.options().watch {
         eprintln!(
             "{} {}",
             console::style("stopped").for_stderr().green().bold(),
             console::style("watching").for_stderr().dim()
         );
     } else {
-        let command = match arguments.command {
-            Command::Check(_) => "check",
-            Command::Format(_) => "format",
-            Command::Lint(_) => "lint",
+        let command = match operation {
+            Operation::Check(_) => "check",
+            Operation::Format(_) => "format",
+            Operation::Lint(_) => "lint",
         };
 
         eprintln!(

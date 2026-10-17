@@ -14,8 +14,8 @@ use instar_core::workspace::{Purpose, Workspace};
 use instar_luau::{Context, Frontend, Progress};
 
 use super::{
-    arguments::Arguments,
-    execution::{self, Project, Response},
+    arguments::{Arguments, Operation},
+    execution::{self, Outcome, Project, Response},
     interrupt,
     report::{Batch, Source},
     watch::Watcher,
@@ -23,10 +23,11 @@ use super::{
 
 pub(super) fn run(
     arguments: &Arguments,
+    operation: &Operation,
     project: &Project,
     watcher: Option<&mut Watcher>,
     started: Instant,
-) -> Result<u8> {
+) -> Result<Outcome> {
     tracing::debug!("creating native frontend");
     let workspace = &project.workspace;
 
@@ -45,6 +46,7 @@ pub(super) fn run(
 
     execution::session(
         arguments,
+        operation,
         project,
         watcher,
         started,

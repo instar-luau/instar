@@ -36,6 +36,7 @@ pub struct Workspace {
     pub(super) snapshots: RefCell<BTreeMap<String, Option<Arc<str>>>>,
     pub(super) observed_paths: RefCell<BTreeSet<PathBuf>>,
     pub(super) environments: RefCell<Registry>,
+    pub(super) cancelled: fn() -> bool,
 }
 
 impl Workspace {
@@ -60,11 +61,20 @@ impl Workspace {
             snapshots: RefCell::new(BTreeMap::new()),
             observed_paths: RefCell::new(BTreeSet::new()),
             environments: RefCell::new(Registry::default()),
+            cancelled: || false,
         };
 
         workspace.reload()?;
 
         Ok(workspace)
+    }
+
+    /// Use the supplied callback to cancel background asset acquisition.
+    #[must_use]
+    pub fn with_cancellation(mut self, cancelled: fn() -> bool) -> Self {
+        self.cancelled = cancelled;
+
+        self
     }
 
     /// Reload configuration, preserving the previous scopes if the root cannot load.

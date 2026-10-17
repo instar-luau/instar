@@ -23,6 +23,27 @@ pub struct Configuration {
     /// Case-insensitive alias names mapped to paths relative to their defining file.
     #[schemars(extend("propertyNames" = schema::alias(), "additionalProperties" = schema::path()))]
     pub aliases: BTreeMap<String, PathBuf>,
+
+    /// A command that supplies a sourcemap on standard output.
+    pub generator: Option<Generator>,
+}
+
+/// A sourcemap command and its source-relative inputs.
+#[derive(
+    Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd, Deserialize, JsonSchema, Serialize,
+)]
+#[serde(default, deny_unknown_fields)]
+pub struct Generator {
+    /// The executable and arguments; an empty list disables generation.
+    pub command: Vec<String>,
+
+    /// Files whose changes require regenerating the sourcemap.
+    #[schemars(extend("items" = schema::path()))]
+    pub inputs: Vec<PathBuf>,
+
+    /// The directory of the configuration source defining the command.
+    #[serde(skip)]
+    pub directory: PathBuf,
 }
 
 pub(super) fn normalize(values: &mut Dict) -> Result<(), Box<Error>> {

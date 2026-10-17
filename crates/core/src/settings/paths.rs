@@ -66,6 +66,37 @@ pub(super) fn resolve(
         }
     }
 
+    if let Some(generator) = &mut configuration.resolve.generator {
+        let source = resolution.field("generator");
+        let command = source.field("command");
+
+        if generator
+            .command
+            .first()
+            .is_some_and(|executable| executable.trim().is_empty())
+        {
+            return Err(command.field("0").error("expected a nonempty executable"));
+        }
+
+        for (index, argument) in generator.command.iter().enumerate() {
+            if argument.contains('\0') {
+                return Err(command
+                    .field(&index.to_string())
+                    .error("command arguments must not contain NUL"));
+            }
+        }
+
+        command.base(base).clone_into(&mut generator.directory);
+
+        for (index, path) in generator.inputs.iter_mut().enumerate() {
+            anchor(
+                path,
+                &source.field("inputs").field(&index.to_string()),
+                base,
+            );
+        }
+    }
+
     let environment = source.field("environment");
 
     for (name, path) in [

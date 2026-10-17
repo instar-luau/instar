@@ -40,6 +40,15 @@ pub(super) struct Arguments {
 
 #[derive(Subcommand)]
 pub(super) enum Command {
+    #[command(flatten)]
+    Files(Box<Operation>),
+
+    #[command(about = "print the instar.toml JSON Schema")]
+    Schema,
+}
+
+#[derive(Subcommand)]
+pub(super) enum Operation {
     #[command(about = "check files, directories, patterns, or stdin (-)")]
     Check(Check),
 
@@ -50,7 +59,7 @@ pub(super) enum Command {
     Lint(Lint),
 }
 
-impl Command {
+impl Operation {
     pub(super) fn options(&self) -> &Options {
         match self {
             Self::Check(check) => &check.options,

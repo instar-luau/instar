@@ -9,8 +9,8 @@ use eyre::{Report, Result, WrapErr as _, eyre};
 use instar_core::workspace::Workspace;
 
 use super::{
-    arguments::{Arguments, Command},
-    execution::{self, Project, Response},
+    arguments::{Arguments, Operation},
+    execution::{self, Outcome, Project, Response},
     progress::Progress,
     report::Batch,
 };
@@ -47,6 +47,7 @@ impl Worker<'_> {
 
             let mut batch = execute(self.modules, &request.progress)?;
             batch.dependencies = workspace.dependencies();
+            batch.generators = workspace.generated();
 
             if self.responses.send(Response::Completed(batch)).is_err() {
                 break;
@@ -106,14 +107,15 @@ impl Pool {
 
 pub(super) fn run(
     arguments: &Arguments,
+    operation: &Operation,
     project: &Project,
     execute: impl Fn(&Workspace, Worker<'_>) -> Result<()> + Sync,
-    session: impl FnOnce(&Pool) -> Result<u8>,
-) -> Result<u8> {
-    let requested = match &arguments.command {
-        Command::Check(_) => None,
-        Command::Format(format) => format.jobs,
-        Command::Lint(lint) => lint.jobs,
+    session: impl FnOnce(&Pool) -> Result<Outcome>,
+) -> Result<Outcome> {
+    let requested = match operation {
+        Operation::Check(_) => None,
+        Operation::Format(format) => format.jobs,
+        Operation::Lint(lint) => lint.jobs,
     };
 
     let modules: Vec<_> = project.selected.keys().cloned().collect();
@@ -125,9 +127,10 @@ pub(super) fn run(
         .max(1);
 
     let root = project.workspace.directory();
-    let options = arguments.command.options();
+    let options = operation.options();
     let overrides = &project.overrides;
     let stdin = project.stdin.as_ref();
+    let generated = project.workspace.generated();
 
     if arguments.verbose {
         eprintln!(
@@ -137,10 +140,11 @@ pub(super) fn run(
         );
     }
 
-    let operation = |worker: Worker<'_>| -> Result<()> {
+    let run_worker = |worker: Worker<'_>| -> Result<()> {
         let span = tracing::debug_span!("worker", files = worker.modules.len());
         let _entered = span.enter();
-        let (workspace, _) = execution::open(root, options, overrides, stdin)?;
+        let (mut workspace, _) = execution::open(root, options, overrides, stdin)?;
+        workspace.set_generated(generated.clone());
 
         execute(&workspace, worker)
     };
@@ -167,9 +171,9 @@ pub(super) fn run(
                     responses: outgoing,
                 };
 
-                let operation = &operation;
+                let run_worker = &run_worker;
 
-                match thread::Builder::new().spawn_scoped(scope, move || operation(worker)) {
+                match thread::Builder::new().spawn_scoped(scope, move || run_worker(worker)) {
                     Ok(thread) => {
                         threads.push(thread);
 
@@ -187,7 +191,7 @@ pub(super) fn run(
             }
 
             if failure.is_some() {
-                Ok(0)
+                Ok(Outcome::Completed(0))
             } else {
                 session(&pool)
             }
