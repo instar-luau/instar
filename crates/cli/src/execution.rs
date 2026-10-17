@@ -6,7 +6,7 @@ use std::{
     time::Instant,
 };
 
-use eyre::{Result, bail};
+use eyre::{Result, WrapErr as _, bail};
 use indicatif::ProgressBar;
 use instar_core::workspace::{Access, Purpose, Workspace};
 
@@ -36,11 +36,15 @@ pub(super) fn run(arguments: &Arguments) -> Result<u8> {
     let root = options
         .root
         .clone()
-        .map_or_else(env::current_dir, Ok)?
-        .canonicalize()?;
+        .map_or_else(env::current_dir, Ok)
+        .wrap_err("cannot resolve working directory")?;
+
+    let root = root
+        .canonicalize()
+        .wrap_err_with(|| format!("cannot resolve root `{}`", root.display()))?;
 
     if !root.is_dir() {
-        bail!("{}: expected a project directory", root.display());
+        bail!("project root `{}` must be a directory", root.display());
     }
 
     let stdin_count = options
@@ -69,7 +73,7 @@ pub(super) fn run(arguments: &Arguments) -> Result<u8> {
                 .stdin_filepath
                 .clone()
                 .unwrap_or_else(|| PathBuf::from("stdin.luau")),
-            Arc::from(io::read_to_string(io::stdin().lock())?),
+            Arc::from(io::read_to_string(io::stdin().lock()).wrap_err("cannot read stdin")?),
         ))
     } else {
         None
@@ -86,7 +90,6 @@ pub(super) fn run(arguments: &Arguments) -> Result<u8> {
         let result = prepare(arguments, &root, &overrides, stdin.as_ref()).and_then(|project| {
             match &arguments.command {
                 Command::Check(_) => check::run(arguments, &project, watcher.as_mut(), started),
-
                 Command::Format(_) => format::run(arguments, &project, watcher.as_mut(), started),
                 Command::Lint(_) => lint::run(arguments, &project, watcher.as_mut(), started),
             }

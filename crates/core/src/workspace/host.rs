@@ -1,6 +1,5 @@
 use std::{
     collections::BTreeMap,
-    error::Error as _,
     path::{Component, Path, PathBuf},
     sync::Arc,
 };
@@ -16,7 +15,7 @@ impl Host for Workspace {
     fn alias(&self, module: &str, name: &str) -> Result<Navigation, HostError> {
         let scope = self
             .scope(Path::new(module))
-            .map_err(|error| failure(module, Operation::Alias, &error))?;
+            .map_err(|error| failure(module, Operation::Alias, error))?;
 
         let Some(target) = scope.configuration.resolve.aliases.get(name) else {
             return Ok(Navigation::Missing);
@@ -24,7 +23,7 @@ impl Host for Workspace {
 
         logical(target)
             .and_then(|path| resolve(&path))
-            .map_err(|error| failure(module, Operation::Alias, &error))
+            .map_err(|error| failure(module, Operation::Alias, error))
     }
 
     fn child(&self, module: &str, name: &str) -> Result<Navigation, HostError> {
@@ -41,13 +40,13 @@ impl Host for Workspace {
 
                 resolve(&target)
             })
-            .map_err(|error| failure(module, Operation::Child, &error))
+            .map_err(|error| failure(module, Operation::Child, error))
     }
 
     fn configuration(&self, module: &str) -> Result<Configuration, HostError> {
         let scope = self
             .scope(Path::new(module))
-            .map_err(|error| failure(module, Operation::Configuration, &error))?;
+            .map_err(|error| failure(module, Operation::Configuration, error))?;
 
         let configuration = &scope.configuration;
 
@@ -58,13 +57,13 @@ impl Host for Workspace {
         };
 
         let locations = instances::configuration(self, &scope, Path::new(module))
-            .map_err(|error| failure(module, Operation::Hierarchy, &error))?;
+            .map_err(|error| failure(module, Operation::Hierarchy, error))?;
 
         Ok(Configuration {
             mode,
             globals: configuration.environment.globals.clone(),
             environment: environment::identity(self, &scope, Path::new(module))
-                .map_err(|error| failure(module, Operation::Environment, &error))?,
+                .map_err(|error| failure(module, Operation::Environment, error))?,
             flags: flags(configuration),
             locations,
         })
@@ -76,7 +75,7 @@ impl Host for Workspace {
         let prepared = environments.get(name).ok_or_else(|| HostError {
             module: name.to_owned(),
             operation: Operation::Environment,
-            reason: "unknown declaration environment".to_owned(),
+            source: "unknown declaration environment".into(),
         })?;
 
         self.snapshots
@@ -99,7 +98,7 @@ impl Host for Workspace {
         self.instances.borrow().get(name).ok_or_else(|| HostError {
             module: name.to_owned(),
             operation: Operation::Hierarchy,
-            reason: "unknown instance hierarchy".to_owned(),
+            source: "unknown instance hierarchy".into(),
         })
     }
 
@@ -121,13 +120,13 @@ impl Host for Workspace {
             }
         };
 
-        parent().map_err(|error| failure(module, Operation::Parent, &error))
+        parent().map_err(|error| failure(module, Operation::Parent, error))
     }
 
     fn source(&self, module: &str) -> Result<Option<String>, HostError> {
         Self::source(self, module)
             .map(|source| source.map(|source| source.to_string()))
-            .map_err(|error| failure(module, Operation::Source, &error))
+            .map_err(|error| failure(module, Operation::Source, error))
     }
 }
 
@@ -210,19 +209,10 @@ fn found(path: &Path) -> Result<Navigation, Error> {
     paths::text(&paths::canonical(path)?).map(Navigation::Found)
 }
 
-fn failure(module: &str, operation: Operation, error: &Error) -> HostError {
-    let mut reason = error.to_string();
-    let mut cause = error.source();
-
-    while let Some(source) = cause {
-        reason.push_str(": ");
-        reason.push_str(&source.to_string());
-        cause = source.source();
-    }
-
+fn failure(module: &str, operation: Operation, source: Error) -> HostError {
     HostError {
         module: module.to_owned(),
         operation,
-        reason,
+        source: Box::new(source),
     }
 }

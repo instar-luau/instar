@@ -5,7 +5,7 @@ use std::{
     thread,
 };
 
-use eyre::{Report, Result, eyre};
+use eyre::{Report, Result, WrapErr as _, eyre};
 use indicatif::ProgressBar;
 use instar_core::workspace::Workspace;
 
@@ -35,7 +35,9 @@ impl Worker<'_> {
         for request in self.requests {
             for module in &request.dirty {
                 if workspace.requires_reload(module)? {
-                    self.responses.send(Response::Reload)?;
+                    self.responses
+                        .send(Response::Reload)
+                        .wrap_err("cannot send worker response")?;
 
                     return Ok(());
                 }
@@ -71,17 +73,24 @@ impl Pool {
         progress: &ProgressBar,
     ) -> Result<Response> {
         for connection in &self.connections {
-            connection.requests.send(Request {
-                dirty: dirty.clone(),
-                progress: progress.clone(),
-            })?;
+            connection
+                .requests
+                .send(Request {
+                    dirty: dirty.clone(),
+                    progress: progress.clone(),
+                })
+                .wrap_err("cannot send worker request")?;
         }
 
         let mut batch = Batch::default();
         let mut reload = false;
 
         for connection in &self.connections {
-            match connection.responses.recv()? {
+            match connection
+                .responses
+                .recv()
+                .wrap_err("cannot receive worker response")?
+            {
                 Response::Completed(completed) => batch.append(completed),
                 Response::Reload => reload = true,
             }
@@ -167,7 +176,7 @@ pub(super) fn run(
                     }
 
                     Err(error) => {
-                        failure = Some(Report::from(error));
+                        failure = Some(Report::from(error).wrap_err("cannot start worker"));
                         break;
                     }
                 }
@@ -195,7 +204,8 @@ pub(super) fn run(
                         .or_else(|| panic.downcast_ref::<&str>().copied())
                         .unwrap_or("unknown panic payload");
 
-                    failure.get_or_insert_with(|| eyre!("worker panicked: {reason}"));
+                    failure
+                        .get_or_insert_with(|| eyre!("internal error: worker panicked: {reason}"));
                 }
             }
         }

@@ -6,8 +6,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use eyre::Result;
+use eyre::{Result, WrapErr as _};
 use instar_core::workspace::Workspace;
+
 use notify::{
     Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _, event::ModifyKind,
 };
@@ -50,22 +51,30 @@ impl Watcher {
             }
 
             if let Some(directory) = directory(&path)? {
-                directories.insert(directory.canonicalize()?, true);
+                let canonical = directory.canonicalize().wrap_err_with(|| {
+                    format!("cannot resolve watch directory `{}`", directory.display())
+                })?;
+
+                directories.insert(canonical, true);
             }
         }
 
         let (sender, receiver) = mpsc::channel();
-        let mut subscription = notify::recommended_watcher(sender)?;
+
+        let mut subscription =
+            notify::recommended_watcher(sender).wrap_err("cannot start filesystem watcher")?;
 
         for (directory, recursive) in &directories {
-            subscription.watch(
-                directory,
-                if *recursive {
-                    RecursiveMode::Recursive
-                } else {
-                    RecursiveMode::NonRecursive
-                },
-            )?;
+            subscription
+                .watch(
+                    directory,
+                    if *recursive {
+                        RecursiveMode::Recursive
+                    } else {
+                        RecursiveMode::NonRecursive
+                    },
+                )
+                .wrap_err_with(|| format!("cannot watch `{}`", directory.display()))?;
         }
 
         Ok(Self {
@@ -81,7 +90,9 @@ impl Watcher {
     pub(super) fn begin(&mut self, paths: impl IntoIterator<Item = PathBuf>) -> Result<()> {
         self.observed.clear();
 
-        self.observe(paths)
+        self.observe(paths)?;
+
+        Ok(())
     }
 
     pub(super) fn observe(&mut self, paths: impl IntoIterator<Item = PathBuf>) -> Result<()> {
@@ -106,7 +117,10 @@ impl Watcher {
                 continue;
             };
 
-            let directory = ancestor.canonicalize()?;
+            let directory = ancestor.canonicalize().wrap_err_with(|| {
+                format!("cannot resolve watch directory `{}`", ancestor.display())
+            })?;
+
             let discovery = discovery && path.parent() == Some(ancestor);
 
             if self.directories.iter().any(|(watched, recursive)| {
@@ -117,17 +131,21 @@ impl Watcher {
             }
 
             if self.directories.contains_key(&directory) {
-                self.subscription.unwatch(&directory)?;
+                self.subscription
+                    .unwatch(&directory)
+                    .wrap_err_with(|| format!("cannot stop watching `{}`", directory.display()))?;
             }
 
-            self.subscription.watch(
-                &directory,
-                if discovery {
-                    RecursiveMode::NonRecursive
-                } else {
-                    RecursiveMode::Recursive
-                },
-            )?;
+            self.subscription
+                .watch(
+                    &directory,
+                    if discovery {
+                        RecursiveMode::NonRecursive
+                    } else {
+                        RecursiveMode::Recursive
+                    },
+                )
+                .wrap_err_with(|| format!("cannot watch `{}`", directory.display()))?;
 
             self.directories.insert(directory, !discovery);
         }
@@ -176,7 +194,11 @@ impl Watcher {
         let mut events = Vec::new();
 
         loop {
-            let event = self.receiver.recv()??;
+            let event = self
+                .receiver
+                .recv()
+                .wrap_err("cannot receive filesystem changes")?
+                .wrap_err("cannot observe filesystem changes")?;
 
             if self.relevant(&event) {
                 events.push(event);
@@ -192,7 +214,7 @@ impl Watcher {
                 .recv_timeout(self.debounce.saturating_sub(updated.elapsed()))
             {
                 Ok(event) => {
-                    let event = event?;
+                    let event = event.wrap_err("cannot observe filesystem changes")?;
 
                     if self.relevant(&event) {
                         events.push(event);
@@ -201,7 +223,7 @@ impl Watcher {
                 }
 
                 Err(RecvTimeoutError::Timeout) => return Ok(events),
-                Err(error) => return Err(error.into()),
+                Err(error) => return Err(error).wrap_err("cannot receive filesystem changes"),
             }
         }
     }
@@ -239,7 +261,10 @@ fn directory(path: &Path) -> Result<Option<&Path>> {
             Err(error)
                 if matches!(error.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => {}
 
-            Err(error) => return Err(error.into()),
+            Err(error) => {
+                return Err(error)
+                    .wrap_err_with(|| format!("cannot inspect `{}`", ancestor.display()));
+            }
         }
     }
 

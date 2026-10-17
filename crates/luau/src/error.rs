@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{error::Error as Failure, fmt};
 
 /// A host callback or native frontend failure.
 #[derive(Debug, thiserror::Error)]
@@ -17,7 +17,7 @@ pub enum Error {
 
 /// An operational host failure with its module and callback context.
 #[derive(Debug, thiserror::Error)]
-#[error("cannot {operation} for module `{module}`: {reason}")]
+#[error("cannot {operation} for module `{module}`")]
 pub struct HostError {
     /// The host module identifier involved in the failure.
     pub module: String,
@@ -25,8 +25,8 @@ pub struct HostError {
     /// The callback operation that failed.
     pub operation: Operation,
 
-    /// The reason the operation failed.
-    pub reason: String,
+    /// The underlying host failure.
+    pub source: Box<dyn Failure + Send + Sync>,
 }
 
 /// A host callback operation.

@@ -46,9 +46,9 @@ impl Default for Configuration {
         Self {
             include: None,
             exclude: None,
-            width: NonZeroUsize::new(120).expect("120 is nonzero"),
+            width: NonZeroUsize::new(120).expect("internal error: zero default width"),
             indent_style: Indentation::default(),
-            indent_width: NonZeroUsize::new(4).expect("4 is nonzero"),
+            indent_width: NonZeroUsize::new(4).expect("internal error: zero default indentation"),
             line_ending: LineEnding::default(),
             quote_style: Quotes::default(),
             final_newline: true,

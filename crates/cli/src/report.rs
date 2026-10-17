@@ -22,9 +22,14 @@ use color_eyre::{
     config::{HookBuilder, Theme},
 };
 
-use eyre::{Report, Result};
+use eyre::{Report, Result, WrapErr as _};
 use indicatif::{ProgressBar, ProgressStyle};
-use instar_core::{lint, workspace::Workspace};
+
+use instar_core::{
+    lint,
+    workspace::{Error as WorkspaceError, Workspace},
+};
+
 use similar::TextDiff;
 
 use super::{
@@ -186,7 +191,9 @@ pub(super) fn initialize(arguments: &Arguments) -> Result<()> {
         builder.theme(Theme::new())
     };
 
-    builder.install()?;
+    builder
+        .install()
+        .wrap_err("cannot initialize error reporting")?;
 
     if arguments.verbose {
         tracing_subscriber::fmt()
@@ -196,7 +203,8 @@ pub(super) fn initialize(arguments: &Arguments) -> Result<()> {
             .with_ansi(console::colors_enabled_stderr())
             .with_max_level(tracing::Level::DEBUG)
             .try_init()
-            .map_err(Report::msg)?;
+            .map_err(Report::msg)
+            .wrap_err("cannot initialize logging")?;
     }
 
     Ok(())
@@ -214,22 +222,28 @@ pub(super) fn progress(
     };
 
     if arguments.verbose {
-        eprintln!("root: {}", workspace.directory().display());
+        eprintln!("root: `{}`", workspace.directory().display());
 
         for module in selected.keys() {
-            eprintln!("{action} {}", path(module, selected).display());
+            eprintln!("{action} `{}`", path(module, selected).display());
         }
     }
 
     let progress = if arguments.quiet {
         ProgressBar::hidden()
     } else {
-        ProgressBar::new(selected.len().try_into()?)
+        ProgressBar::new(
+            selected
+                .len()
+                .try_into()
+                .wrap_err("cannot count selected files")?,
+        )
     };
 
-    let progress = progress.with_style(ProgressStyle::with_template(
-        "{spinner} {prefix} {pos}/{len}",
-    )?);
+    let progress = progress.with_style(
+        ProgressStyle::with_template("{spinner} {prefix} {pos}/{len}")
+            .wrap_err("cannot configure progress display")?,
+    );
 
     progress.set_prefix(console::style(action).for_stderr().bold().to_string());
 
@@ -247,8 +261,25 @@ pub(super) fn failure(error: &Report) {
         .map(|cause| format!("caused by: {cause}"))
         .collect();
 
+    for cause in error.chain() {
+        if let Some(WorkspaceError::Configuration(configuration)) =
+            cause.downcast_ref::<WorkspaceError>()
+            && !configuration.path.is_empty()
+            && (configuration.profile.is_none() || configuration.metadata.is_none())
+        {
+            notes.push(format!(
+                "configuration key: `{}`",
+                configuration.path.join(".")
+            ));
+        }
+    }
+
     if let Some(handler) = error.handler().downcast_ref::<Handler>() {
-        if let Some(trace) = handler.span_trace() {
+        if let Some(trace) = handler
+            .span_trace()
+            .map(ToString::to_string)
+            .filter(|trace| !trace.is_empty())
+        {
             notes.push(format!("span trace:\n{trace}"));
         }
 
@@ -262,7 +293,7 @@ pub(super) fn failure(error: &Report) {
         .with_notes(notes);
 
     if let Err(source) = render(&BTreeMap::new(), vec![diagnostic]) {
-        eprintln!("error: {error:#}\nerror: cannot render diagnostic: {source}");
+        eprintln!("error: {error:#}\nerror: {source:#}");
     }
 }
 
@@ -335,7 +366,8 @@ fn render(inputs: &BTreeMap<String, PathBuf>, mut findings: Vec<Finding>) -> Res
             notes: finding.notes,
         };
 
-        term::emit_to_write_style(&mut writer, &Config::default(), &files, &diagnostic)?;
+        term::emit_to_write_style(&mut writer, &Config::default(), &files, &diagnostic)
+            .wrap_err("cannot render diagnostic")?;
     }
 
     Ok(summary)
@@ -364,14 +396,17 @@ fn publish(
                 TextDiff::from_lines(proposed.source.text.as_ref(), &proposed.text)
                     .unified_diff()
                     .header(&name, &name)
-            )?;
+            )
+            .wrap_err("cannot write preview to stdout")?;
         } else if check {
             if different {
                 eprintln!("would format `{}`", path.display());
             }
         } else if !preview {
             if project.stdin_module.as_ref() == Some(&proposed.source.module) {
-                output.write_all(proposed.text.as_bytes())?;
+                output
+                    .write_all(proposed.text.as_bytes())
+                    .wrap_err("cannot write source to stdout")?;
             } else if different
                 && let Err(error) = project.workspace.write(
                     &proposed.source.module,
@@ -385,7 +420,7 @@ fn publish(
         }
     }
 
-    output.flush()?;
+    output.flush().wrap_err("cannot flush stdout")?;
 
     Ok(())
 }

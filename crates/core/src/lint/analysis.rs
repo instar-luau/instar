@@ -653,7 +653,7 @@ impl Context<'_, '_> {
                         } else {
                             "LocalUnused"
                         },
-                        "binding is never used; prefix with '_' to silence",
+                        "binding is never used; prefix with `_` to silence",
                     ));
                 }
 
@@ -812,7 +812,7 @@ impl Context<'_, '_> {
                     warnings.push((
                         definition,
                         "FunctionUnused",
-                        "function is never used; prefix with '_' to silence",
+                        "function is never used; prefix with `_` to silence",
                     ));
                 }
             }
@@ -831,7 +831,7 @@ impl Context<'_, '_> {
                     self.settings.globals.get(name).map(|reason| {
                         (
                             global.references.clone(),
-                            format!("global {name} is restricted: {reason}"),
+                            format!("global `{name}` is restricted: {reason}"),
                         )
                     })
                 })
@@ -852,7 +852,7 @@ impl Context<'_, '_> {
                     self.warn(
                         node,
                         "PlaceholderRead",
-                        "placeholder value '_' is read; use a named variable",
+                        "placeholder value `_` is read; use a named variable",
                     );
                 }
             }
@@ -951,7 +951,7 @@ impl Context<'_, '_> {
                         self.warn(
                             *argument,
                             "restricted_module_paths",
-                            &format!("module path {path} is restricted: {reason}"),
+                            &format!("module path `{path}` is restricted: {reason}"),
                         );
                     }
                 } else if self.active(&["non_const_require"]) && !self.instance(value) {
@@ -1100,7 +1100,7 @@ impl Context<'_, '_> {
                     if (self.bindings().global(tree, callee, "type") && !primitive)
                         || (self.bindings().global(tree, callee, "typeof") && !valid)
                     {
-                        self.warn(literal, "UnknownType", &format!("unknown type '{name}'"));
+                        self.warn(literal, "UnknownType", &format!("unknown type `{name}`"));
                     }
                 }
             }

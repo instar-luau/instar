@@ -263,7 +263,12 @@ fn statements(
 
     for range in imports::runs(tree, statements.iter().map(|(_, require)| require.as_ref())) {
         statements[range].sort_by_key(|(_, require)| {
-            tree.text(require.as_ref().expect("recognized import run").binding)
+            tree.text(
+                require
+                    .as_ref()
+                    .expect("internal error: missing require in import run")
+                    .binding,
+            )
         });
     }
 

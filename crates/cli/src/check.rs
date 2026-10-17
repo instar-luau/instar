@@ -9,7 +9,7 @@ use codespan_reporting::{
     files::{Files as _, SimpleFile},
 };
 
-use eyre::{Result, eyre};
+use eyre::{Result, WrapErr as _, eyre};
 use instar_core::workspace::Workspace;
 use instar_luau::{Context, Frontend};
 
@@ -72,10 +72,16 @@ fn process(
                 }
             };
 
-            let start = file.line_range((), diagnostic.start_line as usize)?.start
+            let start = file
+                .line_range((), diagnostic.start_line as usize)
+                .wrap_err("internal error: cannot locate diagnostic start")?
+                .start
                 + diagnostic.start_column as usize;
 
-            let end = file.line_range((), diagnostic.end_line as usize)?.start
+            let end = file
+                .line_range((), diagnostic.end_line as usize)
+                .wrap_err("internal error: cannot locate diagnostic end")?
+                .start
                 + diagnostic.end_column as usize;
 
             let source = Source {

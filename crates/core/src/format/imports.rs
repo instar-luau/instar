@@ -107,7 +107,10 @@ impl Imports {
 
     fn bind_name(&mut self, tree: &Tree<'_>, node: NodeIndex) {
         if tree.text(node) == b"require" {
-            *self.scopes.last_mut().expect("lexical scope") = true;
+            *self
+                .scopes
+                .last_mut()
+                .expect("internal error: missing lexical scope") = true;
         }
     }
 

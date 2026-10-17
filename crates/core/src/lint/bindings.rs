@@ -198,7 +198,7 @@ impl Collector<'_, '_> {
 
         self.scopes
             .last_mut()
-            .expect("active lexical scope")
+            .expect("internal error: missing lexical scope")
             .insert(name.clone(), index);
 
         self.bindings.locals.push(Local {
@@ -361,7 +361,7 @@ impl Collector<'_, '_> {
                     self.bindings
                         .locals
                         .last_mut()
-                        .expect("declared local")
+                        .expect("internal error: missing declared local")
                         .initialized |= expanded;
                 }
             }
@@ -449,7 +449,12 @@ impl Collector<'_, '_> {
                     let index = self.bindings.locals.len();
                     let shadow = self.lookup("self");
                     self.declare(method, node, None, "parameter");
-                    let scope = self.scopes.last_mut().expect("function scope");
+
+                    let scope = self
+                        .scopes
+                        .last_mut()
+                        .expect("internal error: missing function scope");
+
                     scope.remove(&text(tree, method));
                     scope.insert("self".to_owned(), index);
                     "self".clone_into(&mut self.bindings.locals[index].name);

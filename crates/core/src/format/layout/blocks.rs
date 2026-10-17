@@ -321,8 +321,17 @@ impl Builder<'_, '_> {
                 .map(|statement| statement.require.as_ref()),
         ) {
             statements[range].sort_by(|left, right| {
-                let left = &left.require.as_ref().expect("recognized import run").path;
-                let right = &right.require.as_ref().expect("recognized import run").path;
+                let left = &left
+                    .require
+                    .as_ref()
+                    .expect("internal error: missing require in import run")
+                    .path;
+
+                let right = &right
+                    .require
+                    .as_ref()
+                    .expect("internal error: missing require in import run")
+                    .path;
 
                 if self.configuration.require.order == Order::Grouped {
                     self.prepared

@@ -296,13 +296,13 @@ pub(crate) fn emit(
         renderer
             .emitter
             .as_mut()
-            .expect("output renderer")
+            .expect("internal error: missing output renderer")
             .newline();
     }
 
     Ok(renderer
         .emitter
-        .expect("output renderer")
+        .expect("internal error: missing output renderer")
         .finish()
         .into_owned())
 }

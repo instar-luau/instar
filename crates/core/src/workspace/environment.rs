@@ -188,7 +188,10 @@ impl Documentation {
 
     pub(super) fn get(&self, symbol: &str) -> Option<&Value> {
         self.index
-            .get_or_init(|| serde_json::from_str(&self.source).expect("validated documentation"))
+            .get_or_init(|| {
+                serde_json::from_str(&self.source)
+                    .expect("internal error: invalid validated documentation")
+            })
             .get(symbol)
     }
 }
@@ -536,7 +539,7 @@ fn verified(path: &Path, digest: &str) -> Result<String, Error> {
     let mut actual = String::with_capacity(64);
 
     for byte in Sha256::digest(source.as_bytes()) {
-        write!(actual, "{byte:02x}").expect("writing to a string cannot fail");
+        write!(actual, "{byte:02x}").expect("internal error: cannot write to a string");
     }
 
     if actual != digest {

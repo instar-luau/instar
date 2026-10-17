@@ -57,7 +57,7 @@ impl Prepared {
         for (name, settings) in &configuration.rules {
             let policy = rules
                 .get_mut(name)
-                .ok_or_else(|| invalid(format!("unknown lint rule {name}")))?;
+                .ok_or_else(|| invalid(format!("unknown lint rule `{name}`")))?;
 
             if let Some(enabled) = settings.enabled {
                 policy.enabled = enabled;
@@ -69,7 +69,9 @@ impl Prepared {
 
             if let Some(parameters) = &settings.settings {
                 if parameters.rule != *name {
-                    return Err(invalid(format!("settings identity does not match {name}")));
+                    return Err(invalid(format!(
+                        "settings identity does not match `{name}`"
+                    )));
                 }
 
                 if !matches!(
@@ -80,15 +82,28 @@ impl Prepared {
                         | "restricted_module_paths"
                 ) && !parameters.parameters.is_empty()
                 {
-                    return Err(invalid(format!("{name} does not accept parameters")));
+                    return Err(invalid(format!("`{name}` does not accept parameters")));
                 }
             }
         }
 
         let unused: Unused = parameters(configuration, "unused_variable")?;
 
-        let ignored = Regex::new(&unused.ignore_pattern)
-            .map_err(|error| invalid(format!("unused_variable.ignore_pattern: {error}")))?;
+        let ignored = Regex::new(&unused.ignore_pattern).map_err(|error| {
+            let mut error = invalid(error.to_string());
+
+            error.path = [
+                "rules",
+                "unused_variable",
+                "settings",
+                "parameters",
+                "ignore_pattern",
+            ]
+            .map(str::to_owned)
+            .into();
+
+            error
+        })?;
 
         let immutable = parameters(configuration, "prefer_const")?;
         let globals: Globals = parameters(configuration, "restricted_globals")?;
@@ -184,7 +199,18 @@ fn parameters<Value: Default + DeserializeOwned>(
 
     Figment::from(Serialized::defaults(&settings.parameters))
         .extract()
-        .map_err(|error| invalid(format!("{name}: {error}")))
+        .map_err(|mut error| {
+            error.path = ["rules", name, "settings", "parameters"]
+                .into_iter()
+                .map(str::to_owned)
+                .chain(error.path)
+                .collect();
+
+            error.metadata = None;
+            error.profile = None;
+
+            Box::new(error)
+        })
 }
 
 fn invalid(message: impl Into<String>) -> Box<figment::Error> {

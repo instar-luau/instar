@@ -116,7 +116,7 @@ pub fn suppress(source: &str, findings: &mut Vec<Finding>) -> Result<(), Error> 
             let definition = RULES
                 .iter()
                 .find(|rule| rule.name == name)
-                .ok_or_else(|| invalid(&format!("unknown lint rule {name}")))?;
+                .ok_or_else(|| invalid(&format!("unknown lint rule `{name}`")))?;
 
             rules.push(definition.name.as_str());
         }
