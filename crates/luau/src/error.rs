@@ -1,39 +1,23 @@
-use std::error;
 use std::fmt;
 
 /// A host callback or native frontend failure.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// An operational failure reported by the host.
+    #[error(transparent)]
     Host(HostError),
 
     /// A failure raised by native Luau analysis.
+    #[error("{reason}")]
     Native {
         /// The native failure message.
         reason: String,
     },
 }
 
-impl fmt::Display for Error {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Host(source) => fmt::Display::fmt(source, formatter),
-            Self::Native { reason } => formatter.write_str(reason),
-        }
-    }
-}
-
-impl error::Error for Error {
-    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
-        match self {
-            Self::Host(source) => Some(source),
-            Self::Native { .. } => None,
-        }
-    }
-}
-
 /// An operational host failure with its module and callback context.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("cannot {operation} for module `{module}`: {reason}")]
 pub struct HostError {
     /// The host module identifier involved in the failure.
     pub module: String,
@@ -44,23 +28,6 @@ pub struct HostError {
     /// The reason the operation failed.
     pub reason: String,
 }
-
-impl fmt::Display for HostError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let Self {
-            module,
-            operation,
-            reason,
-        } = self;
-
-        write!(
-            formatter,
-            "cannot {operation} for module {module}: {reason}"
-        )
-    }
-}
-
-impl error::Error for HostError {}
 
 /// A host callback operation.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

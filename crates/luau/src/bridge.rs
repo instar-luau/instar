@@ -157,11 +157,13 @@ pub(crate) mod bindings {
 
 use std::collections::BTreeMap;
 
-use crate::configuration::{Configuration, Mode};
-use crate::environment::Environment;
-use crate::flags::Flag;
-use crate::host::Context;
-use crate::instances::Instance;
+use crate::{
+    configuration::{Configuration, Mode},
+    environment::Environment,
+    flags::Flag,
+    host::Context,
+    instances::Instance,
+};
 
 impl From<Configuration> for bindings::Configuration {
     fn from(configuration: Configuration) -> Self {
@@ -194,27 +196,6 @@ impl From<Configuration> for bindings::Configuration {
                 .collect(),
         }
     }
-}
-
-pub(crate) fn flags(values: BTreeMap<String, Flag>) -> Vec<bindings::Flag> {
-    values
-        .into_iter()
-        .map(|(name, value)| match value {
-            Flag::Boolean(boolean) => bindings::Flag {
-                name,
-                kind: bindings::FlagKind::Boolean,
-                boolean,
-                integer: 0,
-            },
-
-            Flag::Integer(integer) => bindings::Flag {
-                name,
-                kind: bindings::FlagKind::Integer,
-                boolean: false,
-                integer,
-            },
-        })
-        .collect()
 }
 
 impl From<Environment> for bindings::Environment {
@@ -272,4 +253,25 @@ impl From<Option<String>> for bindings::Text {
             value: value.unwrap_or_default(),
         }
     }
+}
+
+pub(crate) fn flags(values: BTreeMap<String, Flag>) -> Vec<bindings::Flag> {
+    values
+        .into_iter()
+        .map(|(name, value)| match value {
+            Flag::Boolean(boolean) => bindings::Flag {
+                name,
+                kind: bindings::FlagKind::Boolean,
+                boolean,
+                integer: 0,
+            },
+
+            Flag::Integer(integer) => bindings::Flag {
+                name,
+                kind: bindings::FlagKind::Integer,
+                boolean: false,
+                integer,
+            },
+        })
+        .collect()
 }

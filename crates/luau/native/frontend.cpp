@@ -17,18 +17,6 @@ namespace instar::luau {
         initialize();
     }
 
-    void Frontend::initialize() {
-        auto initialized = std::make_unique<Luau::Frontend>(Luau::SolverMode::New, &host, &host, options);
-        Luau::registerBuiltinGlobals(*initialized, initialized->globals);
-        Luau::freeze(initialized->globals.globalTypes);
-
-        initialized->prepareModuleScope = [this](const Luau::ModuleName &name, const Luau::ScopePtr &scope, bool) {
-            host.prepare(*frontend, name, scope);
-        };
-
-        frontend = std::move(initialized);
-    }
-
     rust::Vec<Diagnostic> Frontend::analyze(rust::Str module) {
         try {
             rust::Vec<Diagnostic> diagnostics;
@@ -49,12 +37,12 @@ namespace instar::luau {
                 }
 
                 if (!result) {
-                    throw std::runtime_error("Module not found: " + host.getHumanReadableModuleName(name));
+                    throw std::runtime_error("cannot find module `" + host.getHumanReadableModuleName(name) + "`");
                 }
 
                 if (!result->timeoutHits.empty()) {
                     throw std::runtime_error(
-                        "Luau analysis timed out: " + host.getHumanReadableModuleName(result->timeoutHits.front())
+                        "analysis timed out for `" + host.getHumanReadableModuleName(result->timeoutHits.front()) + "`"
                     );
                 }
 
@@ -105,6 +93,18 @@ namespace instar::luau {
 
     const Instances *Frontend::hierarchy(const std::string &name) {
         return host.prepare(*frontend, name, {});
+    }
+
+    void Frontend::initialize() {
+        auto initialized = std::make_unique<Luau::Frontend>(Luau::SolverMode::New, &host, &host, options);
+        Luau::registerBuiltinGlobals(*initialized, initialized->globals);
+        Luau::freeze(initialized->globals.globalTypes);
+
+        initialized->prepareModuleScope = [this](const Luau::ModuleName &name, const Luau::ScopePtr &scope, bool) {
+            host.prepare(*frontend, name, scope);
+        };
+
+        frontend = std::move(initialized);
     }
 
     std::unique_ptr<Frontend> create(const Context &host, bool retainTypes) {

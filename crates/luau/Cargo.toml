@@ -10,6 +10,7 @@ categories.workspace = true
 
 [dependencies]
 cxx.workspace = true
+thiserror.workspace = true
 
 [build-dependencies]
 cmake.workspace = true

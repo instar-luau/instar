@@ -1,8 +1,10 @@
 use cxx::UniquePtr;
 
-use crate::bridge::bindings::{self, Diagnostic};
-use crate::error::Error;
-use crate::host::Context;
+use crate::{
+    bridge::bindings::{self, Diagnostic},
+    error::Error,
+    host::Context,
+};
 
 /// Owns Luau's persistent analysis state while borrowing its host context.
 pub struct Frontend<'host> {

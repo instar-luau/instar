@@ -2,12 +2,14 @@ use std::{cell::Cell, collections::BTreeMap};
 
 use cxx::Exception;
 
-use crate::bridge::{self, bindings};
-use crate::configuration::Configuration;
-use crate::environment::Environment;
-use crate::error::{Error, HostError};
-use crate::flags::Flag;
-use crate::instances::Instance;
+use crate::{
+    bridge::{self, bindings},
+    configuration::Configuration,
+    environment::Environment,
+    error::{Error, HostError},
+    flags::Flag,
+    instances::Instance,
+};
 
 /// Supplies module identity, source snapshots, navigation, and resolved configuration.
 ///

@@ -30,7 +30,7 @@ namespace instar::luau {
 
         Luau::TypeId superclass(const Luau::ExternType &type) {
             if (!type.parent) {
-                throw std::logic_error("Instance type has no superclass");
+                throw std::logic_error("instance type has no superclass");
             }
 
             return *type.parent;
@@ -135,14 +135,14 @@ namespace instar::luau {
             const auto &node = instances[index];
 
             if ((index == 0 && node.has_parent) || (index != 0 && (!node.has_parent || node.parent >= index))) {
-                throw std::invalid_argument("Instance hierarchy must contain one root with parents before children");
+                throw std::invalid_argument("instance hierarchy must contain one root with parents before children");
             }
 
             const auto declared = scope->lookupType(std::string(node.class_name));
             const auto *base = declared ? Luau::get<Luau::ExternType>(Luau::follow(declared->type)) : nullptr;
 
             if (!declared || !base || !base_instance || !Luau::isSubclass(base, base_instance)) {
-                throw std::invalid_argument("Unknown instance class: " + std::string(node.class_name));
+                throw std::invalid_argument("unknown instance class `" + std::string(node.class_name) + "`");
             }
 
             auto data = std::make_shared<Metadata>();
@@ -188,7 +188,7 @@ namespace instar::luau {
                         const auto readable = property->second.readTy;
 
                         if (!readable) {
-                            throw std::logic_error("Instance child property is not readable");
+                            throw std::logic_error("instance child property is not readable");
                         }
 
                         property->second = Luau::Property::readonly(arena.addType(Luau::UnionType{{*readable, type}}));
@@ -237,7 +237,7 @@ namespace instar::luau {
     void Instances::bind(Luau::GlobalTypes &globals, const Luau::ScopePtr &scope, std::optional<size_t> script) const {
         if (script) {
             if (*script >= types.size()) {
-                throw std::invalid_argument("Script index is outside its instance hierarchy");
+                throw std::invalid_argument("script index is outside its instance hierarchy");
             }
 
             Luau::addGlobalBinding(globals, scope, "script", types[*script], "@roblox");

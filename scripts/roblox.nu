@@ -51,7 +51,7 @@ def resolve [mappings: record]: record -> string {
     let name = $value.Declared? | default $value.Name?
 
     if $name == null {
-        error make $"Missing type name: ($value | to json --raw)"
+        error make $"missing type name: ($value | to json --raw)"
     }
 
     if $name ends-with '?' {
@@ -215,7 +215,7 @@ def member [value: record, mappings: record]: nothing -> string {
 
             $"($name): RBXScriptSignal<($payload)>"
         }
-        _ => { error make $"Unsupported member kind: ($value.MemberType)" }
+        _ => { error make $"unsupported member kind `($value.MemberType)`" }
     }
 }
 
@@ -371,7 +371,7 @@ def blocks [source: string]: nothing -> list<any> {
     }
 
     if $attributes != '' {
-        error make 'Attribute without a declaration'
+        error make 'attribute without a declaration'
     }
 
     $result
@@ -400,7 +400,7 @@ def ordered [source: string]: nothing -> string {
         }
 
         if ($remaining | length) == ($pending | length) {
-            error make $"Unresolved class inheritance: ($remaining | get name | str join ', ')"
+            error make $"unresolved class inheritance: ($remaining | get name | str join ', ')"
         }
 
         $pending = $remaining
@@ -492,7 +492,7 @@ def main [
     let revision = http get https://api.github.com/repos/MaximumADHD/Roblox-Client-Tracker/commits/roblox | get sha
 
     if $revision !~ '^[0-9a-f]{40}$' {
-        error make 'Invalid tracker revision'
+        error make 'invalid tracker revision'
     }
 
     let tracker = $"https://raw.githubusercontent.com/MaximumADHD/Roblox-Client-Tracker/($revision)"
@@ -501,7 +501,7 @@ def main [
     let documentation = http get --raw $"($tracker)/api-docs/en-us.json" | from json
 
     if not (($documentation | describe) starts-with record) {
-        error make 'Invalid documentation object'
+        error make 'invalid documentation object'
     }
 
     let classes = $dump.Classes | corrected ...$corrections.Classes
@@ -511,7 +511,7 @@ def main [
 
     let members = blocks (open --raw ($DATA | path join members.d.luau)) | reduce --fold {} {|block, result|
         if not ($block.text starts-with 'declare extern type ') or not ($block.text ends-with end) {
-            error make $"Invalid member declaration: ($block.name)"
+            error make $"invalid member declaration `($block.name)`"
         }
 
         let lines = $block.text | lines | skip 1 | drop 1 | each {|line| $line | str trim } | where $it != ''
@@ -541,13 +541,13 @@ def main [
                 }
 
                 if $depth < 0 {
-                    error make $"Unbalanced member signature: ($line)"
+                    error make $"unbalanced member signature: ($line)"
                 }
             }
         }
 
         if $depth != 0 {
-            error make 'Unterminated member signature'
+            error make 'unterminated member signature'
         }
 
         if ($current | is-not-empty) {
@@ -586,7 +586,7 @@ def main [
     let missing = $referenced | where $it not-in $defined
 
     if ($missing | is-not-empty) {
-        error make $"Unresolved API types: ($missing | str join ', ')"
+        error make $"unresolved API types: ($missing | str join ', ')"
     }
 
     let enums = $dump.Enums | each {|value| [
@@ -674,7 +674,7 @@ def main [
     let canonical = canonical $documentation {luau: $luau_roots, roblox: $roblox_roots}
 
     if ($canonical | columns | any {|symbol| not ($symbol starts-with @luau/ or $symbol starts-with @roblox/) }) {
-        error make 'Unrecognized documentation namespace'
+        error make 'unrecognized documentation namespace'
     }
 
     let documents = [luau roblox] | reduce --fold {} {|namespace, result|
@@ -692,7 +692,7 @@ def main [
     $metadata = $metadata | insert profiles $profiles | insert documentation ($documents.roblox | hash sha256) | insert enumerations ($namespace | hash sha256)
 
     if ($destination | path exists) {
-        error make 'Generation requires a new destination directory'
+        error make 'generation requires a new destination directory'
     }
 
     let roblox = $destination | path join roblox

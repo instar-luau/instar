@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::flags::Flag;
-use crate::instances::Location;
+use crate::{flags::Flag, instances::Location};
 
 /// Resolved type-checking configuration supplied by the host.
 #[derive(Clone, Debug, Default)]

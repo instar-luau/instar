@@ -74,16 +74,16 @@ namespace instar::luau {
         std::string invalid_message(MagicKind kind, std::string_view name) {
             switch (kind) {
             case MagicKind::Constructor:
-                return "Instance.new does not support class '" + std::string(name) + "'";
+                return "`Instance.new` does not support class `" + std::string(name) + "`";
 
             case MagicKind::Service:
-                return "GetService does not support service '" + std::string(name) + "'";
+                return "`GetService` does not support service `" + std::string(name) + "`";
 
             case MagicKind::IsA:
-                return "IsA does not support class '" + std::string(name) + "'";
+                return "`IsA` does not support class `" + std::string(name) + "`";
 
             default:
-                return "instance lookup does not support class '" + std::string(name) + "'";
+                return "instance lookup does not support class `" + std::string(name) + "`";
             }
         }
 
@@ -432,7 +432,7 @@ namespace instar::luau {
             }
 
             if (!names.insert(name).second) {
-                throw std::invalid_argument("duplicate Roblox class flags: " + name);
+                throw std::invalid_argument("duplicate Roblox class flags for `" + name + "`");
             }
 
             std::unordered_set<std::string> properties;
@@ -440,7 +440,7 @@ namespace instar::luau {
             for (const Property &property : definition.properties) {
                 if (!properties.insert(std::string(property.name)).second) {
                     throw std::invalid_argument(
-                        "duplicate property capability: " + name + "." + std::string(property.name)
+                        "duplicate property capability `" + name + "." + std::string(property.name) + "`"
                     );
                 }
             }
@@ -457,7 +457,7 @@ namespace instar::luau {
         const auto *base_type = base ? Luau::get<Luau::ExternType>(Luau::follow(base->type)) : nullptr;
 
         if (!base_type) {
-            throw std::invalid_argument("Roblox class magic requires Object or Instance declarations");
+            throw std::invalid_argument("Roblox class magic requires `Object` or `Instance` declarations");
         }
 
         for (const auto &[name, type_function] : globals.globalScope->exportedTypeBindings) {
@@ -474,7 +474,7 @@ namespace instar::luau {
             const auto type = metadata->classes.find(name);
 
             if (type == metadata->classes.end()) {
-                throw std::invalid_argument("Roblox class has no declaration: " + name);
+                throw std::invalid_argument("Roblox class `" + name + "` has no declaration");
             }
 
             type->second.service = classes[index].service;
@@ -486,7 +486,7 @@ namespace instar::luau {
 
                 if (property == declaration->props.end()) {
                     throw std::invalid_argument(
-                        "Roblox property metadata has no declaration: " + name + "." + std::string(access.name)
+                        "Roblox property `" + name + "." + std::string(access.name) + "` has no declaration"
                     );
                 }
 

@@ -1,5 +1,5 @@
 /// A registered native Luau flag override.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Flag {
     /// A boolean flag value.
     Boolean(bool),

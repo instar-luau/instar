@@ -79,7 +79,7 @@ namespace instar::luau {
                     return NavigateResult::Ambiguous;
                 }
 
-                throw std::invalid_argument("Invalid Luau navigation status");
+                throw std::invalid_argument("invalid Luau navigation status");
             }
 
             NavigateResult move(std::optional<std::string> destination) {
@@ -230,143 +230,6 @@ namespace instar::luau {
         return resolve(name).configuration;
     }
 
-    const Host::Settings &Host::resolve(const Luau::ModuleName &name) const {
-        if (const auto found = configurations.find(name); found != configurations.end()) {
-            return found->second;
-        }
-
-        if (const auto found = mappings.find(name); found != mappings.end()) {
-            const auto mapping = found->second;
-
-            if (!mapping.source) {
-                static const Settings settings;
-
-                return settings;
-            }
-
-            auto settings = resolve(*mapping.source);
-
-            if (std::find(settings.modules.begin(), settings.modules.end(), name) != settings.modules.end()) {
-                settings.hierarchy = mapping.hierarchy;
-                settings.script = mapping.script;
-            }
-
-            settings.modules = {name};
-
-            return configurations.emplace(name, std::move(settings)).first->second;
-        }
-
-        Configuration configuration = callbacks.configuration(name);
-
-        try {
-            flags.require({configuration.flags.data(), configuration.flags.size()});
-        } catch (const std::invalid_argument &error) {
-            throw std::invalid_argument(name + ": " + error.what());
-        }
-
-        Settings settings;
-        auto &native = settings.configuration;
-        native.parseOptions.allowDeclarationSyntax = true;
-
-        switch (configuration.mode) {
-        case Mode::NoCheck:
-            native.mode = Luau::Mode::NoCheck;
-            break;
-
-        case Mode::NonStrict:
-            native.mode = Luau::Mode::Nonstrict;
-            break;
-
-        case Mode::Strict:
-            native.mode = Luau::Mode::Strict;
-            break;
-
-        default:
-            throw std::invalid_argument("Invalid Luau checking mode");
-        }
-
-        native.globals.reserve(configuration.globals.size());
-
-        for (const rust::String &global : configuration.globals) {
-            native.globals.emplace_back(std::string(global));
-        }
-
-        if (configuration.environment.present) {
-            settings.environment = std::string(configuration.environment.value);
-        }
-
-        if (!configuration.locations.empty()) {
-            const auto &first = configuration.locations[0];
-
-            if (std::all_of(
-                    configuration.locations.begin(),
-                    configuration.locations.end(),
-                    [&](const Location &location) { return location.hierarchy == first.hierarchy; }
-                )) {
-                settings.hierarchy = std::string(first.hierarchy);
-            }
-
-            if (configuration.locations.size() == 1 && first.has_script) {
-                settings.script = first.script;
-            }
-
-            for (const Location &location : configuration.locations) {
-                const auto &instances = load(std::string(location.hierarchy));
-
-                if (!location.has_script) {
-                    continue;
-                }
-
-                if (location.script >= instances.size()) {
-                    throw std::invalid_argument("Script index is outside its instance hierarchy");
-                }
-
-                auto identity = instance_identity(std::string(location.hierarchy), location.script);
-
-                if (!mappings.at(identity).source) {
-                    auto mapping = mappings.at(identity);
-                    mapping.source = name;
-                    identity += ":" + name;
-                    mappings.insert_or_assign(identity, std::move(mapping));
-                }
-
-                if (std::find(settings.modules.begin(), settings.modules.end(), identity) == settings.modules.end()) {
-                    settings.modules.push_back(std::move(identity));
-                }
-            }
-        }
-
-        if (settings.modules.empty()) {
-            settings.modules.push_back(name);
-        }
-
-        return configurations.emplace(name, std::move(settings)).first->second;
-    }
-
-    const rust::Vec<Instance> &Host::load(const std::string &name) const {
-        if (const auto found = models.find(name); found != models.end()) {
-            return found->second;
-        }
-
-        auto instances = callbacks.hierarchy(name);
-
-        for (size_t script = 0; script < instances.size(); ++script) {
-            const auto &instance = instances[script];
-
-            mappings.emplace(
-                instance_identity(name, script),
-                Mapping{instance.module.present && instance.class_name == "ModuleScript"
-                            ? std::optional<std::string>{std::string(instance.module.value)}
-                            : std::nullopt,
-                    name,
-                    script,
-                    instance.class_name == "ModuleScript" ? Luau::SourceCode::Module : Luau::SourceCode::Script}
-            );
-        }
-
-        return models.emplace(name, std::move(instances)).first->second;
-    }
-
     std::optional<std::string> Host::getEnvironmentForModule(const Luau::ModuleName &name) const {
         const auto environment = resolve(name).environment;
 
@@ -431,5 +294,142 @@ namespace instar::luau {
         mappings.clear();
         models.clear();
         hierarchy = nullptr;
+    }
+
+    const Host::Settings &Host::resolve(const Luau::ModuleName &name) const {
+        if (const auto found = configurations.find(name); found != configurations.end()) {
+            return found->second;
+        }
+
+        if (const auto found = mappings.find(name); found != mappings.end()) {
+            const auto mapping = found->second;
+
+            if (!mapping.source) {
+                static const Settings settings;
+
+                return settings;
+            }
+
+            auto settings = resolve(*mapping.source);
+
+            if (std::find(settings.modules.begin(), settings.modules.end(), name) != settings.modules.end()) {
+                settings.hierarchy = mapping.hierarchy;
+                settings.script = mapping.script;
+            }
+
+            settings.modules = {name};
+
+            return configurations.emplace(name, std::move(settings)).first->second;
+        }
+
+        Configuration configuration = callbacks.configuration(name);
+
+        try {
+            flags.require({configuration.flags.data(), configuration.flags.size()});
+        } catch (const std::invalid_argument &error) {
+            throw std::invalid_argument(name + ": " + error.what());
+        }
+
+        Settings settings;
+        auto &native = settings.configuration;
+        native.parseOptions.allowDeclarationSyntax = true;
+
+        switch (configuration.mode) {
+        case Mode::NoCheck:
+            native.mode = Luau::Mode::NoCheck;
+            break;
+
+        case Mode::NonStrict:
+            native.mode = Luau::Mode::Nonstrict;
+            break;
+
+        case Mode::Strict:
+            native.mode = Luau::Mode::Strict;
+            break;
+
+        default:
+            throw std::invalid_argument("invalid Luau checking mode");
+        }
+
+        native.globals.reserve(configuration.globals.size());
+
+        for (const rust::String &global : configuration.globals) {
+            native.globals.emplace_back(std::string(global));
+        }
+
+        if (configuration.environment.present) {
+            settings.environment = std::string(configuration.environment.value);
+        }
+
+        if (!configuration.locations.empty()) {
+            const auto &first = configuration.locations[0];
+
+            if (std::all_of(
+                    configuration.locations.begin(),
+                    configuration.locations.end(),
+                    [&](const Location &location) { return location.hierarchy == first.hierarchy; }
+                )) {
+                settings.hierarchy = std::string(first.hierarchy);
+            }
+
+            if (configuration.locations.size() == 1 && first.has_script) {
+                settings.script = first.script;
+            }
+
+            for (const Location &location : configuration.locations) {
+                const auto &instances = load(std::string(location.hierarchy));
+
+                if (!location.has_script) {
+                    continue;
+                }
+
+                if (location.script >= instances.size()) {
+                    throw std::invalid_argument("script index is outside its instance hierarchy");
+                }
+
+                auto identity = instance_identity(std::string(location.hierarchy), location.script);
+
+                if (!mappings.at(identity).source) {
+                    auto mapping = mappings.at(identity);
+                    mapping.source = name;
+                    identity += ":" + name;
+                    mappings.insert_or_assign(identity, std::move(mapping));
+                }
+
+                if (std::find(settings.modules.begin(), settings.modules.end(), identity) == settings.modules.end()) {
+                    settings.modules.push_back(std::move(identity));
+                }
+            }
+        }
+
+        if (settings.modules.empty()) {
+            settings.modules.push_back(name);
+        }
+
+        return configurations.emplace(name, std::move(settings)).first->second;
+    }
+
+    const rust::Vec<Instance> &Host::load(const std::string &name) const {
+        if (const auto found = models.find(name); found != models.end()) {
+            return found->second;
+        }
+
+        auto instances = callbacks.hierarchy(name);
+
+        for (size_t script = 0; script < instances.size(); ++script) {
+            const auto &instance = instances[script];
+
+            mappings.emplace(
+                instance_identity(name, script),
+                Mapping{instance.module.present && instance.class_name == "ModuleScript"
+                            ? std::optional<std::string>{std::string(instance.module.value)}
+                            : std::nullopt,
+                    name,
+                    script,
+                    instance.class_name == "ModuleScript" ? Luau::SourceCode::Module : Luau::SourceCode::Script}
+            );
+        }
+
+        return models.emplace(name, std::move(instances)).first->second;
     }
 }
