@@ -194,19 +194,19 @@ declare extern type UniqueId with end
 declare extern type WebViewParams with end
 
 declare extern type Collection with
-    Enabled: boolean
-    OnAdded: (instance: Instance) -> ()
-    OnRemoved: (instance: Instance) -> ()
-    OnHeartbeat: (instance: Instance, deltaTime: number) -> ()
-    OnPreRender: (instance: Instance, deltaTime: number) -> ()
-    OnPreAnimation: (instance: Instance, deltaTime: number) -> ()
-    OnPreSimulation: (instance: Instance, deltaTime: number) -> ()
-    OnPostSimulation: (instance: Instance, deltaTime: number) -> ()
-    OnSimulate: (instance: Instance, deltaTime: number) -> ()
-    OnPropertyChanged: { [string]: (instance: Instance) -> () }
-    OnAttributeChanged: { [string]: (instance: Instance) -> () }
-    function ForEach(self, callback: (instance: Instance) -> ()): ()
-    function Destroy(self): ()
+	Enabled: boolean
+	OnAdded: (instance: Instance) -> ()
+	OnRemoved: (instance: Instance) -> ()
+	OnHeartbeat: (instance: Instance, deltaTime: number) -> ()
+	OnPreRender: (instance: Instance, deltaTime: number) -> ()
+	OnPreAnimation: (instance: Instance, deltaTime: number) -> ()
+	OnPreSimulation: (instance: Instance, deltaTime: number) -> ()
+	OnPostSimulation: (instance: Instance, deltaTime: number) -> ()
+	OnSimulate: (instance: Instance, deltaTime: number) -> ()
+	OnPropertyChanged: { [string]: (instance: Instance) -> () }
+	OnAttributeChanged: { [string]: (instance: Instance) -> () }
+	function ForEach(self, callback: (instance: Instance) -> ()): ()
+	function Destroy(self): ()
 end
 
 type CollectionHandle = Collection

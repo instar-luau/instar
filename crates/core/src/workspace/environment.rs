@@ -31,69 +31,6 @@ pub(super) struct Registry {
     symbols: BTreeMap<(Option<String>, Vec<String>), Arc<Symbols>>,
 }
 
-#[derive(Eq, Ord, PartialEq, PartialOrd)]
-struct Inputs {
-    roblox: Option<(PathBuf, Security)>,
-    capabilities: Option<PathBuf>,
-    definitions: Vec<(String, PathBuf)>,
-}
-
-pub(super) struct Prepared {
-    pub(super) native: Environment,
-    pub(super) documentation: Option<Documentation>,
-}
-
-pub(super) struct Documentation {
-    source: String,
-    index: OnceCell<BTreeMap<String, Value>>,
-}
-
-struct Namespace<'source>(&'source str);
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Metadata {
-    revision: String,
-    services: Vec<String>,
-    creatable_instances: Vec<String>,
-    profiles: BTreeMap<String, String>,
-    documentation: String,
-    enumerations: String,
-    properties: BTreeMap<String, Vec<Access>>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Access {
-    class: String,
-    name: String,
-    read: bool,
-    write: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Capabilities {
-    classes: Vec<Capability>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Capability {
-    name: String,
-    service: bool,
-    creatable: bool,
-    properties: Vec<Permission>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Permission {
-    name: String,
-    read: bool,
-    write: bool,
-}
-
 impl Registry {
     pub(super) fn dependencies(&self, dependencies: &mut BTreeSet<PathBuf>) {
         for inputs in self.inputs.keys() {
@@ -120,23 +57,6 @@ impl Registry {
                 .flat_map(|prepared| &prepared.native.definitions)
                 .map(|definition| PathBuf::from(&definition.name)),
         );
-    }
-
-    fn identity(&mut self, inputs: Inputs) -> Result<String, Error> {
-        let index = match self.inputs.entry(inputs) {
-            Entry::Occupied(entry) => *entry.get(),
-
-            Entry::Vacant(entry) => {
-                let prepared = prepare(entry.key())?;
-                let index = self.prepared.len();
-                self.prepared.push(prepared);
-                entry.insert(index);
-
-                index
-            }
-        };
-
-        Ok(index.to_string())
     }
 
     pub(super) fn get(&self, name: &str) -> Option<&Prepared> {
@@ -205,6 +125,40 @@ impl Registry {
             }
         }
     }
+
+    fn identity(&mut self, inputs: Inputs) -> Result<String, Error> {
+        let index = match self.inputs.entry(inputs) {
+            Entry::Occupied(entry) => *entry.get(),
+
+            Entry::Vacant(entry) => {
+                let prepared = prepare(entry.key())?;
+                let index = self.prepared.len();
+                self.prepared.push(prepared);
+                entry.insert(index);
+
+                index
+            }
+        };
+
+        Ok(index.to_string())
+    }
+}
+
+#[derive(Eq, Ord, PartialEq, PartialOrd)]
+struct Inputs {
+    roblox: Option<(PathBuf, Security)>,
+    capabilities: Option<PathBuf>,
+    definitions: Vec<(String, PathBuf)>,
+}
+
+pub(super) struct Prepared {
+    pub(super) native: Environment,
+    pub(super) documentation: Option<Documentation>,
+}
+
+pub(super) struct Documentation {
+    source: String,
+    index: OnceCell<BTreeMap<String, Value>>,
 }
 
 impl Documentation {
@@ -238,6 +192,8 @@ impl Documentation {
             .get(symbol)
     }
 }
+
+struct Namespace<'source>(&'source str);
 
 impl<'source> DeserializeSeed<'source> for Namespace<'_> {
     type Value = bool;
@@ -300,6 +256,50 @@ impl<'source> Visitor<'source> for Namespace<'_> {
 
         Ok(valid)
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Metadata {
+    revision: String,
+    services: Vec<String>,
+    creatable_instances: Vec<String>,
+    profiles: BTreeMap<String, String>,
+    documentation: String,
+    enumerations: String,
+    properties: BTreeMap<String, Vec<Access>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Access {
+    class: String,
+    name: String,
+    read: bool,
+    write: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Capabilities {
+    classes: Vec<Capability>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Capability {
+    name: String,
+    service: bool,
+    creatable: bool,
+    properties: Vec<Permission>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Permission {
+    name: String,
+    read: bool,
+    write: bool,
 }
 
 pub(super) fn identity(

@@ -11,11 +11,13 @@ mod settings;
 mod symbols;
 mod syntax;
 
-pub use catalog::rules;
-pub use directives::suppress;
-pub use error::Error;
-pub use finding::{Edit, Finding};
-pub use fixes::apply;
-pub use settings::Prepared;
-pub use symbols::Symbols;
-pub use syntax::lint;
+pub use self::{
+    catalog::rules,
+    directives::suppress,
+    error::Error,
+    finding::{Edit, Finding},
+    fixes::apply,
+    settings::Prepared,
+    symbols::Symbols,
+    syntax::lint,
+};

@@ -9,8 +9,10 @@ mod model;
 mod paths;
 mod selection;
 mod source;
-mod writing;
+mod write;
 
-pub use error::Error;
-pub use model::Workspace;
-pub use selection::{Access, Purpose};
+pub use self::{
+    error::Error,
+    model::Workspace,
+    selection::{Access, Purpose},
+};

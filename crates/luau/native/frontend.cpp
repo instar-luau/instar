@@ -107,10 +107,10 @@ namespace instar::luau {
         frontend = std::move(initialized);
     }
 
-    std::unique_ptr<Frontend> create(const Context &host, bool retainTypes) {
+    std::unique_ptr<Frontend> create(const Context &host, bool retain_types) {
         const auto flags = host.flags();
         Luau::FrontendOptions options;
-        options.retainFullTypeGraphs = retainTypes;
+        options.retainFullTypeGraphs = retain_types;
 
         return std::make_unique<Frontend>(host, rust::Slice<const Flag>{flags.data(), flags.size()}, options);
     }

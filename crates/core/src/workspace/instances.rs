@@ -15,24 +15,6 @@ pub(super) struct Registry {
     maps: Vec<Map>,
 }
 
-struct Map {
-    instances: Vec<Instance>,
-    modules: BTreeMap<String, Vec<usize>>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Node {
-    name: String,
-    class_name: String,
-
-    #[serde(default)]
-    file_paths: Vec<PathBuf>,
-
-    #[serde(default)]
-    children: Vec<Self>,
-}
-
 impl Registry {
     pub(super) fn dependencies(&self, dependencies: &mut BTreeSet<PathBuf>) {
         dependencies.extend(
@@ -108,6 +90,11 @@ impl Registry {
     }
 }
 
+struct Map {
+    instances: Vec<Instance>,
+    modules: BTreeMap<String, Vec<usize>>,
+}
+
 impl Map {
     fn insert(&mut self, node: Node, parent: Option<usize>, base: &Path) -> Result<(), Error> {
         let index = self.instances.len();
@@ -148,6 +135,19 @@ impl Map {
 
         Ok(())
     }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Node {
+    name: String,
+    class_name: String,
+
+    #[serde(default)]
+    file_paths: Vec<PathBuf>,
+
+    #[serde(default)]
+    children: Vec<Self>,
 }
 
 pub(super) fn enabled(workspace: &Workspace, scope: &Scope, module: &Path) -> Result<bool, Error> {

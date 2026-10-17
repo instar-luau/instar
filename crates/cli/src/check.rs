@@ -16,8 +16,8 @@ use instar_luau::{Context, Frontend};
 use super::{
     arguments::Arguments,
     execution::{self, Project, Response},
-    reporting::{Batch, Source},
-    watching::Watcher,
+    report::{Batch, Source},
+    watch::Watcher,
 };
 
 pub(super) fn run(

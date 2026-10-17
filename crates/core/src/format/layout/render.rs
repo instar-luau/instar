@@ -14,7 +14,7 @@ use super::{
 };
 
 use crate::{
-    format::{Error, formatting::parse},
+    format::{Error, engine::parse},
     settings::format::{Configuration, Indentation, LineEnding},
 };
 

@@ -11,8 +11,8 @@ use instar_core::{
 use super::{
     arguments::Arguments,
     execution::{self, Project},
-    reporting::{Batch, Output, Source},
-    watching::Watcher,
+    report::{Batch, Output, Source},
+    watch::Watcher,
     workers,
 };
 

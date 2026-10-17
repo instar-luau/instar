@@ -38,18 +38,6 @@ pub struct Workspace {
     pub(super) environments: RefCell<Registry>,
 }
 
-pub(super) struct Scope {
-    pub(super) layers: Figment,
-    pub(super) configuration: Configuration,
-    pub(super) checking: Selection,
-    pub(super) formatting: Selection,
-    pub(super) format: Arc<format::Prepared>,
-    pub(super) linting: Selection,
-    pub(super) lint: Arc<lint::Prepared>,
-    pub(super) environments: RefCell<BTreeMap<bool, Option<String>>>,
-    builtins: RefCell<Option<Arc<str>>>,
-}
-
 impl Workspace {
     /// Open a workspace, applying JSON overrides after its TOML layers.
     ///
@@ -233,6 +221,14 @@ impl Workspace {
         }))
     }
 
+    pub(super) fn scope(&self, module: &Path) -> Result<Rc<Scope>, Error> {
+        discovery::directory(self, module.parent().unwrap_or(&self.root))
+    }
+
+    pub(super) fn root(&self) -> Rc<Scope> {
+        Rc::clone(&self.scopes.borrow()[&self.root])
+    }
+
     fn reload_dependencies(&self) -> BTreeSet<PathBuf> {
         let mut dependencies = BTreeSet::new();
         let scopes = self.scopes.borrow();
@@ -267,14 +263,18 @@ impl Workspace {
 
         dependencies
     }
+}
 
-    pub(super) fn scope(&self, module: &Path) -> Result<Rc<Scope>, Error> {
-        discovery::directory(self, module.parent().unwrap_or(&self.root))
-    }
-
-    pub(super) fn root(&self) -> Rc<Scope> {
-        Rc::clone(&self.scopes.borrow()[&self.root])
-    }
+pub(super) struct Scope {
+    pub(super) layers: Figment,
+    pub(super) configuration: Configuration,
+    pub(super) checking: Selection,
+    pub(super) formatting: Selection,
+    pub(super) format: Arc<format::Prepared>,
+    pub(super) linting: Selection,
+    pub(super) lint: Arc<lint::Prepared>,
+    pub(super) environments: RefCell<BTreeMap<bool, Option<String>>>,
+    builtins: RefCell<Option<Arc<str>>>,
 }
 
 impl Scope {

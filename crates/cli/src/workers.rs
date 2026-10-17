@@ -12,7 +12,7 @@ use instar_core::workspace::Workspace;
 use super::{
     arguments::{Arguments, Command},
     execution::{self, Project, Response},
-    reporting::Batch,
+    report::Batch,
 };
 
 struct Request {

@@ -13,8 +13,8 @@ use instar_core::workspace::{Access, Purpose, Workspace};
 use super::{
     arguments::{Arguments, Command, Options},
     check, format, lint,
-    reporting::{self, Batch},
-    watching::{Change, Watcher},
+    report::{self, Batch},
+    watch::{Change, Watcher},
 };
 
 pub(super) struct Project {
@@ -97,7 +97,7 @@ pub(super) fn run(arguments: &Arguments) -> Result<u8> {
         };
 
         if let Err(error) = result {
-            reporting::failure(&error);
+            report::failure(&error);
             watcher.wait()?;
         }
     }
@@ -119,7 +119,7 @@ pub(super) fn session(
     loop {
         tracing::debug!(files = project.selected.len(), "processing batch");
 
-        let progress = reporting::progress(arguments, &project.workspace, &project.selected)?;
+        let progress = report::progress(arguments, &project.workspace, &project.selected)?;
         let result = execute(&dirty, &progress);
         progress.finish_and_clear();
 

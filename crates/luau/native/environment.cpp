@@ -53,7 +53,6 @@ namespace instar::luau {
                 rebase_type(type.type, prefix, replacement);
             }
         }
-
     }
 
     DeclarationFailure::DeclarationFailure(const rust::Vec<Diagnostic> &diagnostics) noexcept
@@ -64,9 +63,8 @@ namespace instar::luau {
         const Flags flags(rust::Slice<const Flag>{settings.data(), settings.size()});
         flags.require(scoped);
 
-        return Luau::getBuiltinDefinitionSource() +
-               "\ndeclare string: any\ndeclare next: any\ndeclare pairs: any"
-               "\ndeclare getmetatable: any\ndeclare setmetatable: any\n";
+        return Luau::getBuiltinDefinitionSource() + "\ndeclare string: any\ndeclare next: any\ndeclare pairs: any"
+                                                    "\ndeclare getmetatable: any\ndeclare setmetatable: any\n";
     }
 
     rust::Vec<Diagnostic> prepare(Luau::Frontend &frontend, const std::string &name, const Environment &environment) {

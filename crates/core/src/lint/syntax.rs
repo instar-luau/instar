@@ -652,10 +652,6 @@ pub(super) fn body(tree: &Tree<'_>, node: NodeIndex) -> NodeIndex {
     }
 }
 
-fn empty(tree: &Tree<'_>, node: NodeIndex) -> bool {
-    matches!(&tree.node(body(tree, node)).kind, NodeKind::Block { statements } if tree.list(statements).is_empty())
-}
-
 pub(super) fn single(tree: &Tree<'_>, node: NodeIndex) -> Option<NodeIndex> {
     let NodeKind::Block { statements } = &tree.node(body(tree, node)).kind else {
         return None;
@@ -684,4 +680,8 @@ pub(super) fn same(tree: &Tree<'_>, left: NodeIndex, right: NodeIndex) -> bool {
     };
 
     tokens(left).eq(tokens(right))
+}
+
+fn empty(tree: &Tree<'_>, node: NodeIndex) -> bool {
+    matches!(&tree.node(body(tree, node)).kind, NodeKind::Block { statements } if tree.list(statements).is_empty())
 }

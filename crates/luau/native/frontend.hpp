@@ -15,7 +15,7 @@ namespace instar::luau {
 
     class Frontend {
     public:
-        Frontend(const Context &context, rust::Slice<const Flag> flags, const Luau::FrontendOptions &options);
+        Frontend(const Context &context, rust::Slice<const Flag> settings, const Luau::FrontendOptions &options);
 
         rust::Vec<Diagnostic> analyze(rust::Str module);
         void invalidate(rust::Str module);
@@ -33,7 +33,7 @@ namespace instar::luau {
         std::unordered_map<std::string, rust::Vec<Diagnostic>> environments;
     };
 
-    std::unique_ptr<Frontend> create(const Context &host, bool retainTypes);
+    std::unique_ptr<Frontend> create(const Context &host, bool retain_types);
 }
 
 #endif

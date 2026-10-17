@@ -418,7 +418,6 @@ namespace instar::luau {
                 attach_extern(globals, type, magic, property, tag);
             }
         }
-
     }
 
     void apply(Luau::GlobalTypes &globals, rust::Slice<const Class> classes) {

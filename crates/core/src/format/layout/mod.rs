@@ -7,5 +7,4 @@ mod quotes;
 mod render;
 mod tokens;
 
-pub(crate) use plan::Builder;
-pub(crate) use render::emit;
+pub(crate) use self::{plan::Builder, render::emit};

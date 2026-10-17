@@ -31,7 +31,7 @@ namespace instar::luau {
     class Instances {
     public:
         Instances(
-            const std::string &name, const Luau::ScopePtr &scope, rust::Slice<const Instance> instances,
+            const std::string &hierarchy, const Luau::ScopePtr &scope, rust::Slice<const Instance> instances,
             Luau::NotNull<Luau::BuiltinTypes> builtins
         );
 
