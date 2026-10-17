@@ -8,7 +8,6 @@
 #include "environment.hpp"
 #include "instar-luau/src/bridge.rs.h"
 
-#include <optional>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -22,25 +21,32 @@ namespace instar::luau {
     rust::Vec<Diagnostic> Frontend::analyze(rust::Str module) {
         try {
             rust::Vec<Diagnostic> diagnostics;
+            const auto names = host.modules(std::string(module));
+            frontend->queueModuleCheck(names);
+            bool interrupted = false;
 
-            for (const std::string &name : host.modules(std::string(module))) {
-                std::optional<Luau::CheckResult> result = frontend->getCheckResult(name, true);
+            const auto checked_names =
+                frontend->checkQueuedModules({}, {}, [&](std::size_t completed, std::size_t total) {
+                    interrupted = !callbacks.advance(completed, total);
+                    return !interrupted;
+                });
 
-                if (!result) {
-                    frontend->queueModuleCheck(name);
+            if (interrupted) {
+                throw std::runtime_error("analysis interrupted");
+            }
 
-                    for (const std::string &checked_name : frontend->checkQueuedModules()) {
-                        if (const auto checked = frontend->moduleResolver.getModule(checked_name)) {
-                            attribute(*checked);
-                        }
-
-                        if (!callbacks.progress(host.getHumanReadableModuleName(checked_name), true)) {
-                            throw std::runtime_error("analysis interrupted");
-                        }
-                    }
-
-                    result = frontend->getCheckResult(name, true);
+            for (const std::string &checked_name : checked_names) {
+                if (const auto checked = frontend->moduleResolver.getModule(checked_name)) {
+                    attribute(*checked);
                 }
+
+                if (!callbacks.progress(host.getHumanReadableModuleName(checked_name), true)) {
+                    throw std::runtime_error("analysis interrupted");
+                }
+            }
+
+            for (const std::string &name : names) {
+                const auto result = frontend->getCheckResult(name, true);
 
                 if (!result) {
                     throw std::runtime_error("cannot find module `" + host.getHumanReadableModuleName(name) + "`");
@@ -66,6 +72,15 @@ namespace instar::luau {
         }
     }
 
+    void Frontend::queue(rust::Str module) {
+        try {
+            frontend->queueModuleCheck(host.modules(std::string(module)));
+        } catch (...) {
+            clear();
+            throw;
+        }
+    }
+
     std::size_t Frontend::checks() const {
         return frontend->stats.filesStrict + frontend->stats.filesNonstrict;
     }
@@ -83,6 +98,7 @@ namespace instar::luau {
     }
 
     void Frontend::refresh() {
+        frontend->moduleQueue.clear();
         std::vector<std::string> changed;
 
         for (const auto &[name, source] : frontend->sourceModules) {

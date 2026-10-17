@@ -23,6 +23,17 @@ impl<'host> Frontend<'host> {
         Ok(Self { native, context })
     }
 
+    /// Queue a module and its dependencies for the next check.
+    ///
+    /// # Errors
+    /// Returns an operational host error or native queueing failure.
+    pub fn queue(&mut self, module: &str) -> Result<(), Error> {
+        let result = self.native.pin_mut().queue(module);
+        self.context.complete(result)?;
+
+        Ok(())
+    }
+
     /// Check a module and its dependencies, reusing unchanged native state.
     ///
     /// # Errors

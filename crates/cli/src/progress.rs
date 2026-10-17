@@ -1,8 +1,8 @@
 use std::{
     collections::BTreeSet,
+    fmt::Write as _,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::Duration,
 };
 
 use eyre::{Result, WrapErr as _};
@@ -43,9 +43,18 @@ impl Progress {
             ProgressBar::new_spinner()
         };
 
+        let bar = bar.with_message(console::style("preparing").for_stderr().dim().to_string());
+
+        let template = if console::colors_enabled_stderr() {
+            "{prefix} [{bar:24.blue}] {wide_msg}"
+        } else {
+            "{prefix} [{bar:24}] {wide_msg}"
+        };
+
         let bar = bar.with_style(
-            ProgressStyle::with_template("{spinner} {prefix} {wide_msg}")
-                .wrap_err("cannot configure progress display")?,
+            ProgressStyle::with_template(template)
+                .wrap_err("cannot configure progress display")?
+                .progress_chars("━━─"),
         );
 
         bar.set_prefix(
@@ -74,14 +83,17 @@ impl Progress {
         })
     }
 
-    pub(super) fn reset(&self) {
+    pub(super) fn reset(&self, files: usize) {
         *self.state.lock().expect("progress state") = State::default();
         self.bar.reset();
-        self.bar.set_message(String::new());
 
-        if !self.bar.is_hidden() {
-            self.bar.enable_steady_tick(Duration::from_millis(100));
+        if self.concurrent {
+            self.bar.set_length(files as u64);
+        } else {
+            self.bar.unset_length();
         }
+
+        self.update(&State::default());
     }
 
     pub(super) fn start(&self, module: &str) {
@@ -110,6 +122,11 @@ impl Progress {
         let mut state = self.state.lock().expect("progress state");
         state.active.remove(module);
         state.completed.insert(module.to_owned());
+
+        if self.concurrent {
+            self.bar.set_position(state.completed.len() as u64);
+        }
+
         self.update(&state);
     }
 
@@ -119,6 +136,14 @@ impl Progress {
         self.finish(module);
 
         result
+    }
+
+    pub(super) fn advance(&self, completed: usize, total: usize) {
+        let mut state = self.state.lock().expect("progress state");
+        state.active.clear();
+        self.bar.set_length(total as u64);
+        self.bar.set_position(completed as u64);
+        self.update(&state);
     }
 
     pub(super) fn files(&self) -> usize {
@@ -134,29 +159,39 @@ impl Progress {
             return;
         }
 
-        let path = state.active.first().map_or_else(PathBuf::new, |module| {
-            report::relative(Path::new(module), &self.root)
-        });
+        let mut message = state.active.first().map_or_else(
+            || {
+                let phase = if self
+                    .bar
+                    .length()
+                    .is_some_and(|total| total != 0 && self.bar.position() == total)
+                {
+                    "finalizing"
+                } else {
+                    "preparing"
+                };
 
-        let mut message = format!(
-            "{}  {} {}",
-            console::style(path.display()).for_stderr().magenta(),
-            console::style(state.completed.len())
-                .for_stderr()
-                .blue()
-                .bold(),
-            console::style("completed").for_stderr().dim()
+                console::style(phase).for_stderr().dim().to_string()
+            },
+            |module| {
+                console::style(report::relative(Path::new(module), &self.root).display())
+                    .for_stderr()
+                    .magenta()
+                    .to_string()
+            },
         );
 
         if state.active.len() > 1 {
-            message.push_str(&format!(
+            write!(
+                message,
                 "; {} {}",
                 console::style(state.active.len())
                     .for_stderr()
                     .cyan()
                     .bold(),
                 console::style("active").for_stderr().dim()
-            ));
+            )
+            .expect("internal error: cannot format progress");
         }
 
         self.bar.set_message(message);

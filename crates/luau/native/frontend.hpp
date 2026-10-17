@@ -19,6 +19,7 @@ namespace instar::luau {
         Frontend(const Context &context, rust::Slice<const Flag> settings, const Luau::FrontendOptions &options);
 
         rust::Vec<Diagnostic> analyze(rust::Str module);
+        void queue(rust::Str module);
         std::size_t checks() const;
         void invalidate(rust::Str module);
         void refresh();

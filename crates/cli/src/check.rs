@@ -30,10 +30,11 @@ pub(super) fn run(
     tracing::debug!("creating native frontend");
     let workspace = &project.workspace;
 
-    let update = |module: &str, stage| {
+    let update = |stage: Progress<'_>| {
         match stage {
-            Progress::Started => project.progress.start(module),
-            Progress::Finished => project.progress.finish(module),
+            Progress::Started(module) => project.progress.start(module),
+            Progress::Finished(module) => project.progress.finish(module),
+            Progress::Advanced { completed, total } => project.progress.advance(completed, total),
         }
 
         !interrupt::requested()
@@ -61,9 +62,18 @@ pub(super) fn run(
             let mut files = BTreeMap::new();
             let modules: Vec<_> = selected.keys().cloned().collect();
 
-            let batch = Batch::collect(&modules, |module| {
-                process(workspace, module, &mut frontend, &mut files)
+            let mut queued = Vec::with_capacity(modules.len());
+
+            let mut batch = Batch::collect(&modules, |module| {
+                frontend.queue(module)?;
+                queued.push(module.to_owned());
+
+                Ok(Batch::default())
             })?;
+
+            batch.append(Batch::collect(&queued, |module| {
+                process(workspace, module, &mut frontend, &mut files)
+            })?);
 
             tracing::debug!(checks = ?frontend.checks().checked_sub(checks), "completed native checks");
 

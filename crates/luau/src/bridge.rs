@@ -134,6 +134,8 @@ pub(crate) mod bindings {
         fn hierarchy(self: &Context<'_>, name: &str) -> Result<Vec<Instance>>;
 
         fn progress(self: &Context<'_>, module: &str, completed: bool) -> bool;
+
+        fn advance(self: &Context<'_>, completed: usize, total: usize) -> bool;
     }
 
     unsafe extern "C++" {
@@ -148,6 +150,8 @@ pub(crate) mod bindings {
         ) -> Result<UniquePtr<Frontend<'host>>>;
 
         fn analyze(self: Pin<&mut Frontend<'_>>, module: &str) -> Result<Vec<Diagnostic>>;
+
+        fn queue(self: Pin<&mut Frontend<'_>>, module: &str) -> Result<()>;
 
         fn checks(self: &Frontend<'_>) -> usize;
 

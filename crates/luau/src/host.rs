@@ -78,21 +78,29 @@ pub enum Navigation {
     Ambiguous,
 }
 
-/// A native module's analysis progress.
+/// Native analysis progress.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Progress {
+pub enum Progress<'module> {
     /// Analysis is beginning for this module.
-    Started,
+    Started(&'module str),
 
     /// Analysis has completed for this module.
-    Finished,
+    Finished(&'module str),
+
+    /// A batch of dirty native work has completed.
+    Advanced {
+        /// Completed native work units.
+        completed: usize,
+        /// Dirty native work units in this batch.
+        total: usize,
+    },
 }
 
 /// Borrows the host callbacks used by native frontends.
 pub struct Context<'host> {
     host: &'host dyn Host,
     error: Cell<Option<HostError>>,
-    progress: Option<&'host dyn Fn(&str, Progress) -> bool>,
+    progress: Option<&'host dyn Fn(Progress<'_>) -> bool>,
 }
 
 impl<'host> Context<'host> {
@@ -107,9 +115,9 @@ impl<'host> Context<'host> {
         }
     }
 
-    /// Report native module progress, returning false to interrupt analysis.
+    /// Report native analysis progress, returning false to interrupt analysis.
     #[must_use]
-    pub fn with_progress(mut self, progress: &'host dyn Fn(&str, Progress) -> bool) -> Self {
+    pub fn with_progress(mut self, progress: &'host dyn Fn(Progress<'_>) -> bool) -> Self {
         self.progress = Some(progress);
 
         self
@@ -176,15 +184,17 @@ impl<'host> Context<'host> {
 
     pub(crate) fn progress(&self, module: &str, completed: bool) -> bool {
         self.progress.is_none_or(|progress| {
-            progress(
-                module,
-                if completed {
-                    Progress::Finished
-                } else {
-                    Progress::Started
-                },
-            )
+            progress(if completed {
+                Progress::Finished(module)
+            } else {
+                Progress::Started(module)
+            })
         })
+    }
+
+    pub(crate) fn advance(&self, completed: usize, total: usize) -> bool {
+        self.progress
+            .is_none_or(|progress| progress(Progress::Advanced { completed, total }))
     }
 
     pub(crate) fn complete<Value>(&self, result: Result<Value, Exception>) -> Result<Value, Error> {

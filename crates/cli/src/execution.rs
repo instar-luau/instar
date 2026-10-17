@@ -139,7 +139,7 @@ pub(super) fn session(
         tracing::debug!("processing batch");
 
         let progress = &project.progress;
-        progress.reset();
+        progress.reset(selected.len());
         let result = execute(&selected, &dirty, discovery, progress);
         progress.clear();
         interrupt::check()?;
