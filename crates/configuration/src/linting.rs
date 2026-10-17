@@ -23,13 +23,6 @@ pub struct Configuration {
     /// Presets applied in order over the rule catalog's defaults.
     pub presets: Vec<Preset>,
 
-    /// Sole selected rule set; an empty list disables every rule.
-    #[schemars(extend("items" = schema::identifier()))]
-    pub selected: Option<Vec<String>>,
-
-    /// Report upstream warnings as errors.
-    pub upstream_errors: bool,
-
     /// Named rule overrides, merged by rule and parameter name.
     #[schemars(extend("propertyNames" = schema::identifier()))]
     pub rules: BTreeMap<String, Rule>,

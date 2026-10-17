@@ -90,6 +90,14 @@ impl<'host> Context<'host> {
         Self { host, error }
     }
 
+    /// Return built-in declaration syntax using validated host and scope flags.
+    ///
+    /// # Errors
+    /// Returns host configuration failures or invalid native flag settings.
+    pub fn builtins(&self, flags: BTreeMap<String, Flag>) -> Result<String, Error> {
+        self.complete(bindings::builtins(self, &bridge::flags(flags)))
+    }
+
     pub(crate) fn alias(
         &self,
         module: &str,

@@ -21,7 +21,6 @@ namespace instar::luau {
             error.location.end.line,
             error.location.end.column,
             Luau::toString(error, Luau::TypeErrorToStringOptions{&resolver}),
-            Luau::get<Luau::SyntaxError>(error) != nullptr,
         };
     }
 }

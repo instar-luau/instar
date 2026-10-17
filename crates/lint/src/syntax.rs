@@ -1,21 +1,65 @@
-use std::{cmp::Ordering, str};
+use std::{cell::OnceCell, cmp::Ordering, iter, str};
 
 use vermis::{
     token::{Keyword, Symbol, TokenKind},
     tree::{NodeIndex, NodeKind, Tree},
 };
 
-use crate::{Edit, Error, Finding, Prepared};
+use crate::{Edit, Error, Finding, Prepared, Symbols, bindings::Bindings};
 
-struct Context<'tree, 'source> {
-    tree: &'tree Tree<'source>,
-    source: &'source str,
-    settings: &'tree Prepared,
-    findings: Vec<Finding>,
+pub(super) const RULES: &[&str] = &[
+    "bad_string_escape",
+    "compare_nan",
+    "constant_condition",
+    "constant_table_comparison",
+    "length_as_condition",
+    "zero_step_loop",
+    "divide_by_zero",
+    "empty_if",
+    "empty_loop",
+    "if_same_then_else",
+    "mixed_table",
+    "and_or_conditional",
+    "collapsible_if",
+    "else_after_return",
+    "negated_condition",
+    "parenthesized_conditions",
+];
+
+pub(super) struct Context<'tree, 'source> {
+    pub(super) tree: &'tree Tree<'source>,
+    pub(super) source: &'source str,
+    pub(super) settings: &'tree Prepared,
+    pub(super) symbols: &'tree Symbols,
+    bindings: OnceCell<Bindings>,
+    pub(super) findings: Vec<Finding>,
+    lines: OnceCell<Vec<usize>>,
 }
 
 impl Context<'_, '_> {
-    fn emit(&mut self, node: NodeIndex, rule: &str, message: &str, edits: Vec<Edit>) {
+    pub(super) fn active(&self, rules: &[&str]) -> bool {
+        rules
+            .iter()
+            .any(|rule| self.settings.enabled(rule).is_some())
+    }
+
+    pub(super) fn bindings(&self) -> &Bindings {
+        self.bindings.get_or_init(|| Bindings::new(self.tree))
+    }
+
+    pub(super) fn lines(&self) -> &[usize] {
+        self.lines.get_or_init(|| {
+            iter::once(0)
+                .chain(
+                    self.source
+                        .match_indices('\n')
+                        .map(|(offset, _)| offset + 1),
+                )
+                .collect()
+        })
+    }
+
+    pub(super) fn emit(&mut self, node: NodeIndex, rule: &str, message: &str, edits: Vec<Edit>) {
         if let Some(policy) = self.settings.enabled(rule) {
             let span = self.tree.node(node).span;
 
@@ -33,7 +77,7 @@ impl Context<'_, '_> {
         let tree = self.tree;
         let unwrapped = unwrap(tree, condition);
 
-        if truth(tree, unwrapped).is_some() {
+        if self.active(&["constant_condition"]) && truth(tree, unwrapped).is_some() {
             self.emit(
                 condition,
                 "constant_condition",
@@ -42,8 +86,9 @@ impl Context<'_, '_> {
             );
         }
 
-        if matches!(&tree.node(unwrapped).kind, NodeKind::Unary { operator, .. }
-            if tree.token(*operator).kind == TokenKind::Symbol(Symbol::Length))
+        if self.active(&["length_as_condition"])
+            && matches!(&tree.node(unwrapped).kind, NodeKind::Unary { operator, .. }
+                if tree.token(*operator).kind == TokenKind::Symbol(Symbol::Length))
         {
             self.emit(
                 condition,
@@ -53,7 +98,9 @@ impl Context<'_, '_> {
             );
         }
 
-        if matches!(tree.node(condition).kind, NodeKind::Group { .. }) {
+        if self.active(&["parenthesized_conditions"])
+            && matches!(tree.node(condition).kind, NodeKind::Group { .. })
+        {
             let mut edits = Vec::new();
             let mut inner = condition;
 
@@ -98,7 +145,10 @@ impl Context<'_, '_> {
         }
 
         match &tree.node(node).kind {
-            NodeKind::String { token } if tree.token(*token).kind != TokenKind::RawString => {
+            NodeKind::String { token }
+                if self.active(&["bad_string_escape"])
+                    && tree.token(*token).kind != TokenKind::RawString =>
+            {
                 let interpolated = tree.token(*token).kind != TokenKind::QuotedString;
                 let mut bytes = tree.token(*token).bytes(tree.source).iter();
 
@@ -135,7 +185,7 @@ impl Context<'_, '_> {
 
             NodeKind::NumericFor {
                 step: Some(step), ..
-            } if number(tree, *step) == Some(0.0) => {
+            } if self.active(&["zero_step_loop"]) && number(tree, *step) == Some(0.0) => {
                 self.emit(
                     *step,
                     "zero_step_loop",
@@ -148,7 +198,7 @@ impl Context<'_, '_> {
             | NodeKind::Repeat { body, .. }
             | NodeKind::NumericFor { body, .. }
             | NodeKind::GenericFor { body, .. }
-                if empty(tree, *body) =>
+                if self.active(&["empty_loop"]) && empty(tree, *body) =>
             {
                 self.emit(node, "empty_loop", "empty loop body", Vec::new());
             }
@@ -157,10 +207,18 @@ impl Context<'_, '_> {
                 branches,
                 otherwise,
                 ..
-            } => {
+            } if self.active(&[
+                "empty_if",
+                "if_same_then_else",
+                "else_after_return",
+                "negated_condition",
+                "collapsible_if",
+            ]) =>
+            {
                 for branch in tree.list(branches) {
-                    if let NodeKind::Branch { body, .. } = &tree.node(branch.node).kind
-                        && empty(tree, *body)
+                    if self.active(&["empty_if"])
+                        && let NodeKind::Branch { body, .. } = tree.node(branch.node).kind
+                        && empty(tree, body)
                     {
                         self.emit(
                             branch.node,
@@ -184,7 +242,7 @@ impl Context<'_, '_> {
                         })
                         .collect();
 
-                    if empty(tree, *otherwise) {
+                    if self.active(&["empty_if"]) && empty(tree, *otherwise) {
                         self.emit(
                             *otherwise,
                             "empty_if",
@@ -193,7 +251,8 @@ impl Context<'_, '_> {
                         );
                     }
 
-                    if let Some(first) = bodies.first()
+                    if self.active(&["if_same_then_else"])
+                        && let Some(first) = bodies.first()
                         && bodies.iter().all(|body| same(tree, *first, *body))
                         && same(tree, *first, body(tree, *otherwise))
                     {
@@ -205,15 +264,17 @@ impl Context<'_, '_> {
                         );
                     }
 
-                    if bodies.iter().all(|body| {
-                        let NodeKind::Block { statements } = &tree.node(*body).kind else {
-                            return false;
-                        };
+                    if self.active(&["else_after_return"])
+                        && bodies.iter().all(|body| {
+                            let NodeKind::Block { statements } = &tree.node(*body).kind else {
+                                return false;
+                            };
 
-                        tree.list(statements).last().is_some_and(|statement| {
-                            matches!(tree.node(statement.node).kind, NodeKind::Return { .. })
+                            tree.list(statements).last().is_some_and(|statement| {
+                                matches!(tree.node(statement.node).kind, NodeKind::Return { .. })
+                            })
                         })
-                    }) {
+                    {
                         self.emit(
                             *otherwise,
                             "else_after_return",
@@ -222,7 +283,8 @@ impl Context<'_, '_> {
                         );
                     }
 
-                    if let [branch] = tree.list(branches)
+                    if self.active(&["negated_condition"])
+                        && let [branch] = tree.list(branches)
                         && let NodeKind::Branch { condition, .. } = tree.node(branch.node).kind
                         && matches!(&tree.node(unwrap(tree, condition)).kind, NodeKind::Unary { operator, .. }
                             if tree.token(*operator).kind == TokenKind::Keyword(Keyword::Not))
@@ -235,6 +297,7 @@ impl Context<'_, '_> {
                         );
                     }
                 } else if let [branch] = tree.list(branches)
+                    && self.active(&["collapsible_if"])
                     && let NodeKind::Branch { body, .. } = tree.node(branch.node).kind
                     && let Some(inner) = single(tree, body)
                     && let NodeKind::If {
@@ -260,10 +323,12 @@ impl Context<'_, '_> {
             } => {
                 let operator = tree.token(*operator).kind;
 
-                if matches!(
-                    operator,
-                    TokenKind::Symbol(Symbol::Divide | Symbol::FloorDivide | Symbol::Modulo)
-                ) && number(tree, *right) == Some(0.0)
+                if self.active(&["divide_by_zero"])
+                    && matches!(
+                        operator,
+                        TokenKind::Symbol(Symbol::Divide | Symbol::FloorDivide | Symbol::Modulo)
+                    )
+                    && number(tree, *right) == Some(0.0)
                 {
                     self.emit(
                         *right,
@@ -277,8 +342,9 @@ impl Context<'_, '_> {
                     operator,
                     TokenKind::Symbol(Symbol::Equal | Symbol::NotEqual)
                 ) {
-                    if number(tree, *left).is_some_and(f64::is_nan)
-                        || number(tree, *right).is_some_and(f64::is_nan)
+                    if self.active(&["compare_nan"])
+                        && (number(tree, *left).is_some_and(f64::is_nan)
+                            || number(tree, *right).is_some_and(f64::is_nan))
                     {
                         self.emit(
                             node,
@@ -288,8 +354,12 @@ impl Context<'_, '_> {
                         );
                     }
 
-                    if matches!(tree.node(unwrap(tree, *left)).kind, NodeKind::Table { .. })
-                        || matches!(tree.node(unwrap(tree, *right)).kind, NodeKind::Table { .. })
+                    if self.active(&["constant_table_comparison"])
+                        && (matches!(tree.node(unwrap(tree, *left)).kind, NodeKind::Table { .. })
+                            || matches!(
+                                tree.node(unwrap(tree, *right)).kind,
+                                NodeKind::Table { .. }
+                            ))
                     {
                         self.emit(
                             node,
@@ -300,7 +370,8 @@ impl Context<'_, '_> {
                     }
                 }
 
-                if operator == TokenKind::Keyword(Keyword::Or)
+                if self.active(&["and_or_conditional"])
+                    && operator == TokenKind::Keyword(Keyword::Or)
                     && let NodeKind::Binary {
                         operator, right, ..
                     } = &tree.node(unwrap(tree, *left)).kind
@@ -316,7 +387,7 @@ impl Context<'_, '_> {
                 }
             }
 
-            NodeKind::Table { fields, .. } => {
+            NodeKind::Table { fields, .. } if self.active(&["mixed_table"]) => {
                 let mut positional = false;
                 let mut keyed = false;
 
@@ -349,7 +420,7 @@ impl Context<'_, '_> {
 ///
 /// # Errors
 /// Returns malformed or incomplete syntax without proposing corrections.
-pub fn lint(source: &str, settings: &Prepared) -> Result<Vec<Finding>, Error> {
+pub fn lint(source: &str, settings: &Prepared, symbols: &Symbols) -> Result<Vec<Finding>, Error> {
     let prefix = usize::from(source.starts_with('\u{feff}')) * 3;
     let text = &source[prefix..];
 
@@ -360,15 +431,32 @@ pub fn lint(source: &str, settings: &Prepared) -> Result<Vec<Finding>, Error> {
         error
     })?;
 
+    if settings.rules.is_empty() {
+        return Ok(Vec::new());
+    }
+
     let mut context = Context {
         tree: &tree,
         source: text,
         settings,
+        symbols,
+        bindings: OnceCell::new(),
         findings: Vec::new(),
+        lines: OnceCell::new(),
     };
 
     for index in 0..tree.nodes.len() {
-        context.visit(NodeIndex::new(index));
+        if settings.syntax {
+            context.visit(NodeIndex::new(index));
+        }
+
+        if settings.analysis {
+            context.analyze(NodeIndex::new(index));
+        }
+    }
+
+    if settings.analysis {
+        context.finish();
     }
 
     for finding in &mut context.findings {
@@ -408,7 +496,7 @@ pub(crate) fn parse(source: &str) -> Result<Tree<'_>, Error> {
     Ok(tree)
 }
 
-fn unwrap(tree: &Tree<'_>, mut node: NodeIndex) -> NodeIndex {
+pub(super) fn unwrap(tree: &Tree<'_>, mut node: NodeIndex) -> NodeIndex {
     while let NodeKind::Group { expression, .. }
     | NodeKind::Assertion { expression, .. }
     | NodeKind::Instantiate { expression, .. } = tree.node(node).kind
@@ -419,7 +507,7 @@ fn unwrap(tree: &Tree<'_>, mut node: NodeIndex) -> NodeIndex {
     node
 }
 
-fn number(tree: &Tree<'_>, node: NodeIndex) -> Option<f64> {
+pub(super) fn number(tree: &Tree<'_>, node: NodeIndex) -> Option<f64> {
     match &tree.node(unwrap(tree, node)).kind {
         NodeKind::Unary { operator, operand }
             if tree.token(*operator).kind == TokenKind::Symbol(Symbol::Subtract) =>
@@ -504,7 +592,7 @@ fn number(tree: &Tree<'_>, node: NodeIndex) -> Option<f64> {
     }
 }
 
-fn truth(tree: &Tree<'_>, node: NodeIndex) -> Option<bool> {
+pub(super) fn truth(tree: &Tree<'_>, node: NodeIndex) -> Option<bool> {
     match &tree.node(unwrap(tree, node)).kind {
         NodeKind::Nil { .. } => Some(false),
 
@@ -556,7 +644,7 @@ fn truth(tree: &Tree<'_>, node: NodeIndex) -> Option<bool> {
     }
 }
 
-fn body(tree: &Tree<'_>, node: NodeIndex) -> NodeIndex {
+pub(super) fn body(tree: &Tree<'_>, node: NodeIndex) -> NodeIndex {
     if let NodeKind::Else { body, .. } = tree.node(node).kind {
         body
     } else {
@@ -568,7 +656,7 @@ fn empty(tree: &Tree<'_>, node: NodeIndex) -> bool {
     matches!(&tree.node(body(tree, node)).kind, NodeKind::Block { statements } if tree.list(statements).is_empty())
 }
 
-fn single(tree: &Tree<'_>, node: NodeIndex) -> Option<NodeIndex> {
+pub(super) fn single(tree: &Tree<'_>, node: NodeIndex) -> Option<NodeIndex> {
     let NodeKind::Block { statements } = &tree.node(body(tree, node)).kind else {
         return None;
     };
@@ -580,7 +668,7 @@ fn single(tree: &Tree<'_>, node: NodeIndex) -> Option<NodeIndex> {
     Some(statement.node)
 }
 
-fn same(tree: &Tree<'_>, left: NodeIndex, right: NodeIndex) -> bool {
+pub(super) fn same(tree: &Tree<'_>, left: NodeIndex, right: NodeIndex) -> bool {
     let tokens = |node: NodeIndex| {
         let range = &tree.node(node).tokens;
 

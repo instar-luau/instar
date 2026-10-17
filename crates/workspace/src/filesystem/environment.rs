@@ -1,12 +1,20 @@
 use std::{
+    cell::OnceCell,
     collections::{BTreeMap, BTreeSet, btree_map::Entry},
-    fmt::Write as _,
+    fmt::{self, Write as _},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use instar_configuration::environment::{Group, Security};
+use instar_lint::Symbols;
 use instar_luau::{Class, Definition, Environment, Property};
-use serde::Deserialize;
+
+use serde::{
+    Deserialize, Deserializer,
+    de::{DeserializeSeed, MapAccess, SeqAccess, Visitor},
+};
+
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
@@ -16,7 +24,8 @@ use super::{Error, Workspace, instances, model::Scope, paths};
 pub(super) struct Registry {
     inputs: BTreeMap<Inputs, usize>,
     prepared: Vec<Prepared>,
-    documentation: BTreeMap<Vec<(String, PathBuf)>, BTreeMap<String, Value>>,
+    documentation: BTreeMap<Vec<(String, PathBuf)>, Vec<Documentation>>,
+    symbols: BTreeMap<(Option<String>, Vec<String>), Arc<Symbols>>,
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
@@ -28,8 +37,15 @@ struct Inputs {
 
 pub(super) struct Prepared {
     pub(super) native: Environment,
-    pub(super) documentation: BTreeMap<String, Value>,
+    pub(super) documentation: Option<Documentation>,
 }
+
+pub(super) struct Documentation {
+    source: String,
+    index: OnceCell<BTreeMap<String, Value>>,
+}
+
+struct Namespace<'source>(&'source str);
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -124,10 +140,44 @@ impl Registry {
         self.prepared.get(name.parse::<usize>().ok()?)
     }
 
-    pub(super) fn documents(
+    pub(super) fn symbols(
         &mut self,
-        groups: &[Group],
-    ) -> Result<&BTreeMap<String, Value>, Error> {
+        name: Option<&str>,
+        globals: &[String],
+        builtins: &str,
+    ) -> Result<Arc<Symbols>, Error> {
+        let key = (name.map(str::to_owned), globals.to_owned());
+
+        if let Some(symbols) = self.symbols.get(&key) {
+            return Ok(Arc::clone(symbols));
+        }
+
+        let mut symbols = Symbols::default();
+
+        symbols.declare(builtins).map_err(|source| Error::Syntax {
+            path: PathBuf::from("<builtins>"),
+            source,
+        })?;
+
+        if let Some(prepared) = name.and_then(|name| self.get(name)) {
+            for definition in &prepared.native.definitions {
+                symbols
+                    .declare(&definition.source)
+                    .map_err(|source| Error::Syntax {
+                        path: PathBuf::from(&definition.name),
+                        source,
+                    })?;
+            }
+        }
+
+        symbols.globals.extend(globals.iter().cloned());
+        let symbols = Arc::new(symbols);
+        self.symbols.insert(key, Arc::clone(&symbols));
+
+        Ok(symbols)
+    }
+
+    pub(super) fn documents(&mut self, groups: &[Group]) -> Result<&[Documentation], Error> {
         let paths = groups
             .iter()
             .flat_map(|group| {
@@ -142,15 +192,110 @@ impl Registry {
             Entry::Occupied(entry) => Ok(entry.into_mut()),
 
             Entry::Vacant(entry) => {
-                let mut index = BTreeMap::new();
+                let mut documents = Vec::new();
 
                 for (namespace, path) in entry.key() {
-                    documents(path, &paths::read(path)?, namespace, &mut index)?;
+                    documents.push(Documentation::new(path, paths::read(path)?, namespace)?);
                 }
 
-                Ok(entry.insert(index))
+                Ok(entry.insert(documents))
             }
         }
+    }
+}
+
+impl Documentation {
+    fn new(path: &Path, source: String, namespace: &str) -> Result<Self, Error> {
+        let mut decoder = serde_json::Deserializer::from_str(&source);
+
+        let valid = decoder
+            .deserialize_map(Namespace(&format!("{namespace}/")))
+            .and_then(|valid| decoder.end().map(|()| valid))
+            .map_err(|source| Error::Data {
+                path: path.to_owned(),
+                source,
+            })?;
+
+        if !valid {
+            return Err(invalid(
+                path,
+                "documentation symbol is outside its declared namespace",
+            ));
+        }
+
+        Ok(Self {
+            source,
+            index: OnceCell::new(),
+        })
+    }
+
+    pub(super) fn get(&self, symbol: &str) -> Option<&Value> {
+        self.index
+            .get_or_init(|| serde_json::from_str(&self.source).expect("validated documentation"))
+            .get(symbol)
+    }
+}
+
+impl<'source> DeserializeSeed<'source> for Namespace<'_> {
+    type Value = bool;
+
+    fn deserialize<Decoder: Deserializer<'source>>(
+        self,
+        decoder: Decoder,
+    ) -> Result<bool, Decoder::Error> {
+        decoder.deserialize_any(self)
+    }
+}
+
+impl<'source> Visitor<'source> for Namespace<'_> {
+    type Value = bool;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a map")
+    }
+
+    fn visit_bool<Failure>(self, _: bool) -> Result<bool, Failure> {
+        Ok(true)
+    }
+
+    fn visit_i64<Failure>(self, _: i64) -> Result<bool, Failure> {
+        Ok(true)
+    }
+
+    fn visit_u64<Failure>(self, _: u64) -> Result<bool, Failure> {
+        Ok(true)
+    }
+
+    fn visit_f64<Failure>(self, _: f64) -> Result<bool, Failure> {
+        Ok(true)
+    }
+
+    fn visit_str<Failure>(self, value: &str) -> Result<bool, Failure> {
+        Ok(value.starts_with(self.0))
+    }
+
+    fn visit_unit<Failure>(self) -> Result<bool, Failure> {
+        Ok(true)
+    }
+
+    fn visit_seq<Sequence: SeqAccess<'source>>(
+        self,
+        mut sequence: Sequence,
+    ) -> Result<bool, Sequence::Error> {
+        while sequence.next_element_seed(Namespace(""))?.is_some() {}
+
+        Ok(true)
+    }
+
+    fn visit_map<Map: MapAccess<'source>>(self, mut map: Map) -> Result<bool, Map::Error> {
+        let mut valid = true;
+
+        while let Some(validated) = map.next_key_seed(Namespace(self.0))? {
+            valid &= validated;
+            map.next_value_seed(Namespace(""))?;
+        }
+
+        Ok(valid)
     }
 }
 
@@ -230,7 +375,7 @@ pub(super) fn identity(
 fn prepare(inputs: &Inputs) -> Result<Prepared, Error> {
     let mut prepared = Prepared {
         native: Environment::default(),
-        documentation: BTreeMap::new(),
+        documentation: None,
     };
 
     if let Some((directory, security)) = &inputs.roblox {
@@ -314,12 +459,11 @@ fn assets(directory: &Path, security: Security, prepared: &mut Prepared) -> Resu
 
     let documentation = directory.join("documentation.json");
 
-    documents(
+    prepared.documentation = Some(Documentation::new(
         &documentation,
-        &verified(&documentation, &metadata.documentation)?,
+        verified(&documentation, &metadata.documentation)?,
         "@roblox",
-        &mut prepared.documentation,
-    )?;
+    )?);
 
     let mut classes = BTreeMap::<String, Class>::new();
 
@@ -397,27 +541,6 @@ fn verified(path: &Path, digest: &str) -> Result<String, Error> {
     }
 
     Ok(source)
-}
-
-fn documents(
-    path: &Path,
-    source: &str,
-    namespace: &str,
-    target: &mut BTreeMap<String, Value>,
-) -> Result<(), Error> {
-    let documents: BTreeMap<String, Value> = parse(path, source)?;
-    let prefix = format!("{namespace}/");
-
-    if documents.keys().any(|symbol| !symbol.starts_with(&prefix)) {
-        return Err(invalid(
-            path,
-            "documentation symbol is outside its declared namespace",
-        ));
-    }
-
-    target.extend(documents);
-
-    Ok(())
 }
 
 fn parse<'source, Output: Deserialize<'source>>(

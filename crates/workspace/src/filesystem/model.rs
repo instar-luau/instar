@@ -8,12 +8,14 @@ use std::{
 
 use figment::Figment;
 use instar_configuration::{Configuration, formatting, resolve};
+use instar_lint::Symbols;
+use instar_luau::Context;
 use serde_json::Value;
 
 use super::{
     Error, discovery,
     environment::{self, Registry},
-    instances, paths,
+    host, instances, paths,
     selection::{self, Access, Purpose, Selection},
 };
 
@@ -41,6 +43,7 @@ pub(super) struct Scope {
     pub(super) linting: Selection,
     pub(super) lint: Arc<instar_lint::Prepared>,
     pub(super) environments: RefCell<BTreeMap<bool, Option<String>>>,
+    builtins: RefCell<Option<Arc<str>>>,
 }
 
 impl Workspace {
@@ -173,6 +176,36 @@ impl Workspace {
         Ok(Arc::clone(&self.scope(Path::new(module))?.lint))
     }
 
+    /// Return declared value and type names for a module's lint environment.
+    ///
+    /// # Errors
+    /// Returns invalid flags, declaration syntax, or environment inputs.
+    pub fn symbols(&self, module: &str) -> Result<Arc<Symbols>, Error> {
+        let scope = self.scope(Path::new(module))?;
+        let cached = scope.builtins.borrow().as_ref().map(Arc::clone);
+
+        let builtins = if let Some(builtins) = cached {
+            builtins
+        } else {
+            let builtins: Arc<str> = Context::new(self)
+                .builtins(host::flags(&scope.configuration))
+                .map_err(Error::Analysis)?
+                .into();
+
+            *scope.builtins.borrow_mut() = Some(Arc::clone(&builtins));
+
+            builtins
+        };
+
+        let name = environment::identity(self, &scope, Path::new(module))?;
+
+        self.environments.borrow_mut().symbols(
+            name.as_deref(),
+            &scope.configuration.environment.globals,
+            &builtins,
+        )
+    }
+
     /// Look up a configured documentation symbol in the module's environment.
     ///
     /// # Errors
@@ -184,13 +217,15 @@ impl Workspace {
 
         let documentation = registry
             .documents(&scope.configuration.environment.groups)?
-            .get(symbol)
-            .cloned();
+            .iter()
+            .rev()
+            .find_map(|documentation| documentation.get(symbol).cloned());
 
         Ok(documentation.or_else(|| {
             name.as_deref()
                 .and_then(|name| registry.get(name))
-                .and_then(|prepared| prepared.documentation.get(symbol).cloned())
+                .and_then(|prepared| prepared.documentation.as_ref())
+                .and_then(|documentation| documentation.get(symbol).cloned())
         }))
     }
 
@@ -310,6 +345,7 @@ impl Scope {
             linting,
             lint: Arc::new(lint),
             environments: RefCell::new(BTreeMap::new()),
+            builtins: RefCell::new(None),
         })
     }
 }

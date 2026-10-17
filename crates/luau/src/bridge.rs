@@ -91,38 +91,6 @@ pub(crate) mod bindings {
 
         /// Upstream diagnostic message.
         message: String,
-
-        /// Whether this error prevents linting or validating source edits.
-        blocking: bool,
-    }
-
-    /// A native lint finding with its rule-specific subject.
-    #[derive(Clone, Debug, Eq, PartialEq)]
-    pub struct Warning {
-        /// Finding location and message.
-        diagnostic: Diagnostic,
-
-        /// Canonical lint rule name.
-        rule: String,
-
-        /// Binding name or symbol path used by rule settings.
-        subject: String,
-
-        /// Binding or symbol category used by rule settings.
-        category: String,
-
-        /// Whether removing this local self-assignment is safe.
-        fixable: bool,
-    }
-
-    /// Cached analysis diagnostics and lint findings for a selected module.
-    #[derive(Clone, Debug)]
-    pub struct Analysis {
-        /// Type, syntax, and declaration diagnostics.
-        diagnostics: Vec<Diagnostic>,
-
-        /// Findings belonging to the selected source.
-        warnings: Vec<Warning>,
     }
 
     struct Text {
@@ -168,6 +136,7 @@ pub(crate) mod bindings {
 
     unsafe extern "C++" {
         include!("native/frontend.hpp");
+        include!("native/environment.hpp");
 
         type Frontend<'host>;
 
@@ -176,9 +145,9 @@ pub(crate) mod bindings {
             retain_types: bool,
         ) -> Result<UniquePtr<Frontend<'host>>>;
 
-        fn analyze(self: Pin<&mut Frontend<'_>>, module: &str, lint: bool) -> Result<Analysis>;
+        fn analyze(self: Pin<&mut Frontend<'_>>, module: &str) -> Result<Vec<Diagnostic>>;
 
-        fn warnings() -> Vec<String>;
+        fn builtins(host: &Context<'_>, flags: &[Flag]) -> Result<String>;
 
         fn invalidate(self: Pin<&mut Frontend<'_>>, module: &str) -> Result<()>;
 

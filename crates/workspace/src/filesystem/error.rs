@@ -20,6 +20,17 @@ pub enum Error {
     /// Configuration could not be loaded or deserialized.
     Configuration(Box<figment::Error>),
 
+    /// Native environment settings could not be validated.
+    Analysis(instar_luau::Error),
+
+    /// A declaration source contains invalid syntax.
+    Syntax {
+        /// The declaration source.
+        path: PathBuf,
+        /// The syntax failure.
+        source: instar_lint::Error,
+    },
+
     /// Environment metadata or documentation could not be decoded.
     Data {
         /// The input file.
@@ -44,6 +55,8 @@ impl fmt::Display for Error {
             Self::Traversal(source) => fmt::Display::fmt(source, formatter),
             Self::Pattern(source) => fmt::Display::fmt(source, formatter),
             Self::Configuration(source) => fmt::Display::fmt(source, formatter),
+            Self::Analysis(source) => fmt::Display::fmt(source, formatter),
+            Self::Syntax { path, source } => write!(formatter, "{}: {source}", path.display()),
             Self::Data { path, source } => write!(formatter, "{}: {source}", path.display()),
             Self::Path { path, reason } => write!(formatter, "{}: {reason}", path.display()),
         }
@@ -57,6 +70,8 @@ impl error::Error for Error {
             Self::Traversal(source) => Some(source),
             Self::Pattern(source) => Some(source),
             Self::Configuration(source) => Some(source),
+            Self::Analysis(source) => Some(source),
+            Self::Syntax { source, .. } => Some(source),
             Self::Data { source, .. } => Some(source),
             Self::Path { .. } => None,
         }

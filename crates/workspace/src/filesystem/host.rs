@@ -197,7 +197,7 @@ fn found(path: &Path) -> Result<Navigation, Error> {
     paths::text(&paths::canonical(path)?).map(Navigation::Found)
 }
 
-fn flags(configuration: &ProjectConfiguration) -> BTreeMap<String, Flag> {
+pub(super) fn flags(configuration: &ProjectConfiguration) -> BTreeMap<String, Flag> {
     configuration
         .flags
         .iter()

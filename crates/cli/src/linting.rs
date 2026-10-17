@@ -1,22 +1,40 @@
 use std::{collections::BTreeMap, mem, sync::Arc, time::Instant};
 
 use codespan_reporting::diagnostic::{Diagnostic, Label};
-use eyre::{Result, bail, eyre};
+use eyre::{Result, eyre};
 use indicatif::ProgressBar;
 use instar_configuration::linting::Severity;
-use instar_luau::{Context, Frontend};
-use instar_workspace::Workspace;
+use instar_lint::Symbols;
+use instar_workspace::{Error, Workspace};
 
 use super::{
     arguments::{Arguments, Command},
-    checking,
     execution::{self, Project, Response},
     reporting::{Batch, Output, Source},
     watching::Watcher,
     workers::{Pool, Worker},
 };
 
-pub(super) fn syntax(workspace: &Workspace, worker: Worker<'_>) -> Result<()> {
+type Environments = BTreeMap<String, Result<Arc<Symbols>, Arc<Error>>>;
+
+pub(super) fn prepare(project: &Project) -> Environments {
+    project
+        .selected
+        .keys()
+        .map(|module| {
+            (
+                module.clone(),
+                project.workspace.symbols(module).map_err(Arc::new),
+            )
+        })
+        .collect()
+}
+
+pub(super) fn syntax(
+    workspace: &Workspace,
+    worker: Worker<'_>,
+    environments: &Environments,
+) -> Result<()> {
     worker.run(workspace, |modules, _| {
         Ok(Batch::collect(modules, &ProgressBar::hidden(), |module| {
             workspace.invalidate(module);
@@ -31,7 +49,47 @@ pub(super) fn syntax(workspace: &Workspace, worker: Worker<'_>) -> Result<()> {
             let settings = workspace.linting(module)?;
             let mut batch = Batch::default();
 
-            match instar_lint::lint(&source.text, &settings) {
+            let symbols = match environments
+                .get(module)
+                .ok_or_else(|| eyre!("{module}: lint environment is unavailable"))?
+            {
+                Ok(symbols) => symbols,
+
+                Err(error) => {
+                    let Error::Syntax {
+                        path,
+                        source: error,
+                    } = error.as_ref()
+                    else {
+                        return Err(Arc::clone(error).into());
+                    };
+
+                    let module = path
+                        .to_str()
+                        .ok_or_else(|| eyre!("declaration path is not UTF-8"))?;
+
+                    let text = workspace
+                        .source(module)?
+                        .ok_or_else(|| eyre!("{module}: declaration source is unavailable"))?;
+
+                    batch.findings.push(
+                        Diagnostic::error()
+                            .with_code("syntax")
+                            .with_message(error.message.clone())
+                            .with_labels(vec![Label::primary(
+                                Source {
+                                    module: module.to_owned(),
+                                    text,
+                                },
+                                error.range.clone(),
+                            )]),
+                    );
+
+                    return Ok(batch);
+                }
+            };
+
+            match instar_lint::lint(&source.text, &settings, symbols) {
                 Ok(findings) => batch.lint.push((source, findings)),
 
                 Err(error) => batch.findings.push(
@@ -54,64 +112,16 @@ pub(super) fn run(
     started: Instant,
     pool: &Pool,
 ) -> Result<u8> {
-    let workspace = &project.workspace;
-    let context = Context::new(workspace);
-    let mut frontend = Frontend::new(&context, false)?;
-    let modules: Vec<_> = project.selected.keys().cloned().collect();
-
     let corrections =
         matches!(&arguments.command, Command::Lint(lint) if lint.fix || lint.fix_preview);
 
     execution::session(arguments, project, watcher, started, |dirty, progress| {
-        for module in dirty {
-            frontend.invalidate(module)?;
-        }
-
         let Response::Completed(mut batch) = pool.execute(dirty, progress)? else {
             return Ok(Response::Reload);
         };
 
-        let mut pending: BTreeMap<_, _> = mem::take(&mut batch.lint)
-            .into_iter()
-            .map(|(source, findings)| (source.module.clone(), (source, findings)))
-            .collect();
-
-        let mut files = BTreeMap::new();
-
-        batch.append(Batch::collect(&modules, progress, |module| {
-            let Some((source, mut findings)) = pending.remove(module) else {
-                return Ok(Batch::default());
-            };
-
-            let analysis = frontend.lint(module)?;
-
-            if workspace.snapshot(module).as_deref() != Some(source.text.as_ref()) {
-                bail!("{module}: source changed between lint passes");
-            }
-
-            let blocked = analysis
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.blocking);
-
-            let mut completed = checking::diagnostics(
-                workspace,
-                analysis
-                    .diagnostics
-                    .into_iter()
-                    .filter(|diagnostic| diagnostic.blocking),
-                &mut files,
-            )?;
-
-            let settings = workspace.linting(module)?;
-
-            let warnings: Vec<_> = analysis
-                .warnings
-                .into_iter()
-                .filter(|warning| warning.diagnostic.module == module)
-                .collect();
-
-            findings.extend(instar_lint::analyze(&source.text, &warnings, &settings)?);
+        for (source, mut findings) in mem::take(&mut batch.lint) {
+            let mut completed = Batch::default();
 
             if let Err(error) = instar_lint::suppress(&source.text, &mut findings) {
                 completed.findings.push(
@@ -121,10 +131,11 @@ pub(super) fn run(
                         .with_labels(vec![Label::primary(source, error.range)]),
                 );
 
-                return Ok(completed);
+                batch.append(completed);
+                continue;
             }
 
-            if corrections && !blocked {
+            if corrections {
                 let text = instar_lint::apply(&source.text, &findings)?;
 
                 completed.outputs.push(Output {
@@ -155,8 +166,8 @@ pub(super) fn run(
                         )])
                 }));
 
-            Ok(completed)
-        }));
+            batch.append(completed);
+        }
 
         Ok(Response::Completed(batch))
     })

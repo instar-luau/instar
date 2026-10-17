@@ -1,4 +1,4 @@
-use std::{num::NonZeroUsize, path::PathBuf};
+use std::{collections::BTreeMap, num::NonZeroUsize, path::PathBuf};
 
 use clap::{ColorChoice, Parser, Subcommand};
 
@@ -192,10 +192,17 @@ impl Command {
         if let Self::Lint(lint) = self
             && !lint.rule.is_empty()
         {
-            overrides.push(format!(
-                "lint.selected={}",
-                serde_json::to_string(&lint.rule)?
-            ));
+            let rules: BTreeMap<_, _> = instar_lint::rules()
+                .map(str::to_owned)
+                .chain(lint.rule.iter().cloned())
+                .map(|name| {
+                    let enabled = lint.rule.contains(&name);
+
+                    (name, BTreeMap::from([("enabled", enabled)]))
+                })
+                .collect();
+
+            overrides.push(format!("lint.rules={}", serde_json::to_string(&rules)?));
         }
 
         Ok(overrides)

@@ -56,7 +56,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         .file("native/host.cpp")
         .file("native/environment.cpp")
         .file("native/diagnostic.cpp")
-        .file("native/linting.cpp")
         .file("native/capabilities.cpp")
         .file("native/flags.cpp")
         .file("native/instances.cpp")

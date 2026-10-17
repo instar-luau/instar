@@ -1,20 +1,21 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use figment::{Figment, providers::Serialized};
 use instar_configuration::linting::{Configuration, Preset, Severity};
 use regex::Regex;
 use serde::{Deserialize, de::DeserializeOwned};
 
-use crate::catalog::RULES;
+use crate::{analysis, catalog::RULES, syntax};
 
 /// Validated rule policies for one configuration scope.
 #[derive(Clone, Debug)]
 pub struct Prepared {
     pub(crate) rules: BTreeMap<String, Policy>,
+    pub(crate) syntax: bool,
+    pub(crate) analysis: bool,
     pub(crate) unused: Unused,
     pub(crate) ignored: Regex,
     pub(crate) immutable: Immutable,
-    pub(crate) deprecated: Deprecated,
     pub(crate) globals: BTreeMap<String, String>,
     pub(crate) imports: BTreeMap<String, String>,
 }
@@ -37,13 +38,6 @@ pub(crate) struct Unused {
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct Immutable {
     pub(crate) mutated_tables_stay_local: bool,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub(crate) struct Deprecated {
-    pub(crate) paths: BTreeMap<String, String>,
-    pub(crate) ambiguous_methods: bool,
 }
 
 #[derive(Default, Deserialize)]
@@ -81,11 +75,7 @@ impl Prepared {
                     definition.name.clone(),
                     Policy {
                         enabled: definition.enabled,
-                        severity: if definition.upstream && configuration.upstream_errors {
-                            Severity::Error
-                        } else {
-                            Severity::Warning
-                        },
+                        severity: Severity::Warning,
                     },
                 )
             })
@@ -126,7 +116,6 @@ impl Prepared {
                     name.as_str(),
                     "unused_variable"
                         | "prefer_const"
-                        | "deprecated"
                         | "restricted_globals"
                         | "restricted_module_paths"
                 ) && !parameters.parameters.is_empty()
@@ -136,40 +125,14 @@ impl Prepared {
             }
         }
 
-        if let Some(selected) = &configuration.selected {
-            for name in selected {
-                if !rules.contains_key(name) {
-                    return Err(invalid(format!("unknown lint rule {name}")));
-                }
-            }
-
-            let selected: BTreeSet<_> = selected.iter().collect();
-
-            for (name, policy) in &mut rules {
-                policy.enabled = selected.contains(name);
-            }
-        }
-
         let unused: Unused = parameters(configuration, "unused_variable")?;
 
         let ignored = Regex::new(&unused.ignore_pattern)
             .map_err(|error| invalid(format!("unused_variable.ignore_pattern: {error}")))?;
 
         let immutable = parameters(configuration, "prefer_const")?;
-        let deprecated: Deprecated = parameters(configuration, "deprecated")?;
         let globals: Globals = parameters(configuration, "restricted_globals")?;
         let imports: Imports = parameters(configuration, "restricted_module_paths")?;
-
-        for (name, replacement) in &deprecated.paths {
-            if !name.split('.').all(identifier)
-                || replacement.trim().is_empty()
-                || replacement.contains('\0')
-            {
-                return Err(invalid(format!(
-                    "invalid deprecated symbol or replacement: {name}"
-                )));
-            }
-        }
 
         for (name, reason) in globals.names.iter().chain(&imports.paths) {
             if name.trim().is_empty()
@@ -186,19 +149,22 @@ impl Prepared {
             return Err(invalid("invalid restricted global name"));
         }
 
+        rules.retain(|_, policy| policy.enabled);
+
         Ok(Self {
+            syntax: syntax::RULES.iter().any(|name| rules.contains_key(*name)),
+            analysis: analysis::RULES.iter().any(|name| rules.contains_key(*name)),
             rules,
             unused,
             ignored,
             immutable,
-            deprecated,
             globals: globals.names,
             imports: imports.paths,
         })
     }
 
     pub(crate) fn enabled(&self, name: &str) -> Option<&Policy> {
-        self.rules.get(name).filter(|policy| policy.enabled)
+        self.rules.get(name)
     }
 }
 

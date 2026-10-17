@@ -100,7 +100,7 @@ pub(super) fn run(
     project: &Project,
     overrides: &[String],
     requested: Option<NonZeroUsize>,
-    execute: fn(&Workspace, Worker<'_>) -> Result<()>,
+    execute: impl Fn(&Workspace, Worker<'_>) -> Result<()> + Sync,
     session: impl FnOnce(&Pool) -> Result<u8>,
 ) -> Result<u8> {
     let modules: Vec<_> = project.selected.keys().cloned().collect();

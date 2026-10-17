@@ -105,14 +105,18 @@ pub(super) fn run(arguments: &Arguments) -> Result<u8> {
                     },
                 ),
 
-                Command::Lint(lint) => workers::run(
-                    arguments,
-                    &project,
-                    &overrides,
-                    lint.jobs,
-                    linting::syntax,
-                    |pool| linting::run(arguments, &project, watcher.as_mut(), started, pool),
-                ),
+                Command::Lint(lint) => {
+                    let environments = linting::prepare(&project);
+
+                    workers::run(
+                        arguments,
+                        &project,
+                        &overrides,
+                        lint.jobs,
+                        |workspace, worker| linting::syntax(workspace, worker, &environments),
+                        |pool| linting::run(arguments, &project, watcher.as_mut(), started, pool),
+                    )
+                }
             }
         });
 
