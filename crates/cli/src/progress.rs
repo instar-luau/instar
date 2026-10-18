@@ -85,6 +85,15 @@ impl Progress {
 
     pub(super) fn reset(&self, files: usize) {
         *self.state.lock().expect("progress state") = State::default();
+
+        self.bar.set_prefix(
+            console::style(self.action)
+                .for_stderr()
+                .cyan()
+                .bold()
+                .to_string(),
+        );
+
         self.bar.reset();
 
         if self.concurrent {
@@ -94,6 +103,19 @@ impl Progress {
         }
 
         self.update(&State::default());
+    }
+
+    pub(super) fn writing(&self, files: usize) -> Self {
+        let progress = Self {
+            state: Arc::default(),
+            action: "writing",
+            ..self.clone()
+        };
+
+        progress.reset(files);
+        progress.bar.force_draw();
+
+        progress
     }
 
     pub(super) fn start(&self, module: &str) {
@@ -148,6 +170,10 @@ impl Progress {
 
     pub(super) fn files(&self) -> usize {
         self.state.lock().expect("progress state").completed.len()
+    }
+
+    pub(super) fn suspend<Value>(&self, execute: impl FnOnce() -> Value) -> Value {
+        self.bar.suspend(execute)
     }
 
     pub(super) fn clear(&self) {

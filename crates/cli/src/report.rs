@@ -466,6 +466,20 @@ fn publish(
     outputs: Vec<Output>,
     summary: &mut Summary,
 ) -> Result<()> {
+    let writing = if check || preview {
+        None
+    } else {
+        let files = outputs
+            .iter()
+            .filter(|proposed| {
+                project.stdin_module.as_ref() == Some(&proposed.source.module)
+                    || proposed.text != proposed.source.text.as_ref()
+            })
+            .count();
+
+        (files != 0).then(|| project.progress.writing(files))
+    };
+
     let mut output = io::stdout().lock();
 
     for proposed in outputs {
@@ -493,20 +507,24 @@ fn publish(
                     console::style(path.display()).for_stderr().magenta()
                 );
             }
-        } else if !preview {
+        } else if let Some(writing) = &writing {
             if project.stdin_module.as_ref() == Some(&proposed.source.module) {
-                output
-                    .write_all(proposed.text.as_bytes())
+                writing
+                    .process(&proposed.source.module, || {
+                        output.write_all(proposed.text.as_bytes())
+                    })
                     .wrap_err("cannot write source to stdout")?;
             } else if different
-                && let Err(error) = project.workspace.write(
-                    &proposed.source.module,
-                    &proposed.source.text,
-                    &proposed.text,
-                )
+                && let Err(error) = writing.process(&proposed.source.module, || {
+                    project.workspace.write(
+                        &proposed.source.module,
+                        &proposed.source.text,
+                        &proposed.text,
+                    )
+                })
             {
                 summary.failures += 1;
-                failure(&Report::new(error));
+                writing.suspend(|| failure(&Report::new(error)));
             }
         }
     }

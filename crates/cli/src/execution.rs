@@ -201,7 +201,9 @@ pub(super) fn session(
             watcher.observe(mem::take(&mut batch.dependencies), false)?;
         }
 
-        let summary = batch.report(operation, project, &selected)?;
+        let result = batch.report(operation, project, &selected);
+        progress.clear();
+        let summary = result?;
 
         summary.report(arguments, operation, progress.files(), started);
         let status = summary.status(operation);
