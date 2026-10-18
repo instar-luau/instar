@@ -152,7 +152,11 @@ impl Renderer<'_, '_> {
                         self.column + usize::from(self.space)
                     };
 
-                    let layout = if choice.prefix { Layout::Prefix } else { Layout::Fit };
+                    let layout = if choice.prefix {
+                        Layout::Prefix
+                    } else {
+                        Layout::Fit
+                    };
 
                     let selected = if matches!(mode, Some(Layout::Fit))
                         || self.fits(&choice.probe, column, layout, None)

@@ -18,12 +18,9 @@ impl Protection<'_> {
 
         for item in document {
             if let Document::Choice(choice) = &item
-                && self
-                    .regions
-                    .iter()
-                    .all(|region| {
-                        region.end <= choice.range.start || choice.range.end <= region.start
-                    })
+                && self.regions.iter().all(|region| {
+                    region.end <= choice.range.start || choice.range.end <= region.start
+                })
             {
                 self.active = false;
                 result.push(item);
