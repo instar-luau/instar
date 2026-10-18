@@ -146,6 +146,10 @@ impl Builder<'_, '_> {
             _ => {}
         }
 
+        if end == start + 1 {
+            return vec![Document::Token(TokenIndex::new(start))];
+        }
+
         self.sequence(start..end, &self.tree.children(index))
     }
 

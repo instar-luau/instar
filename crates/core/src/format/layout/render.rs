@@ -145,27 +145,21 @@ impl Renderer<'_, '_> {
                     self.render(content, selected, Some(&next));
                 }
 
-                Document::Choice {
-                    prefix,
-                    probe,
-                    inline,
-                    expanded,
-                    ..
-                } => {
+                Document::Choice(choice) => {
                     let column = if self.lines > 0 || !self.emitted {
                         self.indentation * self.configuration.indent_width.get()
                     } else {
                         self.column + usize::from(self.space)
                     };
 
-                    let layout = if *prefix { Layout::Prefix } else { Layout::Fit };
+                    let layout = if choice.prefix { Layout::Prefix } else { Layout::Fit };
 
                     let selected = if matches!(mode, Some(Layout::Fit))
-                        || self.fits(probe, column, layout, None)
+                        || self.fits(&choice.probe, column, layout, None)
                     {
-                        inline
+                        &choice.inline
                     } else {
-                        expanded
+                        &choice.expanded
                     };
 
                     self.render(selected, mode, Some(&next));
@@ -297,7 +291,7 @@ impl Renderer<'_, '_> {
                     }
                 }
 
-                Document::Choice { .. } => return false,
+                Document::Choice(_) => return false,
             }
         }
 
@@ -592,6 +586,12 @@ fn replacements(sources: &[Option<Vec<u8>>]) -> Result<Vec<Option<Box<Replacemen
 }
 
 fn columns(bytes: &[u8], mut column: usize, tab_width: usize) -> (usize, usize) {
+    if bytes.iter().all(|byte| (b' '..=b'~').contains(byte)) {
+        let column = column + bytes.len();
+
+        return (column, column);
+    }
+
     let mut maximum = column;
 
     for segment in bytes.split_inclusive(|byte| matches!(byte, b'\n' | b'\t')) {

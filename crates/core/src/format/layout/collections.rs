@@ -1,4 +1,4 @@
-use std::{iter, ops::Range};
+use std::{iter, ops::Range, rc::Rc};
 
 use vermis::{
     token::{Symbol, TokenKind},
@@ -6,7 +6,7 @@ use vermis::{
 };
 
 use super::{
-    document::{Document, Layout},
+    document::{Choice, Document, Layout},
     plan::Builder,
 };
 
@@ -186,18 +186,31 @@ impl Builder<'_, '_> {
                 connection.extend(values_list.content);
                 connection.extend(self.sequence(value_end..range.end, &[]));
 
-                vec![Document::Choice {
+                let inline: Rc<[Document]> = connection.clone().into();
+
+                vec![Document::Choice(Box::new(Choice {
                     range: end..range.end,
                     prefix: true,
-                    probe: connection.clone().into(),
-                    inline: connection.clone().into(),
+                    probe: Rc::clone(&inline),
+                    inline,
                     expanded: vec![Document::Indent {
                         conditional: false,
                         content: iter::once(Document::Line(1)).chain(connection).collect(),
                     }]
                     .into(),
-                }]
+                }))]
             };
+
+            if bindings.continuation == bindings.content.len() {
+                prefix.extend(bindings.content);
+
+                return iter::once(Document::Group {
+                    layout: Layout::Fit,
+                    content: prefix,
+                })
+                .chain(values)
+                .collect();
+            }
 
             let mut probe = prefix.clone();
             probe.extend(bindings.content.clone());
@@ -212,24 +225,20 @@ impl Builder<'_, '_> {
             let mut continuation = continued.split_off(bindings.continuation);
             prefix.extend(continued);
 
-            if continuation.is_empty() {
-                prefix.extend(values);
-            } else {
-                continuation.extend(values);
+            continuation.extend(values);
 
-                prefix.push(Document::Indent {
-                    conditional: false,
-                    content: continuation,
-                });
-            }
+            prefix.push(Document::Indent {
+                conditional: false,
+                content: continuation,
+            });
 
-            return vec![Document::Choice {
+            return vec![Document::Choice(Box::new(Choice {
                 range,
                 prefix: false,
                 probe: probe.into(),
                 inline: inline.into(),
                 expanded: prefix.into(),
-            }];
+            }))];
         }
 
         let mut content = Vec::new();

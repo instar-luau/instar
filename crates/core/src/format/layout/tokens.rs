@@ -205,7 +205,15 @@ impl Builder<'_, '_> {
                 result.extend(self.gap(previous, start));
             }
 
-            result.extend(self.node(child));
+            match node.kind {
+                NodeKind::Name { token }
+                | NodeKind::Number { token }
+                | NodeKind::String { token }
+                | NodeKind::Boolean { token }
+                | NodeKind::Nil { token } => result.push(Document::Token(token)),
+
+                _ => result.extend(self.node(child)),
+            }
 
             let end = if matches!(node.kind, NodeKind::Attributes { .. })
                 && !self.inline_attributes[child.get()]

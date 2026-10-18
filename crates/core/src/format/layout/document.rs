@@ -12,6 +12,15 @@ pub(super) enum Layout {
 }
 
 #[derive(Clone)]
+pub(super) struct Choice {
+    pub(super) range: Range<usize>,
+    pub(super) prefix: bool,
+    pub(super) probe: Rc<[Document]>,
+    pub(super) inline: Rc<[Document]>,
+    pub(super) expanded: Rc<[Document]>,
+}
+
+#[derive(Clone)]
 pub(super) enum Document {
     Token(TokenIndex),
     Verbatim(Range<usize>),
@@ -30,11 +39,5 @@ pub(super) enum Document {
         content: Vec<Self>,
     },
 
-    Choice {
-        range: Range<usize>,
-        prefix: bool,
-        probe: Rc<[Self]>,
-        inline: Rc<[Self]>,
-        expanded: Rc<[Self]>,
-    },
+    Choice(Box<Choice>),
 }

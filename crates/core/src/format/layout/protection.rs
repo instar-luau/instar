@@ -17,11 +17,13 @@ impl Protection<'_> {
         let mut result = Vec::with_capacity(document.len());
 
         for item in document {
-            if let Document::Choice { range, .. } = &item
+            if let Document::Choice(choice) = &item
                 && self
                     .regions
                     .iter()
-                    .all(|region| region.end <= range.start || range.end <= region.start)
+                    .all(|region| {
+                        region.end <= choice.range.start || choice.range.end <= region.start
+                    })
             {
                 self.active = false;
                 result.push(item);
@@ -72,24 +74,11 @@ impl Protection<'_> {
                     }
                 }
 
-                Document::Choice {
-                    range,
-                    prefix,
-                    probe,
-                    inline,
-                    expanded,
-                } => {
+                Document::Choice(mut choice) => {
                     let mut alternative = self.clone();
-                    let inline = self.apply(inline.to_vec()).into();
-                    let expanded = alternative.apply(expanded.to_vec()).into();
-
-                    result.push(Document::Choice {
-                        range,
-                        prefix,
-                        probe,
-                        inline,
-                        expanded,
-                    });
+                    choice.inline = self.apply(choice.inline.to_vec()).into();
+                    choice.expanded = alternative.apply(choice.expanded.to_vec()).into();
+                    result.push(Document::Choice(choice));
                 }
 
                 other => {
