@@ -18,13 +18,17 @@ pub enum Error {
     #[error("workspace operation cancelled")]
     Cancelled,
 
-    /// A release asset could not be downloaded.
+    /// A workspace asynchronous runtime could not start.
+    #[error("cannot start workspace runtime")]
+    Runtime(#[source] io::Error),
+
+    /// An asset could not be downloaded.
     #[error("cannot download `{url}`")]
     Download {
-        /// The release asset URL.
+        /// The asset URL.
         url: String,
-        /// The process, network, or HTTP failure.
-        source: io::Error,
+        /// The client, network, or HTTP failure.
+        source: reqwest::Error,
     },
 
     /// A sourcemap generator could not run successfully.

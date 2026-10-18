@@ -1,16 +1,19 @@
 use std::{
+    fmt::Write as _,
     fs::{self, File, OpenOptions, TryLockError},
-    io,
+    io::{self, Write as _},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
-    thread,
     time::Duration,
 };
 
-use super::{Error, Workspace, environment, paths, process};
+use reqwest::Client;
+use sha2::{Digest as _, Sha256};
+use tokio::{runtime::Builder, time};
 
-const FILES: [&str; 7] = [
-    "metadata.json",
+use super::{Error, Workspace, environment, process};
+
+const ADDRESS: &str = "https://instar-luau.github.io/instar/roblox";
+const FILES: [&str; 6] = [
     "documentation.json",
     "enumerations.d.luau",
     "none.d.luau",
@@ -31,17 +34,29 @@ pub(super) fn directory(workspace: &Workspace) -> Result<PathBuf, Error> {
         .join("instar")
         .join("roblox");
 
-    let version = env!("CARGO_PKG_VERSION");
-    let directory = parent.join(version);
-
-    if exists(&directory)? {
-        return Ok(directory);
-    }
-
     fs::create_dir_all(&parent).map_err(|source| filesystem(&parent, source))?;
 
-    let lock_path = parent.join(format!("{version}.lock"));
+    let runtime = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(Error::Runtime)?;
 
+    runtime.block_on(async {
+        tokio::select! {
+            biased;
+
+            () = async {
+                while !cancelled() {
+                    time::sleep(Duration::from_millis(50)).await;
+                }
+            } => Err(Error::Cancelled),
+            result = acquire(&parent, cancelled) => result,
+        }
+    })
+}
+
+async fn acquire(parent: &Path, cancelled: fn() -> bool) -> Result<PathBuf, Error> {
+    let lock_path = parent.join("lock");
     let lock = OpenOptions::new()
         .read(true)
         .write(true)
@@ -55,87 +70,125 @@ pub(super) fn directory(workspace: &Workspace) -> Result<PathBuf, Error> {
 
         match lock.try_lock() {
             Ok(()) => break,
-            Err(TryLockError::WouldBlock) => thread::sleep(Duration::from_millis(50)),
+            Err(TryLockError::WouldBlock) => time::sleep(Duration::from_millis(50)).await,
             Err(TryLockError::Error(source)) => return Err(filesystem(&lock_path, source)),
         }
     }
 
-    if exists(&directory)? {
-        return Ok(directory);
-    }
-
-    let staging = tempfile::tempdir_in(&parent).map_err(|source| filesystem(&parent, source))?;
+    let cached = cached(parent)?;
+    let staging = tempfile::tempdir_in(parent).map_err(|source| filesystem(parent, source))?;
     let bundle = staging.path().join("bundle");
     fs::create_dir(&bundle).map_err(|source| filesystem(&bundle, source))?;
-    let diagnostics = staging.path().join("diagnostics");
 
-    for filename in FILES {
-        process::interrupted(cancelled)?;
+    let client = Client::builder()
+        .https_only(true)
+        .connect_timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(300))
+        .build()
+        .map_err(|source| Error::Download {
+            url: ADDRESS.to_owned(),
+            source,
+        })?;
+    let metadata = bundle.join("metadata.json");
 
-        let url = format!(
-            "https://github.com/instar-luau/instar/releases/download/v{version}/roblox-{filename}"
-        );
+    if let Err(error) = download(&client, "metadata.json", &metadata, cancelled).await {
+        if matches!(error, Error::Download { .. })
+            && let Some(directory) = cached
+        {
+            process::interrupted(cancelled)?;
+            tracing::warn!(%error, "cannot refresh Roblox assets; using cached bundle");
+            return Ok(directory);
+        }
 
-        download(&url, &bundle.join(filename), &diagnostics, cancelled)?;
+        return Err(error);
     }
 
-    environment::validate(&bundle, cancelled)?;
+    let contents = fs::read(&metadata).map_err(|source| filesystem(&metadata, source))?;
+    let mut identity = String::with_capacity(64);
+
+    for byte in Sha256::digest(&contents) {
+        write!(identity, "{byte:02x}").expect("internal error: cannot write to a string");
+    }
+
+    let directory = parent.join(&identity);
+
+    if !exists(&directory)? {
+        for filename in FILES {
+            download(&client, filename, &bundle.join(filename), cancelled).await?;
+        }
+
+        environment::validate(&bundle, cancelled)?;
+        process::interrupted(cancelled)?;
+        fs::rename(&bundle, &directory).map_err(|source| filesystem(&directory, source))?;
+    }
+
     process::interrupted(cancelled)?;
-    fs::rename(&bundle, &directory).map_err(|source| filesystem(&directory, source))?;
+
+    if cached.as_ref() != Some(&directory) {
+        let pointer = parent.join("current");
+        let mut staged =
+            tempfile::NamedTempFile::new_in(parent).map_err(|source| filesystem(parent, source))?;
+
+        staged
+            .write_all(identity.as_bytes())
+            .map_err(|source| filesystem(&pointer, source))?;
+        staged
+            .as_file()
+            .sync_all()
+            .map_err(|source| filesystem(&pointer, source))?;
+        staged
+            .persist(&pointer)
+            .map_err(|error| filesystem(&pointer, error.error))?;
+    }
 
     Ok(directory)
 }
 
-fn download(
-    url: &str,
+async fn download(
+    client: &Client,
+    filename: &str,
     destination: &Path,
-    diagnostics: &Path,
     cancelled: fn() -> bool,
 ) -> Result<(), Error> {
+    process::interrupted(cancelled)?;
+
+    let url = format!("{ADDRESS}/{filename}");
     let failure = |source| Error::Download {
-        url: url.to_owned(),
+        url: url.clone(),
         source,
     };
 
-    let diagnostic = File::create(diagnostics).map_err(|source| filesystem(diagnostics, source))?;
+    let response = client.get(&url).send().await.map_err(failure)?;
+    let mut response = response.error_for_status().map_err(failure)?;
+    let mut file = File::create(destination).map_err(|source| filesystem(destination, source))?;
 
-    let mut child = Command::new("curl")
-        .args([
-            "--disable",
-            "--fail",
-            "--silent",
-            "--show-error",
-            "--location",
-            "--proto",
-            "=https",
-            "--proto-redir",
-            "=https",
-            "--connect-timeout",
-            "30",
-            "--max-time",
-            "300",
-            "--output",
-        ])
-        .arg(destination)
-        .arg(url)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(diagnostic)
-        .spawn()
-        .map_err(failure)?;
+    while let Some(chunk) = response.chunk().await.map_err(failure)? {
+        process::interrupted(cancelled)?;
 
-    let status = process::wait(&mut child, cancelled, failure)?;
-
-    if !status.success() {
-        let diagnostic = paths::read(diagnostics)?;
-
-        return Err(failure(io::Error::other(format!(
-            "curl exited with {status}: {}",
-            diagnostic.trim()
-        ))));
+        file.write_all(&chunk)
+            .map_err(|source| filesystem(destination, source))?;
     }
 
     Ok(())
+}
+
+fn cached(parent: &Path) -> Result<Option<PathBuf>, Error> {
+    let pointer = parent.join("current");
+    let identity = match fs::read_to_string(&pointer) {
+        Ok(identity) => identity,
+        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => return Err(filesystem(&pointer, source)),
+    };
+
+    if identity.len() != 64 || !identity.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(Error::Path {
+            path: pointer,
+            reason: "invalid cached asset identity",
+        });
+    }
+
+    let directory = parent.join(identity);
+    Ok(exists(&directory)?.then_some(directory))
 }
 
 fn exists(path: &Path) -> Result<bool, Error> {
