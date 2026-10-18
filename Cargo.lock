@@ -2608,9 +2608,9 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vermis"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10d01a2975a3cfdb3776e3d9773ad4bfbfb5bfc5db5da208fff185af2ff689ca"
+checksum = "47c9d5fb3db44786132fbea51c9713a30e897904cf6a0277083541621c8462cc"
 
 [[package]]
 name = "version_check"
