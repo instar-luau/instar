@@ -3,6 +3,8 @@ use std::{collections::BTreeMap, num::NonZeroUsize, path::PathBuf};
 use clap::{ColorChoice, Parser, Subcommand};
 use instar_core::lint;
 
+use super::schema::Association;
+
 #[derive(Parser)]
 #[command(version, about = "check, format, and lint Luau projects")]
 pub(super) struct Arguments {
@@ -43,8 +45,16 @@ pub(super) enum Command {
     #[command(flatten)]
     Files(Box<Operation>),
 
-    #[command(about = "print the instar.toml JSON Schema")]
-    Schema,
+    #[command(about = "print or associate the instar.toml JSON Schema")]
+    Schema {
+        #[arg(
+            long,
+            value_enum,
+            value_name = "TOOL",
+            help = "associate instar.toml in the current directory's TOML tool configuration"
+        )]
+        associate: Option<Association>,
+    },
 }
 
 #[derive(Subcommand)]

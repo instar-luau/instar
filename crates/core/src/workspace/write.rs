@@ -40,7 +40,11 @@ impl Workspace {
     }
 }
 
-fn replace(path: &Path, original: &str, proposed: &str) -> io::Result<()> {
+/// Atomically replace a regular, writable file while preserving its permissions.
+///
+/// # Errors
+/// Returns concurrent changes, locking failures, or filesystem errors.
+pub fn replace(path: &Path, original: &str, proposed: &str) -> io::Result<()> {
     let metadata = fs::symlink_metadata(path)?;
 
     if !metadata.is_file() || metadata.permissions().readonly() {
@@ -75,20 +79,20 @@ fn replace(path: &Path, original: &str, proposed: &str) -> io::Result<()> {
         .read_to_end(&mut current)?;
 
     if current != original.as_bytes() {
-        return Err(io::Error::other("source changed since formatting"));
+        return Err(io::Error::other("file changed before replacement"));
     }
 
     let current_metadata = fs::symlink_metadata(path)?;
 
     if !current_metadata.is_file() || current_metadata.permissions() != metadata.permissions() {
         return Err(io::Error::other(
-            "write destination changed since formatting",
+            "write destination changed before replacement",
         ));
     }
 
     if Handle::from_file(file.try_clone()?)? != Handle::from_path(path)? {
         return Err(io::Error::other(
-            "write destination changed since formatting",
+            "write destination changed before replacement",
         ));
     }
 

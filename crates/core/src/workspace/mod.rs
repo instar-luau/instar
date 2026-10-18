@@ -19,4 +19,5 @@ pub use self::{
     error::Error,
     model::Workspace,
     selection::{Access, Purpose},
+    write::replace,
 };

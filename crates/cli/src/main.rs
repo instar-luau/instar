@@ -23,7 +23,7 @@ fn main() -> ExitCode {
 
     let result = report::initialize(arguments.color, arguments.verbose).and_then(|()| {
         match &arguments.command {
-            Command::Schema => schema::run(),
+            Command::Schema { associate } => schema::run(*associate),
 
             Command::Files(operation) => {
                 interrupt::initialize()?;
