@@ -43,7 +43,9 @@ pub(super) fn run(
                 started,
                 |selected, dirty, _, progress| {
                     if selected != &project.selected {
-                        return Ok(execution::Response::Reload);
+                        return Ok(execution::Response::Reload {
+                            configuration: false,
+                        });
                     }
 
                     pool.execute(dirty, progress)

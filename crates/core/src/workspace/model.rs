@@ -11,7 +11,7 @@ use instar_luau::Context;
 use serde_json::Value;
 
 use super::{
-    Error, discovery,
+    Error, Generators, discovery,
     environment::{self, Registry},
     host, instances, paths,
     selection::{self, Access, Purpose, Selection},
@@ -37,6 +37,7 @@ pub struct Workspace {
     pub(super) observed_paths: RefCell<BTreeSet<PathBuf>>,
     pub(super) environments: RefCell<Registry>,
     pub(super) cancelled: fn() -> bool,
+    pub(super) generation: Option<Generators>,
 }
 
 impl Workspace {
@@ -62,6 +63,7 @@ impl Workspace {
             observed_paths: RefCell::new(BTreeSet::new()),
             environments: RefCell::new(Registry::default()),
             cancelled: || false,
+            generation: None,
         };
 
         workspace.reload()?;
@@ -69,10 +71,19 @@ impl Workspace {
         Ok(workspace)
     }
 
-    /// Use the supplied callback to cancel background asset acquisition.
+    /// Use the supplied callback to cancel background workspace operations.
     #[must_use]
     pub fn with_cancellation(mut self, cancelled: fn() -> bool) -> Self {
         self.cancelled = cancelled;
+
+        self
+    }
+
+    /// Share persistent sourcemap producers with this workspace.
+    #[must_use]
+    pub fn with_generators(mut self, generators: Generators) -> Self {
+        self.generation = Some(generators);
+        *self.instances.get_mut() = instances::Registry::default();
 
         self
     }

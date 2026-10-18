@@ -36,7 +36,9 @@ impl Worker<'_> {
             for module in &request.dirty {
                 if workspace.requires_reload(module)? {
                     self.responses
-                        .send(Response::Reload)
+                        .send(Response::Reload {
+                            configuration: true,
+                        })
                         .wrap_err("cannot send worker response")?;
 
                     return Ok(());
@@ -47,7 +49,6 @@ impl Worker<'_> {
 
             let mut batch = execute(self.modules, &request.progress)?;
             batch.dependencies = workspace.dependencies();
-            batch.generators = workspace.generated();
 
             if self.responses.send(Response::Completed(batch)).is_err() {
                 break;
@@ -84,7 +85,7 @@ impl Pool {
         }
 
         let mut batch = Batch::default();
-        let mut reload = false;
+        let mut configuration = None;
 
         for connection in &self.connections {
             match connection
@@ -93,15 +94,18 @@ impl Pool {
                 .wrap_err("cannot receive worker response")?
             {
                 Response::Completed(completed) => batch.append(completed),
-                Response::Reload => reload = true,
+
+                Response::Reload {
+                    configuration: changed,
+                } => *configuration.get_or_insert(false) |= changed,
             }
         }
 
-        Ok(if reload {
-            Response::Reload
-        } else {
-            Response::Completed(batch)
-        })
+        Ok(
+            configuration.map_or(Response::Completed(batch), |configuration| {
+                Response::Reload { configuration }
+            }),
+        )
     }
 }
 
@@ -130,6 +134,7 @@ pub(super) fn run(
     let options = operation.options();
     let overrides = &project.overrides;
     let stdin = project.stdin.as_ref();
+    let generation = project.generation.as_ref();
     let generated = project.workspace.generated();
 
     if arguments.verbose {
@@ -144,6 +149,11 @@ pub(super) fn run(
         let span = tracing::debug_span!("worker", files = worker.modules.len());
         let _entered = span.enter();
         let (mut workspace, _) = execution::open(root, options, overrides, stdin)?;
+
+        if let Some(generation) = generation {
+            workspace = workspace.with_generators(generation.clone());
+        }
+
         workspace.set_generated(generated.clone());
 
         execute(&workspace, worker)
@@ -196,6 +206,13 @@ pub(super) fn run(
                 session(&pool)
             }
         };
+
+        if (result.is_err() || failure.is_some())
+            && let Some(generation) = generation
+            && let Err(error) = generation.shutdown()
+        {
+            failure.get_or_insert_with(|| error.into());
+        }
 
         for thread in threads {
             match thread.join() {

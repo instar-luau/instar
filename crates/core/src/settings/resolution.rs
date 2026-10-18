@@ -28,7 +28,7 @@ pub struct Configuration {
     pub generator: Option<Generator>,
 }
 
-/// A sourcemap command and its source-relative inputs.
+/// A sourcemap command with streaming watch arguments.
 #[derive(
     Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd, Deserialize, JsonSchema, Serialize,
 )]
@@ -37,9 +37,8 @@ pub struct Generator {
     /// The executable and arguments; an empty list disables generation.
     pub command: Vec<String>,
 
-    /// Files whose changes require regenerating the sourcemap.
-    #[schemars(extend("items" = schema::path()))]
-    pub inputs: Vec<PathBuf>,
+    /// Additional arguments for watch mode, which emits one JSON sourcemap per line.
+    pub watch: Vec<String>,
 
     /// The directory of the configuration source defining the command.
     #[serde(skip)]

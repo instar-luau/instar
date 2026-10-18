@@ -1,21 +1,15 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::ErrorKind,
-    iter,
+    iter, mem,
     path::{Component, Path, PathBuf},
-    sync::{
-        Arc,
-        mpsc::{self, Receiver, RecvTimeoutError},
-    },
+    sync::mpsc::{self, Receiver, RecvTimeoutError},
     time::{Duration, Instant},
 };
 
 use eyre::{Result, WrapErr as _};
 
-use instar_core::{
-    settings::resolution::Generator,
-    workspace::{Workspace, configuration_files},
-};
+use instar_core::workspace::{Generators, Workspace, configuration_files};
 
 use notify::{
     ErrorKind as WatchErrorKind, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _,
@@ -32,7 +26,6 @@ pub(super) enum Change {
     },
 
     Reload {
-        generated: BTreeMap<Generator, Arc<str>>,
         started: Instant,
     },
 }
@@ -44,7 +37,7 @@ pub(super) struct Watcher {
     roots: BTreeSet<PathBuf>,
     reload: BTreeMap<PathBuf, bool>,
     observed: BTreeMap<PathBuf, PathBuf>,
-    generators: BTreeMap<Generator, Arc<str>>,
+    pub(super) generators: Generators,
     debounce: Duration,
     quiet: bool,
 }
@@ -100,7 +93,7 @@ impl Watcher {
             roots,
             reload: BTreeMap::new(),
             observed: BTreeMap::new(),
-            generators: BTreeMap::new(),
+            generators: Generators::new(interrupt::requested),
             debounce: Duration::from_millis(options.debounce),
             quiet,
         };
@@ -113,24 +106,15 @@ impl Watcher {
     pub(super) fn begin(&mut self, workspace: &Workspace) -> Result<()> {
         self.observed.clear();
         self.reload.clear();
-
-        self.generators.clear();
-        self.generated(workspace.generated())?;
         self.observe(workspace.reload_dependencies(), true)?;
         self.observe(workspace.dependencies(), false)?;
 
         Ok(())
     }
 
-    pub(super) fn generated(&mut self, generators: BTreeMap<Generator, Arc<str>>) -> Result<()> {
-        self.observe(
-            generators
-                .keys()
-                .flat_map(|generator| generator.inputs.iter().cloned()),
-            false,
-        )?;
-
-        self.generators.extend(generators);
+    pub(super) fn reset(&mut self) -> Result<()> {
+        let previous = mem::replace(&mut self.generators, Generators::new(interrupt::requested));
+        previous.shutdown()?;
 
         Ok(())
     }
@@ -213,7 +197,7 @@ impl Watcher {
     }
 
     pub(super) fn changed(&mut self, workspace: &Workspace) -> Result<Change> {
-        let events = self.wait(false)?;
+        let (events, generated) = self.wait(false)?;
         let started = Instant::now();
         let mut paths = BTreeSet::new();
         let mut discovery = false;
@@ -224,10 +208,9 @@ impl Watcher {
             if event.need_rescan() || event.paths.is_empty() {
                 tracing::debug!("reloading after filesystem rescan request");
 
-                return Ok(Change::Reload {
-                    generated: BTreeMap::new(),
-                    started,
-                });
+                self.reset()?;
+
+                return Ok(Change::Reload { started });
             }
 
             let structural = !modified(&event);
@@ -242,10 +225,9 @@ impl Watcher {
                     {
                         tracing::debug!(path = %path.display(), "reloading for workspace dependency");
 
-                        return Ok(Change::Reload {
-                            generated: BTreeMap::new(),
-                            started,
-                        });
+                        self.reset()?;
+
+                        return Ok(Change::Reload { started });
                     }
                 }
 
@@ -264,31 +246,10 @@ impl Watcher {
             }
         }
 
-        let mut generated = self.generators.clone();
-        let mut changed = false;
-
-        for (generator, previous) in &mut generated {
-            let mut regenerate = discovery;
-
-            for input in &generator.inputs {
-                let input = workspace.normalize(self.observed.get(input).unwrap_or(input))?;
-
-                regenerate |= paths.iter().any(|path| {
-                    Path::new(path).starts_with(&input) || Path::new(&input).starts_with(path)
-                });
-            }
-
-            if regenerate {
-                let source = workspace.generate(generator)?;
-                changed |= source != *previous;
-                *previous = source;
-            }
-        }
-
-        if changed {
+        if generated {
             tracing::debug!("reloading for generated sourcemaps");
 
-            return Ok(Change::Reload { generated, started });
+            return Ok(Change::Reload { started });
         }
 
         Ok(Change::Sources {
@@ -308,16 +269,23 @@ impl Watcher {
         }
     }
 
-    pub(super) fn wait(&mut self, recovery: bool) -> Result<Vec<Event>> {
+    pub(super) fn wait(&mut self, recovery: bool) -> Result<(Vec<Event>, bool)> {
         let mut events = Vec::new();
         let mut updated = Instant::now();
+        let mut generated = false;
 
         loop {
             interrupt::check()?;
 
+            if !recovery {
+                generated |= self.generators.advance()?;
+            }
+
             let remaining = self.debounce.saturating_sub(updated.elapsed());
 
-            let timeout = if events.is_empty() {
+            let timeout = if generated && events.is_empty() {
+                Duration::ZERO
+            } else if events.is_empty() {
                 interrupt::INTERVAL
             } else {
                 remaining.min(interrupt::INTERVAL)
@@ -327,7 +295,9 @@ impl Watcher {
                 Ok(event) => event.wrap_err("cannot observe filesystem changes")?,
 
                 Err(RecvTimeoutError::Timeout) => {
-                    if !events.is_empty() && updated.elapsed() >= self.debounce {
+                    if (generated && events.is_empty())
+                        || (!events.is_empty() && updated.elapsed() >= self.debounce)
+                    {
                         break;
                     }
 
@@ -361,7 +331,7 @@ impl Watcher {
             self.unwatch(&directory)?;
         }
 
-        Ok(events)
+        Ok((events, generated))
     }
 
     fn unwatch(&mut self, directory: &Path) -> Result<()> {
@@ -411,15 +381,6 @@ impl Watcher {
                     .reload
                     .keys()
                     .any(|dependency| path.starts_with(dependency))
-                || self
-                    .generators
-                    .keys()
-                    .flat_map(|generator| &generator.inputs)
-                    .any(|input| {
-                        let input = self.observed.get(input).unwrap_or(input);
-
-                        path.starts_with(input) || input.starts_with(path)
-                    })
             {
                 return Ok(true);
             }

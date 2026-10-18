@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, btree_map::Entry},
+    collections::{BTreeMap, BTreeSet},
     env, io, mem,
     path::{Path, PathBuf},
     sync::{
@@ -12,10 +12,7 @@ use std::{
 
 use eyre::{Result, WrapErr as _, bail};
 
-use instar_core::{
-    settings::resolution::Generator,
-    workspace::{Access, Purpose, Workspace},
-};
+use instar_core::workspace::{Access, Generators, Purpose, Workspace};
 
 use super::{
     arguments::{Arguments, Operation, Options},
@@ -27,6 +24,7 @@ use super::{
 
 pub(super) struct Project {
     pub(super) workspace: Workspace,
+    pub(super) generation: Option<Generators>,
     pub(super) overrides: Vec<String>,
     pub(super) selected: BTreeMap<String, PathBuf>,
     pub(super) stdin_module: Option<String>,
@@ -36,16 +34,13 @@ pub(super) struct Project {
 
 pub(super) enum Response {
     Completed(Batch),
-    Reload,
+    Reload { configuration: bool },
 }
 
 pub(super) enum Outcome {
     Completed(u8),
 
-    Reload {
-        generated: BTreeMap<Generator, Arc<str>>,
-        started: Instant,
-    },
+    Reload { started: Instant },
 }
 
 pub(super) fn run(arguments: &Arguments, operation: &Operation) -> Result<u8> {
@@ -102,60 +97,60 @@ pub(super) fn run(arguments: &Arguments, operation: &Operation) -> Result<u8> {
         .then(|| Watcher::new(&root, options, arguments.quiet))
         .transpose()?;
 
-    let mut generated = BTreeMap::new();
     let mut started = Instant::now();
 
-    loop {
-        interrupt::check()?;
+    let result = (|| {
+        loop {
+            interrupt::check()?;
 
-        let result = prepare(
-            arguments,
-            operation,
-            &root,
-            &overrides,
-            stdin.as_ref(),
-            watcher.as_mut(),
-            mem::take(&mut generated),
-        )
-        .and_then(|project| match operation {
-            Operation::Check(_) => {
-                check::run(arguments, operation, &project, watcher.as_mut(), started)
-            }
+            let result = prepare(
+                arguments,
+                operation,
+                &root,
+                &overrides,
+                stdin.as_ref(),
+                watcher.as_mut(),
+            )
+            .and_then(|project| match operation {
+                Operation::Check(_) => {
+                    check::run(arguments, operation, &project, watcher.as_mut(), started)
+                }
 
-            Operation::Format(_) => {
-                format::run(arguments, operation, &project, watcher.as_mut(), started)
-            }
+                Operation::Format(_) => {
+                    format::run(arguments, operation, &project, watcher.as_mut(), started)
+                }
 
-            Operation::Lint(_) => {
-                lint::run(arguments, operation, &project, watcher.as_mut(), started)
-            }
-        });
+                Operation::Lint(_) => {
+                    lint::run(arguments, operation, &project, watcher.as_mut(), started)
+                }
+            });
 
-        interrupt::check()?;
+            interrupt::check()?;
 
-        match result {
-            Ok(Outcome::Completed(status)) => return Ok(status),
+            match result {
+                Ok(Outcome::Completed(status)) => return Ok(status),
+                Ok(Outcome::Reload { started: reloaded }) => started = reloaded,
 
-            Ok(Outcome::Reload {
-                generated: snapshot,
-                started: reloaded,
-            }) => {
-                generated = snapshot;
-                started = reloaded;
-            }
+                Err(error) => {
+                    let Some(watcher) = &mut watcher else {
+                        return Err(error);
+                    };
 
-            Err(error) => {
-                let Some(watcher) = &mut watcher else {
-                    return Err(error);
-                };
-
-                report::failure(&error);
-                watcher.ready();
-                watcher.wait(true)?;
-                started = Instant::now();
+                    report::failure(&error);
+                    watcher.reset()?;
+                    watcher.ready();
+                    watcher.wait(true)?;
+                    started = Instant::now();
+                }
             }
         }
+    })();
+
+    if let Some(watcher) = watcher {
+        watcher.generators.shutdown()?;
     }
+
+    result
 }
 
 pub(super) fn session(
@@ -188,17 +183,20 @@ pub(super) fn session(
         progress.clear();
         interrupt::check()?;
 
-        let Response::Completed(mut batch) = result? else {
-            return Ok(Outcome::Reload {
-                generated: BTreeMap::new(),
-                started,
-            });
+        let mut batch = match result? {
+            Response::Completed(batch) => batch,
+
+            Response::Reload { configuration } => {
+                if configuration && let Some(watcher) = &mut watcher {
+                    watcher.reset()?;
+                }
+
+                return Ok(Outcome::Reload { started });
+            }
         };
 
         if let Some(watcher) = &mut watcher {
             batch.dependencies.extend(project.workspace.dependencies());
-            batch.generators.extend(project.workspace.generated());
-            watcher.generated(mem::take(&mut batch.generators))?;
             watcher.observe(project.workspace.reload_dependencies(), true)?;
             watcher.observe(mem::take(&mut batch.dependencies), false)?;
         }
@@ -222,8 +220,8 @@ pub(super) fn session(
                     started,
                 } => (paths, discovery, started),
 
-                Change::Reload { generated, started } => {
-                    return Ok(Outcome::Reload { generated, started });
+                Change::Reload { started } => {
+                    return Ok(Outcome::Reload { started });
                 }
             };
 
@@ -327,39 +325,40 @@ fn prepare(
     overrides: &[String],
     stdin: Option<&(PathBuf, Arc<str>)>,
     watcher: Option<&mut Watcher>,
-    mut generated: BTreeMap<Generator, Arc<str>>,
 ) -> Result<Project> {
     let options = operation.options();
     let (mut workspace, stdin_module) = open(root, options, overrides, stdin)?;
     let selected = select(operation, &workspace, stdin_module.as_deref())?;
     let progress = Progress::new(arguments, operation, workspace.directory())?;
 
-    if !matches!(operation, Operation::Format(_)) {
-        let generators = workspace.generators();
+    let generation = if matches!(operation, Operation::Format(_)) {
+        None
+    } else {
+        watcher.as_ref().map(|watcher| watcher.generators.clone())
+    };
 
-        if let Some(watcher) = watcher {
-            watcher.observe(workspace.reload_dependencies(), true)?;
-
-            watcher.observe(
-                generators
-                    .iter()
-                    .flat_map(|generator| generator.inputs.iter().cloned()),
-                false,
-            )?;
-        }
-
-        for generator in generators {
-            if let Entry::Vacant(entry) = generated.entry(generator) {
-                let source = workspace.generate(entry.key())?;
-                entry.insert(source);
-            }
-        }
+    if let Some(generation) = &generation {
+        workspace = workspace.with_generators(generation.clone());
     }
 
-    workspace.set_generated(generated);
+    if !matches!(operation, Operation::Format(_)) {
+        if let Some(watcher) = watcher {
+            watcher.observe(workspace.reload_dependencies(), true)?;
+        }
+
+        let mut generated = BTreeMap::new();
+
+        for generator in workspace.generators() {
+            let source = workspace.generate(&generator)?;
+            generated.insert(generator, source);
+        }
+
+        workspace.set_generated(generated);
+    }
 
     Ok(Project {
         workspace,
+        generation,
         overrides: overrides.to_owned(),
         selected,
         stdin_module,

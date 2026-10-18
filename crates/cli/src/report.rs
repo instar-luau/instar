@@ -24,7 +24,7 @@ use color_eyre::{
 
 use eyre::{Report, Result, WrapErr as _};
 
-use instar_core::{lint, settings::resolution::Generator, workspace::Error as WorkspaceError};
+use instar_core::{lint, workspace::Error as WorkspaceError};
 
 use similar::TextDiff;
 
@@ -53,7 +53,6 @@ pub(super) struct Batch {
     pub(super) outputs: Vec<Output>,
     pub(super) lint: Vec<(Source, Vec<lint::Finding>)>,
     pub(super) dependencies: BTreeSet<PathBuf>,
-    pub(super) generators: BTreeMap<Generator, Arc<str>>,
     failures: Vec<Report>,
 }
 
@@ -84,7 +83,6 @@ impl Batch {
         self.outputs.extend(batch.outputs);
         self.lint.extend(batch.lint);
         self.dependencies.extend(batch.dependencies);
-        self.generators.extend(batch.generators);
     }
 
     pub(super) fn report(

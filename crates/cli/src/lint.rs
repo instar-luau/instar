@@ -49,14 +49,18 @@ pub(super) fn run(
                 started,
                 |selected, dirty, _, progress| {
                     if selected != &project.selected {
-                        return Ok(Response::Reload);
+                        return Ok(Response::Reload {
+                            configuration: false,
+                        });
                     }
 
-                    let Response::Completed(batch) = pool.execute(dirty, progress)? else {
-                        return Ok(Response::Reload);
-                    };
+                    match pool.execute(dirty, progress)? {
+                        Response::Completed(batch) => {
+                            Ok(Response::Completed(complete(batch, corrections)?))
+                        }
 
-                    Ok(Response::Completed(complete(batch, corrections)?))
+                        response @ Response::Reload { .. } => Ok(response),
+                    }
                 },
             )
         },

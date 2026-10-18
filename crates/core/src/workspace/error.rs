@@ -1,4 +1,4 @@
-use std::{io, path::PathBuf};
+use std::{io, path::PathBuf, sync::Arc};
 
 use crate::lint;
 
@@ -48,6 +48,10 @@ pub enum Error {
         /// The JSON decoding failure.
         source: serde_json::Error,
     },
+
+    /// A shared sourcemap producer failed.
+    #[error(transparent)]
+    Generation(Arc<Self>),
 
     /// A directory traversal failed.
     #[error("cannot traverse workspace")]

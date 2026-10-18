@@ -78,23 +78,18 @@ pub(super) fn resolve(
             return Err(command.field("0").error("expected a nonempty executable"));
         }
 
-        for (index, argument) in generator.command.iter().enumerate() {
-            if argument.contains('\0') {
-                return Err(command
-                    .field(&index.to_string())
-                    .error("command arguments must not contain NUL"));
+        for (name, arguments) in [("command", &generator.command), ("watch", &generator.watch)] {
+            for (index, argument) in arguments.iter().enumerate() {
+                if argument.contains('\0') {
+                    return Err(source
+                        .field(name)
+                        .field(&index.to_string())
+                        .error("command arguments must not contain NUL"));
+                }
             }
         }
 
         command.base(base).clone_into(&mut generator.directory);
-
-        for (index, path) in generator.inputs.iter_mut().enumerate() {
-            anchor(
-                path,
-                &source.field("inputs").field(&index.to_string()),
-                base,
-            );
-        }
     }
 
     let environment = source.field("environment");

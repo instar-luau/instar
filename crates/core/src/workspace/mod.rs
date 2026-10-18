@@ -17,6 +17,7 @@ mod write;
 pub use self::{
     discovery::configuration_files,
     error::Error,
+    generation::Generators,
     model::Workspace,
     selection::{Access, Purpose},
     write::replace,
