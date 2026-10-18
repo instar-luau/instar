@@ -1,17 +1,17 @@
-use std::ops::Range;
+use std::{ops::Range, rc::Rc};
 
-use vermis::{
-    token::Symbol,
-    tree::{TokenIndex, Tree},
-};
+use vermis::{token::Symbol, tree::TokenIndex};
 
 #[derive(Copy, Clone)]
 pub(super) enum Layout {
     Fit,
+    Prefix,
+    Table,
     Vertical,
     Arguments,
 }
 
+#[derive(Clone)]
 pub(super) enum Document {
     Token(TokenIndex),
     Verbatim(Range<usize>),
@@ -19,7 +19,6 @@ pub(super) enum Document {
     Space,
     Line(usize),
     Soft(usize),
-    TrailingComma,
 
     Indent {
         conditional: bool,
@@ -30,28 +29,12 @@ pub(super) enum Document {
         layout: Layout,
         content: Vec<Self>,
     },
-}
 
-impl Document {
-    pub(super) fn multiline(&self, tree: &Tree<'_>) -> bool {
-        match self {
-            Self::Line(_)
-            | Self::Group {
-                layout: Layout::Vertical,
-                ..
-            } => true,
-
-            Self::Token(index) => tree.token(*index).bytes(tree.source).contains(&b'\n'),
-
-            Self::Verbatim(range) => tree.tokens[range.clone()]
-                .iter()
-                .any(|token| token.bytes(tree.source).contains(&b'\n')),
-
-            Self::Group { content, .. } | Self::Indent { content, .. } => {
-                content.iter().any(|item| item.multiline(tree))
-            }
-
-            _ => false,
-        }
-    }
+    Choice {
+        range: Range<usize>,
+        prefix: bool,
+        probe: Rc<[Self]>,
+        inline: Rc<[Self]>,
+        expanded: Rc<[Self]>,
+    },
 }

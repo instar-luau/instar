@@ -8,6 +8,7 @@ use crate::format::{directives::Directives, literal};
 pub(crate) struct Require {
     pub(crate) path: String,
     pub(crate) binding: NodeIndex,
+    boundary: bool,
 }
 
 pub(crate) struct Imports {
@@ -85,6 +86,7 @@ impl Imports {
         Some(Require {
             path: literal::string(tree, value.node)?,
             binding: *name,
+            boundary: directives.boundary(tree, index).is_some(),
         })
     }
 
@@ -403,7 +405,7 @@ pub(crate) fn runs<'require>(
 
         let mut end = start + 1;
 
-        while end < requires.len() && requires[end].is_some() {
+        while end < requires.len() && requires[end].is_some_and(|require| !require.boundary) {
             end += 1;
         }
 

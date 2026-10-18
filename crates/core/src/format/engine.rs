@@ -91,6 +91,7 @@ fn formatted(source: &str, configuration: &Prepared) -> Result<String, Error> {
     preservation::validate(
         &tree,
         &proposed,
+        configuration.settings(),
         imports.as_ref(),
         &directives,
         &proposed_directives,

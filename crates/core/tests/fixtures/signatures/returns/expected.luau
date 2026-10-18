@@ -1,0 +1,17 @@
+local function transform(
+	source: SourceConfiguration,
+	destination: DestinationConfiguration,
+	permissions: PermissionConfiguration,
+	validation: ValidationConfiguration
+): Result
+	return execute(source, destination, permissions, validation)
+end
+local function load(source_path: string): (
+	SourceConfiguration,
+	DestinationConfiguration,
+	PermissionConfiguration,
+	ValidationConfiguration,
+	CancellationConfiguration
+)
+	return read_configuration(source_path)
+end

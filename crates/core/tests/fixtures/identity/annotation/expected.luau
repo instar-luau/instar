@@ -1,6 +1,6 @@
 do
-	local z = require("./z")
-	local a: typeof(z) = require("./a")
+	local zeta = require("./z")
+	local alpha: typeof(zeta) = require("./a")
 end
 
 do
@@ -12,18 +12,18 @@ do
 	local require = function(value)
 		return value
 	end
-	local z = require("./z")
-	local a = require("./a")
+	local zeta = require("./z")
+	local alpha = require("./a")
 end
 
 do
 	local function load(require)
-		local z = require("./z")
-		local a = require("./a")
+		local zeta = require("./z")
+		local alpha = require("./a")
 	end
 end
 
 do
-	local z = require("./z")
+	local zeta = require("./z")
 	local require = require("./a")
 end

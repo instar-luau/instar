@@ -15,6 +15,7 @@ use crate::{
 struct Statement {
     content: Vec<Document>,
     blank: bool,
+    inline: bool,
     require: Option<Require>,
 }
 
@@ -25,6 +26,27 @@ impl Builder<'_, '_> {
         let end = node.tokens.end.get();
 
         match &node.kind {
+            NodeKind::Local {
+                bindings, values, ..
+            }
+            | NodeKind::Constant {
+                bindings, values, ..
+            }
+            | NodeKind::Assignment {
+                targets: bindings,
+                values,
+                ..
+            } => {
+                return self.separated(
+                    start..end,
+                    &[self.tree.list(bindings), self.tree.list(values)],
+                );
+            }
+
+            NodeKind::Return { values, .. } => {
+                return self.separated(start..end, &[self.tree.list(values)]);
+            }
+
             NodeKind::Function {
                 parameters,
                 returns,
@@ -188,6 +210,7 @@ impl Builder<'_, '_> {
     ) -> Vec<Document> {
         let mut result = Vec::new();
         let mut position = range.start;
+        let mut inline = false;
 
         if root {
             while position < range.end {
@@ -222,6 +245,26 @@ impl Builder<'_, '_> {
 
             let tail = self.inline_end(finish, next);
 
+            let tail = (finish..tail)
+                .find(|position| self.directives.marker(*position).is_some())
+                .unwrap_or(tail);
+
+            if let Some(boundary) = self
+                .directives
+                .boundary(self.tree, entry.node)
+                .filter(|boundary| position < *boundary)
+            {
+                units.push(Statement {
+                    content: self.trivia(position..boundary, true),
+                    blank: position > range.start && self.blank(position, node.tokens.start.get()),
+                    inline,
+                    require: None,
+                });
+
+                position = boundary;
+                inline = false;
+            }
+
             let mut content = self.trivia(position..node.tokens.start.get(), true);
             content.extend(self.node(entry.node));
 
@@ -236,12 +279,14 @@ impl Builder<'_, '_> {
             units.push(Statement {
                 content,
                 blank,
+                inline,
                 require: self
                     .imports
                     .and_then(|imports| imports.require(self.tree, entry.node, self.directives)),
             });
 
             position = tail;
+            inline = self.directives.marker(tail).is_some();
         }
 
         self.order(&mut units);
@@ -252,6 +297,7 @@ impl Builder<'_, '_> {
             Statement {
                 content,
                 blank,
+                inline,
                 require,
             },
         ) in units.into_iter().enumerate()
@@ -265,7 +311,11 @@ impl Builder<'_, '_> {
                         |(left, right)| self.prepared.group(left) != self.prepared.group(right),
                     );
 
-                result.push(Document::Line(if blank || grouped { 2 } else { 1 }));
+                result.push(if inline {
+                    Document::Space
+                } else {
+                    Document::Line(if blank || grouped { 2 } else { 1 })
+                });
             }
 
             result.extend(content);
@@ -273,7 +323,12 @@ impl Builder<'_, '_> {
         }
 
         if self.comments(position..range.end) {
-            result.push(Document::Line(1));
+            result.push(if inline {
+                Document::Space
+            } else {
+                Document::Line(1)
+            });
+
             result.extend(self.trivia(position..range.end, true));
         }
 
@@ -289,7 +344,95 @@ impl Builder<'_, '_> {
         closing: Range<usize>,
     ) -> Vec<Document> {
         let children = self.tree.children(index);
-        let mut result = self.sequence(header.clone(), &children);
+
+        let mut result = match &self.tree.node(index).kind {
+            NodeKind::Branch {
+                keyword,
+                condition,
+                then: Some(closing),
+                ..
+            }
+            | NodeKind::While {
+                keyword,
+                condition,
+                do_keyword: Some(closing),
+                ..
+            } => self.framed(
+                *keyword,
+                self.tree.node(*condition).tokens.start.get()
+                    ..self.tree.node(*condition).tokens.end.get(),
+                *closing,
+                1,
+                self.condition(*condition),
+            ),
+
+            NodeKind::GenericFor {
+                keyword,
+                bindings,
+                values,
+                do_keyword: Some(closing),
+                ..
+            } => {
+                let interior = keyword.get() + 1..closing.get();
+
+                self.framed(
+                    *keyword,
+                    interior.clone(),
+                    *closing,
+                    1,
+                    self.separated(
+                        interior,
+                        &[self.tree.list(bindings), self.tree.list(values)],
+                    ),
+                )
+            }
+
+            NodeKind::NumericFor {
+                keyword,
+                binding,
+                start,
+                range_separator,
+                end,
+                step_separator,
+                step,
+                do_keyword: Some(closing),
+                ..
+            } => {
+                let binding = [ListEntry {
+                    node: *binding,
+                    separator: None,
+                }];
+
+                let mut values = vec![
+                    ListEntry {
+                        node: *start,
+                        separator: *range_separator,
+                    },
+                    ListEntry {
+                        node: *end,
+                        separator: *step_separator,
+                    },
+                ];
+
+                values.extend(step.map(|step| ListEntry {
+                    node: step,
+                    separator: None,
+                }));
+
+                let interior = keyword.get() + 1..closing.get();
+
+                self.framed(
+                    *keyword,
+                    interior.clone(),
+                    *closing,
+                    1,
+                    self.separated(interior, &[&binding, &values]),
+                )
+            }
+
+            _ => self.sequence(header.clone(), &children),
+        };
+
         let interior_start = self.inline_end(header.end, interior.end);
         result.extend(self.trivia(header.end..interior_start, false));
         result.push(Document::Line(1));
@@ -307,7 +450,16 @@ impl Builder<'_, '_> {
 
         if !closing.is_empty() {
             result.push(Document::Line(1));
-            result.extend(self.sequence(closing, &children));
+
+            result.extend(match &self.tree.node(index).kind {
+                NodeKind::Repeat {
+                    until: Some(until),
+                    condition,
+                    ..
+                } => self.prefixed(*until, *condition),
+
+                _ => self.sequence(closing, &children),
+            });
         }
 
         result

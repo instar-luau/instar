@@ -7,11 +7,14 @@ use vermis::{
 
 use super::comments;
 
-use crate::format::{
-    Error,
-    directives::{Directives, Kind},
-    imports::{self, Imports},
-    literal,
+use crate::{
+    format::{
+        Error,
+        directives::{Directives, Kind},
+        imports::{self, Imports},
+        literal,
+    },
+    settings::format::Configuration,
 };
 
 struct Comparison<'tree, 'source> {
@@ -106,6 +109,7 @@ impl Comparison<'_, '_> {
 pub(crate) fn validate(
     original: &Tree<'_>,
     proposed: &Tree<'_>,
+    configuration: &Configuration,
     imports: Option<&Imports>,
     original_directives: &Directives,
     proposed_directives: &Directives,
@@ -138,18 +142,18 @@ pub(crate) fn validate(
         }
     }
 
-    let before = comments::attached(original, Some(&comparison.nodes), imports.is_some())
-        .ok_or_else(|| Error::internal(0..0, "cannot validate original comment attachment"))?;
+    let before = comments::attached(
+        original,
+        Some(&comparison.nodes),
+        imports.is_some(),
+        original_directives,
+    )
+    .ok_or_else(|| Error::internal(0..0, "cannot validate original comment attachment"))?;
 
-    let after = comments::attached(proposed, None, imports.is_some())
+    let after = comments::attached(proposed, None, imports.is_some(), proposed_directives)
         .ok_or_else(|| Error::internal(0..0, "cannot validate proposed comment attachment"))?;
 
-    if before != after {
-        return Err(Error::internal(
-            0..0,
-            "formatter changed comment attachment",
-        ));
-    }
+    comments::validate(original, proposed, &before, &after, configuration)?;
 
     if original_directives.policies.len() != proposed_directives.policies.len() {
         return Err(Error::internal(0..0, "formatter changed directives"));

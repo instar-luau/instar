@@ -131,13 +131,11 @@ impl Builder<'_, '_> {
                 self.tree.tokens[right].span.start,
             );
 
-            result.push(
-                if lines > 0 || self.tree.tokens[previous].kind == TokenKind::Comment {
-                    Document::Line(lines.clamp(1, 2))
-                } else {
-                    Document::Space
-                },
-            );
+            if lines > 0 || self.tree.tokens[previous].kind == TokenKind::Comment {
+                result.push(Document::Line(lines.clamp(1, 2)));
+            } else if self.tree.tokens[right].kind != TokenKind::Symbol(Symbol::Comma) {
+                result.push(Document::Space);
+            }
         } else if self.space(left, right) {
             result.push(Document::Space);
         }
@@ -148,6 +146,7 @@ impl Builder<'_, '_> {
     pub(super) fn trivia(&self, range: Range<usize>, leading: bool) -> Vec<Document> {
         let mut result = Vec::new();
         let mut previous = None;
+        let end = range.end;
 
         for position in range {
             let token = self.tree.tokens[position];
@@ -173,8 +172,14 @@ impl Builder<'_, '_> {
             previous = Some(position);
         }
 
-        if leading && previous.is_some() {
-            result.push(Document::Line(1));
+        if leading && let Some(previous) = previous {
+            result.push(Document::Line(
+                self.lines(
+                    self.tree.tokens[previous].span.end,
+                    self.tree.tokens[end].span.start,
+                )
+                .clamp(1, 2),
+            ));
         }
 
         result
@@ -201,6 +206,19 @@ impl Builder<'_, '_> {
             }
 
             result.extend(self.node(child));
+
+            let end = if matches!(node.kind, NodeKind::Attributes { .. })
+                && !self.inline_attributes[child.get()]
+            {
+                let tail = self.inline_end(end, range.end);
+                result.extend(self.trivia(end..tail, false));
+                result.push(Document::Line(1));
+
+                tail
+            } else {
+                end
+            };
+
             previous = self.previous(start, end);
             position = end;
         }
@@ -243,7 +261,7 @@ impl Builder<'_, '_> {
         })
     }
 
-    fn previous(&self, start: usize, end: usize) -> Option<usize> {
+    pub(super) fn previous(&self, start: usize, end: usize) -> Option<usize> {
         (start..end).rev().find(|&position| {
             !matches!(
                 self.tree.tokens[position].kind,
@@ -368,7 +386,7 @@ impl Builder<'_, '_> {
         true
     }
 
-    fn tokens(
+    pub(super) fn tokens(
         &self,
         range: Range<usize>,
         previous: &mut Option<usize>,

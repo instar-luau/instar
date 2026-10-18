@@ -1,4 +1,4 @@
 type Record = {
 	first: string,
-	second: boolean,
+	second: boolean
 }

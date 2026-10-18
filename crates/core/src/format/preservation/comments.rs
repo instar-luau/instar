@@ -1,11 +1,19 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    iter::repeat_n,
+};
 
 use vermis::{
     token::TokenKind,
-    tree::{NodeIndex, NodeKind, Tree},
+    tree::{NodeIndex, NodeKind, TokenIndex, Tree},
 };
 
 use super::syntax::substantive;
+
+use crate::{
+    format::{Error, directives::Directives},
+    settings::format::{Configuration, Indentation},
+};
 
 #[derive(Copy, Clone, Eq, Ord, PartialEq, PartialOrd)]
 enum Location {
@@ -14,6 +22,14 @@ enum Location {
     Interior {
         node: usize,
         gap: usize,
+    },
+
+    Boundary {
+        marker: usize,
+        node: usize,
+        gap: usize,
+        token: usize,
+        inline: bool,
     },
 
     Adjacent {
@@ -28,10 +44,9 @@ enum Location {
     },
 }
 
-#[derive(Eq, PartialEq)]
-pub(super) struct Attachment<'source> {
+pub(super) struct Attachment {
     location: Location,
-    text: &'source [u8],
+    token: TokenIndex,
 }
 
 struct Comment {
@@ -41,11 +56,12 @@ struct Comment {
     global: bool,
 }
 
-pub(super) fn attached<'source>(
-    tree: &Tree<'source>,
+pub(super) fn attached(
+    tree: &Tree<'_>,
     correspondence: Option<&[Option<NodeIndex>]>,
     ordering: bool,
-) -> Option<Vec<Attachment<'source>>> {
+    directives: &Directives,
+) -> Option<Vec<Attachment>> {
     let mut comments = Vec::new();
     let mut previous = None;
     let mut leading = true;
@@ -62,6 +78,10 @@ pub(super) fn attached<'source>(
                 inline,
                 global: leading && token.bytes(tree.source).starts_with(b"--!"),
             });
+
+            if directives.marker(position).is_some() {
+                previous = Some(position);
+            }
         } else {
             if !matches!(token.kind, TokenKind::Whitespace | TokenKind::EndOfFile) {
                 leading = false;
@@ -90,6 +110,10 @@ pub(super) fn attached<'source>(
             if !comment.inline {
                 comment.adjacent = next;
             }
+
+            if directives.marker(position).is_some() {
+                next = Some(position);
+            }
         } else if substantive(token.kind) {
             next = Some(position);
         }
@@ -111,12 +135,14 @@ pub(super) fn attached<'source>(
     let mut result = Vec::with_capacity(comments.len());
 
     for comment in comments {
+        let marker = directives.marker(comment.position);
+
         let location = if comment.global {
             Location::Global
         } else {
             let owner = *owners.get(&comment.position)?;
 
-            if interior(&tree.node(owner).kind) {
+            if marker.is_none() && interior(&tree.node(owner).kind) {
                 let children = children
                     .entry(owner.get())
                     .or_insert_with(|| tree.children(owner));
@@ -129,7 +155,7 @@ pub(super) fn attached<'source>(
                     node: identity(owner, correspondence)?,
                     gap,
                 }
-            } else if let Some(adjacent) = comment.adjacent {
+            } else if let Some(adjacent) = marker.map(|_| comment.position).or(comment.adjacent) {
                 let (node, gap, token) = if let Some(anchor) = anchors.get(&adjacent) {
                     *anchor
                 } else {
@@ -161,11 +187,21 @@ pub(super) fn attached<'source>(
                     (node, gap, token)
                 };
 
-                Location::Adjacent {
-                    node,
-                    gap,
-                    token,
-                    inline: comment.inline,
+                if let Some(marker) = marker {
+                    Location::Boundary {
+                        marker,
+                        node,
+                        gap,
+                        token,
+                        inline: comment.inline,
+                    }
+                } else {
+                    Location::Adjacent {
+                        node,
+                        gap,
+                        token,
+                        inline: comment.inline,
+                    }
                 }
             } else {
                 Location::Detached {
@@ -176,7 +212,7 @@ pub(super) fn attached<'source>(
 
         result.push(Attachment {
             location,
-            text: tree.tokens[comment.position].bytes(tree.source),
+            token: TokenIndex::new(comment.position),
         });
     }
 
@@ -185,6 +221,138 @@ pub(super) fn attached<'source>(
     }
 
     Some(result)
+}
+
+pub(crate) fn reindent(
+    tree: &Tree<'_>,
+    index: TokenIndex,
+    target_columns: usize,
+    configuration: &Configuration,
+) -> Option<Vec<u8>> {
+    standalone(tree, index, configuration)?;
+
+    let bytes = tree.token(index).bytes(tree.source);
+    let delimiter = 2 + bytes.get(3..)?.iter().position(|&byte| byte != b'=')?;
+    let closing = bytes.len().checked_sub(delimiter)?;
+    let beginning = bytes[..closing].iter().rposition(|byte| *byte == b'\n')? + 1;
+
+    if !bytes[beginning..closing]
+        .iter()
+        .all(|byte| matches!(byte, b' ' | b'\t'))
+    {
+        return None;
+    }
+
+    let mut result = bytes[..beginning].to_vec();
+
+    let spaces = match configuration.indent_style {
+        Indentation::Tabs => {
+            let width = configuration.indent_width.get();
+            result.extend(repeat_n(b'\t', target_columns / width));
+
+            target_columns % width
+        }
+
+        Indentation::Spaces => target_columns,
+    };
+
+    result.extend(repeat_n(b' ', spaces));
+    result.extend_from_slice(&bytes[closing..]);
+
+    (result != bytes).then_some(result)
+}
+
+pub(super) fn validate(
+    original: &Tree<'_>,
+    proposed: &Tree<'_>,
+    before: &[Attachment],
+    after: &[Attachment],
+    configuration: &Configuration,
+) -> Result<(), Error> {
+    if before.len() != after.len() {
+        return Err(Error::internal(
+            0..0,
+            "formatter changed comment attachment",
+        ));
+    }
+
+    for (before, after) in before.iter().zip(after) {
+        if before.location != after.location {
+            return Err(Error::internal(
+                0..0,
+                "formatter changed comment attachment",
+            ));
+        }
+
+        let original_token = original.token(before.token);
+        let proposed_token = proposed.token(after.token);
+        let original_bytes = original_token.bytes(original.source);
+        let proposed_bytes = proposed_token.bytes(proposed.source);
+
+        if original_bytes == proposed_bytes {
+            continue;
+        }
+
+        let expected = standalone(proposed, after.token, configuration)
+            .and_then(|columns| reindent(original, before.token, columns, configuration));
+
+        if expected.as_deref() != Some(proposed_bytes) {
+            return Err(Error::internal(
+                original_token.span.start..original_token.span.end,
+                "formatter changed comment text",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn standalone(tree: &Tree<'_>, index: TokenIndex, configuration: &Configuration) -> Option<usize> {
+    let token = tree.token(index);
+
+    if token.kind != TokenKind::BlockComment || !token.bytes(tree.source).contains(&b'\n') {
+        return None;
+    }
+
+    let preceding = &tree.source[..token.span.start];
+
+    let start = preceding
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |position| position + 1);
+
+    let leading = &preceding[start..];
+
+    if !leading.iter().all(|byte| matches!(byte, b' ' | b'\t')) {
+        return None;
+    }
+
+    let following = &tree.source[token.span.end..];
+
+    let end = following
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .unwrap_or(following.len());
+
+    if !following[..end]
+        .iter()
+        .all(|byte| matches!(byte, b' ' | b'\t' | b'\r'))
+    {
+        return None;
+    }
+
+    Some(indentation(leading, configuration.indent_width.get()))
+}
+
+fn indentation(bytes: &[u8], width: usize) -> usize {
+    bytes.iter().fold(0, |columns, byte| {
+        columns
+            + if *byte == b'\t' {
+                width - columns % width
+            } else {
+                1
+            }
+    })
 }
 
 fn owners(tree: &Tree<'_>, targets: &BTreeSet<usize>) -> Option<BTreeMap<usize, NodeIndex>> {

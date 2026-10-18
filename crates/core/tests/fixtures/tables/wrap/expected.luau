@@ -1,4 +1,4 @@
 local record = {
 	first = "alpha",
-	second = "beta",
+	second = "beta"
 }

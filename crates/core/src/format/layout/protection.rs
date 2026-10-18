@@ -5,6 +5,7 @@ use vermis::tree::Tree;
 use super::document::Document;
 use crate::format::{Error, directives::Directive};
 
+#[derive(Clone)]
 struct Protection<'regions> {
     regions: &'regions [Range<usize>],
     emitted: Vec<bool>,
@@ -16,6 +17,17 @@ impl Protection<'_> {
         let mut result = Vec::with_capacity(document.len());
 
         for item in document {
+            if let Document::Choice { range, .. } = &item
+                && self
+                    .regions
+                    .iter()
+                    .all(|region| region.end <= range.start || range.end <= region.start)
+            {
+                self.active = false;
+                result.push(item);
+                continue;
+            }
+
             match item {
                 Document::Token(index) => {
                     let region = self
@@ -58,6 +70,26 @@ impl Protection<'_> {
                     if !content.is_empty() {
                         result.push(Document::Group { layout, content });
                     }
+                }
+
+                Document::Choice {
+                    range,
+                    prefix,
+                    probe,
+                    inline,
+                    expanded,
+                } => {
+                    let mut alternative = self.clone();
+                    let inline = self.apply(inline.to_vec()).into();
+                    let expanded = alternative.apply(expanded.to_vec()).into();
+
+                    result.push(Document::Choice {
+                        range,
+                        prefix,
+                        probe,
+                        inline,
+                        expanded,
+                    });
                 }
 
                 other => {

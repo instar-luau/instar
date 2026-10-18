@@ -23,6 +23,7 @@ pub(crate) struct Directive {
 pub(crate) struct Directives {
     pub(crate) policies: Vec<Directive>,
     barriers: BTreeSet<usize>,
+    boundaries: Vec<Range<usize>>,
 }
 
 impl Directives {
@@ -34,6 +35,41 @@ impl Directives {
                 directive.kind != Kind::Global
                     && directive.scope.start < node.span.end
                     && node.span.start < directive.scope.end
+            })
+    }
+
+    pub(crate) fn boundary(&self, tree: &Tree<'_>, index: NodeIndex) -> Option<usize> {
+        let end = tree.node(index).tokens.start.get();
+
+        let start = tree.tokens[..end]
+            .iter()
+            .rposition(|token| {
+                !matches!(
+                    token.kind,
+                    TokenKind::Whitespace | TokenKind::Comment | TokenKind::BlockComment
+                )
+            })
+            .map_or(0, |position| position + 1);
+
+        self.boundaries
+            .iter()
+            .filter(|boundary| start < boundary.end && boundary.end <= end)
+            .map(|boundary| boundary.end)
+            .max()
+    }
+
+    pub(crate) fn marker(&self, position: usize) -> Option<usize> {
+        self.boundaries
+            .iter()
+            .enumerate()
+            .find_map(|(index, boundary)| {
+                if position == boundary.start {
+                    Some(index * 2)
+                } else if position + 1 == boundary.end {
+                    Some(index * 2 + 1)
+                } else {
+                    None
+                }
             })
     }
 
@@ -71,6 +107,7 @@ impl Directives {
 pub(crate) fn collect(tree: &Tree<'_>) -> Result<Directives, Error> {
     let mut policies = Vec::new();
     let mut barriers = BTreeSet::new();
+    let mut boundaries = Vec::new();
     let mut formatting: Option<Directive> = None;
     let mut linting: Option<Range<usize>> = None;
     let mut leading = true;
@@ -136,6 +173,9 @@ pub(crate) fn collect(tree: &Tree<'_>) -> Result<Directives, Error> {
         let following = statement(tree, &statements, location.end);
 
         if position >= header
+            && !command.is_some_and(|command| {
+                matches!(command.trim(), "off" | "ignore start" | "on" | "ignore end")
+            })
             && let Some(index) = following
         {
             barriers.insert(index.get());
@@ -164,6 +204,12 @@ pub(crate) fn collect(tree: &Tree<'_>) -> Result<Directives, Error> {
                     let opening = formatting.take().ok_or_else(|| {
                         Error::input(location.clone(), "unmatched formatting region end")
                     })?;
+
+                    let start = tree
+                        .tokens
+                        .partition_point(|token| token.span.start < opening.scope.start);
+
+                    boundaries.push(start..position + 1);
 
                     (opening.scope.start..location.end, Kind::Verbatim)
                 }
@@ -272,7 +318,11 @@ pub(crate) fn collect(tree: &Tree<'_>) -> Result<Directives, Error> {
         ));
     }
 
-    Ok(Directives { policies, barriers })
+    Ok(Directives {
+        policies,
+        barriers,
+        boundaries,
+    })
 }
 
 fn statement(tree: &Tree<'_>, statements: &[NodeIndex], offset: usize) -> Option<NodeIndex> {

@@ -1,6 +1,7 @@
 mod blocks;
 mod collections;
 mod document;
+mod expressions;
 mod plan;
 mod protection;
 mod quotes;

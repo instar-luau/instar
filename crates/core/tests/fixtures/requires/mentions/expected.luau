@@ -1,3 +1,3 @@
-local Alpha = require("a")
+local alpha = require("a")
 -- This documents instar-format behavior.
-local Zebra = require("z")
+local zebra = require("z")

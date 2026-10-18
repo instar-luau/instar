@@ -1,0 +1,1 @@
+if configuration:is_ready() and permissions:allow_processing(active_user) and resources:has_capacity(processing_configuration) and not cancellation_token:is_cancelled() then process_records(records) elseif retry_configuration:is_ready() and permissions:allow_retry(active_user) then schedule_retry() else cancel() end

@@ -3,6 +3,6 @@ local values = {
 	first = 1, -- first tail
 
 	-- second
-	second = 2,
+	second = 2
 	-- closing
 }

@@ -1,3 +1,3 @@
 require = custom
-local z = require('./z')
-local a = require('./a')
+local zeta = require('./z')
+local alpha = require('./a')

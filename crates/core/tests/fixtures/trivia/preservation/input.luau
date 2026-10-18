@@ -1,17 +1,17 @@
-f(--[[keep]])
-f(1 --[[argument]],2)
-local t={1 --[[field]],2}
-f() --[[tail]]
-f() --[[statement]]; f()
-f(-- empty
+dispatch(--[[keep]])
+dispatch(1 --[[argument]],2)
+local values={1 --[[field]],2}
+dispatch() --[[tail]]
+dispatch() --[[statement]]; dispatch()
+dispatch(-- empty
 )
-f(1 -- argument
+dispatch(1 -- argument
 ,2)
 local lines={1 -- field
 ,2}
-f() -- tail
-f() -- statement
-; f()
+dispatch() -- tail
+dispatch() -- statement
+; dispatch()
 do
-f() --[[nested]]; f()
+dispatch() --[[nested]]; dispatch()
 end

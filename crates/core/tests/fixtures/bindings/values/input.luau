@@ -1,0 +1,4 @@
+local value,message=transform(records,processing_configuration,active_user_permissions,selected_output_format,cancellation_token)
+const primary,secondary=compute_first_value(records,processing_configuration),compute_second_value(records,processing_configuration)
+value,message=transform(records,processing_configuration,active_user_permissions,selected_output_format,cancellation_token)
+first,second=compute_first_value(records,processing_configuration),compute_second_value(records,processing_configuration)

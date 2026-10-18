@@ -1,0 +1,16 @@
+const source: SourceConfiguration,
+	destination: DestinationConfiguration,
+	permissions: PermissionConfiguration = read_configuration(
+		source_path,
+		destination_path,
+		processing_configuration,
+		validation_options
+	)
+source_configuration,
+	destination_configuration,
+	permission_configuration = read_configuration(
+		source_path,
+		destination_path,
+		processing_configuration,
+		validation_options
+	)
