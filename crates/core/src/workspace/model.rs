@@ -11,7 +11,7 @@ use instar_luau::Context;
 use serde_json::Value;
 
 use super::{
-    Error, Generators, discovery,
+    Error, Generators, assets, discovery,
     environment::{self, Registry},
     host, instances, paths,
     selection::{self, Access, Purpose, Selection},
@@ -146,7 +146,6 @@ impl Workspace {
         for scope in scopes.values() {
             let configuration = &scope.configuration;
             dependencies.extend(configuration.resolve.sourcemaps.iter().flatten().cloned());
-            dependencies.extend(configuration.environment.asset_directory.iter().cloned());
             dependencies.extend(configuration.environment.capabilities.iter().cloned());
 
             for group in &configuration.environment.groups {
@@ -286,21 +285,28 @@ impl Workspace {
     /// Returns unavailable, malformed, or inconsistent environment inputs.
     pub fn documentation(&self, module: &str, symbol: &str) -> Result<Option<Value>, Error> {
         let scope = self.scope(Path::new(module))?;
-        let name = environment::identity(self, &scope, Path::new(module))?;
         let mut registry = self.environments.borrow_mut();
 
-        let documentation = registry
+        if let Some(documentation) = registry
             .documents(&scope.configuration.environment.groups)?
             .iter()
             .rev()
-            .find_map(|documentation| documentation.get(symbol).cloned());
+            .find_map(|documentation| documentation.get(symbol).cloned())
+        {
+            return Ok(Some(documentation));
+        }
 
-        Ok(documentation.or_else(|| {
-            name.as_deref()
-                .and_then(|name| registry.get(name))
-                .and_then(|prepared| prepared.documentation.as_ref())
-                .and_then(|documentation| documentation.get(symbol).cloned())
-        }))
+        let namespace = if symbol.starts_with("@luau/") {
+            assets::Namespace::Luau
+        } else if symbol.starts_with("@roblox/")
+            && instances::enabled(self, &scope, Path::new(module))?
+        {
+            assets::Namespace::Roblox
+        } else {
+            return Ok(None);
+        };
+
+        Ok(registry.document(self, namespace)?.get(symbol).cloned())
     }
 
     pub(super) fn scope(&self, module: &Path) -> Result<Rc<Scope>, Error> {

@@ -359,24 +359,6 @@ namespace instar::luau {
             }
         }
 
-        void add_enum_type_aliases(Luau::GlobalTypes &globals) {
-            const auto enum_item = globals.globalScope->lookupType("EnumItem");
-
-            if (!enum_item) {
-                return;
-            }
-
-            const auto *base = Luau::get<Luau::ExternType>(Luau::follow(enum_item->type));
-            auto &aliases = globals.globalScope->importedTypeBindings["Enum"];
-
-            for (const auto &[name, type_function] : globals.globalScope->exportedTypeBindings) {
-                if (name.size() > 4 && name.rfind("Enum", 0) == 0 && name != "EnumItem" &&
-                    Luau::isSubclass(Luau::get<Luau::ExternType>(Luau::follow(type_function.type)), base)) {
-                    aliases.insert_or_assign(name.substr(4), type_function);
-                }
-            }
-        }
-
         void add_instance_is_a(Luau::GlobalTypes &globals) {
             const std::optional<Luau::TypeFun> instance = globals.globalScope->lookupType("Instance");
 
@@ -508,10 +490,7 @@ namespace instar::luau {
             }
         }
 
-        add_enum_type_aliases(globals);
         share_metatable(globals, "Instance");
-        share_metatable(globals, "Enum");
-        share_metatable(globals, "EnumItem");
         add_instance_is_a(globals);
 
         register_magic(globals, metadata, MagicKind::Constructor, "Instance", "new", true);

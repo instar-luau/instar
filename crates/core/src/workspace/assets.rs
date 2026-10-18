@@ -12,17 +12,38 @@ use tokio::{runtime::Builder, time};
 
 use super::{Error, Workspace, environment, process};
 
-const ADDRESS: &str = "https://instar-luau.github.io/instar/roblox";
-const FILES: [&str; 6] = [
-    "documentation.json",
-    "enumerations.d.luau",
-    "none.d.luau",
-    "local.d.luau",
-    "plugin.d.luau",
-    "roblox.d.luau",
-];
+const ADDRESS: &str = "https://instar-luau.github.io/instar";
 
-pub(super) fn directory(workspace: &Workspace) -> Result<PathBuf, Error> {
+#[derive(Copy, Clone, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) enum Namespace {
+    Luau,
+    Roblox,
+}
+
+impl Namespace {
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Self::Luau => "luau",
+            Self::Roblox => "roblox",
+        }
+    }
+
+    fn files(self) -> &'static [&'static str] {
+        match self {
+            Self::Luau => &["documentation.json"],
+
+            Self::Roblox => &[
+                "documentation.json",
+                "none.d.luau",
+                "local.d.luau",
+                "plugin.d.luau",
+                "roblox.d.luau",
+            ],
+        }
+    }
+}
+
+pub(super) fn directory(workspace: &Workspace, namespace: Namespace) -> Result<PathBuf, Error> {
     let cancelled = workspace.cancelled;
     process::interrupted(cancelled)?;
 
@@ -32,7 +53,7 @@ pub(super) fn directory(workspace: &Workspace) -> Result<PathBuf, Error> {
             reason: "the operating system cache directory is unavailable",
         })?
         .join("instar")
-        .join("roblox");
+        .join(namespace.name());
 
     fs::create_dir_all(&parent).map_err(|source| filesystem(&parent, source))?;
 
@@ -50,13 +71,18 @@ pub(super) fn directory(workspace: &Workspace) -> Result<PathBuf, Error> {
                     time::sleep(Duration::from_millis(50)).await;
                 }
             } => Err(Error::Cancelled),
-            result = acquire(&parent, cancelled) => result,
+            result = acquire(&parent, namespace, cancelled) => result,
         }
     })
 }
 
-async fn acquire(parent: &Path, cancelled: fn() -> bool) -> Result<PathBuf, Error> {
+async fn acquire(
+    parent: &Path,
+    namespace: Namespace,
+    cancelled: fn() -> bool,
+) -> Result<PathBuf, Error> {
     let lock_path = parent.join("lock");
+
     let lock = OpenOptions::new()
         .read(true)
         .write(true)
@@ -76,9 +102,37 @@ async fn acquire(parent: &Path, cancelled: fn() -> bool) -> Result<PathBuf, Erro
     }
 
     let cached = cached(parent)?;
+
+    match refresh(parent, namespace, cached.as_deref(), cancelled).await {
+        Ok(directory) => Ok(directory),
+
+        Err(error) => {
+            if matches!(error, Error::Download { .. })
+                && let Some(directory) = cached
+            {
+                validate(&directory, namespace, cancelled)?;
+                process::interrupted(cancelled)?;
+                tracing::warn!(%error, namespace = namespace.name(), "cannot refresh assets; using cached bundle");
+
+                return Ok(directory);
+            }
+
+            Err(error)
+        }
+    }
+}
+
+async fn refresh(
+    parent: &Path,
+    namespace: Namespace,
+    cached: Option<&Path>,
+    cancelled: fn() -> bool,
+) -> Result<PathBuf, Error> {
     let staging = tempfile::tempdir_in(parent).map_err(|source| filesystem(parent, source))?;
     let bundle = staging.path().join("bundle");
     fs::create_dir(&bundle).map_err(|source| filesystem(&bundle, source))?;
+
+    let address = format!("{ADDRESS}/{}", namespace.name());
 
     let client = Client::builder()
         .https_only(true)
@@ -86,56 +140,54 @@ async fn acquire(parent: &Path, cancelled: fn() -> bool) -> Result<PathBuf, Erro
         .timeout(Duration::from_secs(300))
         .build()
         .map_err(|source| Error::Download {
-            url: ADDRESS.to_owned(),
+            url: address.clone(),
             source,
         })?;
+
     let metadata = bundle.join("metadata.json");
-
-    if let Err(error) = download(&client, "metadata.json", &metadata, cancelled).await {
-        if matches!(error, Error::Download { .. })
-            && let Some(directory) = cached
-        {
-            process::interrupted(cancelled)?;
-            tracing::warn!(%error, "cannot refresh Roblox assets; using cached bundle");
-            return Ok(directory);
-        }
-
-        return Err(error);
-    }
-
+    download(&client, &address, "metadata.json", &metadata, cancelled).await?;
     let contents = fs::read(&metadata).map_err(|source| filesystem(&metadata, source))?;
-    let mut identity = String::with_capacity(64);
-
-    for byte in Sha256::digest(&contents) {
-        write!(identity, "{byte:02x}").expect("internal error: cannot write to a string");
-    }
-
+    let identity = digest(&contents);
     let directory = parent.join(&identity);
 
-    if !exists(&directory)? {
-        for filename in FILES {
-            download(&client, filename, &bundle.join(filename), cancelled).await?;
+    if exists(&directory)? {
+        validate(&directory, namespace, cancelled)?;
+    } else {
+        for filename in namespace.files() {
+            download(
+                &client,
+                &address,
+                filename,
+                &bundle.join(filename),
+                cancelled,
+            )
+            .await?;
         }
 
-        environment::validate(&bundle, cancelled)?;
+        environment::validate(&bundle, namespace, cancelled)?;
         process::interrupted(cancelled)?;
         fs::rename(&bundle, &directory).map_err(|source| filesystem(&directory, source))?;
     }
 
     process::interrupted(cancelled)?;
 
-    if cached.as_ref() != Some(&directory) {
+    if cached != Some(directory.as_path()) {
         let pointer = parent.join("current");
+
         let mut staged =
             tempfile::NamedTempFile::new_in(parent).map_err(|source| filesystem(parent, source))?;
 
         staged
             .write_all(identity.as_bytes())
             .map_err(|source| filesystem(&pointer, source))?;
+
         staged
             .as_file()
             .sync_all()
             .map_err(|source| filesystem(&pointer, source))?;
+
+        process::interrupted(cancelled)?;
+
         staged
             .persist(&pointer)
             .map_err(|error| filesystem(&pointer, error.error))?;
@@ -146,13 +198,15 @@ async fn acquire(parent: &Path, cancelled: fn() -> bool) -> Result<PathBuf, Erro
 
 async fn download(
     client: &Client,
+    address: &str,
     filename: &str,
     destination: &Path,
     cancelled: fn() -> bool,
 ) -> Result<(), Error> {
     process::interrupted(cancelled)?;
 
-    let url = format!("{ADDRESS}/{filename}");
+    let url = format!("{address}/{filename}");
+
     let failure = |source| Error::Download {
         url: url.clone(),
         source,
@@ -174,6 +228,7 @@ async fn download(
 
 fn cached(parent: &Path) -> Result<Option<PathBuf>, Error> {
     let pointer = parent.join("current");
+
     let identity = match fs::read_to_string(&pointer) {
         Ok(identity) => identity,
         Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -188,7 +243,35 @@ fn cached(parent: &Path) -> Result<Option<PathBuf>, Error> {
     }
 
     let directory = parent.join(identity);
+
     Ok(exists(&directory)?.then_some(directory))
+}
+
+fn validate(directory: &Path, namespace: Namespace, cancelled: fn() -> bool) -> Result<(), Error> {
+    process::interrupted(cancelled)?;
+    let metadata = directory.join("metadata.json");
+    let contents = fs::read(&metadata).map_err(|source| filesystem(&metadata, source))?;
+
+    if directory.file_name().and_then(|name| name.to_str()) != Some(digest(&contents).as_str()) {
+        return Err(Error::Path {
+            path: metadata,
+            reason: "cached asset metadata does not match its identity",
+        });
+    }
+
+    environment::validate(directory, namespace, cancelled)?;
+
+    Ok(())
+}
+
+fn digest(contents: &[u8]) -> String {
+    let mut digest = String::with_capacity(64);
+
+    for byte in Sha256::digest(contents) {
+        write!(digest, "{byte:02x}").expect("internal error: cannot write to a string");
+    }
+
+    digest
 }
 
 fn exists(path: &Path) -> Result<bool, Error> {

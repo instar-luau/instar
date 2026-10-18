@@ -5,19 +5,6 @@ type QDir = string
 type QFont = string
 type TeleportData = boolean | buffer | number | string | { [number]: TeleportData } | { [string]: TeleportData }
 
-declare extern type Enum with
-	function GetEnumItems(self): { any }
-	function FromValue(self, Number: number): any
-	function FromName(self, Name: string): any
-end
-
-declare extern type EnumItem with
-	Name: string
-	Value: number
-	EnumType: Enum
-	function IsA(self, enumName: string): boolean
-end
-
 declare debug: {
 	info: (<R...>(thread, number, string) -> R...)
 		& (<R...>(number, string) -> R...)
@@ -64,7 +51,7 @@ type HttpRequestOptions = {
 	Method: "GET" | "HEAD" | "POST" | "PUT" | "DELETE" | "CONNECT" | "OPTIONS" | "TRACE" | "PATCH" | nil,
 	Headers: { [string]: string | Secret }?,
 	Body: string?,
-	Compress: EnumHttpCompression?,
+	Compress: Enum.HttpCompression?,
 }
 
 type HttpResponseData = {
@@ -77,14 +64,14 @@ type HttpResponseData = {
 
 type HumanoidDescriptionAccessory = {
 	AssetId: number,
-	AccessoryType: EnumAccessoryType,
+	AccessoryType: Enum.AccessoryType,
 	IsLayered: boolean,
 	Order: number?,
 	Puffiness: number?,
 }
 
 declare extern type ValueCurveKey with
-	Interpolation: EnumKeyInterpolationMode
+	Interpolation: Enum.KeyInterpolationMode
 	Time: number
 	Value: any
 	RightTangent: number
@@ -92,14 +79,14 @@ declare extern type ValueCurveKey with
 end
 
 declare ValueCurveKey: {
-	new: (time: number, value: any, interpolation: EnumKeyInterpolationMode) -> ValueCurveKey,
+	new: (time: number, value: any, interpolation: Enum.KeyInterpolationMode) -> ValueCurveKey,
 }
 
 export type RaycastResult<T = BasePart> = {
 	Instance: T,
 	Position: Vector3,
 	Normal: Vector3,
-	Material: EnumMaterial,
+	Material: Enum.Material,
 	Distance: number,
 }
 
@@ -182,16 +169,23 @@ type ReflectedClasses = { ReflectedClass }
 type ReflectedProperties = { ReflectedProperty }
 
 type ProductIdentifierArray = { ProductIdentifier }
-type InfoTypeArray = { EnumInfoType }
+type InfoTypeArray = { Enum.InfoType }
 type RankedItemArray = { RankedItem }
 
-declare extern type AdReward with end
-declare extern type ClipEvaluator with end
-declare extern type OpenCloudModel with end
-declare extern type ScopedInstanceIdentity with end
-declare extern type SystemAddress with end
-declare extern type UniqueId with end
-declare extern type WebViewParams with end
+declare extern type AdReward with
+end
+declare extern type ClipEvaluator with
+end
+declare extern type OpenCloudModel with
+end
+declare extern type ScopedInstanceIdentity with
+end
+declare extern type SystemAddress with
+end
+declare extern type UniqueId with
+end
+declare extern type WebViewParams with
+end
 
 declare extern type Collection with
 	Enabled: boolean

@@ -734,8 +734,16 @@
               "Name": "axes",
               "Type": {
                 "Variadic": {
-                  "Category": "Enum",
-                  "Name": "Axis | EnumNormalId"
+                  "Union": [
+                    {
+                      "Category": "Enum",
+                      "Name": "Axis"
+                    },
+                    {
+                      "Category": "Enum",
+                      "Name": "NormalId"
+                    }
+                  ]
                 }
               }
             }
@@ -4017,75 +4025,6 @@
         }
       ],
       "Name": "Faces"
-    },
-    {
-      "Members": [
-        {
-          "MemberType": "Function",
-          "Name": "IsA",
-          "Parameters": [
-            {
-              "Name": "enumName",
-              "Type": {
-                "Name": "string"
-              }
-            }
-          ],
-          "ReturnType": {
-            "Name": "bool"
-          }
-        },
-        {
-          "MemberType": "Property",
-          "Name": "EnumType",
-          "ValueType": {
-            "Name": "Enum"
-          }
-        },
-        {
-          "MemberType": "Property",
-          "Name": "Value",
-          "ValueType": {
-            "Name": "int"
-          }
-        },
-        {
-          "MemberType": "Property",
-          "Name": "Name",
-          "ValueType": {
-            "Name": "string"
-          }
-        }
-      ],
-      "Name": "EnumItem"
-    },
-    {
-      "Members": [
-        {
-          "MemberType": "Function",
-          "Name": "GetEnumItems",
-          "Parameters": [],
-          "ReturnType": {
-            "Name": "Array",
-            "Generic": "EnumItem"
-          }
-        }
-      ],
-      "Name": "Enum"
-    },
-    {
-      "Members": [
-        {
-          "MemberType": "Function",
-          "Name": "GetEnums",
-          "Parameters": [],
-          "ReturnType": {
-            "Name": "Array",
-            "Generic": "Enum"
-          }
-        }
-      ],
-      "Name": "Enums"
     },
     {
       "Members": [

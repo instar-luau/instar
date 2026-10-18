@@ -2193,15 +2193,7 @@
     "OptionalCoordinateFrame": "CFrame?"
   },
   "Exclusions": {
-    "Types": [
-      "RBXScriptSignal",
-      "Enum",
-      "EnumItem",
-      "GlobalSettings",
-      "SharedTable",
-      "RaycastResult",
-      "Enums"
-    ],
+    "Types": ["RBXScriptSignal", "GlobalSettings", "SharedTable", "RaycastResult"],
     "Sections": ["TestEZ", "BehaviorScript"],
     "Globals": ["Game", "Workspace"]
   },

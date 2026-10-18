@@ -1,9 +1,9 @@
 use std::{collections::BTreeMap, num::NonZeroUsize, path::PathBuf};
 
 use clap::{ColorChoice, Parser, Subcommand};
-use instar_core::lint;
+use instar_core::{assets::Target, lint};
 
-use super::schema::Association;
+use super::association::Association;
 
 #[derive(Parser)]
 #[command(version, about = "check, format, and lint Luau projects")]
@@ -45,16 +45,8 @@ pub(super) enum Command {
     #[command(flatten)]
     Files(Box<Operation>),
 
-    #[command(about = "print or associate the instar.toml JSON Schema")]
-    Schema {
-        #[arg(
-            long,
-            value_enum,
-            value_name = "TOOL",
-            help = "associate instar.toml in the current directory's TOML tool configuration"
-        )]
-        associate: Option<Association>,
-    },
+    #[command(about = "generate local schema, Luau, and Roblox files")]
+    Generate(Generate),
 }
 
 #[derive(Subcommand)]
@@ -67,6 +59,44 @@ pub(super) enum Operation {
 
     #[command(about = "lint files, directories, patterns, or stdin (-)")]
     Lint(Lint),
+}
+
+#[derive(clap::Args)]
+pub(super) struct Generate {
+    #[arg(
+        value_name = "TARGET",
+        help = "schema, luau, or roblox; defaults to all"
+    )]
+    pub(super) targets: Vec<Target>,
+
+    #[arg(
+        long,
+        value_name = "DIRECTORY",
+        help = "write selected files to this directory"
+    )]
+    pub(super) output: PathBuf,
+
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "resolve output and TOML tool configuration relative to this project directory"
+    )]
+    pub(super) root: Option<PathBuf>,
+
+    #[arg(
+        long,
+        value_enum,
+        value_name = "TOOL",
+        help = "associate the generated schema in the project's TOML tool configuration"
+    )]
+    pub(super) associate: Option<Association>,
+
+    #[arg(
+        long,
+        value_name = "COMMIT",
+        help = "generate upstream files from this 40-character tracker commit"
+    )]
+    pub(super) revision: Option<String>,
 }
 
 impl Operation {

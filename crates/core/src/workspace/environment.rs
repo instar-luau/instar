@@ -19,12 +19,15 @@ use sha2::{Digest as _, Sha256};
 use super::{Error, Workspace, assets, instances, model::Scope, paths};
 
 use crate::{
+    assets::{Documentation as DocumentationMetadata, Metadata},
     lint::Symbols,
     settings::environment::{Group, Security},
 };
 
 #[derive(Default)]
 pub(super) struct Registry {
+    assets: BTreeMap<assets::Namespace, PathBuf>,
+    builtin_documentation: BTreeMap<assets::Namespace, Documentation>,
     inputs: BTreeMap<Inputs, usize>,
     prepared: Vec<Prepared>,
     documentation: BTreeMap<Vec<(String, PathBuf)>, Vec<Documentation>>,
@@ -33,15 +36,19 @@ pub(super) struct Registry {
 
 impl Registry {
     pub(super) fn dependencies(&self, dependencies: &mut BTreeSet<PathBuf>) {
+        for directory in self.assets.values() {
+            dependencies.insert(directory.clone());
+            dependencies.insert(directory.join("metadata.json"));
+            dependencies.insert(directory.join("documentation.json"));
+
+            if let Some(parent) = directory.parent() {
+                dependencies.insert(parent.join("current"));
+            }
+        }
+
         for inputs in self.inputs.keys() {
             dependencies.extend(inputs.capabilities.iter().cloned());
             dependencies.extend(inputs.definitions.iter().map(|(_, path)| path.clone()));
-
-            if let Some((directory, _)) = &inputs.roblox {
-                dependencies.insert(directory.clone());
-                dependencies.insert(directory.join("metadata.json"));
-                dependencies.insert(directory.join("documentation.json"));
-            }
         }
 
         dependencies.extend(
@@ -83,6 +90,14 @@ impl Registry {
         })?;
 
         if let Some(prepared) = name.and_then(|name| self.get(name)) {
+            if prepared.native.enumerations.is_some() {
+                symbols.globals.insert("Enum".to_owned());
+
+                symbols
+                    .types
+                    .extend(["Enum", "EnumItem", "Enumerations"].map(str::to_owned));
+            }
+
             for definition in &prepared.native.definitions {
                 symbols
                     .declare(&definition.source)
@@ -126,6 +141,35 @@ impl Registry {
         }
     }
 
+    pub(super) fn document(
+        &mut self,
+        workspace: &Workspace,
+        namespace: assets::Namespace,
+    ) -> Result<&Documentation, Error> {
+        let directory = self.directory(workspace, namespace)?;
+
+        match self.builtin_documentation.entry(namespace) {
+            Entry::Occupied(entry) => Ok(entry.into_mut()),
+            Entry::Vacant(entry) => Ok(entry.insert(documentation(&directory, namespace)?)),
+        }
+    }
+
+    fn directory(
+        &mut self,
+        workspace: &Workspace,
+        namespace: assets::Namespace,
+    ) -> Result<PathBuf, Error> {
+        match self.assets.entry(namespace) {
+            Entry::Occupied(entry) => Ok(entry.get().clone()),
+
+            Entry::Vacant(entry) => {
+                let directory = paths::canonical(&assets::directory(workspace, namespace)?)?;
+
+                Ok(entry.insert(directory).clone())
+            }
+        }
+    }
+
     fn identity(&mut self, inputs: Inputs) -> Result<String, Error> {
         let index = match self.inputs.entry(inputs) {
             Entry::Occupied(entry) => *entry.get(),
@@ -153,7 +197,6 @@ struct Inputs {
 
 pub(super) struct Prepared {
     pub(super) native: Environment,
-    pub(super) documentation: Option<Documentation>,
 }
 
 pub(super) struct Documentation {
@@ -263,27 +306,6 @@ impl<'source> Visitor<'source> for Namespace<'_> {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Metadata {
-    revision: String,
-    services: Vec<String>,
-    creatable_instances: Vec<String>,
-    profiles: BTreeMap<String, String>,
-    documentation: String,
-    enumerations: String,
-    properties: BTreeMap<String, Vec<Access>>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Access {
-    class: String,
-    name: String,
-    read: bool,
-    write: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Capabilities {
     classes: Vec<Capability>,
 }
@@ -338,13 +360,9 @@ pub(super) fn identity(
             None
         } else {
             let assets = if roblox {
-                let directory = match &settings.environment.asset_directory {
-                    Some(directory) => directory.clone(),
+                let directory = registry.directory(workspace, assets::Namespace::Roblox)?;
 
-                    None => assets::directory(workspace)?,
-                };
-
-                Some((paths::canonical(&directory)?, settings.environment.security))
+                Some((directory, settings.environment.security))
             } else {
                 None
             };
@@ -374,7 +392,6 @@ pub(super) fn identity(
 fn prepare(inputs: &Inputs) -> Result<Prepared, Error> {
     let mut prepared = Prepared {
         native: Environment::default(),
-        documentation: None,
     };
 
     if let Some((directory, security)) = &inputs.roblox {
@@ -417,7 +434,18 @@ fn prepare(inputs: &Inputs) -> Result<Prepared, Error> {
     Ok(prepared)
 }
 
-pub(super) fn validate(directory: &Path, cancelled: fn() -> bool) -> Result<(), Error> {
+pub(super) fn validate(
+    directory: &Path,
+    namespace: assets::Namespace,
+    cancelled: fn() -> bool,
+) -> Result<(), Error> {
+    super::process::interrupted(cancelled)?;
+    documentation(directory, namespace)?;
+
+    if namespace == assets::Namespace::Luau {
+        return Ok(());
+    }
+
     for security in [
         Security::None,
         Security::Local,
@@ -433,7 +461,6 @@ pub(super) fn validate(directory: &Path, cancelled: fn() -> bool) -> Result<(), 
             security,
             &mut Prepared {
                 native: Environment::default(),
-                documentation: None,
             },
         )?;
     }
@@ -444,15 +471,6 @@ pub(super) fn validate(directory: &Path, cancelled: fn() -> bool) -> Result<(), 
 fn assets(directory: &Path, security: Security, prepared: &mut Prepared) -> Result<(), Error> {
     let metadata_path = directory.join("metadata.json");
     let metadata: Metadata = parse(&metadata_path, &paths::read(&metadata_path)?)?;
-
-    if metadata.revision.len() != 40
-        || !metadata
-            .revision
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit())
-    {
-        return Err(invalid(&metadata_path, "invalid asset revision"));
-    }
 
     let profile = match security {
         Security::None => "none",
@@ -467,26 +485,14 @@ fn assets(directory: &Path, security: Security, prepared: &mut Prepared) -> Resu
         .ok_or_else(|| invalid(&metadata_path, "missing security profile"))?;
 
     let declarations = directory.join(format!("{profile}.d.luau"));
-    let enumerations = directory.join("enumerations.d.luau");
 
-    for (path, digest) in [
-        (&declarations, digest),
-        (&enumerations, &metadata.enumerations),
-    ] {
-        prepared.native.definitions.push(Definition {
-            name: paths::text(path)?,
-            namespace: "@roblox".to_owned(),
-            source: verified(path, digest)?,
-        });
-    }
+    prepared.native.definitions.push(Definition {
+        name: paths::text(&declarations)?,
+        namespace: "@roblox".to_owned(),
+        source: verified(&declarations, digest)?,
+    });
 
-    let documentation = directory.join("documentation.json");
-
-    prepared.documentation = Some(Documentation::new(
-        &documentation,
-        verified(&documentation, &metadata.documentation)?,
-        "@roblox",
-    )?);
+    prepared.native.enumerations = Some(metadata.enumerations);
 
     let mut classes = BTreeMap::<String, Class>::new();
 
@@ -549,6 +555,33 @@ fn assets(directory: &Path, security: Security, prepared: &mut Prepared) -> Resu
     prepared.native.classes = Some(classes.into_values().collect());
 
     Ok(())
+}
+
+fn documentation(directory: &Path, namespace: assets::Namespace) -> Result<Documentation, Error> {
+    let metadata_path = directory.join("metadata.json");
+    let source = paths::read(&metadata_path)?;
+
+    let digest = match namespace {
+        assets::Namespace::Luau => {
+            let metadata: DocumentationMetadata = parse(&metadata_path, &source)?;
+
+            metadata.documentation
+        }
+
+        assets::Namespace::Roblox => {
+            let metadata: Metadata = parse(&metadata_path, &source)?;
+
+            metadata.documentation
+        }
+    };
+
+    let path = directory.join("documentation.json");
+
+    Documentation::new(
+        &path,
+        verified(&path, &digest)?,
+        &format!("@{}", namespace.name()),
+    )
 }
 
 fn verified(path: &Path, digest: &str) -> Result<String, Error> {

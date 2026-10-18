@@ -1,8 +1,15 @@
-/// Ordered declarations and class capabilities for one named environment.
+use std::collections::BTreeMap;
+
+use crate::{bridge::bindings, error::Error};
+
+/// Ordered declarations, enum data, and class capabilities for one named environment.
 #[derive(Clone, Debug, Default)]
 pub struct Environment {
     /// Declaration files in application order.
     pub definitions: Vec<Definition>,
+
+    /// Optional Roblox enum families and their item names.
+    pub enumerations: Option<BTreeMap<String, Vec<String>>>,
 
     /// Optional class permissions; an empty list grants no construction or service capabilities.
     pub classes: Option<Vec<Class>>,
@@ -48,4 +55,14 @@ pub struct Property {
 
     /// Whether writes are permitted.
     pub write: bool,
+}
+
+/// Return standard built-in declarations using the native default flags.
+///
+/// # Errors
+/// Returns conflicting native flag settings.
+pub fn declarations() -> Result<String, Error> {
+    bindings::declarations(&[], &[]).map_err(|source| Error::Native {
+        reason: source.what().to_owned(),
+    })
 }

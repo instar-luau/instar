@@ -19,6 +19,7 @@ namespace instar::luau {
         const rust::Vec<Diagnostic> &diagnostics;
     };
 
+    rust::String declarations(rust::Slice<const Flag> settings, rust::Slice<const Flag> scoped);
     rust::String builtins(const Context &host, rust::Slice<const Flag> scoped);
     rust::Vec<Diagnostic> prepare(Luau::Frontend &frontend, const std::string &name, const Environment &environment);
 }

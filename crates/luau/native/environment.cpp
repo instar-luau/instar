@@ -8,6 +8,7 @@
 #include "Luau/TypeArena.h"
 #include "capabilities.hpp"
 #include "diagnostic.hpp"
+#include "enumerations.hpp"
 #include "flags.hpp"
 #include "instar-luau/src/bridge.rs.h"
 
@@ -58,13 +59,18 @@ namespace instar::luau {
     DeclarationFailure::DeclarationFailure(const rust::Vec<Diagnostic> &diagnostics) noexcept
         : diagnostics(diagnostics) {}
 
-    rust::String builtins(const Context &host, rust::Slice<const Flag> scoped) {
-        const auto settings = host.flags();
-        const Flags flags(rust::Slice<const Flag>{settings.data(), settings.size()});
+    rust::String declarations(rust::Slice<const Flag> settings, rust::Slice<const Flag> scoped) {
+        const Flags flags(settings);
         flags.require(scoped);
 
         return Luau::getBuiltinDefinitionSource() + "\ndeclare string: any\ndeclare next: any\ndeclare pairs: any"
                                                     "\ndeclare getmetatable: any\ndeclare setmetatable: any\n";
+    }
+
+    rust::String builtins(const Context &host, rust::Slice<const Flag> scoped) {
+        const auto settings = host.flags();
+
+        return declarations(rust::Slice<const Flag>{settings.data(), settings.size()}, scoped);
     }
 
     rust::Vec<Diagnostic> prepare(Luau::Frontend &frontend, const std::string &name, const Environment &environment) {
@@ -84,6 +90,13 @@ namespace instar::luau {
 
         Luau::unfreeze(frontend.globals.globalTypes);
         frontend.globals.globalScope = scope;
+
+        if (environment.has_enumerations) {
+            construct_enumerations(
+                frontend.globals,
+                {environment.enumerations.data(), environment.enumerations.size()}
+            );
+        }
 
         for (const Definition &definition : environment.definitions) {
             std::string source(definition.source);

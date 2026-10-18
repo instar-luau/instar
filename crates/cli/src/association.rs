@@ -1,13 +1,15 @@
 use std::{
-    env, fs,
+    fs::{self, OpenOptions},
     io::{self, Write as _},
+    path::{Component, MAIN_SEPARATOR, Path, PathBuf},
 };
 
 use eyre::{Result, WrapErr as _, bail, eyre};
-use instar_core::{settings, workspace};
+use instar_core::workspace;
 use toml_edit::{Array, DocumentMut, InlineTable, Item, Table, TableLike, Value};
 
-const ADDRESS: &str = "https://instar-luau.github.io/instar/schema.json";
+use super::{interrupt, report};
+
 const PATTERN: &str = "**/instar.toml";
 
 #[derive(Copy, Clone, clap::ValueEnum)]
@@ -16,26 +18,67 @@ pub(super) enum Association {
     Taplo,
 }
 
-pub(super) fn run(association: Option<Association>) -> Result<u8> {
-    if let Some(association) = association {
-        associate(association)?;
-
-        return Ok(0);
-    }
-
-    let mut output = io::stdout().lock();
-
-    serde_json::to_writer_pretty(&mut output, &settings::schema())
-        .wrap_err("cannot write configuration schema")?;
-
-    writeln!(output).wrap_err("cannot finish configuration schema")?;
-
-    Ok(0)
+pub(super) struct Configuration {
+    pub(super) path: PathBuf,
+    original: Option<String>,
+    proposed: String,
 }
 
-fn associate(association: Association) -> Result<()> {
-    let directory = env::current_dir().wrap_err("cannot find the current directory")?;
+impl Configuration {
+    pub(super) fn apply(&self) -> Result<()> {
+        interrupt::check()?;
 
+        if self.original.as_deref() == Some(self.proposed.as_str()) {
+            let current = fs::read_to_string(&self.path)
+                .wrap_err_with(|| format!("cannot read {}", self.path.display()))?;
+
+            if current != self.proposed {
+                bail!(
+                    "TOML tool configuration `{}` changed during generation",
+                    self.path.display()
+                );
+            }
+
+            return Ok(());
+        }
+
+        if let Some(original) = &self.original {
+            workspace::replace(&self.path, original, &self.proposed)
+                .wrap_err_with(|| format!("cannot update {}", self.path.display()))?;
+        } else {
+            let directory = self
+                .path
+                .parent()
+                .ok_or_else(|| eyre!("TOML tool configuration has no parent directory"))?;
+
+            let mut staged = tempfile::NamedTempFile::new_in(directory)
+                .wrap_err("cannot stage TOML tool configuration")?;
+
+            staged
+                .write_all(self.proposed.as_bytes())
+                .wrap_err("cannot write TOML tool configuration")?;
+
+            staged
+                .as_file()
+                .sync_all()
+                .wrap_err("cannot flush TOML tool configuration")?;
+
+            interrupt::check()?;
+
+            staged
+                .persist_noclobber(&self.path)
+                .wrap_err_with(|| format!("cannot create {}", self.path.display()))?;
+        }
+
+        Ok(())
+    }
+}
+
+pub(super) fn prepare(
+    directory: &Path,
+    association: Association,
+    schema: &Path,
+) -> Result<Configuration> {
     let (names, field): (&[&str], _) = match association {
         Association::Tombi => (
             &[
@@ -57,14 +100,24 @@ fn associate(association: Association) -> Result<()> {
     for name in names {
         let candidate = directory.join(name);
 
-        let contents = match fs::read_to_string(&candidate) {
-            Ok(contents) => contents,
+        let metadata = match fs::symlink_metadata(&candidate) {
+            Ok(metadata) => metadata,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
 
             Err(error) => {
                 return Err(error).wrap_err_with(|| format!("cannot read {}", candidate.display()));
             }
         };
+
+        if !metadata.is_file() {
+            bail!(
+                "TOML tool configuration `{}` must be a regular file",
+                candidate.display()
+            );
+        }
+
+        let contents = fs::read_to_string(&candidate)
+            .wrap_err_with(|| format!("cannot read {}", candidate.display()))?;
 
         let parsed = contents
             .parse::<DocumentMut>()
@@ -79,11 +132,36 @@ fn associate(association: Association) -> Result<()> {
             continue;
         }
 
+        if metadata.permissions().readonly() {
+            bail!(
+                "TOML tool configuration `{}` is read-only",
+                candidate.display()
+            );
+        }
+
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&candidate)
+            .wrap_err_with(|| format!("cannot update {}", candidate.display()))?
+            .try_lock()
+            .map_err(io::Error::other)
+            .wrap_err_with(|| format!("cannot lock {}", candidate.display()))?;
+
         path = candidate;
         original = Some(contents);
         document = parsed;
         break;
     }
+
+    let directory = normalize(directory);
+    let schema = normalize(schema);
+    let address = report::relative(&schema, &directory);
+
+    let address = address
+        .to_str()
+        .ok_or_else(|| eyre!("generated schema path must be valid UTF-8"))?
+        .replace(MAIN_SEPARATOR, "/");
 
     let configuration: &mut dyn TableLike = if path.ends_with("pyproject.toml") {
         document
@@ -99,40 +177,37 @@ fn associate(association: Association) -> Result<()> {
         .entry(field)
         .or_insert_with(|| toml_edit::value(Array::new()));
 
-    configure(entries, association)
+    configure(entries, association, &address)
         .wrap_err_with(|| format!("cannot update {field} in {}", path.display()))?;
 
     let proposed = document.to_string();
 
-    if original.as_deref() == Some(proposed.as_str()) {
-        return Ok(());
-    }
-
-    if let Some(original) = original {
-        workspace::replace(&path, &original, &proposed)
-            .wrap_err_with(|| format!("cannot update {}", path.display()))?;
-    } else {
-        let mut staged = tempfile::NamedTempFile::new_in(&directory)
-            .wrap_err("cannot stage TOML tool configuration")?;
-
-        staged
-            .write_all(proposed.as_bytes())
-            .wrap_err("cannot write TOML tool configuration")?;
-
-        staged
-            .as_file()
-            .sync_all()
-            .wrap_err("cannot flush TOML tool configuration")?;
-
-        staged
-            .persist_noclobber(&path)
-            .wrap_err_with(|| format!("cannot create {}", path.display()))?;
-    }
-
-    Ok(())
+    Ok(Configuration {
+        path,
+        original,
+        proposed,
+    })
 }
 
-fn configure(entries: &mut Item, association: Association) -> Result<()> {
+fn normalize(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+
+            Component::ParentDir => {
+                normalized.pop();
+            }
+
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+
+    normalized
+}
+
+fn configure(entries: &mut Item, association: Association, address: &str) -> Result<()> {
     match entries {
         Item::ArrayOfTables(entries) => {
             let selected = select(
@@ -142,7 +217,7 @@ fn configure(entries: &mut Item, association: Association) -> Result<()> {
 
             let mut entry = selected.map_or_else(Table::new, |index| entries.remove(index));
 
-            configure_entry(&mut entry, association)?;
+            configure_entry(&mut entry, association, address)?;
 
             match association {
                 Association::Tombi => {
@@ -180,6 +255,7 @@ fn configure(entries: &mut Item, association: Association) -> Result<()> {
                     .as_inline_table_mut()
                     .ok_or_else(|| eyre!("expected an inline table"))?,
                 association,
+                address,
             )?;
 
             match association {
@@ -215,7 +291,11 @@ fn select<'entry>(
     }
 }
 
-fn configure_entry(entry: &mut dyn TableLike, association: Association) -> Result<()> {
+fn configure_entry(
+    entry: &mut dyn TableLike,
+    association: Association,
+    address: &str,
+) -> Result<()> {
     entry
         .entry("include")
         .or_insert_with(|| toml_edit::value(Array::from_iter([PATTERN])));
@@ -232,8 +312,8 @@ fn configure_entry(entry: &mut dyn TableLike, association: Association) -> Resul
 
     let path = schema.entry("path").or_insert(Item::None);
 
-    if path.as_str() != Some(ADDRESS) {
-        let mut value = Value::from(ADDRESS);
+    if path.as_str() != Some(address) {
+        let mut value = Value::from(address);
 
         if let Some(previous) = path.as_value() {
             *value.decor_mut() = previous.decor().clone();

@@ -24,7 +24,7 @@ use color_eyre::{
 
 use eyre::{Report, Result, WrapErr as _};
 
-use instar_core::{lint, workspace::Error as WorkspaceError};
+use instar_core::{assets::Generated, lint, workspace::Error as WorkspaceError};
 
 use similar::TextDiff;
 
@@ -248,6 +248,70 @@ pub(super) fn initialize(color: Option<ColorChoice>, verbose: bool) -> Result<()
     }
 
     Ok(())
+}
+
+pub(super) fn generated(
+    arguments: &Arguments,
+    generated: &Generated,
+    root: &Path,
+    association: Option<&Path>,
+    started: Instant,
+) {
+    if arguments.quiet {
+        return;
+    }
+
+    if arguments.verbose {
+        eprintln!(
+            "{}: `{}`",
+            console::style("root").for_stderr().cyan(),
+            console::style(root.display()).for_stderr().magenta()
+        );
+
+        for path in &generated.files {
+            eprintln!(
+                "{} `{}`",
+                console::style("generated").for_stderr().cyan().bold(),
+                console::style(path.display()).for_stderr().magenta()
+            );
+        }
+
+        if let Some(path) = association {
+            eprintln!(
+                "{} `{}`",
+                console::style("associated").for_stderr().cyan().bold(),
+                console::style(path.display()).for_stderr().magenta()
+            );
+        }
+    }
+
+    eprintln!(
+        "{} {} {} {}; {} {}",
+        console::style("generated").for_stderr().green().bold(),
+        console::style(generated.files.len())
+            .for_stderr()
+            .cyan()
+            .bold(),
+        console::style("files in").for_stderr().dim(),
+        console::style(format!("{:.2?}", started.elapsed()))
+            .for_stderr()
+            .cyan(),
+        console::style(generated.changed)
+            .for_stderr()
+            .yellow()
+            .bold(),
+        console::style("changed").for_stderr().dim()
+    );
+}
+
+pub(super) fn generation_interrupted(arguments: &Arguments) {
+    if !arguments.quiet {
+        eprintln!(
+            "{} {}",
+            console::style("interrupted").for_stderr().yellow().bold(),
+            console::style("generate").for_stderr().cyan()
+        );
+    }
 }
 
 pub(super) fn interrupted(arguments: &Arguments, operation: &Operation) {

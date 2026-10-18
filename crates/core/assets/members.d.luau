@@ -128,7 +128,7 @@ declare extern type BindableFunction with
 end
 
 declare extern type Players with
-	PlayerChatted: RBXScriptSignal<EnumPlayerChatType, Player, string, Player?>
+	PlayerChatted: RBXScriptSignal<Enum.PlayerChatType, Player, string, Player?>
 	function GetPlayerByUserId(self, userId: number): Player?
 	function GetPlayerFromCharacter(self, character: Model): Player?
 end
@@ -137,17 +137,25 @@ declare extern type ContextActionService with
 	function BindAction(
 		self,
 		actionName: string,
-		functionToBind: (actionName: string, inputState: EnumUserInputState, inputObject: InputObject) -> EnumContextActionResult?,
+		functionToBind: (
+			actionName: string,
+			inputState: Enum.UserInputState,
+			inputObject: InputObject
+		) -> Enum.ContextActionResult?,
 		createTouchButton: boolean,
-		...: EnumUserInputType | EnumKeyCode
+		...: Enum.UserInputType | Enum.KeyCode
 	): ()
 	function BindActionAtPriority(
 		self,
 		actionName: string,
-		functionToBind: (actionName: string, inputState: EnumUserInputState, inputObject: InputObject) -> EnumContextActionResult?,
+		functionToBind: (
+			actionName: string,
+			inputState: Enum.UserInputState,
+			inputObject: InputObject
+		) -> Enum.ContextActionResult?,
 		createTouchButton: boolean,
 		priorityLevel: number,
-		...: EnumUserInputType | EnumKeyCode
+		...: Enum.UserInputType | Enum.KeyCode
 	): ()
 end
 
@@ -162,7 +170,7 @@ end
 declare extern type WorldRoot with
 	function Raycast(self, origin: Vector3, direction: Vector3, raycastParams: RaycastParams?): RaycastResult?
 	function ArePartsTouchingOthers(self, partList: { BasePart }, overlapIgnored: number?): boolean
-	function BulkMoveTo(self, partList: { BasePart }, cframeList: { CFrame }, eventMode: EnumBulkMoveMode?): nil
+	function BulkMoveTo(self, partList: { BasePart }, cframeList: { CFrame }, eventMode: Enum.BulkMoveMode?): nil
 	function GetPartBoundsInBox(self, cframe: CFrame, size: Vector3, overlapParams: OverlapParams?): { BasePart }
 	function GetPartBoundsInRadius(self, position: Vector3, radius: number, overlapParams: OverlapParams?): { BasePart }
 	function GetPartsInPart(self, part: BasePart, overlapParams: OverlapParams?): { BasePart }
@@ -232,7 +240,7 @@ declare extern type TeleportService with
 	)
 	function ReserveServer(self, placeId: number): (string, string)
 	LocalPlayerArrivedFromTeleport: RBXScriptSignal<Player, any>
-	TeleportInitFailed: RBXScriptSignal<Player, EnumTeleportResult, string, number, TeleportOptions>
+	TeleportInitFailed: RBXScriptSignal<Player, Enum.TeleportResult, string, number, TeleportOptions>
 end
 
 declare extern type TeleportOptions with
@@ -241,10 +249,9 @@ declare extern type TeleportOptions with
 end
 
 declare extern type UserService with
-	function GetUserInfosByUserIdsAsync(
-		self,
-		userIds: { number }
-	): { { Id: number, Username: string, DisplayName: string } }
+	function GetUserInfosByUserIdsAsync(self, userIds: { number }): {
+		{ Id: number, Username: string, DisplayName: string }
+	}
 end
 
 declare extern type Studio with
@@ -268,12 +275,12 @@ declare extern type CollectionService with
 end
 
 declare extern type UserInputService with
-	function GetConnectedGamepads(self): { EnumUserInputType }
-	function GetGamepadState(self, gamepadNum: EnumUserInputType): { InputObject }
+	function GetConnectedGamepads(self): { Enum.UserInputType }
+	function GetGamepadState(self, gamepadNum: Enum.UserInputType): { InputObject }
 	function GetKeysPressed(self): { InputObject }
 	function GetMouseButtonsPressed(self): { InputObject }
-	function GetNavigationGamepads(self): { EnumUserInputType }
-	function GetSupportedGamepadKeyCodes(self, gamepadNum: EnumUserInputType): { EnumKeyCode }
+	function GetNavigationGamepads(self): { Enum.UserInputType }
+	function GetSupportedGamepadKeyCodes(self, gamepadNum: Enum.UserInputType): { Enum.KeyCode }
 end
 
 declare extern type Humanoid with
@@ -307,14 +314,14 @@ declare extern type BasePart with
 	function SubtractAsync(
 		self,
 		parts: { BasePart },
-		collisionfidelity: EnumCollisionFidelity?,
-		renderFidelity: EnumRenderFidelity?
+		collisionfidelity: Enum.CollisionFidelity?,
+		renderFidelity: Enum.RenderFidelity?
 	): UnionOperation
 	function UnionAsync(
 		self,
 		parts: { BasePart },
-		collisionfidelity: EnumCollisionFidelity?,
-		renderFidelity: EnumRenderFidelity?
+		collisionfidelity: Enum.CollisionFidelity?,
+		renderFidelity: Enum.RenderFidelity?
 	): UnionOperation
 end
 
@@ -357,11 +364,10 @@ declare extern type GlobalDataStore with
 	): (number, DataStoreKeyInfo)
 	function RemoveAsync(self, key: string): (any, DataStoreKeyInfo)
 	function SetAsync(self, key: string, value: any, userIds: { number }?, options: DataStoreSetOptions?): string
-	function UpdateAsync(
-		self,
-		key: string,
-		transformFunction: ((any, DataStoreKeyInfo) -> (any, { number }?, {}?))
-	): (any, DataStoreKeyInfo)
+	function UpdateAsync(self, key: string, transformFunction: ((any, DataStoreKeyInfo) -> (any, { number }?, {}?))): (
+		any,
+		DataStoreKeyInfo
+	)
 end
 
 declare extern type OrderedDataStore with
@@ -441,12 +447,9 @@ declare extern type Sound with
 end
 
 declare extern type StudioService with
-	function GizmoRaycast(
-		self,
-		origin: Vector3,
-		direction: Vector3,
-		raycastParams: RaycastParams?
-	): RaycastResult<Attachment | Constraint | NoCollisionConstraint | WeldConstraint>?
+	function GizmoRaycast(self, origin: Vector3, direction: Vector3, raycastParams: RaycastParams?): RaycastResult<
+		Attachment | Constraint | NoCollisionConstraint | WeldConstraint
+	>?
 end
 
 declare extern type ControllerManager with
@@ -461,7 +464,7 @@ declare extern type CaptureService with
 		self,
 		onCaptureReady: (capture: VideoCapture) -> (),
 		params: CaptureParams
-	): EnumVideoCaptureStartedResult
+	): Enum.VideoCaptureStartedResult
 	function TakeCapture(self, onCaptureReady: (capture: Capture) -> (), params: CaptureParams): ()
 end
 

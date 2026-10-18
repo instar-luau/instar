@@ -1,4 +1,4 @@
-use schemars::{Schema, schema_for};
+use schemars::{Schema, generate::SchemaSettings};
 use serde_json::{Value, json};
 
 use super::Configuration;
@@ -6,7 +6,9 @@ use super::Configuration;
 /// Generate the configuration schema accepted by this version of Instar.
 #[must_use]
 pub fn schema() -> Schema {
-    schema_for!(Configuration)
+    SchemaSettings::draft07()
+        .into_generator()
+        .into_root_schema_for::<Configuration>()
 }
 
 pub(super) fn identifier() -> Value {

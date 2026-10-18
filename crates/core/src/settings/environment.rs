@@ -21,10 +21,6 @@ pub struct Configuration {
     #[schemars(extend("items" = schema::identifier()))]
     pub globals: Vec<String>,
 
-    /// Asset directory override.
-    #[schemars(extend("anyOf" = [schema::path(), { "type": "null" }]))]
-    pub asset_directory: Option<PathBuf>,
-
     /// Custom capability input file.
     #[schemars(extend("anyOf" = [schema::path(), { "type": "null" }]))]
     pub capabilities: Option<PathBuf>,

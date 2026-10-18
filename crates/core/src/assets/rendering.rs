@@ -1,0 +1,868 @@
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt::Write as _,
+    path::PathBuf,
+    str::from_utf8,
+};
+
+use serde::Serialize;
+use serde_json::{Map, Value};
+use sha2::{Digest as _, Sha256};
+
+use vermis::{
+    token::{Keyword, Symbol},
+    tree::NodeKind,
+};
+
+use super::{
+    Error,
+    mapping::{
+        self, Class, Corrections, Dump, Enumeration, HIERARCHY, Member, Parameter, Type, Types,
+        invalid,
+    },
+    metadata::{Access, Documentation, Metadata},
+    syntax::{self, Output, Replacement},
+};
+
+use crate::{
+    format::{self, Prepared},
+    settings::format::Configuration,
+};
+
+struct Context<'context> {
+    classes: &'context [Class],
+    corrections: &'context Corrections,
+    replacements: &'context BTreeMap<String, Vec<Replacement>>,
+    labels: &'context [&'context str],
+    cancelled: fn() -> bool,
+}
+
+pub(super) fn render(
+    dump: Value,
+    source: &str,
+    documentation: Value,
+    builtins: &str,
+    cancelled: fn() -> bool,
+) -> Result<BTreeMap<PathBuf, String>, Error> {
+    check(cancelled)?;
+
+    if !documentation.is_object() {
+        return Err(invalid("invalid documentation object"));
+    }
+
+    let dump: Dump = mapping::decode(dump, "API dump")?;
+
+    let corrections: Corrections =
+        mapping::parse(include_str!("../../assets/corrections.json"), "corrections")?;
+
+    let types: Types = mapping::parse(include_str!("../../assets/types.json"), "types")?;
+    let classes = mapping::corrected(dump.classes, &corrections.classes, cancelled)?;
+    let datatypes = mapping::corrected(types.data_types, &corrections.classes, cancelled)?;
+    let constructors = mapping::corrected(types.constructors, &corrections.classes, cancelled)?;
+    let declarations = include_str!("../../assets/declarations.d.luau");
+
+    let replacements =
+        syntax::replacements(include_str!("../../assets/members.d.luau"), cancelled)?
+            .into_iter()
+            .collect();
+
+    let declared = syntax::blocks(declarations, cancelled)?;
+
+    let injections = syntax::injected(
+        source,
+        &corrections.exclusions.sections,
+        &corrections.exclusions.globals,
+        &corrections.exports,
+        &declared,
+        cancelled,
+    )?;
+
+    validate(
+        [&classes, &datatypes, &constructors],
+        &dump.enumerations,
+        [declarations, &injections],
+        &corrections,
+        cancelled,
+    )?;
+
+    let configuration = Prepared::new(&Configuration::default())
+        .map_err(|error| invalid(format!("invalid default formatting settings: {error}")))?;
+
+    let mut definitions = BTreeMap::new();
+    let mut properties = BTreeMap::new();
+
+    for (name, level) in [("none", 0), ("local", 1), ("plugin", 2), ("roblox", 4)] {
+        check(cancelled)?;
+        let labels = &HIERARCHY[..=level];
+
+        let context = Context {
+            classes: &classes,
+            corrections: &corrections,
+            replacements: &replacements,
+            labels,
+            cancelled,
+        };
+
+        let mut output = Output::default();
+        output.source(declarations);
+        output.newline();
+
+        for class in &datatypes {
+            check(cancelled)?;
+            output.append(declaration(class, &context)?);
+        }
+
+        output.source(&injections);
+        output.newline();
+
+        for class in &classes {
+            check(cancelled)?;
+            output.append(declaration(class, &context)?);
+        }
+
+        for class in &constructors {
+            check(cancelled)?;
+            output.append(constructor(class, &context)?);
+        }
+
+        let ordered = syntax::ordered(&output.finish(cancelled)?, cancelled)?;
+        let formatted = format::format(&ordered, &configuration)?;
+        check(cancelled)?;
+        definitions.insert(name.to_owned(), formatted);
+
+        let mut entries = Vec::new();
+
+        for class in &classes {
+            check(cancelled)?;
+
+            for member in &class.members {
+                check(cancelled)?;
+
+                if member.kind == "Property"
+                    && !syntax::identifier(&member.name)
+                    && member.access(labels)?
+                {
+                    let (read, write) = member.permissions(labels)?;
+
+                    entries.push(Access {
+                        class: class.name.clone(),
+                        name: member.name.clone(),
+                        read,
+                        write,
+                    });
+                }
+            }
+        }
+
+        properties.insert(name.to_owned(), entries);
+    }
+
+    let luau_roots: BTreeSet<_> = syntax::blocks(builtins, cancelled)?
+        .into_iter()
+        .map(|block| block.name)
+        .collect();
+
+    let mut roblox_roots = BTreeSet::from(["Enum".to_owned()]);
+
+    for definition in definitions.values() {
+        for block in syntax::blocks(definition, cancelled)? {
+            if !block.is_type {
+                roblox_roots.insert(block.name);
+            }
+        }
+    }
+
+    let canonical = canonical(documentation, &luau_roots, &roblox_roots, cancelled)?;
+
+    let canonical = canonical
+        .as_object()
+        .ok_or_else(|| invalid("invalid documentation object"))?;
+
+    if canonical
+        .keys()
+        .any(|key| !key.starts_with("@luau/") && !key.starts_with("@roblox/"))
+    {
+        return Err(invalid("unrecognized documentation namespace"));
+    }
+
+    let mut documents = BTreeMap::new();
+
+    for namespace in ["luau", "roblox"] {
+        check(cancelled)?;
+        let prefix = format!("@{namespace}/");
+
+        let symbols: Map<_, _> = canonical
+            .iter()
+            .filter(|(key, _)| key.starts_with(&prefix))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+
+        documents.insert(namespace, serialize(&symbols, "documentation")?);
+    }
+
+    let luau_documentation = documents
+        .remove("luau")
+        .ok_or_else(|| invalid("missing Luau documentation"))?;
+
+    let roblox_documentation = documents
+        .remove("roblox")
+        .ok_or_else(|| invalid("missing Roblox documentation"))?;
+
+    let metadata = Metadata {
+        services: classes
+            .iter()
+            .filter(|class| mapping::tagged(class.tags.as_deref(), "Service"))
+            .map(|class| class.name.clone())
+            .collect(),
+        creatable_instances: classes
+            .iter()
+            .filter(|class| {
+                !mapping::tagged(class.tags.as_deref(), "NotCreatable")
+                    && !mapping::tagged(class.tags.as_deref(), "Service")
+            })
+            .map(|class| class.name.clone())
+            .collect(),
+        profiles: definitions
+            .iter()
+            .map(|(name, source)| (name.clone(), hash(source)))
+            .collect(),
+        documentation: hash(&roblox_documentation),
+        enumerations: dump
+            .enumerations
+            .into_iter()
+            .map(|enumeration| {
+                (
+                    enumeration.name,
+                    enumeration
+                        .items
+                        .into_iter()
+                        .map(|item| item.name)
+                        .collect(),
+                )
+            })
+            .collect(),
+        properties,
+    };
+
+    let mut result = BTreeMap::new();
+
+    for (name, source) in definitions {
+        result.insert(PathBuf::from(format!("roblox/{name}.d.luau")), source);
+    }
+
+    result.insert(
+        PathBuf::from("roblox/documentation.json"),
+        roblox_documentation,
+    );
+
+    result.insert(
+        PathBuf::from("roblox/metadata.json"),
+        serialize(&metadata, "Roblox metadata")?,
+    );
+
+    let luau_metadata = Documentation {
+        documentation: hash(&luau_documentation),
+    };
+
+    result.insert(PathBuf::from("luau/documentation.json"), luau_documentation);
+
+    result.insert(
+        PathBuf::from("luau/metadata.json"),
+        serialize(&luau_metadata, "Luau metadata")?,
+    );
+
+    check(cancelled)?;
+
+    Ok(result)
+}
+
+fn declaration(class: &Class, context: &Context<'_>) -> Result<Output, Error> {
+    let mut output = Output::default();
+
+    if context.corrections.exclusions.types.contains(&class.name) {
+        return Ok(output);
+    }
+
+    class_header(
+        &mut output,
+        &class.name,
+        class
+            .superclass
+            .as_deref()
+            .filter(|parent| *parent != "<<<ROOT>>>"),
+    )?;
+
+    let replacements = context
+        .replacements
+        .get(&class.name)
+        .map_or(&[][..], Vec::as_slice);
+
+    for (index, member) in class.members.iter().enumerate() {
+        check(context.cancelled)?;
+
+        if !member.access(context.labels)? {
+            continue;
+        }
+
+        if replacements
+            .iter()
+            .any(|replacement| replacement.name == member.name)
+        {
+            if !class.members[..index]
+                .iter()
+                .any(|previous| previous.name == member.name)
+            {
+                for replacement in replacements
+                    .iter()
+                    .filter(|replacement| replacement.name == member.name)
+                {
+                    if permission(&mut output, Some(member), context.labels)? {
+                        output.source(&replacement.source);
+                        output.newline();
+                    }
+                }
+            }
+        } else if permission(&mut output, Some(member), context.labels)? {
+            output.append(signature(member, &context.corrections.types)?);
+            output.newline();
+        }
+    }
+
+    let mut appended = BTreeSet::new();
+
+    for replacement in replacements {
+        check(context.cancelled)?;
+
+        if class
+            .members
+            .iter()
+            .any(|member| member.name == replacement.name)
+            || !appended.insert(&replacement.name)
+        {
+            continue;
+        }
+
+        let original = inherited(class, &replacement.name, context.classes)?;
+
+        if let Some(member) = original
+            && !member.access(context.labels)?
+        {
+            continue;
+        }
+
+        for replacement in replacements
+            .iter()
+            .filter(|entry| entry.name == replacement.name)
+        {
+            if permission(&mut output, original, context.labels)? {
+                output.source(&replacement.source);
+                output.newline();
+            }
+        }
+    }
+
+    output.keyword(Keyword::End);
+    output.newline();
+    output.newline();
+
+    Ok(output)
+}
+
+fn permission(
+    output: &mut Output,
+    member: Option<&Member>,
+    labels: &[&str],
+) -> Result<bool, Error> {
+    let Some(member) = member.filter(|member| member.kind == "Property") else {
+        return Ok(true);
+    };
+
+    let (read, write) = member.permissions(labels)?;
+
+    let allowed = if (read || write) && !syntax::identifier(&member.name) || (read && write) {
+        true
+    } else if read {
+        output.source("read");
+
+        true
+    } else if write {
+        output.source("write");
+
+        true
+    } else {
+        false
+    };
+
+    Ok(allowed)
+}
+
+fn signature(member: &Member, mappings: &BTreeMap<String, String>) -> Result<Output, Error> {
+    let mut output = Output::default();
+
+    match member.kind.as_str() {
+        "Property" => {
+            output.property(&member.name)?;
+            output.symbol(Symbol::Colon);
+
+            output.source(
+                member
+                    .value_type
+                    .as_ref()
+                    .ok_or_else(|| invalid("missing property value type"))?
+                    .resolve(mappings)?,
+            );
+        }
+
+        "Function" => {
+            let values = member.parameters()?;
+            output.keyword(Keyword::Function);
+            output.property(&member.name)?;
+            output.symbol(Symbol::LeftParenthesis);
+            output.source("self");
+
+            if !values.is_empty() {
+                output.symbol(Symbol::Comma);
+            }
+
+            parameters(&mut output, values, mappings, false)?;
+            output.symbol(Symbol::RightParenthesis);
+            output.symbol(Symbol::Colon);
+            returns(&mut output, &member.returns()?, mappings)?;
+        }
+
+        "Callback" => {
+            output.property(&member.name)?;
+            output.symbol(Symbol::Colon);
+            output.symbol(Symbol::LeftParenthesis);
+            parameters(&mut output, member.parameters()?, mappings, true)?;
+            output.symbol(Symbol::RightParenthesis);
+            output.symbol(Symbol::Arrow);
+            returns(&mut output, &member.returns()?, mappings)?;
+        }
+
+        "Event" => {
+            output.property(&member.name)?;
+            output.symbol(Symbol::Colon);
+            output.source("RBXScriptSignal");
+            output.symbol(Symbol::LessThan);
+
+            let values: Vec<_> = member
+                .parameters()?
+                .iter()
+                .map(|parameter| parameter.value.clone())
+                .collect();
+
+            returns(&mut output, &values, mappings)?;
+            output.symbol(Symbol::GreaterThan);
+        }
+
+        kind => return Err(invalid(format!("unsupported member kind `{kind}`"))),
+    }
+
+    Ok(output)
+}
+
+fn parameters(
+    output: &mut Output,
+    values: &[Parameter],
+    mappings: &BTreeMap<String, String>,
+    callback: bool,
+) -> Result<(), Error> {
+    for (index, parameter) in values.iter().enumerate() {
+        if index > 0 {
+            output.symbol(Symbol::Comma);
+        }
+
+        let value = parameter.value.resolve(mappings)?;
+        let variadic = value.starts_with("...") || parameter.name == "...";
+
+        if variadic && index + 1 == values.len() {
+            output.symbol(Symbol::Ellipsis);
+
+            if !callback {
+                output.symbol(Symbol::Colon);
+            }
+
+            output.source(value.strip_prefix("...").unwrap_or(&value));
+            continue;
+        }
+
+        if syntax::identifier(&parameter.name) && parameter.name != "self" {
+            output.source(&parameter.name);
+        } else {
+            output.source(format!("argument{index}"));
+        }
+
+        output.symbol(Symbol::Colon);
+
+        let value = if variadic { "any" } else { &value };
+
+        output.source(value);
+
+        if parameter.fields.contains_key("Default") && !value.ends_with('?') {
+            output.symbol(Symbol::QuestionMark);
+        }
+    }
+
+    Ok(())
+}
+
+fn returns(
+    output: &mut Output,
+    values: &[Type],
+    mappings: &BTreeMap<String, String>,
+) -> Result<(), Error> {
+    if values.len() != 1 {
+        output.symbol(Symbol::LeftParenthesis);
+    }
+
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            output.symbol(Symbol::Comma);
+        }
+
+        let value = value.resolve(mappings)?;
+
+        output.source(if value.starts_with("...") && index + 1 < values.len() {
+            "any".to_owned()
+        } else {
+            value
+        });
+    }
+
+    if values.len() != 1 {
+        output.symbol(Symbol::RightParenthesis);
+    }
+
+    Ok(())
+}
+
+fn constructor(class: &Class, context: &Context<'_>) -> Result<Output, Error> {
+    let mut output = Output::default();
+
+    if context.corrections.exclusions.types.contains(&class.name) {
+        return Ok(output);
+    }
+
+    output.source("declare");
+    output.name(&class.name)?;
+    output.symbol(Symbol::Colon);
+    output.symbol(Symbol::LeftBrace);
+    output.newline();
+    let mut fields = 0;
+
+    for member in &class.members {
+        check(context.cancelled)?;
+
+        if member.kind == "Property" {
+            if fields > 0 {
+                output.symbol(Symbol::Comma);
+                output.newline();
+            }
+
+            fields += 1;
+            output.append(signature(member, &context.corrections.types)?);
+        }
+    }
+
+    let mut emitted = BTreeSet::new();
+
+    for member in &class.members {
+        check(context.cancelled)?;
+
+        if member.kind != "Function" || !emitted.insert(&member.name) {
+            continue;
+        }
+
+        if fields > 0 {
+            output.symbol(Symbol::Comma);
+            output.newline();
+        }
+
+        fields += 1;
+        output.property(&member.name)?;
+        output.symbol(Symbol::Colon);
+
+        for (index, overload) in class
+            .members
+            .iter()
+            .filter(|value| value.kind == "Function" && value.name == member.name)
+            .enumerate()
+        {
+            check(context.cancelled)?;
+
+            if index > 0 {
+                output.symbol(Symbol::Ampersand);
+            }
+
+            output.symbol(Symbol::LeftParenthesis);
+            output.symbol(Symbol::LeftParenthesis);
+
+            parameters(
+                &mut output,
+                overload.parameters()?,
+                &context.corrections.types,
+                true,
+            )?;
+
+            output.symbol(Symbol::RightParenthesis);
+            output.symbol(Symbol::Arrow);
+
+            returns(
+                &mut output,
+                &overload.returns()?,
+                &context.corrections.types,
+            )?;
+
+            output.symbol(Symbol::RightParenthesis);
+        }
+    }
+
+    output.newline();
+    output.symbol(Symbol::RightBrace);
+    output.newline();
+    output.newline();
+
+    Ok(output)
+}
+
+fn inherited<'classes>(
+    class: &'classes Class,
+    name: &str,
+    classes: &'classes [Class],
+) -> Result<Option<&'classes Member>, Error> {
+    let mut current = class;
+    let mut visited = BTreeSet::new();
+
+    loop {
+        if let Some(member) = current.members.iter().find(|member| member.name == name) {
+            return Ok(Some(member));
+        }
+
+        if !visited.insert(&current.name) {
+            return Err(invalid(format!(
+                "unresolved class inheritance: {}",
+                current.name
+            )));
+        }
+
+        let Some(parent) = current
+            .superclass
+            .as_deref()
+            .and_then(|parent| classes.iter().find(|class| class.name == parent))
+        else {
+            return Ok(None);
+        };
+
+        current = parent;
+    }
+}
+
+fn class_header(output: &mut Output, name: &str, parent: Option<&str>) -> Result<(), Error> {
+    output.source("declare");
+    output.source("extern");
+    output.source("type");
+    output.name(name)?;
+
+    if let Some(parent) = parent {
+        output.source("extends");
+        output.name(parent)?;
+    }
+
+    output.source("with");
+    output.newline();
+
+    Ok(())
+}
+
+fn validate(
+    classes: [&[Class]; 3],
+    enumerations: &[Enumeration],
+    declarations: [&str; 2],
+    corrections: &Corrections,
+    cancelled: fn() -> bool,
+) -> Result<(), Error> {
+    let mut defined: BTreeSet<_> = classes[..2]
+        .iter()
+        .flat_map(|classes| classes.iter())
+        .map(|class| class.name.clone())
+        .collect();
+
+    defined.extend(["Enum", "EnumItem", "Enumerations"].map(str::to_owned));
+
+    for enumeration in enumerations {
+        check(cancelled)?;
+
+        if !syntax::identifier(&enumeration.name) || enumeration.name == "GetEnums" {
+            return Err(invalid(format!("invalid enum name `{}`", enumeration.name)));
+        }
+
+        if !defined.insert(format!("Enum.{}", enumeration.name)) {
+            return Err(invalid(format!("duplicate enum `{}`", enumeration.name)));
+        }
+
+        let mut items = BTreeSet::from(["GetEnumItems", "FromName", "FromValue"]);
+
+        for item in &enumeration.items {
+            check(cancelled)?;
+
+            if item.name.is_empty() || item.name.contains('\0') {
+                return Err(invalid(format!(
+                    "invalid enum item in `{}`",
+                    enumeration.name
+                )));
+            }
+
+            if !items.insert(&item.name) {
+                return Err(invalid(format!(
+                    "duplicate enum member `{}.{}`",
+                    enumeration.name, item.name
+                )));
+            }
+        }
+    }
+
+    for source in declarations {
+        let tree = syntax::parse(source)?;
+
+        for node in &tree.nodes {
+            check(cancelled)?;
+
+            if let NodeKind::TypeAlias { name, .. } | NodeKind::Class { name, .. } = node.kind {
+                let name = from_utf8(tree.text(name))
+                    .map_err(|error| invalid(format!("invalid type name: {error}")))?;
+
+                defined.insert(name.to_owned());
+            }
+        }
+    }
+
+    let mut references = BTreeSet::new();
+
+    for class in classes.into_iter().flatten() {
+        check(cancelled)?;
+
+        for member in &class.members {
+            check(cancelled)?;
+
+            if !member.access(&HIERARCHY)? {
+                continue;
+            }
+
+            for value in member.value_type.iter().chain(
+                member
+                    .parameters
+                    .iter()
+                    .flatten()
+                    .map(|parameter| &parameter.value),
+            ) {
+                value.references(&corrections.types, &mut references)?;
+            }
+
+            for values in member.return_type.iter().chain(member.tuple_returns.iter()) {
+                let values = match values {
+                    Value::Array(values) => values.clone(),
+                    value => vec![value.clone()],
+                };
+
+                for value in values {
+                    let value: Type = mapping::decode(value, "tuple return type")?;
+                    value.references(&corrections.types, &mut references)?;
+                }
+            }
+        }
+    }
+
+    let missing: Vec<_> = references
+        .difference(&defined)
+        .map(String::as_str)
+        .collect();
+
+    if !missing.is_empty() {
+        return Err(invalid(format!(
+            "unresolved API types: {}",
+            missing.join(", ")
+        )));
+    }
+
+    Ok(())
+}
+
+fn canonical(
+    value: Value,
+    luau: &BTreeSet<String>,
+    roblox: &BTreeSet<String>,
+    cancelled: fn() -> bool,
+) -> Result<Value, Error> {
+    check(cancelled)?;
+
+    match value {
+        Value::Object(values) => {
+            let keys: BTreeSet<_> = values.keys().cloned().collect();
+            let mut result = Map::new();
+
+            for (key, value) in values {
+                check(cancelled)?;
+                let replacement = canonical_symbol(&key, luau, roblox);
+
+                if replacement != key && keys.contains(&replacement) {
+                    continue;
+                }
+
+                result.insert(replacement, canonical(value, luau, roblox, cancelled)?);
+            }
+
+            Ok(Value::Object(result))
+        }
+
+        Value::Array(values) => {
+            let values: Result<Vec<_>, _> = values
+                .into_iter()
+                .map(|value| canonical(value, luau, roblox, cancelled))
+                .collect();
+
+            Ok(Value::Array(values?))
+        }
+
+        Value::String(value) => Ok(Value::String(canonical_symbol(&value, luau, roblox))),
+        value => Ok(value),
+    }
+}
+
+fn canonical_symbol(value: &str, luau: &BTreeSet<String>, roblox: &BTreeSet<String>) -> String {
+    if let Some(symbol) = value.strip_prefix("@roblox/global/") {
+        let boundary = symbol.find(['.', '/']).unwrap_or(symbol.len());
+        let (root, suffix) = symbol.split_at(boundary);
+
+        if syntax::identifier(root) && luau.contains(root) && !roblox.contains(root) {
+            return format!("@luau/global/{root}{suffix}");
+        }
+    }
+
+    value.to_owned()
+}
+
+fn serialize(value: &impl Serialize, input: &str) -> Result<String, Error> {
+    serde_json::to_string(value).map_err(|source| Error::Data {
+        input: input.to_owned(),
+        source,
+    })
+}
+
+fn hash(source: &str) -> String {
+    let mut identity = String::with_capacity(64);
+
+    for byte in Sha256::digest(source.as_bytes()) {
+        write!(identity, "{byte:02x}").expect("internal error: cannot write to a string");
+    }
+
+    identity
+}
+
+fn check(cancelled: fn() -> bool) -> Result<(), Error> {
+    if cancelled() {
+        Err(Error::Cancelled)
+    } else {
+        Ok(())
+    }
+}

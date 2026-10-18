@@ -48,8 +48,15 @@ pub(crate) mod bindings {
         properties: Vec<Property>,
     }
 
+    struct Enumeration {
+        name: String,
+        items: Vec<String>,
+    }
+
     struct Environment {
         definitions: Vec<Definition>,
+        has_enumerations: bool,
+        enumerations: Vec<Enumeration>,
         has_capabilities: bool,
         classes: Vec<Class>,
     }
@@ -157,6 +164,8 @@ pub(crate) mod bindings {
 
         fn builtins(host: &Context<'_>, flags: &[Flag]) -> Result<String>;
 
+        fn declarations(settings: &[Flag], scoped: &[Flag]) -> Result<String>;
+
         fn invalidate(self: Pin<&mut Frontend<'_>>, module: &str) -> Result<()>;
 
         fn refresh(self: Pin<&mut Frontend<'_>>) -> Result<()>;
@@ -219,6 +228,13 @@ impl From<Environment> for bindings::Environment {
                     namespace: definition.namespace,
                     source: definition.source,
                 })
+                .collect(),
+            has_enumerations: environment.enumerations.is_some(),
+            enumerations: environment
+                .enumerations
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(name, items)| bindings::Enumeration { name, items })
                 .collect(),
             has_capabilities: environment.classes.is_some(),
             classes: environment

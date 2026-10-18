@@ -20,7 +20,7 @@ mod instances;
 pub use self::{
     bridge::bindings::Diagnostic,
     configuration::{Configuration, Mode},
-    environment::{Class, Definition, Environment, Property},
+    environment::{Class, Definition, Environment, Property, declarations},
     error::{Error, HostError, Operation},
     flags::Flag,
     frontend::Frontend,

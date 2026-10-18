@@ -94,16 +94,8 @@ pub(super) fn resolve(
 
     let environment = source.field("environment");
 
-    for (name, path) in [
-        (
-            "asset_directory",
-            &mut configuration.environment.asset_directory,
-        ),
-        ("capabilities", &mut configuration.environment.capabilities),
-    ] {
-        if let Some(path) = path {
-            anchor(path, &environment.field(name), base);
-        }
+    if let Some(path) = &mut configuration.environment.capabilities {
+        anchor(path, &environment.field("capabilities"), base);
     }
 
     for (index, group) in configuration.environment.groups.iter_mut().enumerate() {
