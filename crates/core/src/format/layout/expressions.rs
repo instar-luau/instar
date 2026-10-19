@@ -253,7 +253,7 @@ impl Builder<'_, '_> {
 
         let mut content = self.node(index);
         let mut continuation = Vec::new();
-        let mut called = false;
+        let mut invoked = false;
 
         for (offset, entry) in spine.iter().enumerate() {
             let (index, receiver) = *entry;
@@ -273,7 +273,7 @@ impl Builder<'_, '_> {
 
                     (
                         self.tree.node(*arguments).tokens.start.get(),
-                        called && !matches!(self.tree.node(callee).kind, NodeKind::Field { .. }),
+                        invoked && !matches!(self.tree.node(callee).kind, NodeKind::Field { .. }),
                     )
                 }
 
@@ -323,7 +323,7 @@ impl Builder<'_, '_> {
                 _ => self.sequence(start..node.tokens.end.get(), &self.tree.children(index)),
             });
 
-            called |= matches!(
+            invoked |= matches!(
                 node.kind,
                 NodeKind::Call { .. } | NodeKind::MethodCall { .. }
             );

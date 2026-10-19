@@ -14,7 +14,7 @@ use super::{
 };
 
 use crate::{
-    format::{Error, engine::parse},
+    format::{Error, engine::parse, preservation},
     settings::format::{Configuration, Indentation, LineEnding},
 };
 
@@ -35,7 +35,6 @@ struct Renderer<'tree, 'source> {
     emitter: Option<Emitter<'source>>,
     replacements: &'tree [Option<Box<Replacement<'source>>>],
     placements: Vec<(TokenIndex, usize)>,
-    probing: bool,
     indentation: usize,
     column: usize,
     lines: usize,
@@ -79,7 +78,8 @@ impl Renderer<'_, '_> {
                     self.column += 1;
                     self.emitted = true;
 
-                    self.exceeded |= self.probing && self.column > self.configuration.width.get();
+                    self.exceeded |=
+                        self.measurement.is_some() && self.column > self.configuration.width.get();
                 }
 
                 Document::Space => self.space = true,
@@ -185,7 +185,6 @@ impl Renderer<'_, '_> {
             emitter: None,
             replacements: self.replacements,
             placements: Vec::new(),
-            probing: true,
             indentation: self.indentation,
             column,
             lines: 0,
@@ -270,7 +269,7 @@ impl Renderer<'_, '_> {
                 }
 
                 Document::Space => self.space = true,
-                Document::Line(_) => return false,
+                Document::Line(_) | Document::Choice(_) => return false,
 
                 Document::Soft(spaces) => {
                     if mode.is_none() {
@@ -294,8 +293,6 @@ impl Renderer<'_, '_> {
                         return false;
                     }
                 }
-
-                Document::Choice(_) => return false,
             }
         }
 
@@ -323,7 +320,7 @@ impl Renderer<'_, '_> {
     }
 
     fn token(&mut self, index: TokenIndex) {
-        if !self.probing
+        if self.measurement.is_none()
             && self.emitter.is_none()
             && (self.lines > 0 || !self.emitted)
             && self.tree.token(index).kind == TokenKind::BlockComment
@@ -361,7 +358,7 @@ impl Renderer<'_, '_> {
             self.column = 0;
         }
 
-        self.exceeded |= self.probing
+        self.exceeded |= self.measurement.is_some()
             && ((!comment && maximum > self.configuration.width.get())
                 || (matches!(self.measurement, Some(Layout::Fit)) && bytes.contains(&b'\n')));
 
@@ -418,7 +415,7 @@ impl Renderer<'_, '_> {
         let (column, maximum) = columns(bytes, self.column, self.configuration.indent_width.get());
         self.column = column;
 
-        self.exceeded |= self.probing
+        self.exceeded |= self.measurement.is_some()
             && (maximum > self.configuration.width.get()
                 || matches!(self.measurement, Some(Layout::Fit)) && bytes.contains(&b'\n'));
 
@@ -492,7 +489,6 @@ pub(crate) fn emit(
                 emitter: None,
                 replacements: &replacements,
                 placements: Vec::new(),
-                probing: false,
                 indentation: 0,
                 column: 0,
                 lines: 0,
@@ -508,9 +504,7 @@ pub(crate) fn emit(
         };
 
         for (index, columns) in placements {
-            if let Some(source) =
-                crate::format::preservation::reindent(tree, index, columns, configuration)
-            {
+            if let Some(source) = preservation::reindent(tree, index, columns, configuration) {
                 sources[index.get()] = Some(source);
             }
         }
@@ -524,7 +518,6 @@ pub(crate) fn emit(
         emitter: Some(Emitter::from_tree(tree, line_ending)),
         replacements: &replacements,
         placements: Vec::new(),
-        probing: false,
         indentation: 0,
         column: 0,
         lines: 0,
