@@ -45,7 +45,7 @@ pub enum Error {
 
     /// Native built-in declarations could not be obtained.
     #[error(transparent)]
-    Native(#[from] instar_luau::Error),
+    Native(#[from] instar_bridge::Error),
 
     /// A declaration could not be formatted safely.
     #[error(transparent)]

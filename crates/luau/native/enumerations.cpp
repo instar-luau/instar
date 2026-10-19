@@ -6,7 +6,7 @@
 #include "Luau/StringUtils.h"
 #include "Luau/Type.h"
 #include "Luau/TypeArena.h"
-#include "instar-luau/src/bridge.rs.h"
+#include "instar-bridge/src/bridge.rs.h"
 
 #include <optional>
 #include <stdexcept>

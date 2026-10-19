@@ -10,8 +10,8 @@ use codespan_reporting::{
 };
 
 use eyre::{Result, WrapErr as _, eyre};
+use instar_bridge::{Context, Frontend, Progress};
 use instar_core::workspace::{Purpose, Workspace};
-use instar_luau::{Context, Frontend, Progress};
 
 use super::{
     arguments::{Arguments, Operation},

@@ -2,7 +2,7 @@
 
 #include "Luau/Common.h"
 #include "Luau/Flags.h"
-#include "instar-luau/src/bridge.rs.h"
+#include "instar-bridge/src/bridge.rs.h"
 
 #include <mutex>
 #include <stdexcept>

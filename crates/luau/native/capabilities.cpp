@@ -11,7 +11,7 @@
 #include "Luau/TypePack.h"
 #include "Luau/TypeUtils.h"
 #include "instances.hpp"
-#include "instar-luau/src/bridge.rs.h"
+#include "instar-bridge/src/bridge.rs.h"
 
 #include <cstdint>
 #include <memory>

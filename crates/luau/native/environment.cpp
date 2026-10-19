@@ -10,7 +10,7 @@
 #include "diagnostic.hpp"
 #include "enumerations.hpp"
 #include "flags.hpp"
-#include "instar-luau/src/bridge.rs.h"
+#include "instar-bridge/src/bridge.rs.h"
 
 #include <memory>
 #include <optional>

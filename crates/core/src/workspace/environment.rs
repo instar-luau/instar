@@ -6,7 +6,7 @@ use std::{
     sync::Arc,
 };
 
-use instar_luau::{Class, Definition, Environment, Property};
+use instar_bridge::{Class, Definition, Environment, Property};
 
 use serde::{
     Deserialize, Deserializer,

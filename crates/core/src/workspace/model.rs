@@ -7,7 +7,7 @@ use std::{
 };
 
 use figment::Figment;
-use instar_luau::Context;
+use instar_bridge::Context;
 use serde_json::Value;
 
 use super::{
@@ -25,7 +25,7 @@ use crate::{
 
 /// Filesystem sources with cached, automatically discovered configuration scopes.
 ///
-/// Module identifiers are canonical UTF-8 paths accepted by [`instar_luau::Frontend`].
+/// Module identifiers are canonical UTF-8 paths accepted by [`instar_bridge::Frontend`].
 pub struct Workspace {
     pub(super) root: PathBuf,
     pub(super) files: Vec<PathBuf>,

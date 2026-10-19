@@ -143,7 +143,7 @@ pub fn generate(
         })?;
 
         interrupted(cancelled)?;
-        let builtins = instar_luau::declarations()?;
+        let builtins = instar_bridge::declarations()?;
 
         let mut rendered = rendering::render(
             inputs.dump,

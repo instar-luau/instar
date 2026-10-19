@@ -4,7 +4,7 @@ use std::{
     sync::Arc,
 };
 
-use instar_luau::{Instance, Location};
+use instar_bridge::{Instance, Location};
 use serde::Deserialize;
 
 use super::{Error, Workspace, model::Scope, paths};

@@ -3,7 +3,7 @@
 #include "Luau/Ast.h"
 #include "Luau/RequireNavigator.h"
 #include "frontend.hpp"
-#include "instar-luau/src/bridge.rs.h"
+#include "instar-bridge/src/bridge.rs.h"
 
 #include <algorithm>
 #include <stdexcept>

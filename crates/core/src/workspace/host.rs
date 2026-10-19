@@ -4,7 +4,7 @@ use std::{
     sync::Arc,
 };
 
-use instar_luau::{
+use instar_bridge::{
     Configuration, Environment, Flag, Host, HostError, Instance, Mode, Navigation, Operation,
 };
 

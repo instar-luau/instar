@@ -1,7 +1,7 @@
 #include "diagnostic.hpp"
 
 #include "Luau/Module.h"
-#include "instar-luau/src/bridge.rs.h"
+#include "instar-bridge/src/bridge.rs.h"
 
 namespace instar::luau {
     void attribute(Luau::Module &module) {

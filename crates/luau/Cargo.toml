@@ -1,5 +1,5 @@
 [package]
-name = "instar-luau"
+name = "instar-bridge"
 version.workspace = true
 edition.workspace = true
 description = "Native Luau analysis for Instar"

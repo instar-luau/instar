@@ -1138,6 +1138,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "instar-bridge"
+version = "0.1.0"
+dependencies = [
+ "cmake",
+ "cxx",
+ "cxx-build",
+ "thiserror",
+]
+
+[[package]]
 name = "instar-cli"
 version = "0.1.0"
 dependencies = [
@@ -1148,8 +1158,8 @@ dependencies = [
  "ctrlc",
  "eyre",
  "indicatif",
+ "instar-bridge",
  "instar-core",
- "instar-luau",
  "notify",
  "serde_json",
  "similar",
@@ -1167,7 +1177,7 @@ dependencies = [
  "figment",
  "globset",
  "ignore",
- "instar-luau",
+ "instar-bridge",
  "regex",
  "reqwest",
  "same-file",
@@ -1182,16 +1192,6 @@ dependencies = [
  "tracing",
  "unicode-width",
  "vermis",
-]
-
-[[package]]
-name = "instar-luau"
-version = "0.1.0"
-dependencies = [
- "cmake",
- "cxx",
- "cxx-build",
- "thiserror",
 ]
 
 [[package]]

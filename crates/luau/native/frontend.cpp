@@ -6,7 +6,7 @@
 #include "Luau/TypeArena.h"
 #include "diagnostic.hpp"
 #include "environment.hpp"
-#include "instar-luau/src/bridge.rs.h"
+#include "instar-bridge/src/bridge.rs.h"
 
 #include <stdexcept>
 #include <utility>

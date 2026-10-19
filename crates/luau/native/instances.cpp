@@ -4,7 +4,7 @@
 #include "Luau/Type.h"
 #include "Luau/TypePack.h"
 #include "Luau/TypeUtils.h"
-#include "instar-luau/src/bridge.rs.h"
+#include "instar-bridge/src/bridge.rs.h"
 
 #include <memory>
 #include <stdexcept>

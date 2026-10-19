@@ -9,7 +9,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-instar-luau.workspace = true
+instar-bridge.workspace = true
 
 dirs.workspace = true
 figment.workspace = true

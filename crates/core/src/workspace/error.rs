@@ -67,7 +67,7 @@ pub enum Error {
 
     /// Native environment settings could not be validated.
     #[error("cannot prepare analysis")]
-    Analysis(#[source] instar_luau::Error),
+    Analysis(#[source] instar_bridge::Error),
 
     /// A declaration source contains invalid syntax.
     #[error("cannot parse `{}`", path.display())]
