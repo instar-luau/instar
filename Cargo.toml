@@ -12,7 +12,7 @@ categories = ["development-tools"]
 
 [workspace.dependencies]
 instar-core = { path = "crates/core" }
-instar-bridge = { path = "crates/luau" }
+instar-bridge = { path = "crates/bridge" }
 
 clap = { version = "4", features = ["derive"] }
 cmake = "0.1"
