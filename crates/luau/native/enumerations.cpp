@@ -69,11 +69,23 @@ namespace instar::luau {
                     }
 
                     if (!items.insert(item).second) {
-                        throw std::invalid_argument("duplicate Roblox enumeration item `" + name + "." + item + "`");
+                        throw std::invalid_argument(
+                            std::string("duplicate Roblox enumeration item `")
+                                .append(name)
+                                .append(".")
+                                .append(item)
+                                .append("`")
+                        );
                     }
 
                     if (item == "GetEnumItems" || item == "FromName" || item == "FromValue") {
-                        throw std::invalid_argument("conflicting Roblox enumeration item `" + name + "." + item + "`");
+                        throw std::invalid_argument(
+                            std::string("conflicting Roblox enumeration item `")
+                                .append(name)
+                                .append(".")
+                                .append(item)
+                                .append("`")
+                        );
                     }
                 }
             }
