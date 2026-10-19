@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    cell::OnceCell,
+    collections::{BTreeMap, BTreeSet},
+};
 
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
@@ -86,6 +89,9 @@ pub(super) struct Member {
     pub(super) parameters: Option<Vec<Parameter>>,
     pub(super) security: Option<Value>,
     pub(super) tags: Option<Vec<Value>>,
+
+    #[serde(skip)]
+    decoded_returns: OnceCell<Vec<Type>>,
 }
 
 #[derive(Deserialize)]
@@ -250,20 +256,27 @@ impl Member {
             .ok_or_else(|| invalid(format!("missing parameters for `{}`", self.name)))
     }
 
-    pub(super) fn returns(&self) -> Result<Vec<Type>, Error> {
-        if let Some(value) = self.tuple_returns.as_ref().or(self.return_type.as_ref()) {
+    pub(super) fn returns(&self, input: &str) -> Result<&[Type], Error> {
+        if let Some(values) = self.decoded_returns.get() {
+            return Ok(values);
+        }
+
+        let values = if let Some(value) = self.tuple_returns.as_ref().or(self.return_type.as_ref())
+        {
             match value {
                 Value::Array(values) => values
                     .iter()
                     .cloned()
-                    .map(|value| decode(value, "tuple returns"))
-                    .collect(),
+                    .map(|value| decode(value, input))
+                    .collect::<Result<_, _>>()?,
 
-                value => Ok(vec![decode(value.clone(), "tuple returns")?]),
+                value => vec![decode(value.clone(), input)?],
             }
         } else {
-            Ok(Vec::new())
-        }
+            Vec::new()
+        };
+
+        Ok(self.decoded_returns.get_or_init(|| values))
     }
 
     fn property_security(&self) -> Result<(Option<&str>, Option<&str>), Error> {

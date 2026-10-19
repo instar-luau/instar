@@ -75,14 +75,14 @@ impl Host for Workspace {
 
         self.snapshots
             .borrow_mut()
-            .extend(prepared.native.definitions.iter().map(|definition| {
+            .extend(prepared.definitions.iter().map(|definition| {
                 (
                     definition.name.clone(),
                     Some(Arc::from(definition.source.as_str())),
                 )
             }));
 
-        Ok(prepared.native.clone())
+        Ok(prepared.clone())
     }
 
     fn flags(&self) -> Result<BTreeMap<String, Flag>, HostError> {

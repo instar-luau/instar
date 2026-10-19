@@ -13,4 +13,4 @@ pub use self::{
     generation::{Generated, Target, generate},
 };
 
-pub(crate) use self::metadata::{Documentation, Metadata};
+pub(crate) use self::metadata::{Documentation, Metadata, digest};

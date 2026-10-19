@@ -1,5 +1,4 @@
 use std::{
-    fmt::Write as _,
     fs::{self, File, OpenOptions, TryLockError},
     io::{self, Write as _},
     path::{Path, PathBuf},
@@ -7,10 +6,10 @@ use std::{
 };
 
 use reqwest::Client;
-use sha2::{Digest as _, Sha256};
 use tokio::{runtime::Builder, time};
 
 use super::{Error, Workspace, environment, process};
+use crate::assets::digest;
 
 const ADDRESS: &str = "https://instar-luau.github.io/instar";
 
@@ -262,16 +261,6 @@ fn validate(directory: &Path, namespace: Namespace, cancelled: fn() -> bool) -> 
     environment::validate(directory, namespace, cancelled)?;
 
     Ok(())
-}
-
-fn digest(contents: &[u8]) -> String {
-    let mut digest = String::with_capacity(64);
-
-    for byte in Sha256::digest(contents) {
-        write!(digest, "{byte:02x}").expect("internal error: cannot write to a string");
-    }
-
-    digest
 }
 
 fn exists(path: &Path) -> Result<bool, Error> {

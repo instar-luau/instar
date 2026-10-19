@@ -1,7 +1,7 @@
 use std::{
     cell::OnceCell,
     collections::{BTreeMap, BTreeSet, btree_map::Entry},
-    fmt::{self, Write as _},
+    fmt,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -14,12 +14,11 @@ use serde::{
 };
 
 use serde_json::Value;
-use sha2::{Digest as _, Sha256};
 
 use super::{Error, Workspace, assets, instances, model::Scope, paths};
 
 use crate::{
-    assets::{Documentation as DocumentationMetadata, Metadata},
+    assets::{Documentation as DocumentationMetadata, Metadata, digest},
     lint::Symbols,
     settings::environment::{Group, Security},
 };
@@ -29,7 +28,7 @@ pub(super) struct Registry {
     assets: BTreeMap<assets::Namespace, PathBuf>,
     builtin_documentation: BTreeMap<assets::Namespace, Documentation>,
     inputs: BTreeMap<Inputs, usize>,
-    prepared: Vec<Prepared>,
+    prepared: Vec<Environment>,
     documentation: BTreeMap<Vec<(String, PathBuf)>, Vec<Documentation>>,
     symbols: BTreeMap<(Option<String>, Vec<String>), Arc<Symbols>>,
 }
@@ -61,12 +60,12 @@ impl Registry {
         dependencies.extend(
             self.prepared
                 .iter()
-                .flat_map(|prepared| &prepared.native.definitions)
+                .flat_map(|prepared| &prepared.definitions)
                 .map(|definition| PathBuf::from(&definition.name)),
         );
     }
 
-    pub(super) fn get(&self, name: &str) -> Option<&Prepared> {
+    pub(super) fn get(&self, name: &str) -> Option<&Environment> {
         self.prepared.get(name.parse::<usize>().ok()?)
     }
 
@@ -90,7 +89,7 @@ impl Registry {
         })?;
 
         if let Some(prepared) = name.and_then(|name| self.get(name)) {
-            if prepared.native.enumerations.is_some() {
+            if prepared.enumerations.is_some() {
                 symbols.globals.insert("Enum".to_owned());
 
                 symbols
@@ -98,7 +97,7 @@ impl Registry {
                     .extend(["Enum", "EnumItem", "Enumerations"].map(str::to_owned));
             }
 
-            for definition in &prepared.native.definitions {
+            for definition in &prepared.definitions {
                 symbols
                     .declare(&definition.source)
                     .map_err(|source| Error::Syntax {
@@ -193,10 +192,6 @@ struct Inputs {
     roblox: Option<(PathBuf, Security)>,
     capabilities: Option<PathBuf>,
     definitions: Vec<(String, PathBuf)>,
-}
-
-pub(super) struct Prepared {
-    pub(super) native: Environment,
 }
 
 pub(super) struct Documentation {
@@ -389,10 +384,8 @@ pub(super) fn identity(
     Ok(identity)
 }
 
-fn prepare(inputs: &Inputs) -> Result<Prepared, Error> {
-    let mut prepared = Prepared {
-        native: Environment::default(),
-    };
+fn prepare(inputs: &Inputs) -> Result<Environment, Error> {
+    let mut prepared = Environment::default();
 
     if let Some((directory, security)) = &inputs.roblox {
         assets(directory, *security, &mut prepared)?;
@@ -401,7 +394,7 @@ fn prepare(inputs: &Inputs) -> Result<Prepared, Error> {
     if let Some(path) = &inputs.capabilities {
         let capabilities: Capabilities = parse(path, &paths::read(path)?)?;
 
-        prepared.native.classes = Some(
+        prepared.classes = Some(
             capabilities
                 .classes
                 .into_iter()
@@ -424,7 +417,7 @@ fn prepare(inputs: &Inputs) -> Result<Prepared, Error> {
     }
 
     for (namespace, path) in &inputs.definitions {
-        prepared.native.definitions.push(Definition {
+        prepared.definitions.push(Definition {
             name: paths::text(path)?,
             namespace: namespace.clone(),
             source: paths::read(path)?,
@@ -456,19 +449,13 @@ pub(super) fn validate(
             return Err(Error::Cancelled);
         }
 
-        assets(
-            directory,
-            security,
-            &mut Prepared {
-                native: Environment::default(),
-            },
-        )?;
+        assets(directory, security, &mut Environment::default())?;
     }
 
     Ok(())
 }
 
-fn assets(directory: &Path, security: Security, prepared: &mut Prepared) -> Result<(), Error> {
+fn assets(directory: &Path, security: Security, prepared: &mut Environment) -> Result<(), Error> {
     let metadata_path = directory.join("metadata.json");
     let metadata: Metadata = parse(&metadata_path, &paths::read(&metadata_path)?)?;
 
@@ -486,13 +473,13 @@ fn assets(directory: &Path, security: Security, prepared: &mut Prepared) -> Resu
 
     let declarations = directory.join(format!("{profile}.d.luau"));
 
-    prepared.native.definitions.push(Definition {
+    prepared.definitions.push(Definition {
         name: paths::text(&declarations)?,
         namespace: "@roblox".to_owned(),
         source: verified(&declarations, digest)?,
     });
 
-    prepared.native.enumerations = Some(metadata.enumerations);
+    prepared.enumerations = Some(metadata.enumerations);
 
     let mut classes = BTreeMap::<String, Class>::new();
 
@@ -552,7 +539,7 @@ fn assets(directory: &Path, security: Security, prepared: &mut Prepared) -> Resu
         });
     }
 
-    prepared.native.classes = Some(classes.into_values().collect());
+    prepared.classes = Some(classes.into_values().collect());
 
     Ok(())
 }
@@ -584,15 +571,11 @@ fn documentation(directory: &Path, namespace: assets::Namespace) -> Result<Docum
     )
 }
 
-fn verified(path: &Path, digest: &str) -> Result<String, Error> {
+fn verified(path: &Path, expected: &str) -> Result<String, Error> {
     let source = paths::read(path)?;
-    let mut actual = String::with_capacity(64);
+    let actual = digest(source.as_bytes());
 
-    for byte in Sha256::digest(source.as_bytes()) {
-        write!(actual, "{byte:02x}").expect("internal error: cannot write to a string");
-    }
-
-    if actual != digest {
+    if actual != expected {
         return Err(invalid(path, "asset contents do not match their metadata"));
     }
 

@@ -1,13 +1,11 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fmt::Write as _,
     path::PathBuf,
     str::from_utf8,
 };
 
 use serde::Serialize;
 use serde_json::{Map, Value};
-use sha2::{Digest as _, Sha256};
 
 use vermis::{
     token::{Keyword, Symbol},
@@ -20,7 +18,7 @@ use super::{
         self, Class, Corrections, Dump, Enumeration, HIERARCHY, Member, Parameter, Type, Types,
         invalid,
     },
-    metadata::{Access, Documentation, Metadata},
+    metadata::{Access, Documentation, Metadata, digest},
     syntax::{self, Output, Replacement},
 };
 
@@ -224,9 +222,9 @@ pub(super) fn render(
             .collect(),
         profiles: definitions
             .iter()
-            .map(|(name, source)| (name.clone(), hash(source)))
+            .map(|(name, source)| (name.clone(), digest(source.as_bytes())))
             .collect(),
-        documentation: hash(&roblox_documentation),
+        documentation: digest(roblox_documentation.as_bytes()),
         enumerations: dump
             .enumerations
             .into_iter()
@@ -261,7 +259,7 @@ pub(super) fn render(
     );
 
     let luau_metadata = Documentation {
-        documentation: hash(&luau_documentation),
+        documentation: digest(luau_documentation.as_bytes()),
     };
 
     result.insert(PathBuf::from("luau/documentation.json"), luau_documentation);
@@ -427,7 +425,7 @@ fn signature(member: &Member, mappings: &BTreeMap<String, String>) -> Result<Out
             parameters(&mut output, values, mappings, false)?;
             output.symbol(Symbol::RightParenthesis);
             output.symbol(Symbol::Colon);
-            returns(&mut output, &member.returns()?, mappings)?;
+            returns(&mut output, member.returns("tuple returns")?, mappings)?;
         }
 
         "Callback" => {
@@ -437,7 +435,7 @@ fn signature(member: &Member, mappings: &BTreeMap<String, String>) -> Result<Out
             parameters(&mut output, member.parameters()?, mappings, true)?;
             output.symbol(Symbol::RightParenthesis);
             output.symbol(Symbol::Arrow);
-            returns(&mut output, &member.returns()?, mappings)?;
+            returns(&mut output, member.returns("tuple returns")?, mappings)?;
         }
 
         "Event" => {
@@ -610,7 +608,7 @@ fn constructor(class: &Class, context: &Context<'_>) -> Result<Output, Error> {
 
             returns(
                 &mut output,
-                &overload.returns()?,
+                overload.returns("tuple returns")?,
                 &context.corrections.types,
             )?;
 
@@ -759,7 +757,11 @@ fn validate(
                 value.references(&corrections.types, &mut references)?;
             }
 
-            for values in member.return_type.iter().chain(member.tuple_returns.iter()) {
+            for values in member
+                .return_type
+                .iter()
+                .filter(|_| member.tuple_returns.is_some())
+            {
                 let values = match values {
                     Value::Array(values) => values.clone(),
                     value => vec![value.clone()],
@@ -769,6 +771,10 @@ fn validate(
                     let value: Type = mapping::decode(value, "tuple return type")?;
                     value.references(&corrections.types, &mut references)?;
                 }
+            }
+
+            for value in member.returns("tuple return type")? {
+                value.references(&corrections.types, &mut references)?;
             }
         }
     }
@@ -847,16 +853,6 @@ fn serialize(value: &impl Serialize, input: &str) -> Result<String, Error> {
         input: input.to_owned(),
         source,
     })
-}
-
-fn hash(source: &str) -> String {
-    let mut identity = String::with_capacity(64);
-
-    for byte in Sha256::digest(source.as_bytes()) {
-        write!(identity, "{byte:02x}").expect("internal error: cannot write to a string");
-    }
-
-    identity
 }
 
 fn check(cancelled: fn() -> bool) -> Result<(), Error> {

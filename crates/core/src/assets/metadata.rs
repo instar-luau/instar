@@ -1,6 +1,7 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt::Write as _};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -26,4 +27,14 @@ pub(crate) struct Access {
     pub(crate) name: String,
     pub(crate) read: bool,
     pub(crate) write: bool,
+}
+
+pub(crate) fn digest(contents: &[u8]) -> String {
+    let mut digest = String::with_capacity(64);
+
+    for byte in Sha256::digest(contents) {
+        write!(digest, "{byte:02x}").expect("internal error: cannot write to a string");
+    }
+
+    digest
 }
