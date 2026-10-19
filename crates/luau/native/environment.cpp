@@ -59,18 +59,12 @@ namespace instar::luau {
     DeclarationFailure::DeclarationFailure(const rust::Vec<Diagnostic> &diagnostics) noexcept
         : diagnostics(diagnostics) {}
 
-    rust::String declarations(rust::Slice<const Flag> settings, rust::Slice<const Flag> scoped) {
-        const Flags flags(settings);
-        flags.require(scoped);
+    rust::String declarations(const DeclarationFlags &configuration) {
+        const Flags flags(configuration.settings);
+        flags.require(configuration.scoped);
 
         return Luau::getBuiltinDefinitionSource() + "\ndeclare string: any\ndeclare next: any\ndeclare pairs: any"
                                                     "\ndeclare getmetatable: any\ndeclare setmetatable: any\n";
-    }
-
-    rust::String builtins(const Context &host, rust::Slice<const Flag> scoped) {
-        const auto settings = host.flags();
-
-        return declarations(rust::Slice<const Flag>{settings.data(), settings.size()}, scoped);
     }
 
     rust::Vec<Diagnostic> prepare(Luau::Frontend &frontend, const std::string &name, const Environment &environment) {

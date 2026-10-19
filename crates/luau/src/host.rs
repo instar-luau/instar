@@ -128,7 +128,13 @@ impl<'host> Context<'host> {
     /// # Errors
     /// Returns host configuration failures or invalid native flag settings.
     pub fn builtins(&self, flags: BTreeMap<String, Flag>) -> Result<String, Error> {
-        self.complete(bindings::builtins(self, &bridge::flags(flags)))
+        let settings = bridge::flags(self.host.flags().map_err(Error::Host)?);
+        let scoped = bridge::flags(flags);
+
+        self.complete(bindings::declarations(&bindings::DeclarationFlags {
+            settings: &settings,
+            scoped: &scoped,
+        }))
     }
 
     pub(crate) fn alias(

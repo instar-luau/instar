@@ -8,10 +8,9 @@
 #include <string>
 
 namespace instar::luau {
-    struct Context;
+    struct DeclarationFlags;
     struct Diagnostic;
     struct Environment;
-    struct Flag;
 
     struct DeclarationFailure : std::exception {
         explicit DeclarationFailure(const rust::Vec<Diagnostic> &diagnostics) noexcept;
@@ -19,8 +18,7 @@ namespace instar::luau {
         const rust::Vec<Diagnostic> &diagnostics;
     };
 
-    rust::String declarations(rust::Slice<const Flag> settings, rust::Slice<const Flag> scoped);
-    rust::String builtins(const Context &host, rust::Slice<const Flag> scoped);
+    rust::String declarations(const DeclarationFlags &configuration);
     rust::Vec<Diagnostic> prepare(Luau::Frontend &frontend, const std::string &name, const Environment &environment);
 }
 

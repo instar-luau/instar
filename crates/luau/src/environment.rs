@@ -62,7 +62,11 @@ pub struct Property {
 /// # Errors
 /// Returns conflicting native flag settings.
 pub fn declarations() -> Result<String, Error> {
-    bindings::declarations(&[], &[]).map_err(|source| Error::Native {
+    bindings::declarations(&bindings::DeclarationFlags {
+        settings: &[],
+        scoped: &[],
+    })
+    .map_err(|source| Error::Native {
         reason: source.what().to_owned(),
     })
 }

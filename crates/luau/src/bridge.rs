@@ -26,6 +26,11 @@ pub(crate) mod bindings {
         integer: i32,
     }
 
+    struct DeclarationFlags<'flags> {
+        settings: &'flags [Flag],
+        scoped: &'flags [Flag],
+    }
+
     struct Definition {
         name: String,
 
@@ -162,9 +167,7 @@ pub(crate) mod bindings {
 
         fn checks(self: &Frontend<'_>) -> usize;
 
-        fn builtins(host: &Context<'_>, flags: &[Flag]) -> Result<String>;
-
-        fn declarations(settings: &[Flag], scoped: &[Flag]) -> Result<String>;
+        fn declarations(configuration: &DeclarationFlags<'_>) -> Result<String>;
 
         fn invalidate(self: Pin<&mut Frontend<'_>>, module: &str) -> Result<()>;
 
