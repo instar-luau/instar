@@ -84,9 +84,35 @@ impl Publication {
         fs::create_dir_all(parent).map_err(|source| filesystem(parent, source))?;
         validate_directory(parent)?;
         let staging = tempfile::tempdir_in(parent).map_err(|source| filesystem(parent, source))?;
+        let mut replacements = BTreeMap::new();
 
         for (relative, contents) in files {
             interrupted(cancelled)?;
+
+            if self.existing {
+                let original = &self.originals[relative];
+
+                if original.as_deref() == Some(contents.as_str()) {
+                    continue;
+                }
+
+                if original.is_some() {
+                    let destination = self.directory.join(relative);
+
+                    validate_directory(
+                        destination
+                            .parent()
+                            .expect("internal error: output has no parent"),
+                    )?;
+
+                    let replacement = workspace::Replacement::new(&destination, contents)
+                        .map_err(|source| filesystem(&destination, source))?;
+
+                    replacements.insert(relative.clone(), replacement);
+                    continue;
+                }
+            }
+
             let path = staging.path().join(relative);
             let parent = path.parent().expect("internal error: output has no parent");
             fs::create_dir_all(parent).map_err(|source| filesystem(parent, source))?;
@@ -136,7 +162,10 @@ impl Publication {
             validate_directory(parent)?;
 
             if let Some(original) = original {
-                workspace::replace(&destination, original, proposed)
+                replacements
+                    .remove(relative)
+                    .expect("internal error: output replacement was not prepared")
+                    .commit(&destination, original)
                     .map_err(|source| filesystem(&destination, source))?;
             } else {
                 let mut file = tempfile::NamedTempFile::new_in(parent)

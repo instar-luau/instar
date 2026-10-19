@@ -22,3 +22,5 @@ pub use self::{
     selection::{Access, Purpose},
     write::replace,
 };
+
+pub(crate) use self::write::Replacement;

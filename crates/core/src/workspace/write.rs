@@ -1,10 +1,11 @@
 use std::{
-    fs::{self, OpenOptions},
+    fs::{self, OpenOptions, Permissions},
     io::{self, Read as _, Write as _},
     path::Path,
 };
 
 use same_file::Handle;
+use tempfile::NamedTempFile;
 
 use super::{Error, Workspace};
 
@@ -45,6 +46,51 @@ impl Workspace {
 /// # Errors
 /// Returns concurrent changes, locking failures, or filesystem errors.
 pub fn replace(path: &Path, original: &str, proposed: &str) -> io::Result<()> {
+    guarded(path, original, |permissions| {
+        Replacement::prepare(path, proposed, permissions)
+    })?;
+
+    Ok(())
+}
+
+pub(crate) struct Replacement {
+    staged: NamedTempFile,
+    permissions: Permissions,
+}
+
+impl Replacement {
+    pub(crate) fn new(path: &Path, proposed: &str) -> io::Result<Self> {
+        Self::prepare(path, proposed, fs::symlink_metadata(path)?.permissions())
+    }
+
+    pub(crate) fn commit(self, path: &Path, original: &str) -> io::Result<()> {
+        guarded(path, original, |_| Ok(self))?;
+
+        Ok(())
+    }
+
+    fn prepare(path: &Path, proposed: &str, permissions: Permissions) -> io::Result<Self> {
+        let parent = path
+            .parent()
+            .ok_or_else(|| io::Error::other("write destination has no parent"))?;
+
+        let mut staged = NamedTempFile::new_in(parent)?;
+        staged.write_all(proposed.as_bytes())?;
+        staged.as_file().set_permissions(permissions.clone())?;
+        staged.as_file().sync_all()?;
+
+        Ok(Self {
+            staged,
+            permissions,
+        })
+    }
+}
+
+fn guarded(
+    path: &Path,
+    original: &str,
+    prepare: impl FnOnce(Permissions) -> io::Result<Replacement>,
+) -> io::Result<()> {
     let metadata = fs::symlink_metadata(path)?;
 
     if !metadata.is_file() || metadata.permissions().readonly() {
@@ -60,14 +106,17 @@ pub fn replace(path: &Path, original: &str, proposed: &str) -> io::Result<()> {
         return Err(io::Error::other("refusing to replace a nonregular file"));
     }
 
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::other("write destination has no parent"))?;
+    let Replacement {
+        mut staged,
+        permissions,
+    } = prepare(metadata.permissions())?;
 
-    let mut staged = tempfile::NamedTempFile::new_in(parent)?;
-    staged.write_all(proposed.as_bytes())?;
-    staged.as_file().set_permissions(metadata.permissions())?;
-    staged.as_file().sync_all()?;
+    if permissions != metadata.permissions() {
+        return Err(io::Error::other(
+            "write destination changed before replacement",
+        ));
+    }
+
     let mut current = Vec::new();
 
     (&mut file)
