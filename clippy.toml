@@ -1,1 +1,1 @@
-allowed-duplicate-crates = ["windows-sys"]
+allowed-duplicate-crates = ["core-foundation", "getrandom", "syn", "windows-sys"]
