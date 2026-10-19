@@ -14,6 +14,18 @@ pub enum Error {
         source: io::Error,
     },
 
+    /// Publication failed and some installed files could not be recovered safely.
+    #[error("cannot recover {unrecovered:?}; original backups retained at `{backup}`")]
+    Recovery {
+        /// The original publication failure.
+        #[source]
+        source: Box<Self>,
+        /// The retained directory containing the original files.
+        backup: PathBuf,
+        /// Destinations that could not be restored without risking concurrent changes.
+        unrecovered: Vec<PathBuf>,
+    },
+
     /// The asynchronous runtime could not start.
     #[error("cannot start asset generation runtime")]
     Runtime(#[source] io::Error),

@@ -1,5 +1,5 @@
 use std::{
-    fs::{self, OpenOptions, Permissions},
+    fs::{self, File, OpenOptions, Permissions},
     io::{self, Read as _, Write as _},
     path::Path,
 };
@@ -46,7 +46,7 @@ impl Workspace {
 /// # Errors
 /// Returns concurrent changes, locking failures, or filesystem errors.
 pub fn replace(path: &Path, original: &str, proposed: &str) -> io::Result<()> {
-    guarded(path, original, |permissions| {
+    guarded(path, original, None, |permissions| {
         Replacement::prepare(path, proposed, permissions)
     })?;
 
@@ -63,10 +63,42 @@ impl Replacement {
         Self::prepare(path, proposed, fs::symlink_metadata(path)?.permissions())
     }
 
-    pub(crate) fn commit(self, path: &Path, original: &str) -> io::Result<()> {
-        guarded(path, original, |_| Ok(self))?;
+    pub(crate) fn commit(
+        self,
+        path: &Path,
+        original: &str,
+        identity: &Handle,
+    ) -> io::Result<Handle> {
+        guarded(path, original, Some(identity), |_| Ok(self))
+    }
 
-        Ok(())
+    pub(crate) fn create(self, path: &Path) -> io::Result<Handle> {
+        let identity = Handle::from_file(self.staged.as_file().try_clone()?)?;
+
+        self.staged
+            .persist_noclobber(path)
+            .map_err(|error| error.error)?;
+
+        Ok(identity)
+    }
+
+    pub(crate) fn remove(
+        path: &Path,
+        original: &str,
+        permissions: &Permissions,
+        identity: &Handle,
+    ) -> io::Result<()> {
+        let (mut file, current) = locked(path)?;
+
+        if current != *permissions {
+            return Err(io::Error::other(
+                "write destination changed before recovery",
+            ));
+        }
+
+        validate(&mut file, path, original, permissions, Some(identity))?;
+
+        fs::remove_file(path)
     }
 
     fn prepare(path: &Path, proposed: &str, permissions: Permissions) -> io::Result<Self> {
@@ -89,8 +121,31 @@ impl Replacement {
 fn guarded(
     path: &Path,
     original: &str,
+    identity: Option<&Handle>,
     prepare: impl FnOnce(Permissions) -> io::Result<Replacement>,
-) -> io::Result<()> {
+) -> io::Result<Handle> {
+    let (mut file, current) = locked(path)?;
+
+    let Replacement {
+        mut staged,
+        permissions,
+    } = prepare(current.clone())?;
+
+    if permissions != current {
+        return Err(io::Error::other(
+            "write destination changed before replacement",
+        ));
+    }
+
+    validate(&mut file, path, original, &permissions, identity)?;
+    let installed = Handle::from_file(staged.as_file().try_clone()?)?;
+    fs::rename(staged.path(), path)?;
+    staged.disable_cleanup(true);
+
+    Ok(installed)
+}
+
+fn locked(path: &Path) -> io::Result<(File, Permissions)> {
     let metadata = fs::symlink_metadata(path)?;
 
     if !metadata.is_file() || metadata.permissions().readonly() {
@@ -99,27 +154,26 @@ fn guarded(
         ));
     }
 
-    let mut file = OpenOptions::new().read(true).write(true).open(path)?;
+    let file = OpenOptions::new().read(true).write(true).open(path)?;
     file.try_lock().map_err(io::Error::other)?;
 
     if !file.metadata()?.is_file() {
         return Err(io::Error::other("refusing to replace a nonregular file"));
     }
 
-    let Replacement {
-        mut staged,
-        permissions,
-    } = prepare(metadata.permissions())?;
+    Ok((file, metadata.permissions()))
+}
 
-    if permissions != metadata.permissions() {
-        return Err(io::Error::other(
-            "write destination changed before replacement",
-        ));
-    }
-
+fn validate(
+    file: &mut File,
+    path: &Path,
+    original: &str,
+    permissions: &Permissions,
+    identity: Option<&Handle>,
+) -> io::Result<()> {
     let mut current = Vec::new();
 
-    (&mut file)
+    (&mut *file)
         .take(
             u64::try_from(original.len())
                 .map_err(io::Error::other)?
@@ -133,20 +187,20 @@ fn guarded(
 
     let current_metadata = fs::symlink_metadata(path)?;
 
-    if !current_metadata.is_file() || current_metadata.permissions() != metadata.permissions() {
+    if !current_metadata.is_file() || current_metadata.permissions() != *permissions {
         return Err(io::Error::other(
             "write destination changed before replacement",
         ));
     }
 
-    if Handle::from_file(file.try_clone()?)? != Handle::from_path(path)? {
+    let current = Handle::from_file(file.try_clone()?)?;
+
+    if current != Handle::from_path(path)? || identity.is_some_and(|identity| *identity != current)
+    {
         return Err(io::Error::other(
             "write destination changed before replacement",
         ));
     }
-
-    fs::rename(staged.path(), path)?;
-    staged.disable_cleanup(true);
 
     Ok(())
 }
