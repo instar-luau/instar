@@ -12,7 +12,7 @@ use crate::{
 /// Validated rule policies for one configuration scope.
 #[derive(Clone, Debug)]
 pub struct Prepared {
-    pub(crate) rules: BTreeMap<String, Policy>,
+    pub(crate) rules: BTreeMap<String, Severity>,
     pub(crate) syntax: bool,
     pub(crate) analysis: bool,
     pub(crate) unused: Unused,
@@ -33,18 +33,15 @@ impl Prepared {
             .map(|definition| {
                 (
                     definition.name.clone(),
-                    Policy {
-                        enabled: definition.enabled,
-                        severity: Severity::Warning,
-                    },
+                    (definition.enabled, Severity::Warning),
                 )
             })
             .collect();
 
         for preset in &configuration.presets {
             for definition in RULES.iter() {
-                if let Some(policy) = rules.get_mut(&definition.name) {
-                    policy.enabled = match preset {
+                if let Some((enabled, _)) = rules.get_mut(&definition.name) {
+                    *enabled = match preset {
                         Preset::None => false,
                         Preset::All => true,
                         Preset::Correctness => definition.enabled,
@@ -55,16 +52,16 @@ impl Prepared {
         }
 
         for (name, settings) in &configuration.rules {
-            let policy = rules
+            let (enabled, severity) = rules
                 .get_mut(name)
                 .ok_or_else(|| invalid(format!("unknown lint rule `{name}`")))?;
 
-            if let Some(enabled) = settings.enabled {
-                policy.enabled = enabled;
+            if let Some(value) = settings.enabled {
+                *enabled = value;
             }
 
-            if let Some(severity) = settings.severity {
-                policy.severity = severity;
+            if let Some(value) = settings.severity {
+                *severity = value;
             }
 
             if let Some(parameters) = &settings.settings {
@@ -124,7 +121,10 @@ impl Prepared {
             return Err(invalid("invalid restricted global name"));
         }
 
-        rules.retain(|_, policy| policy.enabled);
+        let rules: BTreeMap<_, _> = rules
+            .into_iter()
+            .filter_map(|(name, (enabled, severity))| enabled.then_some((name, severity)))
+            .collect();
 
         Ok(Self {
             syntax: syntax::RULES.iter().any(|name| rules.contains_key(*name)),
@@ -138,15 +138,9 @@ impl Prepared {
         })
     }
 
-    pub(crate) fn enabled(&self, name: &str) -> Option<&Policy> {
-        self.rules.get(name)
+    pub(crate) fn enabled(&self, name: &str) -> Option<Severity> {
+        self.rules.get(name).copied()
     }
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct Policy {
-    pub(crate) enabled: bool,
-    pub(crate) severity: Severity,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -185,10 +179,13 @@ struct Imports {
     paths: BTreeMap<String, String>,
 }
 
-fn parameters<Value: Default + DeserializeOwned>(
+fn parameters<Value>(
     configuration: &Configuration,
     name: &str,
-) -> Result<Value, Box<figment::Error>> {
+) -> Result<Value, Box<figment::Error>>
+where
+    Value: Default + DeserializeOwned,
+{
     let Some(settings) = configuration
         .rules
         .get(name)

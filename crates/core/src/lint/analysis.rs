@@ -12,7 +12,7 @@ use vermis::{
 use crate::{
     lint::{
         Edit, Finding,
-        bindings::{expands, text},
+        bindings::{Category, expands, text},
         syntax::{Context, number, same, single, truth, unwrap},
     },
     syntax::literal,
@@ -598,7 +598,6 @@ impl Context<'_, '_> {
 
     pub(super) fn finish(&mut self) {
         let tree = self.tree;
-        let mut warnings = Vec::new();
 
         if self.active(&[
             "unused_variable",
@@ -614,7 +613,7 @@ impl Context<'_, '_> {
             for binding in &self.bindings().locals {
                 let used = !binding.reads.is_empty() || !binding.type_reads.is_empty();
 
-                let exported = binding.category == "local"
+                let exported = binding.category == Category::Local
                     && self.bindings().exported(tree, binding.statement);
 
                 let constant = matches!(
@@ -632,22 +631,22 @@ impl Context<'_, '_> {
                     && !exported
                     && binding.reads.is_empty()
                     && !self.settings.ignored.is_match(&binding.name)
-                    && (binding.category != "parameter" || self.settings.unused.parameters)
-                    && (binding.category != "loop" || self.settings.unused.loop_variables)
+                    && (binding.category != Category::Parameter || self.settings.unused.parameters)
+                    && (binding.category != Category::Loop || self.settings.unused.loop_variables)
                 {
-                    warnings.push((
+                    self.warn(
                         binding.declaration,
                         "unused_variable",
                         "binding is never read",
-                    ));
+                    );
                 }
 
                 if self.active(&["LocalUnused", "FunctionUnused", "ImportUnused"])
                     && !used
-                    && binding.category == "local"
+                    && binding.category == Category::Local
                     && !binding.name.starts_with('_')
                 {
-                    warnings.push((
+                    self.warn(
                         binding.declaration,
                         if function {
                             "FunctionUnused"
@@ -657,7 +656,7 @@ impl Context<'_, '_> {
                             "LocalUnused"
                         },
                         "binding is never used; prefix with `_` to silence",
-                    ));
+                    );
                 }
 
                 if self.active(&["DuplicateLocal", "LocalShadow"])
@@ -667,11 +666,11 @@ impl Context<'_, '_> {
 
                     if shadow.statement == binding.statement && binding.name != "_" {
                         if self.active(&["DuplicateLocal"]) {
-                            warnings.push((
+                            self.warn(
                                 binding.declaration,
                                 "DuplicateLocal",
                                 "binding has already been declared in this statement",
-                            ));
+                            );
                         }
                     } else if self.active(&["LocalShadow"])
                         && used
@@ -683,35 +682,35 @@ impl Context<'_, '_> {
                             )
                             && self.settings.enabled("DuplicateFunction").is_some())
                     {
-                        warnings.push((
+                        self.warn(
                             binding.declaration,
                             "LocalShadow",
                             "binding shadows a previous local declaration",
-                        ));
+                        );
                     }
                 } else if self.active(&["LocalShadow"])
                     && used
                     && self.bindings().globals.contains_key(&binding.name)
                     && !self.symbols.globals.contains(&binding.name)
                 {
-                    warnings.push((
+                    self.warn(
                         binding.declaration,
                         "LocalShadow",
                         "binding shadows a global used in this module",
-                    ));
+                    );
                 }
 
                 if self.active(&["UninitializedLocal"])
                     && !binding.initialized
                     && !binding.assigned
-                    && binding.category == "local"
+                    && binding.category == Category::Local
                     && let Some(first) = binding.reads.first()
                 {
-                    warnings.push((
+                    self.warn(
                         *first,
                         "UninitializedLocal",
                         "binding is never initialized or assigned; initialize with nil to silence",
-                    ));
+                    );
                 }
 
                 if let Some(value) = binding.value {
@@ -721,24 +720,24 @@ impl Context<'_, '_> {
 
                     if self.active(&["prefer_const"])
                         && !(binding.assigned || constant || keep_local)
-                        && binding.category == "local"
+                        && binding.category == Category::Local
                     {
-                        warnings.push((
+                        self.warn(
                             binding.declaration,
                             "prefer_const",
                             "unchanged local binding can be declared const",
-                        ));
+                        );
                     }
 
                     if self.active(&["ignored_pcall_result"])
                         && binding.reads.is_empty()
                         && matches!(tree.node(unwrap(tree, value)).kind, NodeKind::Call { callee, .. } if self.bindings().global(tree, callee, "pcall") || self.bindings().global(tree, callee, "xpcall"))
                     {
-                        warnings.push((
+                        self.warn(
                             binding.declaration,
                             "ignored_pcall_result",
                             "protected-call success status is never read",
-                        ));
+                        );
                     }
                 }
             }
@@ -758,15 +757,15 @@ impl Context<'_, '_> {
 
                 for reference in &global.references {
                     if self.active(&["global_usage"]) {
-                        warnings.push((*reference, "global_usage", "access to a global binding"));
+                        self.warn(*reference, "global_usage", "access to a global binding");
                     }
 
                     if self.active(&["UnknownGlobal"]) && !known && global.writes.is_empty() {
-                        warnings.push((
+                        self.warn(
                             *reference,
                             "UnknownGlobal",
                             "unknown global; consider assigning to it first",
-                        ));
+                        );
                     }
                 }
 
@@ -776,7 +775,7 @@ impl Context<'_, '_> {
                     "unscoped_variables"
                 }]) {
                     for write in &global.writes {
-                        warnings.push((
+                        self.warn(
                             *write,
                             if known {
                                 "BuiltinGlobalWrite"
@@ -788,7 +787,7 @@ impl Context<'_, '_> {
                             } else {
                                 "assignment creates an undeclared global"
                             },
-                        ));
+                        );
                     }
                 }
 
@@ -800,11 +799,11 @@ impl Context<'_, '_> {
                         || (!global.read_before_write && !global.module_assignment))
                     && let Some(first) = global.references.first()
                 {
-                    warnings.push((
+                    self.warn(
                         *first,
                         "GlobalUsedAsLocal",
                         "global is only used locally; consider declaring a local",
-                    ));
+                    );
                 }
 
                 if self.active(&["FunctionUnused"])
@@ -812,37 +811,23 @@ impl Context<'_, '_> {
                     && !global.read
                     && !name.starts_with('_')
                 {
-                    warnings.push((
+                    self.warn(
                         definition,
                         "FunctionUnused",
                         "function is never used; prefix with `_` to silence",
-                    ));
+                    );
                 }
             }
         }
 
-        for (node, rule, message) in warnings {
-            self.warn(node, rule, message);
-        }
-
         if self.active(&["restricted_globals"]) && !self.settings.globals.is_empty() {
-            let restrictions: Vec<_> = self
-                .bindings()
-                .globals
-                .iter()
-                .filter_map(|(name, global)| {
-                    self.settings.globals.get(name).map(|reason| {
-                        (
-                            global.references.clone(),
-                            format!("global `{name}` is restricted: {reason}"),
-                        )
-                    })
-                })
-                .collect();
+            for (name, global) in &self.bindings().globals {
+                if let Some(reason) = self.settings.globals.get(name) {
+                    let message = format!("global `{name}` is restricted: {reason}");
 
-            for (references, message) in restrictions {
-                for reference in references {
-                    self.warn(reference, "restricted_globals", &message);
+                    for reference in &global.references {
+                        self.warn(*reference, "restricted_globals", &message);
+                    }
                 }
             }
         }
@@ -1439,11 +1424,11 @@ impl Context<'_, '_> {
             };
 
             if let Some(message) = message
-                && let Some(policy) = self.settings.enabled("CommentDirective")
+                && let Some(severity) = self.settings.enabled("CommentDirective")
             {
                 self.findings.push(Finding {
                     rule: "CommentDirective".to_owned(),
-                    severity: policy.severity,
+                    severity,
                     range: token.span.start..token.span.end,
                     message: message.to_owned(),
                     edits: Vec::new(),

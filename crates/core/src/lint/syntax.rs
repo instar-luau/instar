@@ -34,23 +34,23 @@ pub(super) struct Context<'tree, 'source> {
     pub(super) source: &'source str,
     pub(super) settings: &'tree Prepared,
     pub(super) symbols: &'tree Symbols,
-    bindings: OnceCell<Bindings>,
+    bindings: &'tree OnceCell<Bindings>,
     pub(super) findings: Vec<Finding>,
-    lines: OnceCell<Vec<usize>>,
+    lines: &'tree OnceCell<Vec<usize>>,
 }
 
-impl Context<'_, '_> {
+impl<'tree> Context<'tree, '_> {
     pub(super) fn active(&self, rules: &[&str]) -> bool {
         rules
             .iter()
             .any(|rule| self.settings.enabled(rule).is_some())
     }
 
-    pub(super) fn bindings(&self) -> &Bindings {
+    pub(super) fn bindings(&self) -> &'tree Bindings {
         self.bindings.get_or_init(|| Bindings::new(self.tree))
     }
 
-    pub(super) fn lines(&self) -> &[usize] {
+    pub(super) fn lines(&self) -> &'tree [usize] {
         self.lines.get_or_init(|| {
             iter::once(0)
                 .chain(
@@ -63,12 +63,12 @@ impl Context<'_, '_> {
     }
 
     pub(super) fn emit(&mut self, node: NodeIndex, rule: &str, message: &str, edits: Vec<Edit>) {
-        if let Some(policy) = self.settings.enabled(rule) {
+        if let Some(severity) = self.settings.enabled(rule) {
             let span = self.tree.node(node).span;
 
             self.findings.push(Finding {
                 rule: rule.to_owned(),
-                severity: policy.severity,
+                severity,
                 range: span.start..span.end,
                 message: message.to_owned(),
                 edits,
@@ -433,14 +433,17 @@ pub fn lint(source: &str, settings: &Prepared, symbols: &Symbols) -> Result<Vec<
         return Ok(Vec::new());
     }
 
+    let bindings = OnceCell::new();
+    let lines = OnceCell::new();
+
     let mut context = Context {
         tree: &tree,
         source: text,
         settings,
         symbols,
-        bindings: OnceCell::new(),
+        bindings: &bindings,
         findings: Vec::new(),
-        lines: OnceCell::new(),
+        lines: &lines,
     };
 
     for index in 0..tree.nodes.len() {

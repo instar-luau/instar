@@ -15,7 +15,7 @@ pub(super) struct Local {
     pub(super) declaration: NodeIndex,
     pub(super) statement: NodeIndex,
     pub(super) value: Option<NodeIndex>,
-    pub(super) category: &'static str,
+    pub(super) category: Category,
     pub(super) function: NodeIndex,
     pub(super) shadow: Option<usize>,
     pub(super) reads: Vec<NodeIndex>,
@@ -23,6 +23,13 @@ pub(super) struct Local {
     pub(super) assigned: bool,
     pub(super) initialized: bool,
     pub(super) mutated: bool,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq)]
+pub(super) enum Category {
+    Local,
+    Parameter,
+    Loop,
 }
 
 #[derive(Default)]
@@ -175,7 +182,7 @@ impl Collector<'_, '_> {
         node: NodeIndex,
         statement: NodeIndex,
         value: Option<NodeIndex>,
-        category: &'static str,
+        category: Category,
     ) {
         let name_node = if let NodeKind::Binding {
             name, annotation, ..
@@ -355,7 +362,7 @@ impl Collector<'_, '_> {
                         binding.node,
                         node,
                         tree.list(values).get(index).map(|entry| entry.node),
-                        "local",
+                        Category::Local,
                     );
 
                     self.bindings
@@ -417,7 +424,7 @@ impl Collector<'_, '_> {
 
                     if let Some((first, simple)) = first {
                         if local {
-                            self.declare(first, node, Some(node), "local");
+                            self.declare(first, node, Some(node), Category::Local);
                         } else if simple {
                             self.target(first, false);
 
@@ -448,7 +455,7 @@ impl Collector<'_, '_> {
                 if let Some(method) = method {
                     let index = self.bindings.locals.len();
                     let shadow = self.lookup("self");
-                    self.declare(method, node, None, "parameter");
+                    self.declare(method, node, None, Category::Parameter);
 
                     let scope = self
                         .scopes
@@ -467,7 +474,7 @@ impl Collector<'_, '_> {
                             tree.node(parameter.node).kind,
                             NodeKind::Binding { .. } | NodeKind::Name { .. }
                         ) {
-                            self.declare(parameter.node, node, None, "parameter");
+                            self.declare(parameter.node, node, None, Category::Parameter);
                         } else {
                             self.annotation(parameter.node);
                         }
@@ -501,7 +508,7 @@ impl Collector<'_, '_> {
                 }
 
                 self.scopes.push(BTreeMap::new());
-                self.declare(*binding, node, None, "loop");
+                self.declare(*binding, node, None, Category::Loop);
                 self.loop_block(*body);
                 self.scopes.pop();
             }
@@ -519,7 +526,7 @@ impl Collector<'_, '_> {
                 self.scopes.push(BTreeMap::new());
 
                 for binding in tree.list(bindings) {
-                    self.declare(binding.node, node, None, "loop");
+                    self.declare(binding.node, node, None, Category::Loop);
                 }
 
                 self.loop_block(*body);
