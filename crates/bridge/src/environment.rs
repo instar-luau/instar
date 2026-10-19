@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::{bridge::bindings, error::Error};
+use crate::{builtins, error::Error};
 
 /// Ordered declarations, enum data, and class capabilities for one named environment.
 #[derive(Clone, Debug, Default)]
@@ -57,16 +57,12 @@ pub struct Property {
     pub write: bool,
 }
 
-/// Return standard built-in declarations using the native default flags.
+/// Return standard built-in declarations using the native registry defaults.
 ///
 /// # Errors
-/// Returns conflicting native flag settings.
+/// Returns invalid native flag settings.
 pub fn declarations() -> Result<String, Error> {
-    bindings::declarations(&bindings::DeclarationFlags {
-        settings: &[],
-        scoped: &[],
-    })
-    .map_err(|source| Error::Native {
+    builtins::declarations(&[], &[]).map_err(|source| Error::Native {
         reason: source.what().to_owned(),
     })
 }

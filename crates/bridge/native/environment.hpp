@@ -8,7 +8,6 @@
 #include <string>
 
 namespace instar::luau {
-    struct DeclarationFlags;
     struct Diagnostic;
     struct Environment;
 
@@ -18,7 +17,6 @@ namespace instar::luau {
         const rust::Vec<Diagnostic> &diagnostics;
     };
 
-    rust::String declarations(const DeclarationFlags &configuration);
     rust::Vec<Diagnostic> prepare(Luau::Frontend &frontend, const std::string &name, const Environment &environment);
 }
 

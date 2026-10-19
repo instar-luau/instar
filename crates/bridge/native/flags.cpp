@@ -89,6 +89,20 @@ namespace instar::luau {
 
             return values;
         }
+
+        void validate(const Values &values, const Values &scoped) {
+            if (scoped.size() != values.size()) {
+                throw std::invalid_argument("module flags differ from the frontend flag settings");
+            }
+
+            for (const auto &[name, setting] : scoped) {
+                const auto found = values.find(name);
+
+                if (found == values.end() || found->second != setting) {
+                    throw std::invalid_argument("module flags differ from the frontend flag settings: " + name);
+                }
+            }
+        }
     }
 
     Flags::Flags(rust::Slice<const Flag> flags) : mutex(state().mutex), users(state().users) {
@@ -129,18 +143,25 @@ namespace instar::luau {
     }
 
     void Flags::require(rust::Slice<const Flag> flags) const {
-        const Values normalized = normalize(flags, state());
+        validate(values, normalize(flags, state()));
+    }
 
-        if (normalized.size() != values.size()) {
-            throw std::invalid_argument("module flags differ from the frontend flag settings");
-        }
+    rust::Vec<bool>
+    selectors(rust::Slice<const Flag> settings, rust::Slice<const Flag> scoped, rust::Slice<const rust::Str> names) {
+        const State &shared = state();
+        const Values values = normalize(settings, shared);
+        validate(values, normalize(scoped, shared));
 
-        for (const auto &[name, setting] : normalized) {
+        rust::Vec<bool> selected;
+        selected.reserve(names.size());
+
+        for (const rust::Str selector : names) {
+            const std::string name(selector);
+            const bool initial = registered(name, shared.booleans).second;
             const auto found = values.find(name);
-
-            if (found == values.end() || found->second != setting) {
-                throw std::invalid_argument("module flags differ from the frontend flag settings: " + name);
-            }
+            selected.push_back(found == values.end() ? initial : std::get<bool>(found->second));
         }
+
+        return selected;
     }
 }

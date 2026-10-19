@@ -9,6 +9,8 @@
 )]
 mod bridge;
 
+mod builtins;
+mod cancellation;
 mod configuration;
 mod environment;
 mod error;
@@ -18,7 +20,11 @@ mod host;
 mod instances;
 
 pub use self::{
-    bridge::bindings::Diagnostic,
+    bridge::bindings::{
+        Completion, CompletionKind, Diagnostic, Hint, HintKind, Hover, Import, Occurrence,
+        OccurrenceRole, Parameter, Position, Range, Signature, SourceLocation,
+    },
+    cancellation::Cancellation,
     configuration::{Configuration, Mode},
     environment::{Class, Definition, Environment, Property, declarations},
     error::{Error, HostError, Operation},

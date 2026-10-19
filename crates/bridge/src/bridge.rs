@@ -26,11 +26,6 @@ pub(crate) mod bindings {
         integer: i32,
     }
 
-    struct DeclarationFlags<'flags> {
-        settings: &'flags [Flag],
-        scoped: &'flags [Flag],
-    }
-
     struct Definition {
         name: String,
 
@@ -105,6 +100,247 @@ pub(crate) mod bindings {
         message: String,
     }
 
+    /// A zero-based native byte position.
+    #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+    pub struct Position {
+        /// Zero-based line.
+        line: u32,
+
+        /// Zero-based byte column.
+        column: u32,
+    }
+
+    /// A half-open native byte range.
+    #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+    pub struct Range {
+        /// Inclusive start.
+        start: Position,
+
+        /// Exclusive end.
+        end: Position,
+    }
+
+    /// A source range retaining its physical and instantiated module identities.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct SourceLocation {
+        /// Physical host source identifier.
+        module: String,
+
+        /// Native module identity, including instance context.
+        identity: String,
+
+        /// Native byte range.
+        range: Range,
+    }
+
+    /// Owned semantic hover information.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct Hover {
+        /// Hovered source range.
+        location: SourceLocation,
+
+        /// Identifier, when available.
+        symbol: String,
+
+        /// Inferred Luau type.
+        type_name: String,
+
+        /// Native documentation catalog symbol, empty when unavailable.
+        documentation_symbol: String,
+
+        /// Documentation text, empty when unavailable.
+        documentation: String,
+    }
+
+    /// Native completion category.
+    #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+    pub enum CompletionKind {
+        /// A table or external property.
+        Property,
+
+        /// A value binding.
+        Binding,
+
+        /// A language keyword.
+        Keyword,
+
+        /// A string value.
+        String,
+
+        /// A type binding.
+        Type,
+
+        /// A module.
+        Module,
+
+        /// An inferred anonymous function.
+        GeneratedFunction,
+
+        /// An import path.
+        RequirePath,
+
+        /// A hot comment.
+        HotComment,
+    }
+
+    /// An owned native completion candidate.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct Completion {
+        /// Displayed candidate name.
+        label: String,
+
+        /// Candidate category.
+        kind: CompletionKind,
+
+        /// Whether the followed native type is a function or an overload intersection.
+        is_function: bool,
+
+        /// Inferred candidate type, empty when unavailable.
+        type_name: String,
+
+        /// Native documentation catalog symbol, empty when unavailable.
+        documentation_symbol: String,
+
+        /// Documentation text, empty when unavailable.
+        documentation: String,
+
+        /// Exact insertion text.
+        insert_text: String,
+
+        /// Whether insertion text uses snippet placeholders.
+        snippet: bool,
+
+        /// Source text replaced by insertion.
+        replacement: SourceLocation,
+
+        /// Whether the preceding dot must become a colon.
+        replace_dot: bool,
+
+        /// Dot range when replacement is required.
+        operation: Range,
+
+        /// Whether the candidate is deprecated.
+        deprecated: bool,
+    }
+
+    /// An owned function parameter.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct Parameter {
+        /// Argument name, empty when unavailable.
+        name: String,
+
+        /// Inferred argument type.
+        type_name: String,
+
+        /// Documentation text, empty when unavailable.
+        documentation: String,
+
+        /// Whether this parameter represents a variadic tail.
+        variadic: bool,
+    }
+
+    /// An owned call signature.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct Signature {
+        /// Native module identity of the call.
+        identity: String,
+
+        /// Displayable function signature.
+        label: String,
+
+        /// Native documentation catalog symbol, empty when unavailable.
+        documentation_symbol: String,
+
+        /// Documentation text, empty when unavailable.
+        documentation: String,
+
+        /// Function parameters, excluding implicit method self.
+        parameters: Vec<Parameter>,
+
+        /// Zero-based argument containing the cursor.
+        active_parameter: u32,
+
+        /// Whether native overload resolution selected this signature.
+        selected: bool,
+    }
+
+    /// Semantic occurrence role.
+    #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+    pub enum OccurrenceRole {
+        /// Introduces the declaration.
+        Declaration,
+
+        /// Reads a value.
+        Read,
+
+        /// Writes a value.
+        Write,
+
+        /// Reads and writes a value.
+        ReadWrite,
+
+        /// References the type namespace.
+        Type,
+    }
+
+    /// An occurrence linked to a stable source declaration.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct Occurrence {
+        /// Occurrence source range.
+        location: SourceLocation,
+
+        /// Declaration identity and range.
+        declaration: SourceLocation,
+
+        /// Semantic access role.
+        role: OccurrenceRole,
+
+        /// Whether the declaration belongs to the type namespace.
+        type_namespace: bool,
+    }
+
+    /// Inferred inlay hint category.
+    #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+    pub enum HintKind {
+        /// Inferred binding or parameter type.
+        Type,
+
+        /// Argument name.
+        Parameter,
+
+        /// Inferred function return type.
+        Return,
+    }
+
+    /// An owned inferred inlay hint.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct Hint {
+        /// Zero-width insertion location.
+        location: SourceLocation,
+
+        /// Displayable inferred information.
+        label: String,
+
+        /// Hint category.
+        kind: HintKind,
+
+        /// Whether the source already makes this information explicit.
+        obvious: bool,
+    }
+
+    /// An authoritatively resolved native require argument.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct Import {
+        /// Source range of the require argument.
+        location: SourceLocation,
+
+        /// Resolved physical source identifier.
+        target: String,
+
+        /// Resolved native module identity.
+        identity: String,
+    }
+
     struct Text {
         present: bool,
         value: String,
@@ -153,7 +389,8 @@ pub(crate) mod bindings {
     unsafe extern "C++" {
         include!("native/frontend.hpp");
         include!("native/environment.hpp");
-
+        include!("native/cancellation.hpp");
+        include!("native/flags.hpp");
         type Frontend<'host>;
 
         fn create<'host>(
@@ -167,13 +404,60 @@ pub(crate) mod bindings {
 
         fn checks(self: &Frontend<'_>) -> usize;
 
-        fn declarations(configuration: &DeclarationFlags<'_>) -> Result<String>;
+        fn selectors(settings: &[Flag], scoped: &[Flag], names: &[&str]) -> Result<Vec<bool>>;
 
         fn invalidate(self: Pin<&mut Frontend<'_>>, module: &str) -> Result<()>;
 
         fn refresh(self: Pin<&mut Frontend<'_>>) -> Result<()>;
 
         fn clear(self: Pin<&mut Frontend<'_>>) -> Result<()>;
+
+        fn hover(
+            self: Pin<&mut Frontend<'_>>,
+            module: &str,
+            line: u32,
+            column: u32,
+        ) -> Result<Vec<Hover>>;
+
+        fn completion(
+            self: Pin<&mut Frontend<'_>>,
+            module: &str,
+            line: u32,
+            column: u32,
+        ) -> Result<Vec<Completion>>;
+
+        fn signatures(
+            self: Pin<&mut Frontend<'_>>,
+            module: &str,
+            line: u32,
+            column: u32,
+        ) -> Result<Vec<Signature>>;
+
+        fn definitions(
+            self: Pin<&mut Frontend<'_>>,
+            module: &str,
+            line: u32,
+            column: u32,
+            types: bool,
+        ) -> Result<Vec<SourceLocation>>;
+
+        fn occurrences(self: Pin<&mut Frontend<'_>>, module: &str) -> Result<Vec<Occurrence>>;
+
+        fn rename(
+            self: Pin<&mut Frontend<'_>>,
+            module: &str,
+            line: u32,
+            column: u32,
+            name: &str,
+            candidates: &[String],
+        ) -> Result<Vec<Occurrence>>;
+
+        fn hints(self: Pin<&mut Frontend<'_>>, module: &str) -> Result<Vec<Hint>>;
+        fn imports(self: Pin<&mut Frontend<'_>>, module: &str) -> Result<Vec<Import>>;
+        fn cancellation(self: &Frontend<'_>) -> Result<u64>;
+        fn cancel(identifier: u64);
+        fn reset(identifier: u64);
+        fn release(identifier: u64);
     }
 }
 

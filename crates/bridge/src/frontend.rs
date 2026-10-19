@@ -1,7 +1,10 @@
 use cxx::UniquePtr;
 
 use crate::{
-    bridge::bindings::{self, Diagnostic},
+    bridge::bindings::{
+        self, Completion, Diagnostic, Hint, Hover, Import, Occurrence, Signature, SourceLocation,
+    },
+    cancellation::Cancellation,
     error::Error,
     host::Context,
 };
@@ -81,5 +84,124 @@ impl<'host> Frontend<'host> {
         self.context.complete(result)?;
 
         Ok(())
+    }
+
+    /// Return owned hover data for every instance identity of a physical source.
+    ///
+    /// # Errors
+    /// Returns host, checking, or unavailable type-graph errors.
+    pub fn hover(&mut self, module: &str, line: u32, column: u32) -> Result<Vec<Hover>, Error> {
+        let result = self.native.pin_mut().hover(module, line, column);
+
+        self.context.complete(result)
+    }
+
+    /// Complete incomplete editor input using Luau's native autocomplete engine.
+    ///
+    /// # Errors
+    /// Returns host, checking, or unavailable type-graph errors.
+    pub fn completion(
+        &mut self,
+        module: &str,
+        line: u32,
+        column: u32,
+    ) -> Result<Vec<Completion>, Error> {
+        let result = self.native.pin_mut().completion(module, line, column);
+
+        self.context.complete(result)
+    }
+
+    /// Return native overloads and argument metadata at a call position.
+    ///
+    /// # Errors
+    /// Returns host, checking, or unavailable type-graph errors.
+    pub fn signatures(
+        &mut self,
+        module: &str,
+        line: u32,
+        column: u32,
+    ) -> Result<Vec<Signature>, Error> {
+        let result = self.native.pin_mut().signatures(module, line, column);
+
+        self.context.complete(result)
+    }
+
+    /// Resolve value declarations, or inferred type declarations when `types` is true.
+    ///
+    /// # Errors
+    /// Returns host, checking, or unavailable type-graph errors.
+    pub fn definitions(
+        &mut self,
+        module: &str,
+        line: u32,
+        column: u32,
+        types: bool,
+    ) -> Result<Vec<SourceLocation>, Error> {
+        let result = self
+            .native
+            .pin_mut()
+            .definitions(module, line, column, types);
+
+        self.context.complete(result)
+    }
+
+    /// Return all declaration-linked occurrences in every instance of a source.
+    ///
+    /// # Errors
+    /// Returns host, checking, or unavailable type-graph errors.
+    pub fn occurrences(&mut self, module: &str) -> Result<Vec<Occurrence>, Error> {
+        let result = self.native.pin_mut().occurrences(module);
+
+        self.context.complete(result)
+    }
+
+    /// Validate a rename and return affected occurrences across candidate sources.
+    ///
+    /// # Errors
+    /// Returns invalid names, binding conflicts, unsupported targets, or analysis failures.
+    pub fn rename(
+        &mut self,
+        module: &str,
+        line: u32,
+        column: u32,
+        name: &str,
+        candidates: &[String],
+    ) -> Result<Vec<Occurrence>, Error> {
+        let result = self
+            .native
+            .pin_mut()
+            .rename(module, line, column, name, candidates);
+
+        self.context.complete(result)
+    }
+
+    /// Return inferred binding, argument-name, and return-type inlay hints.
+    ///
+    /// # Errors
+    /// Returns host, checking, or unavailable type-graph errors.
+    pub fn hints(&mut self, module: &str) -> Result<Vec<Hint>, Error> {
+        let result = self.native.pin_mut().hints(module);
+
+        self.context.complete(result)
+    }
+
+    /// Parse the source and resolve require arguments for every native identity.
+    ///
+    /// # Errors
+    /// Returns host, native parsing or resolution, or cancellation errors.
+    pub fn imports(&mut self, module: &str) -> Result<Vec<Import>, Error> {
+        let result = self.native.pin_mut().imports(module);
+
+        self.context.complete(result)
+    }
+
+    /// Obtain a thread-safe cancellation handle without sharing the frontend.
+    ///
+    /// # Errors
+    /// Returns native handle allocation failures.
+    pub fn cancellation(&self) -> Result<Cancellation, Error> {
+        let identifier = self.context.complete(self.native.cancellation())?;
+
+        Ok(Cancellation::new(identifier))
     }
 }

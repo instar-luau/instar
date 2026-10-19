@@ -1,12 +1,16 @@
-use std::{cell::Cell, collections::BTreeMap};
+use std::{
+    cell::{Cell, RefCell},
+    collections::{BTreeMap, HashMap},
+};
 
 use cxx::Exception;
 
 use crate::{
     bridge::{self, bindings},
+    builtins,
     configuration::Configuration,
     environment::Environment,
-    error::{Error, HostError},
+    error::{Error, HostError, Operation},
     flags::Flag,
     instances::Instance,
 };
@@ -66,7 +70,7 @@ pub trait Host {
 }
 
 /// The outcome of a module-navigation lookup.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Navigation {
     /// A unique host module identifier was found.
     Found(String),
@@ -100,6 +104,7 @@ pub enum Progress<'module> {
 pub struct Context<'host> {
     host: &'host dyn Host,
     error: Cell<Option<HostError>>,
+    navigation: RefCell<HashMap<(Operation, String, String), Navigation>>,
     progress: Option<&'host dyn Fn(Progress<'_>) -> bool>,
 }
 
@@ -111,6 +116,7 @@ impl<'host> Context<'host> {
         Self {
             host,
             error,
+            navigation: RefCell::new(HashMap::new()),
             progress: None,
         }
     }
@@ -131,10 +137,7 @@ impl<'host> Context<'host> {
         let settings = bridge::flags(self.host.flags().map_err(Error::Host)?);
         let scoped = bridge::flags(flags);
 
-        self.complete(bindings::declarations(&bindings::DeclarationFlags {
-            settings: &settings,
-            scoped: &scoped,
-        }))
+        self.complete(builtins::declarations(&settings, &scoped))
     }
 
     pub(crate) fn alias(
@@ -143,7 +146,11 @@ impl<'host> Context<'host> {
         name: &str,
         destination: &mut String,
     ) -> Result<bindings::Status, &'static str> {
-        self.navigate(self.host.alias(module, name), destination)
+        self.navigate(
+            (Operation::Alias, module, name),
+            || self.host.alias(module, name),
+            destination,
+        )
     }
 
     pub(crate) fn child(
@@ -152,7 +159,11 @@ impl<'host> Context<'host> {
         name: &str,
         destination: &mut String,
     ) -> Result<bindings::Status, &'static str> {
-        self.navigate(self.host.child(module, name), destination)
+        self.navigate(
+            (Operation::Child, module, name),
+            || self.host.child(module, name),
+            destination,
+        )
     }
 
     pub(crate) fn configuration(
@@ -181,7 +192,11 @@ impl<'host> Context<'host> {
         module: &str,
         destination: &mut String,
     ) -> Result<bindings::Status, &'static str> {
-        self.navigate(self.host.parent(module), destination)
+        self.navigate(
+            (Operation::Parent, module, ""),
+            || self.host.parent(module),
+            destination,
+        )
     }
 
     pub(crate) fn source(&self, module: &str) -> Result<bindings::Text, &'static str> {
@@ -204,6 +219,8 @@ impl<'host> Context<'host> {
     }
 
     pub(crate) fn complete<Value>(&self, result: Result<Value, Exception>) -> Result<Value, Error> {
+        self.navigation.borrow_mut().clear();
+
         match self.error.take() {
             Some(error) => Err(Error::Host(error)),
 
@@ -223,10 +240,23 @@ impl<'host> Context<'host> {
 
     fn navigate(
         &self,
-        result: Result<Navigation, HostError>,
+        identity: (Operation, &str, &str),
+        lookup: impl FnOnce() -> Result<Navigation, HostError>,
         destination: &mut String,
     ) -> Result<bindings::Status, &'static str> {
-        let status = match self.capture(result)? {
+        let key = (identity.0, identity.1.to_owned(), identity.2.to_owned());
+        let cached = self.navigation.borrow().get(&key).cloned();
+
+        let navigation = if let Some(navigation) = cached {
+            navigation
+        } else {
+            let navigation = self.capture(lookup())?;
+            self.navigation.borrow_mut().insert(key, navigation.clone());
+
+            navigation
+        };
+
+        let status = match navigation {
             Navigation::Found(module) => {
                 *destination = module;
 

@@ -30,7 +30,7 @@ pub struct HostError {
 }
 
 /// A host callback operation.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
 pub enum Operation {
     /// Load module source text.
     Source,

@@ -1,6 +1,5 @@
 #include "environment.hpp"
 
-#include "Luau/BuiltinDefinitions.h"
 #include "Luau/Error.h"
 #include "Luau/Module.h"
 #include "Luau/Scope.h"
@@ -9,7 +8,6 @@
 #include "capabilities.hpp"
 #include "diagnostic.hpp"
 #include "enumerations.hpp"
-#include "flags.hpp"
 #include "instar-bridge/src/bridge.rs.h"
 
 #include <memory>
@@ -58,14 +56,6 @@ namespace instar::luau {
 
     DeclarationFailure::DeclarationFailure(const rust::Vec<Diagnostic> &diagnostics) noexcept
         : diagnostics(diagnostics) {}
-
-    rust::String declarations(const DeclarationFlags &configuration) {
-        const Flags flags(configuration.settings);
-        flags.require(configuration.scoped);
-
-        return Luau::getBuiltinDefinitionSource() + "\ndeclare string: any\ndeclare next: any\ndeclare pairs: any"
-                                                    "\ndeclare getmetatable: any\ndeclare setmetatable: any\n";
-    }
 
     rust::Vec<Diagnostic> prepare(Luau::Frontend &frontend, const std::string &name, const Environment &environment) {
         const auto scope = std::make_shared<Luau::Scope>(frontend.globals.globalScope);
