@@ -3,6 +3,7 @@ use std::{
     num::NonZeroUsize,
     sync::mpsc::{self, Receiver, Sender},
     thread,
+    time::Instant,
 };
 
 use eyre::{Report, Result, WrapErr as _, eyre};
@@ -13,6 +14,7 @@ use super::{
     execution::{self, Outcome, Project, Response},
     progress::Progress,
     report::Batch,
+    watch::Watcher,
 };
 
 struct Request {
@@ -20,14 +22,14 @@ struct Request {
     progress: Progress,
 }
 
-pub(super) struct Worker<'modules> {
+struct Worker<'modules> {
     modules: &'modules [String],
     requests: Receiver<Request>,
-    responses: Sender<Response>,
+    responses: Sender<Result<Response>>,
 }
 
 impl Worker<'_> {
-    pub(super) fn run(
+    fn run(
         self,
         workspace: &Workspace,
         mut execute: impl FnMut(&[String], &Progress) -> Result<Batch>,
@@ -36,9 +38,9 @@ impl Worker<'_> {
             for module in &request.dirty {
                 if workspace.requires_reload(module)? {
                     self.responses
-                        .send(Response::Reload {
+                        .send(Ok(Response::Reload {
                             configuration: true,
-                        })
+                        }))
                         .wrap_err("cannot send worker response")?;
 
                     return Ok(());
@@ -47,10 +49,14 @@ impl Worker<'_> {
                 workspace.invalidate(module);
             }
 
-            let mut batch = execute(self.modules, &request.progress)?;
-            batch.dependencies = workspace.dependencies();
+            let result = execute(self.modules, &request.progress).map(|mut batch| {
+                batch.dependencies = workspace.dependencies();
+                batch.reload_dependencies = workspace.reload_dependencies();
 
-            if self.responses.send(Response::Completed(batch)).is_err() {
+                Response::Completed(batch)
+            });
+
+            if self.responses.send(result).is_err() {
                 break;
             }
         }
@@ -61,19 +67,15 @@ impl Worker<'_> {
 
 struct Connection {
     requests: Sender<Request>,
-    responses: Receiver<Response>,
+    responses: Receiver<Result<Response>>,
 }
 
-pub(super) struct Pool {
+struct Pool {
     connections: Vec<Connection>,
 }
 
 impl Pool {
-    pub(super) fn execute(
-        &self,
-        dirty: &BTreeSet<String>,
-        progress: &Progress,
-    ) -> Result<Response> {
+    fn execute(&self, dirty: &BTreeSet<String>, progress: &Progress) -> Result<Response> {
         for connection in &self.connections {
             connection
                 .requests
@@ -86,6 +88,7 @@ impl Pool {
 
         let mut batch = Batch::default();
         let mut configuration = None;
+        let mut failure = None;
 
         for connection in &self.connections {
             match connection
@@ -93,28 +96,35 @@ impl Pool {
                 .recv()
                 .wrap_err("cannot receive worker response")?
             {
-                Response::Completed(completed) => batch.append(completed),
+                Ok(Response::Completed(completed)) => batch.append(completed),
 
-                Response::Reload {
+                Ok(Response::Reload {
                     configuration: changed,
-                } => *configuration.get_or_insert(false) |= changed,
+                }) => *configuration.get_or_insert(false) |= changed,
+
+                Err(error) => {
+                    failure.get_or_insert(error);
+                }
             }
         }
 
-        Ok(
-            configuration.map_or(Response::Completed(batch), |configuration| {
-                Response::Reload { configuration }
-            }),
-        )
+        if let Some(configuration) = configuration {
+            Ok(Response::Reload { configuration })
+        } else if let Some(error) = failure {
+            Err(error)
+        } else {
+            Ok(Response::Completed(batch))
+        }
     }
 }
 
-pub(super) fn run(
+pub(super) fn session(
     arguments: &Arguments,
     operation: &Operation,
     project: &Project,
-    execute: impl Fn(&Workspace, Worker<'_>) -> Result<()> + Sync,
-    session: impl FnOnce(&Pool) -> Result<Outcome>,
+    watcher: Option<&mut Watcher>,
+    started: Instant,
+    execute: impl Fn(&Workspace, &[String], &Progress) -> Result<Batch> + Sync,
 ) -> Result<Outcome> {
     let requested = match operation {
         Operation::Check(_) => None,
@@ -156,7 +166,9 @@ pub(super) fn run(
 
         workspace.set_generated(generated.clone());
 
-        execute(&workspace, worker)
+        worker.run(&workspace, |modules, progress| {
+            execute(&workspace, modules, progress)
+        })
     };
 
     thread::scope(|scope| {
@@ -203,7 +215,22 @@ pub(super) fn run(
             if failure.is_some() {
                 Ok(Outcome::Completed(0))
             } else {
-                session(&pool)
+                execution::session(
+                    arguments,
+                    operation,
+                    project,
+                    watcher,
+                    started,
+                    |selected, dirty, _, progress| {
+                        if selected != &project.selected {
+                            return Ok(Response::Reload {
+                                configuration: false,
+                            });
+                        }
+
+                        pool.execute(dirty, progress)
+                    },
+                )
             }
         };
 

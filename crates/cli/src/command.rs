@@ -13,30 +13,22 @@ pub(super) fn run() -> ExitCode {
     let result = report::initialize(arguments.color, arguments.verbose).and_then(|()| {
         interrupt::initialize()?;
 
-        match &arguments.command {
-            Command::Generate(options) => {
-                let result = generate::run(&arguments, options);
+        let result = match &arguments.command {
+            Command::Generate(options) => generate::run(&arguments, options),
+            Command::Files(operation) => execution::run(&arguments, operation),
+        };
 
-                if interrupt::requested() {
-                    report::generation_interrupted(&arguments);
+        if interrupt::requested() {
+            report::interrupted(&arguments);
 
-                    Ok(130)
-                } else {
-                    result
-                }
-            }
+            let watching = matches!(
+                &arguments.command,
+                Command::Files(operation) if operation.options().watch
+            );
 
-            Command::Files(operation) => {
-                let result = execution::run(&arguments, operation);
-
-                if interrupt::requested() {
-                    report::interrupted(&arguments, operation);
-
-                    return Ok(if operation.options().watch { 0 } else { 130 });
-                }
-
-                result
-            }
+            Ok(if watching { 0 } else { 130 })
+        } else {
+            result
         }
     });
 

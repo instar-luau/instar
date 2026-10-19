@@ -260,13 +260,15 @@ impl Watcher {
     }
 
     pub(super) fn ready(&self) {
-        if !self.quiet {
-            eprintln!(
-                "{} {}",
-                console::style("watching").for_stderr().cyan().bold(),
-                console::style("for changes").for_stderr().dim()
-            );
+        if self.quiet {
+            return;
         }
+
+        eprintln!(
+            "{} {}",
+            console::style("watching").for_stderr().cyan().bold(),
+            console::style("for changes").for_stderr().dim()
+        );
     }
 
     pub(super) fn wait(&mut self, recovery: bool) -> Result<(Vec<Event>, bool)> {

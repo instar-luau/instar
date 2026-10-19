@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, mem, sync::Arc, time::Instant};
+use std::{collections::BTreeMap, sync::Arc, time::Instant};
 
 use codespan_reporting::diagnostic::{Diagnostic, Label};
 use eyre::{Result, eyre};
@@ -11,7 +11,7 @@ use instar_core::{
 
 use super::{
     arguments::{Arguments, Operation},
-    execution::{self, Outcome, Project, Response},
+    execution::{Outcome, Project},
     report::{Batch, Output, Source},
     watch::Watcher,
     workers,
@@ -19,7 +19,7 @@ use super::{
 
 type Environments = BTreeMap<String, Result<Arc<Symbols>, Arc<Error>>>;
 
-pub(super) fn run(
+pub(super) fn session(
     arguments: &Arguments,
     operation: &Operation,
     project: &Project,
@@ -27,42 +27,24 @@ pub(super) fn run(
     started: Instant,
 ) -> Result<Outcome> {
     let environments = prepare(project);
-    let corrections = matches!(operation, Operation::Lint(lint) if lint.fix);
+    let corrections = matches!(operation, Operation::Lint(lint) if lint.corrections);
 
-    workers::run(
+    workers::session(
         arguments,
         operation,
         project,
-        |workspace, worker| {
-            worker.run(workspace, |modules, progress| {
-                Batch::collect(modules, |module| {
-                    progress.process(module, || process(workspace, module, &environments))
+        watcher,
+        started,
+        |workspace, modules, progress| {
+            let mut pending = Vec::new();
+
+            let batch = Batch::collect(modules, |module| {
+                progress.process(module, || {
+                    process(workspace, module, &environments, &mut pending)
                 })
-            })
-        },
-        |pool| {
-            execution::session(
-                arguments,
-                operation,
-                project,
-                watcher,
-                started,
-                |selected, dirty, _, progress| {
-                    if selected != &project.selected {
-                        return Ok(Response::Reload {
-                            configuration: false,
-                        });
-                    }
+            })?;
 
-                    match pool.execute(dirty, progress)? {
-                        Response::Completed(batch) => {
-                            Ok(Response::Completed(complete(batch, corrections)?))
-                        }
-
-                        response @ Response::Reload { .. } => Ok(response),
-                    }
-                },
-            )
+            complete(batch, pending, corrections)
         },
     )
 }
@@ -80,7 +62,12 @@ fn prepare(project: &Project) -> Environments {
         .collect()
 }
 
-fn process(workspace: &Workspace, module: &str, environments: &Environments) -> Result<Batch> {
+fn process(
+    workspace: &Workspace,
+    module: &str,
+    environments: &Environments,
+    pending: &mut Vec<(Source, Vec<lint::Finding>)>,
+) -> Result<Batch> {
     workspace.invalidate(module);
 
     let source = Source {
@@ -90,7 +77,7 @@ fn process(workspace: &Workspace, module: &str, environments: &Environments) -> 
             .ok_or_else(|| eyre!("cannot read source `{module}`"))?,
     };
 
-    let settings = workspace.linting(module)?;
+    let configuration = workspace.linting(module)?;
     let mut batch = Batch::default();
 
     let symbols = match environments
@@ -133,8 +120,8 @@ fn process(workspace: &Workspace, module: &str, environments: &Environments) -> 
         }
     };
 
-    match lint::lint(&source.text, &settings, symbols) {
-        Ok(findings) => batch.lint.push((source, findings)),
+    match lint::lint(&source.text, &configuration, symbols) {
+        Ok(findings) => pending.push((source, findings)),
 
         Err(error) => batch.findings.push(
             Diagnostic::error()
@@ -147,8 +134,12 @@ fn process(workspace: &Workspace, module: &str, environments: &Environments) -> 
     Ok(batch)
 }
 
-fn complete(mut batch: Batch, corrections: bool) -> Result<Batch> {
-    for (source, mut findings) in mem::take(&mut batch.lint) {
+fn complete(
+    mut batch: Batch,
+    pending: Vec<(Source, Vec<lint::Finding>)>,
+    corrections: bool,
+) -> Result<Batch> {
+    for (source, mut findings) in pending {
         let mut completed = Batch::default();
 
         if let Err(error) = lint::suppress(&source.text, &mut findings) {

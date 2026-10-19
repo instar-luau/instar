@@ -31,6 +31,7 @@ pub struct Workspace {
     pub(super) files: Vec<PathBuf>,
     pub(super) overrides: Vec<String>,
     pub(super) scopes: RefCell<BTreeMap<PathBuf, Rc<Scope>>>,
+    pub(super) configuration_paths: RefCell<BTreeSet<PathBuf>>,
     pub(super) instances: RefCell<instances::Registry>,
     pub(super) sources: BTreeMap<String, Arc<str>>,
     pub(super) snapshots: RefCell<BTreeMap<String, Option<Arc<str>>>>,
@@ -57,6 +58,7 @@ impl Workspace {
             files: files.to_owned(),
             overrides: overrides.to_owned(),
             scopes: RefCell::new(BTreeMap::new()),
+            configuration_paths: RefCell::new(BTreeSet::new()),
             instances: RefCell::new(instances::Registry::default()),
             sources: BTreeMap::new(),
             snapshots: RefCell::new(BTreeMap::new()),
@@ -95,6 +97,7 @@ impl Workspace {
     pub fn reload(&mut self) -> Result<(), Error> {
         let scope = discovery::root(self)?;
         *self.scopes.get_mut() = BTreeMap::from([(self.root.clone(), Rc::new(scope))]);
+        self.configuration_paths.get_mut().clear();
         *self.instances.get_mut() = instances::Registry::default();
         *self.environments.get_mut() = Registry::default();
         self.snapshots.get_mut().clear();
@@ -135,13 +138,7 @@ impl Workspace {
 
         let scopes = self.scopes.borrow();
 
-        if self.files.is_empty() {
-            dependencies.extend(
-                scopes
-                    .keys()
-                    .map(|directory| directory.join(discovery::CONFIGURATION)),
-            );
-        }
+        dependencies.extend(self.configuration_paths.borrow().iter().cloned());
 
         for scope in scopes.values() {
             let configuration = &scope.configuration;

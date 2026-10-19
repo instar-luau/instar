@@ -21,7 +21,7 @@ use super::{
     watch::Watcher,
 };
 
-pub(super) fn run(
+pub(super) fn session(
     arguments: &Arguments,
     operation: &Operation,
     project: &Project,

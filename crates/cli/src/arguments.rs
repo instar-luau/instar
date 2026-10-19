@@ -249,12 +249,12 @@ pub(super) struct Lint {
     #[arg(long, value_name = "RULE", num_args = 1.., help = "select only these lint rules")]
     pub(super) rule: Vec<String>,
 
-    #[arg(long, help = "apply safe corrections")]
-    pub(super) fix: bool,
+    #[arg(long = "fix", help = "apply safe corrections")]
+    pub(super) corrections: bool,
 
     #[arg(
         long,
-        requires = "fix",
+        requires = "corrections",
         help = "print safe corrections as a unified diff without writing"
     )]
     pub(super) preview: bool,

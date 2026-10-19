@@ -44,6 +44,8 @@ pub(super) enum Outcome {
 }
 
 pub(super) fn run(arguments: &Arguments, operation: &Operation) -> Result<u8> {
+    let mut started = Instant::now();
+
     let options = operation.options();
 
     let root = options
@@ -97,8 +99,6 @@ pub(super) fn run(arguments: &Arguments, operation: &Operation) -> Result<u8> {
         .then(|| Watcher::new(&root, options, arguments.quiet))
         .transpose()?;
 
-    let mut started = Instant::now();
-
     let result = (|| {
         loop {
             interrupt::check()?;
@@ -113,15 +113,15 @@ pub(super) fn run(arguments: &Arguments, operation: &Operation) -> Result<u8> {
             )
             .and_then(|project| match operation {
                 Operation::Check(_) => {
-                    check::run(arguments, operation, &project, watcher.as_mut(), started)
+                    check::session(arguments, operation, &project, watcher.as_mut(), started)
                 }
 
                 Operation::Format(_) => {
-                    format::run(arguments, operation, &project, watcher.as_mut(), started)
+                    format::session(arguments, operation, &project, watcher.as_mut(), started)
                 }
 
                 Operation::Lint(_) => {
-                    lint::run(arguments, operation, &project, watcher.as_mut(), started)
+                    lint::session(arguments, operation, &project, watcher.as_mut(), started)
                 }
             });
 
@@ -197,7 +197,12 @@ pub(super) fn session(
 
         if let Some(watcher) = &mut watcher {
             batch.dependencies.extend(project.workspace.dependencies());
-            watcher.observe(project.workspace.reload_dependencies(), true)?;
+
+            batch
+                .reload_dependencies
+                .extend(project.workspace.reload_dependencies());
+
+            watcher.observe(mem::take(&mut batch.reload_dependencies), true)?;
             watcher.observe(mem::take(&mut batch.dependencies), false)?;
         }
 
@@ -389,7 +394,7 @@ fn select(
 
         Operation::Lint(lint) => (
             Purpose::Lint,
-            if lint.fix {
+            if lint.corrections {
                 Access::Write
             } else {
                 Access::Read

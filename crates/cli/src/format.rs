@@ -10,47 +10,29 @@ use instar_core::{
 
 use super::{
     arguments::{Arguments, Operation},
-    execution::{self, Outcome, Project},
+    execution::{Outcome, Project},
     report::{Batch, Output, Source},
     watch::Watcher,
     workers,
 };
 
-pub(super) fn run(
+pub(super) fn session(
     arguments: &Arguments,
     operation: &Operation,
     project: &Project,
     watcher: Option<&mut Watcher>,
     started: Instant,
 ) -> Result<Outcome> {
-    workers::run(
+    workers::session(
         arguments,
         operation,
         project,
-        |workspace, worker| {
-            worker.run(workspace, |modules, progress| {
-                Batch::collect(modules, |module| {
-                    progress.process(module, || process(workspace, module))
-                })
+        watcher,
+        started,
+        |workspace, modules, progress| {
+            Batch::collect(modules, |module| {
+                progress.process(module, || process(workspace, module))
             })
-        },
-        |pool| {
-            execution::session(
-                arguments,
-                operation,
-                project,
-                watcher,
-                started,
-                |selected, dirty, _, progress| {
-                    if selected != &project.selected {
-                        return Ok(execution::Response::Reload {
-                            configuration: false,
-                        });
-                    }
-
-                    pool.execute(dirty, progress)
-                },
-            )
         },
     )
 }

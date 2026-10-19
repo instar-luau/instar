@@ -54,6 +54,12 @@ pub(super) fn directory(workspace: &Workspace, directory: &Path) -> Result<Rc<Sc
         pending.push(ancestor);
     }
 
+    workspace.configuration_paths.borrow_mut().extend(
+        pending
+            .iter()
+            .map(|directory| directory.join(CONFIGURATION)),
+    );
+
     let mut scope = match scope {
         Some(scope) => scope,
 

@@ -24,12 +24,12 @@ use color_eyre::{
 
 use eyre::{Report, Result, WrapErr as _};
 
-use instar_core::{assets::Generated, lint, workspace::Error as WorkspaceError};
+use instar_core::{assets::Generated, workspace::Error as WorkspaceError};
 
 use similar::TextDiff;
 
 use super::{
-    arguments::{Arguments, Operation},
+    arguments::{Arguments, Command, Operation},
     execution::Project,
     interrupt,
 };
@@ -51,8 +51,8 @@ pub(super) struct Output {
 pub(super) struct Batch {
     pub(super) findings: Vec<Finding>,
     pub(super) outputs: Vec<Output>,
-    pub(super) lint: Vec<(Source, Vec<lint::Finding>)>,
     pub(super) dependencies: BTreeSet<PathBuf>,
+    pub(super) reload_dependencies: BTreeSet<PathBuf>,
     failures: Vec<Report>,
 }
 
@@ -81,8 +81,8 @@ impl Batch {
         self.findings.extend(batch.findings);
         self.failures.extend(batch.failures);
         self.outputs.extend(batch.outputs);
-        self.lint.extend(batch.lint);
         self.dependencies.extend(batch.dependencies);
+        self.reload_dependencies.extend(batch.reload_dependencies);
     }
 
     pub(super) fn report(
@@ -107,7 +107,7 @@ impl Batch {
                 &mut summary,
             )?,
 
-            Operation::Lint(lint) if lint.fix => {
+            Operation::Lint(lint) if lint.corrections => {
                 publish(false, lint.preview, project, self.outputs, &mut summary)?;
             }
 
@@ -296,40 +296,41 @@ pub(super) fn generated(
         console::style(format!("{:.2?}", started.elapsed()))
             .for_stderr()
             .cyan(),
-        console::style(generated.changed)
-            .for_stderr()
-            .yellow()
-            .bold(),
+        if generated.changed == 0 {
+            console::style(generated.changed).for_stderr().dim()
+        } else {
+            console::style(generated.changed)
+                .for_stderr()
+                .yellow()
+                .bold()
+        },
         console::style("changed").for_stderr().dim()
     );
 }
 
-pub(super) fn generation_interrupted(arguments: &Arguments) {
-    if !arguments.quiet {
-        eprintln!(
-            "{} {}",
-            console::style("interrupted").for_stderr().yellow().bold(),
-            console::style("generate").for_stderr().cyan()
-        );
-    }
-}
-
-pub(super) fn interrupted(arguments: &Arguments, operation: &Operation) {
+pub(super) fn interrupted(arguments: &Arguments) {
     if arguments.quiet {
         return;
     }
 
-    if operation.options().watch {
+    if matches!(
+        &arguments.command,
+        Command::Files(operation) if operation.options().watch
+    ) {
         eprintln!(
             "{} {}",
             console::style("stopped").for_stderr().green().bold(),
             console::style("watching").for_stderr().dim()
         );
     } else {
-        let command = match operation {
-            Operation::Check(_) => "check",
-            Operation::Format(_) => "format",
-            Operation::Lint(_) => "lint",
+        let command = match &arguments.command {
+            Command::Generate(_) => "generate",
+
+            Command::Files(operation) => match operation.as_ref() {
+                Operation::Check(_) => "check",
+                Operation::Format(_) => "format",
+                Operation::Lint(_) => "lint",
+            },
         };
 
         eprintln!(
