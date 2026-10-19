@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 instar-core.workspace = true
 instar-bridge.workspace = true
+instar-server.workspace = true
 
 clap.workspace = true
 codespan-reporting.workspace = true

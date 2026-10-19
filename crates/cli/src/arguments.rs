@@ -9,7 +9,7 @@ use super::association::Association;
 #[command(
     name = "instar",
     version,
-    about = "check, format, and lint Luau projects"
+    about = "check, format, lint, and serve Luau projects"
 )]
 pub(super) struct Arguments {
     #[arg(
@@ -51,6 +51,9 @@ pub(super) enum Command {
 
     #[command(about = "generate local schema, Luau, and Roblox files")]
     Generate(Generate),
+
+    #[command(about = "serve the language server protocol over stdin and stdout")]
+    Server,
 }
 
 #[derive(Subcommand)]

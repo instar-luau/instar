@@ -325,6 +325,7 @@ pub(super) fn interrupted(arguments: &Arguments) {
     } else {
         let command = match &arguments.command {
             Command::Generate(_) => "generate",
+            Command::Server => "server",
 
             Command::Files(operation) => match operation.as_ref() {
                 Operation::Check(_) => "check",
