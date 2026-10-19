@@ -15,8 +15,8 @@ use vermis::{
 use super::{
     Error,
     mapping::{
-        self, Class, Corrections, Dump, Enumeration, HIERARCHY, Member, Parameter, Type, Types,
-        invalid,
+        self, Argument, Class, Corrections, Dump, Enumeration, HIERARCHY, Member, Signature, Type,
+        Types, invalid,
     },
     metadata::{Access, Documentation, Metadata, digest},
     syntax::{self, Output, Replacement},
@@ -321,7 +321,11 @@ fn declaration(class: &Class, context: &Context<'_>) -> Result<Output, Error> {
                 }
             }
         } else if permission(&mut output, Some(member), context.labels)? {
-            output.append(signature(member, &context.corrections.types)?);
+            output.append(signature(
+                &member.name,
+                member.signature(&context.corrections.types)?,
+            )?);
+
             output.newline();
         }
     }
@@ -394,27 +398,22 @@ fn permission(
     Ok(allowed)
 }
 
-fn signature(member: &Member, mappings: &BTreeMap<String, String>) -> Result<Output, Error> {
+fn signature(name: &str, signature: &Signature) -> Result<Output, Error> {
     let mut output = Output::default();
 
-    match member.kind.as_str() {
-        "Property" => {
-            output.property(&member.name)?;
+    match signature {
+        Signature::Property { value } => {
+            output.property(name)?;
             output.symbol(Symbol::Colon);
-
-            output.source(
-                member
-                    .value_type
-                    .as_ref()
-                    .ok_or_else(|| invalid("missing property value type"))?
-                    .resolve(mappings)?,
-            );
+            output.source(value);
         }
 
-        "Function" => {
-            let values = member.parameters()?;
+        Signature::Function {
+            parameters: values,
+            returns: result,
+        } => {
             output.keyword(Keyword::Function);
-            output.property(&member.name)?;
+            output.property(name)?;
             output.symbol(Symbol::LeftParenthesis);
             output.source("self");
 
@@ -422,56 +421,45 @@ fn signature(member: &Member, mappings: &BTreeMap<String, String>) -> Result<Out
                 output.symbol(Symbol::Comma);
             }
 
-            parameters(&mut output, values, mappings, false)?;
+            parameters(&mut output, values, false);
             output.symbol(Symbol::RightParenthesis);
             output.symbol(Symbol::Colon);
-            returns(&mut output, member.returns("tuple returns")?, mappings)?;
+            returns(&mut output, result);
         }
 
-        "Callback" => {
-            output.property(&member.name)?;
+        Signature::Callback {
+            parameters: values,
+            returns: result,
+        } => {
+            output.property(name)?;
             output.symbol(Symbol::Colon);
             output.symbol(Symbol::LeftParenthesis);
-            parameters(&mut output, member.parameters()?, mappings, true)?;
+            parameters(&mut output, values, true);
             output.symbol(Symbol::RightParenthesis);
             output.symbol(Symbol::Arrow);
-            returns(&mut output, member.returns("tuple returns")?, mappings)?;
+            returns(&mut output, result);
         }
 
-        "Event" => {
-            output.property(&member.name)?;
+        Signature::Event { arguments } => {
+            output.property(name)?;
             output.symbol(Symbol::Colon);
             output.source("RBXScriptSignal");
             output.symbol(Symbol::LessThan);
-
-            let values: Vec<_> = member
-                .parameters()?
-                .iter()
-                .map(|parameter| parameter.value.clone())
-                .collect();
-
-            returns(&mut output, &values, mappings)?;
+            returns(&mut output, arguments);
             output.symbol(Symbol::GreaterThan);
         }
-
-        kind => return Err(invalid(format!("unsupported member kind `{kind}`"))),
     }
 
     Ok(output)
 }
 
-fn parameters(
-    output: &mut Output,
-    values: &[Parameter],
-    mappings: &BTreeMap<String, String>,
-    callback: bool,
-) -> Result<(), Error> {
+fn parameters(output: &mut Output, values: &[Argument], callback: bool) {
     for (index, parameter) in values.iter().enumerate() {
         if index > 0 {
             output.symbol(Symbol::Comma);
         }
 
-        let value = parameter.value.resolve(mappings)?;
+        let value = parameter.value.as_str();
         let variadic = value.starts_with("...") || parameter.name == "...";
 
         if variadic && index + 1 == values.len() {
@@ -481,7 +469,7 @@ fn parameters(
                 output.symbol(Symbol::Colon);
             }
 
-            output.source(value.strip_prefix("...").unwrap_or(&value));
+            output.source(value.strip_prefix("...").unwrap_or(value));
             continue;
         }
 
@@ -493,23 +481,17 @@ fn parameters(
 
         output.symbol(Symbol::Colon);
 
-        let value = if variadic { "any" } else { &value };
+        let value = if variadic { "any" } else { value };
 
         output.source(value);
 
-        if parameter.fields.contains_key("Default") && !value.ends_with('?') {
+        if parameter.default && !value.ends_with('?') {
             output.symbol(Symbol::QuestionMark);
         }
     }
-
-    Ok(())
 }
 
-fn returns(
-    output: &mut Output,
-    values: &[Type],
-    mappings: &BTreeMap<String, String>,
-) -> Result<(), Error> {
+fn returns(output: &mut Output, values: &[String]) {
     if values.len() != 1 {
         output.symbol(Symbol::LeftParenthesis);
     }
@@ -519,20 +501,16 @@ fn returns(
             output.symbol(Symbol::Comma);
         }
 
-        let value = value.resolve(mappings)?;
-
         output.source(if value.starts_with("...") && index + 1 < values.len() {
-            "any".to_owned()
+            "any"
         } else {
-            value
+            value.as_str()
         });
     }
 
     if values.len() != 1 {
         output.symbol(Symbol::RightParenthesis);
     }
-
-    Ok(())
 }
 
 fn constructor(class: &Class, context: &Context<'_>) -> Result<Output, Error> {
@@ -559,7 +537,11 @@ fn constructor(class: &Class, context: &Context<'_>) -> Result<Output, Error> {
             }
 
             fields += 1;
-            output.append(signature(member, &context.corrections.types)?);
+
+            output.append(signature(
+                &member.name,
+                member.signature(&context.corrections.types)?,
+            )?);
         }
     }
 
@@ -596,21 +578,20 @@ fn constructor(class: &Class, context: &Context<'_>) -> Result<Output, Error> {
             output.symbol(Symbol::LeftParenthesis);
             output.symbol(Symbol::LeftParenthesis);
 
-            parameters(
-                &mut output,
-                overload.parameters()?,
-                &context.corrections.types,
-                true,
-            )?;
+            let Signature::Function {
+                parameters: values,
+                returns: result,
+            } = overload.signature(&context.corrections.types)?
+            else {
+                return Err(invalid("invalid constructor function signature"));
+            };
+
+            parameters(&mut output, values, true);
 
             output.symbol(Symbol::RightParenthesis);
             output.symbol(Symbol::Arrow);
 
-            returns(
-                &mut output,
-                overload.returns("tuple returns")?,
-                &context.corrections.types,
-            )?;
+            returns(&mut output, result);
 
             output.symbol(Symbol::RightParenthesis);
         }

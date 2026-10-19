@@ -92,6 +92,12 @@ pub(super) struct Member {
 
     #[serde(skip)]
     decoded_returns: OnceCell<Vec<Type>>,
+
+    #[serde(skip)]
+    signature: OnceCell<Signature>,
+
+    #[serde(skip)]
+    security_facts: OnceCell<Security>,
 }
 
 #[derive(Deserialize)]
@@ -118,6 +124,45 @@ pub(super) struct Type {
     pub(super) category: Option<String>,
 }
 
+pub(super) enum Signature {
+    Property {
+        value: String,
+    },
+
+    Function {
+        parameters: Vec<Argument>,
+        returns: Vec<String>,
+    },
+
+    Callback {
+        parameters: Vec<Argument>,
+        returns: Vec<String>,
+    },
+
+    Event {
+        arguments: Vec<String>,
+    },
+}
+
+pub(super) struct Argument {
+    pub(super) name: String,
+    pub(super) value: String,
+    pub(super) default: bool,
+}
+
+enum Security {
+    Label(String),
+
+    Property {
+        read: Option<String>,
+        write: Option<String>,
+        read_only: bool,
+        write_only: bool,
+    },
+
+    Denied,
+}
+
 impl Type {
     pub(super) fn resolve(&self, mappings: &BTreeMap<String, String>) -> Result<String, Error> {
         let mut output = Output::default();
@@ -127,6 +172,8 @@ impl Type {
     }
 
     fn emit(&self, mappings: &BTreeMap<String, String>, output: &mut Output) -> Result<(), Error> {
+        self.validate_shape()?;
+
         if let Some(generic) = &self.generic {
             output.symbol(Symbol::LeftBrace);
             output.source(generic);
@@ -182,6 +229,8 @@ impl Type {
         mappings: &BTreeMap<String, String>,
         result: &mut BTreeSet<String>,
     ) -> Result<(), Error> {
+        self.validate_shape()?;
+
         if let Some(union) = &self.union {
             for part in union {
                 part.references(mappings, result)?;
@@ -216,41 +265,124 @@ impl Type {
 
         Ok(())
     }
+
+    fn validate_shape(&self) -> Result<(), Error> {
+        if self.generic.is_some()
+            && (self.union.is_some() || self.tuple.is_some() || self.variadic.is_some())
+        {
+            return Err(invalid("conflicting generic and structural type shapes"));
+        }
+
+        Ok(())
+    }
 }
 
 impl Member {
     pub(super) fn access(&self, labels: &[&str]) -> Result<bool, Error> {
-        if tagged(self.tags.as_deref(), "NotScriptable") {
-            return Ok(false);
-        }
+        let allowed = match self.security()? {
+            Security::Label(label) => labels.contains(&label.as_str()),
 
-        match self.security.as_ref() {
-            Some(Value::Object(_)) => {
-                let (read, write) = self.property_security()?;
-
-                Ok(read.is_some_and(|label| labels.contains(&label))
-                    || write.is_some_and(|label| labels.contains(&label)))
+            Security::Property { read, write, .. } => {
+                read.as_deref().is_some_and(|label| labels.contains(&label))
+                    || write
+                        .as_deref()
+                        .is_some_and(|label| labels.contains(&label))
             }
 
-            Some(Value::String(label)) => Ok(labels.contains(&label.as_str())),
-            None => Ok(labels.contains(&"None")),
-            Some(_) => Ok(false),
-        }
+            Security::Denied => false,
+        };
+
+        Ok(allowed)
     }
 
     pub(super) fn permissions(&self, labels: &[&str]) -> Result<(bool, bool), Error> {
-        let (read, write) = self.property_security()?;
+        let Security::Property {
+            read,
+            write,
+            read_only,
+            write_only,
+        } = self.security()?
+        else {
+            return Err(invalid(format!(
+                "invalid property security for `{}`",
+                self.name
+            )));
+        };
 
-        let read = read.is_some_and(|label| labels.contains(&label))
-            && !tagged(self.tags.as_deref(), "WriteOnly");
+        let read = read.as_deref().is_some_and(|label| labels.contains(&label)) && !*write_only;
 
-        let write = write.is_some_and(|label| labels.contains(&label))
-            && !tagged(self.tags.as_deref(), "ReadOnly");
+        let write = write
+            .as_deref()
+            .is_some_and(|label| labels.contains(&label))
+            && !*read_only;
 
         Ok((read, write))
     }
 
-    pub(super) fn parameters(&self) -> Result<&[Parameter], Error> {
+    pub(super) fn signature(
+        &self,
+        mappings: &BTreeMap<String, String>,
+    ) -> Result<&Signature, Error> {
+        if let Some(signature) = self.signature.get() {
+            return Ok(signature);
+        }
+
+        let signature = match self.kind.as_str() {
+            "Property" => Signature::Property {
+                value: self
+                    .value_type
+                    .as_ref()
+                    .ok_or_else(|| invalid("missing property value type"))?
+                    .resolve(mappings)?,
+            },
+
+            "Function" | "Callback" => {
+                let parameters = self
+                    .parameters()?
+                    .iter()
+                    .map(|parameter| {
+                        Ok(Argument {
+                            name: parameter.name.clone(),
+                            value: parameter.value.resolve(mappings)?,
+                            default: parameter.fields.contains_key("Default"),
+                        })
+                    })
+                    .collect::<Result<_, Error>>()?;
+
+                let returns = self
+                    .returns("tuple returns")?
+                    .iter()
+                    .map(|value| value.resolve(mappings))
+                    .collect::<Result<_, _>>()?;
+
+                if self.kind == "Function" {
+                    Signature::Function {
+                        parameters,
+                        returns,
+                    }
+                } else {
+                    Signature::Callback {
+                        parameters,
+                        returns,
+                    }
+                }
+            }
+
+            "Event" => Signature::Event {
+                arguments: self
+                    .parameters()?
+                    .iter()
+                    .map(|parameter| parameter.value.resolve(mappings))
+                    .collect::<Result<_, _>>()?,
+            },
+
+            kind => return Err(invalid(format!("unsupported member kind `{kind}`"))),
+        };
+
+        Ok(self.signature.get_or_init(|| signature))
+    }
+
+    fn parameters(&self) -> Result<&[Parameter], Error> {
         self.parameters
             .as_deref()
             .ok_or_else(|| invalid(format!("missing parameters for `{}`", self.name)))
@@ -279,29 +411,53 @@ impl Member {
         Ok(self.decoded_returns.get_or_init(|| values))
     }
 
-    fn property_security(&self) -> Result<(Option<&str>, Option<&str>), Error> {
-        match &self.security {
-            Some(Value::Object(security)) => {
-                let read = security
-                    .get("Read")
-                    .ok_or_else(|| invalid(format!("missing Read security for `{}`", self.name)))?
-                    .as_str();
-
-                let write = security
-                    .get("Write")
-                    .ok_or_else(|| invalid(format!("missing Write security for `{}`", self.name)))?
-                    .as_str();
-
-                Ok((read, write))
-            }
-
-            None => Ok((Some("None"), Some("None"))),
-
-            Some(_) => Err(invalid(format!(
-                "invalid property security for `{}`",
-                self.name
-            ))),
+    fn security(&self) -> Result<&Security, Error> {
+        if let Some(security) = self.security_facts.get() {
+            return Ok(security);
         }
+
+        let security = if tagged(self.tags.as_deref(), "NotScriptable") {
+            Security::Denied
+        } else {
+            match &self.security {
+                Some(Value::Object(security)) => {
+                    let read = security
+                        .get("Read")
+                        .ok_or_else(|| {
+                            invalid(format!("missing Read security for `{}`", self.name))
+                        })?
+                        .as_str()
+                        .map(str::to_owned);
+
+                    let write = security
+                        .get("Write")
+                        .ok_or_else(|| {
+                            invalid(format!("missing Write security for `{}`", self.name))
+                        })?
+                        .as_str()
+                        .map(str::to_owned);
+
+                    Security::Property {
+                        read,
+                        write,
+                        read_only: tagged(self.tags.as_deref(), "ReadOnly"),
+                        write_only: tagged(self.tags.as_deref(), "WriteOnly"),
+                    }
+                }
+
+                None => Security::Property {
+                    read: Some("None".to_owned()),
+                    write: Some("None".to_owned()),
+                    read_only: tagged(self.tags.as_deref(), "ReadOnly"),
+                    write_only: tagged(self.tags.as_deref(), "WriteOnly"),
+                },
+
+                Some(Value::String(label)) => Security::Label(label.clone()),
+                Some(_) => Security::Denied,
+            }
+        };
+
+        Ok(self.security_facts.get_or_init(|| security))
     }
 }
 
