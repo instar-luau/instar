@@ -1,5 +1,5 @@
 [package]
-name = "instar"
+name = "instar-cli"
 version.workspace = true
 edition.workspace = true
 description = "Luau project checking and development tools"
@@ -7,6 +7,10 @@ repository.workspace = true
 license.workspace = true
 keywords.workspace = true
 categories.workspace = true
+
+[[bin]]
+name = "instar"
+path = "src/main.rs"
 
 [dependencies]
 instar-core.workspace = true

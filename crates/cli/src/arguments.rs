@@ -6,7 +6,11 @@ use instar_core::{assets::Target, lint};
 use super::association::Association;
 
 #[derive(Parser)]
-#[command(version, about = "check, format, and lint Luau projects")]
+#[command(
+    name = "instar",
+    version,
+    about = "check, format, and lint Luau projects"
+)]
 pub(super) struct Arguments {
     #[arg(
         long,
