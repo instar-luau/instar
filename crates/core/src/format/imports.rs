@@ -1,8 +1,11 @@
 use std::{collections::BTreeSet, ops::Range};
 
-use vermis::tree::{NodeIndex, NodeKind, NodeList, Tree};
+use vermis::{
+    token::TokenKind,
+    tree::{NodeIndex, NodeKind, NodeList, Tree},
+};
 
-use crate::format::{directives::Directives, literal};
+use crate::{format::directives::Directives, syntax::literal};
 
 #[derive(Clone)]
 pub(crate) struct Require {
@@ -83,8 +86,19 @@ impl Imports {
             return None;
         };
 
+        let NodeKind::String { token } = tree.node(value.node).kind else {
+            return None;
+        };
+
+        if !matches!(
+            tree.token(token).kind,
+            TokenKind::QuotedString | TokenKind::RawString
+        ) {
+            return None;
+        }
+
         Some(Require {
-            path: literal::string(tree, value.node)?,
+            path: String::from_utf8(literal::decode(tree.text(value.node))?).ok()?,
             binding: *name,
             boundary: directives.boundary(tree, index).is_some(),
         })

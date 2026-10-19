@@ -20,14 +20,7 @@ impl Symbols {
     /// # Errors
     /// Returns malformed declaration syntax.
     pub fn declare(&mut self, source: &str) -> Result<(), Error> {
-        let prefix = usize::from(source.starts_with('\u{feff}')) * 3;
-
-        let tree = parse(&source[prefix..]).map_err(|mut error| {
-            error.range.start += prefix;
-            error.range.end += prefix;
-
-            error
-        })?;
+        let tree = parse(source)?;
 
         let name = |node| String::from_utf8_lossy(tree.text(node)).into_owned();
 

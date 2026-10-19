@@ -5,7 +5,10 @@ use vermis::{
     tree::{NodeIndex, NodeKind, Tree},
 };
 
-use crate::lint::{Edit, Error, Finding, Prepared, Symbols, bindings::Bindings};
+use crate::{
+    lint::{Edit, Error, Finding, Prepared, Symbols, bindings::Bindings},
+    syntax,
+};
 
 pub(super) const RULES: &[&str] = &[
     "bad_string_escape",
@@ -424,12 +427,7 @@ pub fn lint(source: &str, settings: &Prepared, symbols: &Symbols) -> Result<Vec<
     let prefix = usize::from(source.starts_with('\u{feff}')) * 3;
     let text = &source[prefix..];
 
-    let tree = parse(text).map_err(|mut error| {
-        error.range.start += prefix;
-        error.range.end += prefix;
-
-        error
-    })?;
+    let tree = parse(source)?;
 
     if settings.rules.is_empty() {
         return Ok(Vec::new());
@@ -473,27 +471,12 @@ pub fn lint(source: &str, settings: &Prepared, symbols: &Symbols) -> Result<Vec<
 }
 
 pub(crate) fn parse(source: &str) -> Result<Tree<'_>, Error> {
-    let tree = vermis::parse(source.as_bytes());
+    let prefix = usize::from(source.starts_with('\u{feff}')) * 3;
 
-    if let Some(diagnostic) = tree.diagnostics.first() {
-        return Err(Error {
-            range: diagnostic.span.start..diagnostic.span.end,
-            message: diagnostic.message.to_owned(),
-        });
-    }
-
-    if let Some(node) = tree
-        .nodes
-        .iter()
-        .find(|node| matches!(node.kind, NodeKind::Error | NodeKind::Missing { .. }))
-    {
-        return Err(Error {
-            range: node.span.start..node.span.end,
-            message: "incomplete syntax".to_owned(),
-        });
-    }
-
-    Ok(tree)
+    syntax::parse(&source.as_bytes()[prefix..], |range, message| Error {
+        range: range.start + prefix..range.end + prefix,
+        message: message.unwrap_or("incomplete syntax").to_owned(),
+    })
 }
 
 pub(super) fn unwrap(tree: &Tree<'_>, mut node: NodeIndex) -> NodeIndex {

@@ -7,6 +7,8 @@ use vermis::{
     tree::{NodeIndex, NodeKind, TokenIndex, Tree},
 };
 
+use crate::syntax;
+
 use super::{
     Error,
     mapping::{invalid, primitive},
@@ -129,24 +131,14 @@ pub(super) fn identifier(name: &str) -> bool {
 }
 
 pub(super) fn parse(source: &str) -> Result<Tree<'_>, Error> {
-    let tree = vermis::parse(source.as_bytes());
+    syntax::parse(source.as_bytes(), |range, message| match message {
+        Some(message) => invalid(format!(
+            "invalid declaration at byte {}: {message}",
+            range.start
+        )),
 
-    if let Some(diagnostic) = tree.diagnostics.first() {
-        return Err(invalid(format!(
-            "invalid declaration at byte {}: {}",
-            diagnostic.span.start, diagnostic.message
-        )));
-    }
-
-    if tree
-        .nodes
-        .iter()
-        .any(|node| matches!(node.kind, NodeKind::Error | NodeKind::Missing { .. }))
-    {
-        return Err(invalid("incomplete declaration syntax"));
-    }
-
-    Ok(tree)
+        None => invalid("incomplete declaration syntax"),
+    })
 }
 
 pub(super) fn blocks(source: &str, cancelled: fn() -> bool) -> Result<Vec<Block>, Error> {

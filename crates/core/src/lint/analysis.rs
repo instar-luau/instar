@@ -9,10 +9,13 @@ use vermis::{
     tree::{NodeIndex, NodeKind, NodeList, Tree},
 };
 
-use crate::lint::{
-    Edit, Finding,
-    bindings::{expands, text},
-    syntax::{Context, number, same, single, truth, unwrap},
+use crate::{
+    lint::{
+        Edit, Finding,
+        bindings::{expands, text},
+        syntax::{Context, number, same, single, truth, unwrap},
+    },
+    syntax::literal,
 };
 
 pub(super) const RULES: &[&str] = &[
@@ -1545,16 +1548,7 @@ fn string(tree: &Tree<'_>, node: NodeIndex) -> Option<Vec<u8>> {
     let bytes = token.bytes(tree.source);
 
     if token.kind == TokenKind::RawString {
-        let opening = bytes.iter().skip(1).position(|byte| *byte == b'[')? + 2;
-        let mut value = bytes.get(opening..bytes.len().checked_sub(opening)?)?;
-
-        if value.starts_with(b"\r\n") {
-            value = &value[2..];
-        } else if value.starts_with(b"\n") || value.starts_with(b"\r") {
-            value = &value[1..];
-        }
-
-        return Some(value.to_vec());
+        return literal::decode(bytes);
     }
 
     if !matches!(

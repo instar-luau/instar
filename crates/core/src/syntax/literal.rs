@@ -1,25 +1,5 @@
 use std::str;
 
-use vermis::{
-    token::TokenKind,
-    tree::{NodeIndex, NodeKind, Tree},
-};
-
-pub(crate) fn string(tree: &Tree<'_>, node: NodeIndex) -> Option<String> {
-    let NodeKind::String { token } = &tree.node(node).kind else {
-        return None;
-    };
-
-    if !matches!(
-        tree.token(*token).kind,
-        TokenKind::QuotedString | TokenKind::RawString
-    ) {
-        return None;
-    }
-
-    String::from_utf8(decode(tree.text(node))?).ok()
-}
-
 pub(crate) fn decode(bytes: &[u8]) -> Option<Vec<u8>> {
     str::from_utf8(bytes).ok()?;
     let first = *bytes.first()?;
@@ -97,7 +77,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<Vec<u8>> {
                     + content
                         .get(index..)?
                         .iter()
-                        .position(|&byte| byte == b'}')?;
+                        .position(|byte| *byte == b'}')?;
 
                 let digits = str::from_utf8(&content[index..end]).ok()?;
                 let character = char::from_u32(u32::from_str_radix(digits, 16).ok()?)?;
@@ -129,7 +109,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<Vec<u8>> {
 }
 
 fn long(bytes: &[u8]) -> Option<Vec<u8>> {
-    let opening = 2 + bytes.get(1..)?.iter().position(|&byte| byte != b'=')?;
+    let opening = 2 + bytes.get(1..)?.iter().position(|byte| *byte != b'=')?;
     let closing = opening;
     let mut content = bytes.get(opening..bytes.len().checked_sub(closing)?)?;
 
@@ -149,11 +129,11 @@ fn long(bytes: &[u8]) -> Option<Vec<u8>> {
 
     if content.starts_with(b"\r\n") {
         content = &content[2..];
-    } else if content.starts_with(b"\n") || content.starts_with(b"\r") {
+    } else if content.starts_with(b"\n") {
         content = &content[1..];
     }
 
     let text = str::from_utf8(content).ok()?;
 
-    Some(text.replace("\r\n", "\n").replace('\r', "\n").into_bytes())
+    Some(text.replace("\r\n", "\n").into_bytes())
 }

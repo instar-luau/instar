@@ -5,7 +5,6 @@ mod engine;
 mod error;
 mod imports;
 mod layout;
-mod literal;
 mod preservation;
 mod settings;
 

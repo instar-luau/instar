@@ -1,4 +1,4 @@
-use vermis::tree::{NodeKind, Tree};
+use vermis::tree::Tree;
 
 use crate::{
     format::{
@@ -8,6 +8,7 @@ use crate::{
         layout, preservation,
     },
     settings::format::Order,
+    syntax,
 };
 
 /// Format a complete UTF-8 Luau source using the supplied configuration.
@@ -33,27 +34,9 @@ pub fn format(source: &str, configuration: &Prepared) -> Result<String, Error> {
 }
 
 pub(crate) fn parse(source: &[u8]) -> Result<Tree<'_>, Error> {
-    let tree = vermis::parse(source);
-
-    if let Some(diagnostic) = tree.diagnostics.first() {
-        return Err(Error::input(
-            diagnostic.span.start..diagnostic.span.end,
-            diagnostic.message,
-        ));
-    }
-
-    if let Some(node) = tree
-        .nodes
-        .iter()
-        .find(|node| matches!(node.kind, NodeKind::Error | NodeKind::Missing { .. }))
-    {
-        return Err(Error::input(
-            node.span.start..node.span.end,
-            "incomplete syntax",
-        ));
-    }
-
-    Ok(tree)
+    syntax::parse(source, |range, message| {
+        Error::input(range, message.unwrap_or("incomplete syntax"))
+    })
 }
 
 fn formatted(source: &str, configuration: &Prepared) -> Result<String, Error> {

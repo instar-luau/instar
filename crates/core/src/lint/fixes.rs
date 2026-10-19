@@ -5,7 +5,7 @@ use crate::lint::{Edit, Error, Finding, syntax};
 /// # Errors
 /// Rejects malformed input, stale or invalid ranges, and corrections producing invalid syntax.
 pub fn apply(source: &str, findings: &[Finding]) -> Result<String, Error> {
-    syntax::parse(source.trim_start_matches('\u{feff}'))?;
+    syntax::parse(source)?;
 
     let mut proposals: Vec<_> = findings
         .iter()
@@ -58,7 +58,7 @@ pub fn apply(source: &str, findings: &[Finding]) -> Result<String, Error> {
         corrected.replace_range(edit.range.clone(), &edit.replacement);
     }
 
-    syntax::parse(corrected.trim_start_matches('\u{feff}')).map_err(|error| Error {
+    syntax::parse(&corrected).map_err(|error| Error {
         range: error.range,
         message: format!("correction produced invalid syntax: {}", error.message),
     })?;

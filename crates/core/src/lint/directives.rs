@@ -22,7 +22,7 @@ pub fn suppress(source: &str, findings: &mut Vec<Finding>) -> Result<(), Error> 
     }
 
     let prefix = usize::from(source.starts_with('\u{feff}')) * 3;
-    let tree = syntax::parse(&source[prefix..])?;
+    let tree = syntax::parse(source)?;
     let mut statements = Vec::new();
 
     for node in &tree.nodes {

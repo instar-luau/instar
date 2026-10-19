@@ -12,9 +12,9 @@ use crate::{
         Error,
         directives::{Directives, Kind},
         imports::{self, Imports},
-        literal,
     },
     settings::format::Configuration,
+    syntax::literal,
 };
 
 struct Comparison<'tree, 'source> {
