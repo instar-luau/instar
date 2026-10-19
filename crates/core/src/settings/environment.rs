@@ -35,7 +35,7 @@ pub struct Configuration {
 #[serde(deny_unknown_fields)]
 pub struct Group {
     /// Custom namespace beginning with `@`.
-    #[schemars(regex(pattern = "^@[A-Za-z0-9_-]+$"), extend("not" = { "enum": ["@luau", "@roblox"] }))]
+    #[schemars(regex(pattern = "^@[A-Za-z0-9_-]+$"))]
     pub namespace: String,
 
     /// Ordered declaration source files.
