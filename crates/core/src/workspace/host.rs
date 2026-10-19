@@ -140,7 +140,7 @@ pub(super) fn flags(configuration: &ProjectConfiguration) -> BTreeMap<String, Fl
         .collect()
 }
 
-fn logical(path: &Path) -> Result<PathBuf, Error> {
+pub(super) fn logical(path: &Path) -> Result<PathBuf, Error> {
     if paths::source(path) && !paths::metadata(path)?.is_some_and(|metadata| metadata.is_dir()) {
         if path.file_stem().is_some_and(|stem| stem == "init") {
             return Ok(path.parent().unwrap_or(path).to_owned());
@@ -167,7 +167,7 @@ fn resolve(workspace: &Workspace, path: &Path) -> Result<Navigation, Error> {
             let file = PathBuf::from(file);
             workspace.observed_paths.borrow_mut().insert(file.clone());
 
-            if paths::metadata(&file)?.is_some_and(|metadata| metadata.is_file()) {
+            if source(workspace, &file)? {
                 if candidate.is_some() {
                     return Ok(Navigation::Ambiguous);
                 }
@@ -195,7 +195,7 @@ fn directory(workspace: &Workspace, path: &Path) -> Result<Navigation, Error> {
         let file = path.join(name);
         workspace.observed_paths.borrow_mut().insert(file.clone());
 
-        if paths::metadata(&file)?.is_some_and(|metadata| metadata.is_file()) {
+        if source(workspace, &file)? {
             if candidate.is_some() {
                 return Ok(Navigation::Ambiguous);
             }
@@ -207,8 +207,28 @@ fn directory(workspace: &Workspace, path: &Path) -> Result<Navigation, Error> {
     found(candidate.as_deref().unwrap_or(path))
 }
 
+fn source(workspace: &Workspace, path: &Path) -> Result<bool, Error> {
+    if paths::metadata(path)?.is_some_and(|metadata| metadata.is_file()) {
+        return Ok(true);
+    }
+
+    if !path
+        .parent()
+        .map(paths::metadata)
+        .transpose()?
+        .flatten()
+        .is_some_and(|metadata| metadata.is_dir())
+    {
+        return Ok(false);
+    }
+
+    let module = paths::text(&paths::identity(path)?)?;
+
+    Ok(workspace.sources.borrow().contains_key(&module))
+}
+
 fn found(path: &Path) -> Result<Navigation, Error> {
-    paths::text(&paths::canonical(path)?).map(Navigation::Found)
+    paths::text(&paths::identity(path)?).map(Navigation::Found)
 }
 
 fn failure(module: &str, operation: Operation, source: Error) -> HostError {

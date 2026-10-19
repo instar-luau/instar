@@ -1,0 +1,5 @@
+consume((
+    first
+    .. second
+    .. third
+))

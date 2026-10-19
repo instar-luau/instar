@@ -1,11 +1,11 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, num::NonZeroUsize};
 
 use figment::{Figment, providers::Serialized};
 use regex::Regex;
 use serde::{Deserialize, de::DeserializeOwned};
 
 use crate::{
-    lint::{analysis, catalog::RULES, syntax},
+    lint::{analysis, catalog::RULES, expression},
     settings::lint::{Configuration, Preset, Severity},
 };
 
@@ -13,6 +13,7 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct Prepared {
     pub(crate) rules: BTreeMap<String, Severity>,
+    pub(crate) indent_width: NonZeroUsize,
     pub(crate) syntax: bool,
     pub(crate) analysis: bool,
     pub(crate) unused: Unused,
@@ -27,7 +28,10 @@ impl Prepared {
     ///
     /// # Errors
     /// Rejects unknown rules, mismatched settings, invalid parameters, and invalid patterns.
-    pub fn new(configuration: &Configuration) -> Result<Self, Box<figment::Error>> {
+    pub fn new(
+        configuration: &Configuration,
+        indent_width: NonZeroUsize,
+    ) -> Result<Self, Box<figment::Error>> {
         let mut rules: BTreeMap<_, _> = RULES
             .iter()
             .map(|definition| {
@@ -127,9 +131,12 @@ impl Prepared {
             .collect();
 
         Ok(Self {
-            syntax: syntax::RULES.iter().any(|name| rules.contains_key(*name)),
+            syntax: expression::RULES
+                .iter()
+                .any(|name| rules.contains_key(*name)),
             analysis: analysis::RULES.iter().any(|name| rules.contains_key(*name)),
             rules,
+            indent_width,
             unused,
             ignored,
             immutable,

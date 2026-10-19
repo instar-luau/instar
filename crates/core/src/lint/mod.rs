@@ -2,22 +2,26 @@
 
 mod analysis;
 mod bindings;
+mod calls;
 mod catalog;
+mod context;
+mod control;
 mod directives;
 mod error;
+mod expression;
 mod finding;
 mod fixes;
+mod layout;
 mod settings;
 mod symbols;
 mod syntax;
 
 pub use self::{
+    analysis::lint,
     catalog::rules,
-    directives::suppress,
-    error::Error,
+    error::{Error, Failure},
     finding::{Edit, Finding},
     fixes::apply,
     settings::Prepared,
     symbols::Symbols,
-    syntax::lint,
 };

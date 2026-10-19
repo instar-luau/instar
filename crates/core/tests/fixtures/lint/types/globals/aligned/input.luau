@@ -1,0 +1,2 @@
+declare value:
+number

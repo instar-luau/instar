@@ -1,0 +1,2 @@
+    local value = first +
+        second

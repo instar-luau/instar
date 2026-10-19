@@ -4,7 +4,7 @@ use vermis::{
 };
 
 use super::{
-    document::{Document, Layout},
+    document::{Document, Layout, Nesting},
     protection,
     quotes::quote,
 };
@@ -327,7 +327,7 @@ impl Builder<'_, '_> {
                 result.push(Document::Line(1));
 
                 result.push(Document::Indent {
-                    conditional: false,
+                    nesting: Nesting::Always,
                     content: self.block(entries, header_end..closing.get(), false),
                 });
 

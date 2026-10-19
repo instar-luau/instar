@@ -11,15 +11,14 @@ use instar_bridge::Context;
 use serde_json::Value;
 
 use super::{
-    Error, Generators, assets, discovery,
+    Error, Generators, SymbolOutcome, assets, discovery,
     environment::{self, Registry},
     host, instances, paths,
     selection::{self, Access, Purpose, Selection},
 };
 
 use crate::{
-    format,
-    lint::{self, Symbols},
+    format, lint,
     settings::{Configuration, resolve},
 };
 
@@ -33,11 +32,11 @@ pub struct Workspace {
     pub(super) scopes: RefCell<BTreeMap<PathBuf, Rc<Scope>>>,
     pub(super) configuration_paths: RefCell<BTreeSet<PathBuf>>,
     pub(super) instances: RefCell<instances::Registry>,
-    pub(super) sources: BTreeMap<String, Arc<str>>,
+    pub(super) sources: RefCell<BTreeMap<String, Arc<str>>>,
     pub(super) snapshots: RefCell<BTreeMap<String, Option<Arc<str>>>>,
     pub(super) observed_paths: RefCell<BTreeSet<PathBuf>>,
     pub(super) environments: RefCell<Registry>,
-    pub(super) cancelled: fn() -> bool,
+    pub(super) cancelled: RefCell<Rc<dyn Fn() -> bool>>,
     pub(super) generation: Option<Generators>,
 }
 
@@ -60,11 +59,11 @@ impl Workspace {
             scopes: RefCell::new(BTreeMap::new()),
             configuration_paths: RefCell::new(BTreeSet::new()),
             instances: RefCell::new(instances::Registry::default()),
-            sources: BTreeMap::new(),
+            sources: RefCell::new(BTreeMap::new()),
             snapshots: RefCell::new(BTreeMap::new()),
             observed_paths: RefCell::new(BTreeSet::new()),
             environments: RefCell::new(Registry::default()),
-            cancelled: || false,
+            cancelled: RefCell::new(Rc::new(|| false)),
             generation: None,
         };
 
@@ -75,10 +74,15 @@ impl Workspace {
 
     /// Use the supplied callback to cancel background workspace operations.
     #[must_use]
-    pub fn with_cancellation(mut self, cancelled: fn() -> bool) -> Self {
-        self.cancelled = cancelled;
+    pub fn with_cancellation(self, cancelled: impl Fn() -> bool + 'static) -> Self {
+        self.set_cancellation(cancelled);
 
         self
+    }
+
+    /// Replace the callback captured by subsequent synchronous workspace operations.
+    pub fn set_cancellation(&self, cancelled: impl Fn() -> bool + 'static) {
+        *self.cancelled.borrow_mut() = Rc::new(cancelled);
     }
 
     /// Share persistent sourcemap producers with this workspace.
@@ -183,15 +187,17 @@ impl Workspace {
         paths::text(&self.root.join(path))
     }
 
-    /// Identify an existing `.luau` or `.lua` source relative to the workspace root.
+    /// Identify a disk or overlaid `.luau` or `.lua` source relative to the workspace root.
     ///
     /// # Errors
     /// Returns inaccessible, non-UTF-8, or unsupported source paths.
     pub fn module(&self, path: &Path) -> Result<String, Error> {
-        let path = paths::canonical(&self.root.join(path))?;
+        let path = paths::identity(&self.root.join(path))?;
+        let module = paths::text(&path)?;
 
         if !paths::source(&path)
-            || !paths::metadata(&path)?.is_some_and(|metadata| metadata.is_file())
+            || !(self.sources.borrow().contains_key(&module)
+                || paths::metadata(&path)?.is_some_and(|metadata| metadata.is_file()))
         {
             return Err(Error::Path {
                 path,
@@ -199,13 +205,14 @@ impl Workspace {
             });
         }
 
-        paths::text(&path)
+        Ok(module)
     }
 
     /// Map sorted, unique modules to their first canonical input; an empty list traverses the root.
     ///
-    /// Explicit files are selected directly. Directories and glob patterns apply
-    /// command inclusion/exclusion settings, falling back to shared settings.
+    /// Explicit check, format, and lint files are selected directly. Index selection
+    /// applies inclusion/exclusion settings to every input and includes source overlays.
+    /// Directories and glob patterns apply purpose-specific settings, falling back to shared settings.
     /// Traversal does not follow symlinks. Glob inputs use their fixed directory prefix.
     ///
     /// # Errors
@@ -246,11 +253,22 @@ impl Workspace {
         Ok(Arc::clone(&self.scope(Path::new(module))?.lint))
     }
 
+    /// Return whether Roblox instance support is enabled for a module.
+    ///
+    /// # Errors
+    /// Returns inaccessible configuration or sourcemap discovery paths.
+    pub fn roblox(&self, module: &str) -> Result<bool, Error> {
+        let module = Path::new(module);
+        let scope = self.scope(module)?;
+
+        instances::enabled(self, &scope, module)
+    }
+
     /// Return declared value and type names for a module's lint environment.
     ///
     /// # Errors
-    /// Returns invalid flags, declaration syntax, or environment inputs.
-    pub fn symbols(&self, module: &str) -> Result<Arc<Symbols>, Error> {
+    /// Returns invalid flags or inaccessible environment inputs.
+    pub fn symbols(&self, module: &str) -> Result<SymbolOutcome, Error> {
         let scope = self.scope(Path::new(module))?;
         let cached = scope.builtins.borrow().as_ref().map(Arc::clone);
 
@@ -269,11 +287,11 @@ impl Workspace {
 
         let name = environment::identity(self, &scope, Path::new(module))?;
 
-        self.environments.borrow_mut().symbols(
+        Ok(self.environments.borrow_mut().symbols(
             name.as_deref(),
             &scope.configuration.environment.globals,
             &builtins,
-        )
+        ))
     }
 
     /// Look up a configured documentation symbol in the module's environment.
@@ -335,11 +353,12 @@ impl Scope {
             Error::Configuration(error)
         })?;
 
-        let lint = lint::Prepared::new(&configuration.lint).map_err(|mut error| {
-            error.path.insert(0, "lint".to_owned());
+        let lint = lint::Prepared::new(&configuration.lint, configuration.format.indent_width)
+            .map_err(|mut error| {
+                error.path.insert(0, "lint".to_owned());
 
-            Error::Configuration(error)
-        })?;
+                Error::Configuration(error)
+            })?;
 
         Ok(Self {
             layers,

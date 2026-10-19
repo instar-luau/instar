@@ -13,6 +13,7 @@ use super::syntax::substantive;
 use crate::{
     format::{Error, directives::Directives},
     settings::format::{Configuration, Indentation},
+    syntax::indentation,
 };
 
 #[derive(Copy, Clone, Eq, Ord, PartialEq, PartialOrd)]
@@ -342,17 +343,6 @@ fn standalone(tree: &Tree<'_>, index: TokenIndex, configuration: &Configuration)
     }
 
     Some(indentation(leading, configuration.indent_width.get()))
-}
-
-fn indentation(bytes: &[u8], width: usize) -> usize {
-    bytes.iter().fold(0, |columns, byte| {
-        columns
-            + if *byte == b'\t' {
-                width - columns % width
-            } else {
-                1
-            }
-    })
 }
 
 fn owners(tree: &Tree<'_>, targets: &BTreeSet<usize>) -> Option<BTreeMap<usize, NodeIndex>> {

@@ -2,12 +2,13 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Component, Path, PathBuf},
+    rc::Rc,
 };
 
 use globset::{Glob, GlobBuilder, GlobMatcher, escape};
 use ignore::WalkBuilder;
 
-use super::{Error, Workspace, paths};
+use super::{Error, Workspace, paths, process};
 use crate::settings::{Configuration, Patterns};
 
 /// The command whose file-selection settings apply during discovery.
@@ -21,6 +22,9 @@ pub enum Purpose {
 
     /// Apply lint inclusion and exclusion patterns.
     Lint,
+
+    /// Apply indexing inclusion and exclusion patterns.
+    Index,
 }
 
 /// The access required by the operation selecting sources.
@@ -44,6 +48,7 @@ impl<'configuration> Selection<'configuration> {
             Purpose::Check => (&configuration.check.include, &configuration.check.exclude),
             Purpose::Format => (&configuration.format.include, &configuration.format.exclude),
             Purpose::Lint => (&configuration.lint.include, &configuration.lint.exclude),
+            Purpose::Index => (&configuration.index.include, &configuration.index.exclude),
         };
 
         Self {
@@ -71,12 +76,16 @@ pub(super) fn select(
     access: Access,
 ) -> Result<BTreeMap<String, PathBuf>, Error> {
     let mut selected = BTreeMap::new();
+    let cancellation = Rc::clone(&workspace.cancelled.borrow());
+    let cancelled = cancellation.as_ref();
+    process::interrupted(cancelled)?;
 
     if inputs.is_empty() {
         walk(workspace, &workspace.root, None, purpose, &mut selected)?;
     }
 
     for input in inputs {
+        process::interrupted(cancelled)?;
         let path = workspace.root.join(input);
         let input = paths::text(input)?;
 
@@ -113,10 +122,32 @@ pub(super) fn select(
 
                 let module = workspace.module(&path)?;
                 let input = PathBuf::from(&module);
-                selected.entry(module).or_insert(input);
+
+                if !matches!(purpose, Purpose::Index)
+                    || Selection::new(&workspace.scope(&input)?.configuration, purpose)
+                        .matches(&input)
+                {
+                    selected.entry(module).or_insert(input);
+                }
             }
         } else {
             if !input.contains(['*', '?', '[', '{']) {
+                if matches!((purpose, access), (Purpose::Index, Access::Read)) {
+                    let module = paths::text(&paths::identity(&path)?)?;
+
+                    if workspace.sources.borrow().contains_key(&module) {
+                        let input = PathBuf::from(&module);
+
+                        if Selection::new(&workspace.scope(&input)?.configuration, purpose)
+                            .matches(&input)
+                        {
+                            selected.entry(module).or_insert(input);
+                        }
+
+                        continue;
+                    }
+                }
+
                 return Err(Error::Path {
                     path,
                     reason: "input does not exist",
@@ -159,7 +190,11 @@ fn walk(
     purpose: Purpose,
     selected: &mut BTreeMap<String, PathBuf>,
 ) -> Result<(), Error> {
+    let cancellation = Rc::clone(&workspace.cancelled.borrow());
+    let cancelled = cancellation.as_ref();
+
     for entry in WalkBuilder::new(root).standard_filters(false).build() {
+        process::interrupted(cancelled)?;
         let entry = entry.map_err(Error::Traversal)?;
         let path = entry.path();
 
@@ -171,6 +206,22 @@ fn walk(
             selected
                 .entry(workspace.module(path)?)
                 .or_insert_with(|| root.to_owned());
+        }
+    }
+
+    if matches!(purpose, Purpose::Index) {
+        for module in workspace.sources.borrow().keys() {
+            process::interrupted(cancelled)?;
+            let path = Path::new(module);
+
+            if path.starts_with(root)
+                && pattern.is_none_or(|pattern| pattern.is_match(path))
+                && Selection::new(&workspace.scope(path)?.configuration, purpose).matches(path)
+            {
+                selected
+                    .entry(module.clone())
+                    .or_insert_with(|| root.to_owned());
+            }
         }
     }
 

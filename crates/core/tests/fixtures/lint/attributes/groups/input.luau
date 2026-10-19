@@ -1,0 +1,7 @@
+@[
+    native,
+    checked
+]
+local function work(value)
+    return value
+end

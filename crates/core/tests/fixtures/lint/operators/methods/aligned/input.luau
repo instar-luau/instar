@@ -1,0 +1,2 @@
+local value = object
+:method()

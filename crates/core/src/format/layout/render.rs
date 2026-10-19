@@ -9,7 +9,7 @@ use vermis::{
 };
 
 use super::{
-    document::{Document, Layout},
+    document::{Document, Layout, Nesting},
     plan::Plan,
 };
 
@@ -52,6 +52,7 @@ impl Renderer<'_, '_> {
         continuation: Option<&Continuation<'_>>,
     ) {
         let flat = mode.is_some();
+        let continued = self.lines == 0 && self.emitted;
 
         for (offset, item) in document.iter().enumerate() {
             if self.exceeded {
@@ -99,14 +100,21 @@ impl Renderer<'_, '_> {
                     }
                 }
 
-                Document::Indent {
-                    conditional,
-                    content,
-                } => {
-                    let increment = usize::from(!conditional || !flat);
-                    self.indentation += increment;
+                Document::Indent { nesting, content } => {
+                    let increment = usize::from(match nesting {
+                        Nesting::Always => true,
+                        Nesting::Broken => !flat,
+                        Nesting::Continuation => !flat && continued,
+                    });
 
-                    self.render(content, if *conditional { mode } else { None }, Some(&next));
+                    let mode = if matches!(nesting, Nesting::Always) {
+                        None
+                    } else {
+                        mode
+                    };
+
+                    self.indentation += increment;
+                    self.render(content, mode, Some(&next));
 
                     self.indentation -= increment;
                 }
@@ -187,9 +195,9 @@ impl Renderer<'_, '_> {
             placements: Vec::new(),
             indentation: self.indentation,
             column,
-            lines: 0,
+            lines: self.lines,
             space: false,
-            emitted: true,
+            emitted: self.emitted,
             measurement: Some(layout),
             exceeded: false,
         };
@@ -279,11 +287,14 @@ impl Renderer<'_, '_> {
                     self.space |= *spaces > 0;
                 }
 
-                Document::Indent {
-                    conditional,
-                    content,
-                } => {
-                    if !self.suffix(content, if *conditional { mode } else { None }) {
+                Document::Indent { nesting, content } => {
+                    let mode = if matches!(nesting, Nesting::Always) {
+                        None
+                    } else {
+                        mode
+                    };
+
+                    if !self.suffix(content, mode) {
                         return false;
                     }
                 }

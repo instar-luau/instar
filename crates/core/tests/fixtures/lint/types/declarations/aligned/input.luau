@@ -1,0 +1,2 @@
+declare function work():
+number

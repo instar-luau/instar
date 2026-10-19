@@ -315,7 +315,7 @@ pub(super) fn open(
     overrides: &[String],
     stdin: Option<&(PathBuf, Arc<str>)>,
 ) -> Result<(Workspace, Option<String>)> {
-    let mut workspace = Workspace::new(root, &options.configuration, overrides)?
+    let workspace = Workspace::new(root, &options.configuration, overrides)?
         .with_cancellation(interrupt::requested);
 
     let module = stdin

@@ -3,6 +3,7 @@ use std::{
     fs, io, mem,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    rc::Rc,
     sync::{
         Arc, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},
@@ -40,10 +41,12 @@ impl Workspace {
     /// # Errors
     /// Returns process failures, invalid sourcemaps, or cancellation.
     pub fn generate(&self, generator: &Generator) -> Result<Arc<str>, Error> {
-        process::interrupted(self.cancelled)?;
+        let cancellation = Rc::clone(&self.cancelled.borrow());
+        let cancelled = cancellation.as_ref();
+        process::interrupted(cancelled)?;
 
         if let Some(generation) = &self.generation {
-            return generation.source(generator);
+            return generation.source(generator, cancelled);
         }
 
         let mut command = command(generator)?;
@@ -58,7 +61,7 @@ impl Workspace {
             .spawn()
             .map_err(failure)?;
 
-        let status = process::wait(&mut child, self.cancelled, failure)?;
+        let status = process::wait(&mut child, cancelled, failure)?;
 
         if !status.success() {
             let diagnostic = fs::read(diagnostics.path()).map_err(failure)?;
@@ -69,7 +72,7 @@ impl Workspace {
             ))));
         }
 
-        process::interrupted(self.cancelled)?;
+        process::interrupted(cancelled)?;
 
         validate(
             executable,
@@ -156,8 +159,14 @@ impl Generators {
         failure.map_or(Ok(()), Err)
     }
 
-    fn source(&self, generator: &Generator) -> Result<Arc<str>, Error> {
+    fn source(
+        &self,
+        generator: &Generator,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Arc<str>, Error> {
         loop {
+            process::interrupted(cancelled)?;
+
             {
                 let mut registry = self.registry();
                 registry.check()?;
@@ -209,7 +218,7 @@ struct Registry {
 
 impl Registry {
     fn check(&self) -> Result<(), Error> {
-        process::interrupted(self.cancelled)?;
+        process::interrupted(&self.cancelled)?;
 
         if self.stopped.load(Ordering::Relaxed) {
             return Err(Error::Cancelled);

@@ -1,0 +1,24 @@
+[lint]
+presets = ["none"]
+
+[lint.rules.unused_variable]
+enabled = true
+
+[lint.rules.LocalUnused]
+enabled = true
+
+[lint.rules.FunctionUnused]
+enabled = true
+
+[lint.rules.ImportUnused]
+enabled = true
+
+[lint.rules.unused_variable.settings]
+rule = "unused_variable"
+
+[lint.rules.unused_variable.settings.parameters]
+parameters = true
+loop_variables = true
+
+[lint.rules.UnknownGlobal]
+enabled = true

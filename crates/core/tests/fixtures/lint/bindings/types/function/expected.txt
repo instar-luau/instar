@@ -1,0 +1,9 @@
+[
+    Finding {
+        rule: "FunctionUnused",
+        severity: Warning,
+        range: 65..71,
+        message: "function is never used; prefix with `_` to silence",
+        edits: [],
+    },
+]

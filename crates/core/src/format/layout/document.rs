@@ -11,6 +11,13 @@ pub(super) enum Layout {
     Arguments,
 }
 
+#[derive(Copy, Clone)]
+pub(super) enum Nesting {
+    Always,
+    Broken,
+    Continuation,
+}
+
 #[derive(Clone)]
 pub(super) struct Choice {
     pub(super) range: Range<usize>,
@@ -30,7 +37,7 @@ pub(super) enum Document {
     Soft(usize),
 
     Indent {
-        conditional: bool,
+        nesting: Nesting,
         content: Vec<Self>,
     },
 

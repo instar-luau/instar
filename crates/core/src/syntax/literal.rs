@@ -2,6 +2,11 @@ use std::str;
 
 pub(crate) fn decode(bytes: &[u8]) -> Option<Vec<u8>> {
     str::from_utf8(bytes).ok()?;
+
+    if bytes.contains(&0) {
+        return None;
+    }
+
     let first = *bytes.first()?;
 
     if first == b'[' {
@@ -21,7 +26,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<Vec<u8>> {
         index += 1;
 
         if byte != b'\\' {
-            if byte == first || byte == 0 || first != b'`' && matches!(byte, b'\r' | b'\n') {
+            if byte == first || matches!(byte, b'\r' | b'\n') || first == b'`' && byte == b'{' {
                 return None;
             }
 
@@ -40,8 +45,6 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<Vec<u8>> {
             b'r' => output.push(b'\r'),
             b't' => output.push(b'\t'),
             b'v' => output.push(11),
-            b'\\' | b'\'' | b'"' => output.push(escape),
-            b'`' | b'{' if first == b'`' => output.push(escape),
 
             b'\r' => {
                 if content.get(index) == Some(&b'\n') {
@@ -61,8 +64,9 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<Vec<u8>> {
             }
 
             b'x' => {
-                let digits = str::from_utf8(content.get(index..index + 2)?).ok()?;
-                output.push(u8::from_str_radix(digits, 16).ok()?);
+                let first = char::from(*content.get(index)?).to_digit(16)?;
+                let second = char::from(*content.get(index + 1)?).to_digit(16)?;
+                output.push(u8::try_from(first * 16 + second).ok()?);
                 index += 2;
             }
 
@@ -79,10 +83,44 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<Vec<u8>> {
                         .iter()
                         .position(|byte| *byte == b'}')?;
 
-                let digits = str::from_utf8(&content[index..end]).ok()?;
-                let character = char::from_u32(u32::from_str_radix(digits, 16).ok()?)?;
-                let mut buffer = [0; 4];
-                output.extend_from_slice(character.encode_utf8(&mut buffer).as_bytes());
+                let digits = &content[index..end];
+
+                if digits.is_empty() || digits.len() > 16 {
+                    return None;
+                }
+
+                let character = digits.iter().try_fold(0_u32, |value, digit| {
+                    Some(
+                        value
+                            .wrapping_mul(16)
+                            .wrapping_add(char::from(*digit).to_digit(16)?),
+                    )
+                })?;
+
+                match character {
+                    0..=0x7f => output.push(u8::try_from(character).ok()?),
+
+                    0x80..=0x7ff => output.extend_from_slice(&[
+                        0xc0 | u8::try_from(character >> 6).ok()?,
+                        0x80 | u8::try_from(character & 0x3f).ok()?,
+                    ]),
+
+                    0x800..=0xffff => output.extend_from_slice(&[
+                        0xe0 | u8::try_from(character >> 12).ok()?,
+                        0x80 | u8::try_from((character >> 6) & 0x3f).ok()?,
+                        0x80 | u8::try_from(character & 0x3f).ok()?,
+                    ]),
+
+                    0x0001_0000..=0x0010_ffff => output.extend_from_slice(&[
+                        0xf0 | u8::try_from(character >> 18).ok()?,
+                        0x80 | u8::try_from((character >> 12) & 0x3f).ok()?,
+                        0x80 | u8::try_from((character >> 6) & 0x3f).ok()?,
+                        0x80 | u8::try_from(character & 0x3f).ok()?,
+                    ]),
+
+                    _ => return None,
+                }
+
                 index = end + 1;
             }
 
@@ -101,7 +139,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<Vec<u8>> {
                 );
             }
 
-            _ => return None,
+            _ => output.push(escape),
         }
     }
 

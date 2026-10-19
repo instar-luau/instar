@@ -1,11 +1,15 @@
-use std::{collections::BTreeSet, ops::Range};
+use std::{cmp::Ordering, collections::BTreeSet, ops::Range};
 
 use vermis::{
     token::TokenKind,
-    tree::{NodeIndex, NodeKind, NodeList, Tree},
+    tree::{NodeIndex, NodeKind, Tree},
 };
 
-use crate::{format::directives::Directives, syntax::literal};
+use crate::{
+    format::{Prepared, directives::Directives},
+    settings::format::Order,
+    syntax::{bindings::Bindings, literal},
+};
 
 #[derive(Clone)]
 pub(crate) struct Require {
@@ -15,22 +19,31 @@ pub(crate) struct Require {
 }
 
 pub(crate) struct Imports {
-    globals: BTreeSet<usize>,
-    scopes: Vec<bool>,
-    reassigned: bool,
+    bindings: Bindings,
+    instances: bool,
 }
 
 impl Imports {
     pub(crate) fn new(tree: &Tree<'_>) -> Self {
-        let mut imports = Self {
-            globals: BTreeSet::new(),
-            scopes: vec![false],
-            reassigned: false,
-        };
+        Self {
+            bindings: Bindings::new(tree),
+            instances: false,
+        }
+    }
 
-        imports.visit(tree, tree.root);
+    pub(crate) fn instances(tree: &Tree<'_>) -> Self {
+        Self {
+            bindings: Bindings::new(tree),
+            instances: true,
+        }
+    }
 
-        imports
+    pub(crate) fn proposed(&self, tree: &Tree<'_>) -> Self {
+        if self.instances {
+            Self::instances(tree)
+        } else {
+            Self::new(tree)
+        }
     }
 
     pub(crate) fn require(
@@ -39,7 +52,7 @@ impl Imports {
         index: NodeIndex,
         directives: &Directives,
     ) -> Option<Require> {
-        if self.reassigned || directives.blocks(tree, index) {
+        if directives.blocks(tree, index) {
             return None;
         }
 
@@ -66,7 +79,9 @@ impl Imports {
             return None;
         };
 
-        if tree.text(*name) == b"require" {
+        if tree.text(*name) == b"require"
+            || self.instances && matches!(tree.text(*name), b"script" | b"game" | b"workspace")
+        {
             return None;
         }
 
@@ -74,7 +89,7 @@ impl Imports {
             return None;
         };
 
-        if !self.globals.contains(&callee.get()) {
+        if !self.bindings.global(tree, *callee, "require") {
             return None;
         }
 
@@ -86,319 +101,74 @@ impl Imports {
             return None;
         };
 
-        let NodeKind::String { token } = tree.node(value.node).kind else {
-            return None;
-        };
-
-        if !matches!(
-            tree.token(token).kind,
-            TokenKind::QuotedString | TokenKind::RawString
-        ) {
-            return None;
-        }
+        let path = string(tree, value.node).or_else(|| self.instance(tree, value.node))?;
 
         Some(Require {
-            path: String::from_utf8(literal::decode(tree.text(value.node))?).ok()?,
+            path,
             binding: *name,
             boundary: directives.boundary(tree, index).is_some(),
         })
     }
 
-    fn global(&self, tree: &Tree<'_>, node: NodeIndex) -> bool {
-        tree.text(node) == b"require" && !self.scopes.iter().any(|shadowed| *shadowed)
-    }
-
-    fn bind(&mut self, tree: &Tree<'_>, node: NodeIndex) {
-        if let NodeKind::Binding {
-            name, annotation, ..
-        } = &tree.node(node).kind
-        {
-            if let Some(annotation) = annotation {
-                self.visit(tree, *annotation);
-            }
-
-            self.bind_name(tree, *name);
-        }
-    }
-
-    fn bind_name(&mut self, tree: &Tree<'_>, node: NodeIndex) {
-        if tree.text(node) == b"require" {
-            *self
-                .scopes
-                .last_mut()
-                .expect("internal error: missing lexical scope") = true;
-        }
-    }
-
-    fn local(&mut self, tree: &Tree<'_>, bindings: &NodeList, values: &NodeList) {
-        for value in tree.list(values) {
-            self.visit(tree, value.node);
+    fn instance(&self, tree: &Tree<'_>, node: NodeIndex) -> Option<String> {
+        if !self.instances {
+            return None;
         }
 
-        for binding in tree.list(bindings) {
-            self.bind(tree, binding.node);
-        }
-    }
-
-    fn write(&mut self, tree: &Tree<'_>, node: NodeIndex) {
-        match &tree.node(node).kind {
-            NodeKind::Name { .. } => self.reassigned |= self.global(tree, node),
-
-            NodeKind::Field { receiver, .. }
-            | NodeKind::Index { receiver, .. }
-            | NodeKind::Group {
-                expression: receiver,
-                ..
-            } => self.write(tree, *receiver),
-
-            _ => {}
-        }
-
-        self.visit(tree, node);
-    }
-
-    fn scoped(&mut self, tree: &Tree<'_>, node: NodeIndex) {
-        self.scopes.push(false);
-        self.visit(tree, node);
-        self.scopes.pop();
-    }
-
-    fn function(&mut self, tree: &Tree<'_>, node: NodeIndex, exported: bool) {
-        let NodeKind::Function {
-            prefix,
-            name,
-            parameters,
-            returns,
-            body,
-            ..
-        } = &tree.node(node).kind
-        else {
-            return;
-        };
-
-        if prefix.is_some_and(|prefix| tree.token(prefix).bytes(tree.source) == b"type") {
-            return;
-        }
-
-        if let Some(name) = name {
-            if exported
-                || prefix.is_some_and(|prefix| {
-                    matches!(tree.token(prefix).bytes(tree.source), b"local" | b"const")
-                })
-            {
-                self.bind_name(tree, *name);
-            } else if let NodeKind::FunctionName { path, .. } = &tree.node(*name).kind {
-                if let Some(first) = tree.list(path).first() {
-                    self.write(tree, first.node);
-                }
-            } else {
-                self.write(tree, *name);
-            }
-        }
-
-        if let Some(returns) = returns {
-            self.visit(tree, *returns);
-        }
-
-        self.scopes.push(false);
-
-        if let NodeKind::Parameters { parameters, .. } = &tree.node(*parameters).kind {
-            for parameter in tree.list(parameters) {
-                self.bind(tree, parameter.node);
-            }
-        }
-
-        if let Some(body) = body {
-            self.visit(tree, *body);
-        }
-
-        self.scopes.pop();
-    }
-
-    fn visit(&mut self, tree: &Tree<'_>, node: NodeIndex) {
-        match &tree.node(node).kind {
+        match tree.node(node).kind {
             NodeKind::Name { .. } => {
-                if self.global(tree, node) {
-                    self.globals.insert(node.get());
-                }
+                let name = match tree.text(node) {
+                    b"script" => "script",
+                    b"game" => "game",
+                    b"workspace" => "workspace",
+                    _ => return None,
+                };
+
+                self.bindings
+                    .global(tree, node, name)
+                    .then(|| name.to_owned())
             }
 
-            NodeKind::Local {
-                bindings, values, ..
-            }
-            | NodeKind::Constant {
-                bindings, values, ..
-            } => self.local(tree, bindings, values),
+            NodeKind::Field { receiver, name, .. } => Some(format!(
+                "{}/{}",
+                self.instance(tree, receiver)?,
+                String::from_utf8_lossy(tree.text(name))
+            )),
 
-            NodeKind::Assignment {
-                targets, values, ..
-            } => {
-                for value in tree.list(values) {
-                    self.visit(tree, value.node);
-                }
+            NodeKind::Index { receiver, key, .. } => Some(format!(
+                "{}/{}",
+                self.instance(tree, receiver)?,
+                string(tree, key)?
+            )),
 
-                for target in tree.list(targets) {
-                    self.write(tree, target.node);
-                }
-            }
-
-            NodeKind::CompoundAssignment { target, value, .. } => {
-                self.visit(tree, *value);
-                self.write(tree, *target);
-            }
-
-            NodeKind::Function { .. } => self.function(tree, node, false),
-
-            NodeKind::Export { declaration, .. }
-                if matches!(tree.node(*declaration).kind, NodeKind::Function { .. }) =>
-            {
-                self.function(tree, *declaration, true);
-            }
-
-            NodeKind::If {
-                branches,
-                otherwise,
-                ..
-            } => {
-                for branch in tree.list(branches) {
-                    self.scoped(tree, branch.node);
-                }
-
-                if let Some(otherwise) = otherwise {
-                    self.scoped(tree, *otherwise);
-                }
-            }
-
-            NodeKind::Conditional {
-                condition,
-                truthy,
-                falsy,
-                ..
-            } => {
-                self.scopes.push(false);
-                self.visit(tree, *condition);
-                self.visit(tree, *truthy);
-                self.scopes.pop();
-                self.visit(tree, *falsy);
-            }
-
-            NodeKind::While {
-                condition, body, ..
-            } => {
-                self.scopes.push(false);
-                self.visit(tree, *condition);
-                self.visit(tree, *body);
-                self.scopes.pop();
-            }
-
-            NodeKind::Repeat {
-                body, condition, ..
-            } => {
-                self.scopes.push(false);
-                self.visit(tree, *body);
-                self.visit(tree, *condition);
-                self.scopes.pop();
-            }
-
-            NodeKind::NumericFor {
-                binding,
-                start,
-                end,
-                step,
-                body,
-                ..
-            } => {
-                self.visit(tree, *start);
-                self.visit(tree, *end);
-
-                if let Some(step) = step {
-                    self.visit(tree, *step);
-                }
-
-                self.scopes.push(false);
-                self.bind(tree, *binding);
-                self.visit(tree, *body);
-                self.scopes.pop();
-            }
-
-            NodeKind::GenericFor {
-                bindings,
-                values,
-                body,
-                ..
-            } => {
-                for value in tree.list(values) {
-                    self.visit(tree, value.node);
-                }
-
-                self.scopes.push(false);
-
-                for binding in tree.list(bindings) {
-                    self.bind(tree, binding.node);
-                }
-
-                self.visit(tree, *body);
-                self.scopes.pop();
-            }
-
-            NodeKind::Do { body, .. } => self.scoped(tree, *body),
-
-            NodeKind::Field { receiver, .. } | NodeKind::MethodCall { receiver, .. } => {
-                self.visit(tree, *receiver);
-
-                if let NodeKind::MethodCall { arguments, .. } = &tree.node(node).kind {
-                    self.visit(tree, *arguments);
-                }
-            }
-
-            NodeKind::TableField {
-                key,
-                opening,
-                value,
-                ..
-            } => {
-                if opening.is_some()
-                    && let Some(key) = key
-                {
-                    self.visit(tree, *key);
-                }
-
-                self.visit(tree, *value);
-            }
-
-            NodeKind::TypeName {
-                namespace,
+            NodeKind::MethodCall {
+                receiver,
+                method,
                 arguments,
                 ..
             } => {
-                if let Some(namespace) = namespace {
-                    self.visit(tree, *namespace);
-                }
+                let path = self.instance(tree, receiver)?;
 
-                if let Some(arguments) = arguments {
-                    self.visit(tree, *arguments);
-                }
-            }
+                let NodeKind::Arguments { values, .. } = &tree.node(arguments).kind else {
+                    return None;
+                };
 
-            NodeKind::TypeAlias { annotation, .. }
-            | NodeKind::TypeParameter { annotation, .. }
-            | NodeKind::TypeField { annotation, .. } => self.visit(tree, *annotation),
+                let [value] = tree.list(values) else {
+                    return None;
+                };
 
-            NodeKind::Generic { default, .. } => {
-                if let Some(default) = default {
-                    self.visit(tree, *default);
-                }
-            }
+                let name = string(tree, value.node)?;
 
-            NodeKind::FunctionName { .. }
-            | NodeKind::Attributes { .. }
-            | NodeKind::Class { .. } => {}
-
-            _ => {
-                for child in tree.children(node) {
-                    self.visit(tree, child);
+                if tree.text(method) == b"WaitForChild"
+                    || path == "game" && tree.text(method) == b"GetService"
+                {
+                    Some(format!("{path}/{name}"))
+                } else {
+                    None
                 }
             }
+
+            _ => None,
         }
     }
 }
@@ -436,4 +206,30 @@ pub(crate) fn runs<'require>(
     }
 
     result
+}
+
+pub(crate) fn compare(configuration: &Prepared, left: &str, right: &str) -> Ordering {
+    if configuration.settings().require.order == Order::Grouped {
+        configuration
+            .group(left)
+            .cmp(&configuration.group(right))
+            .then_with(|| left.cmp(right))
+    } else {
+        left.cmp(right)
+    }
+}
+
+fn string(tree: &Tree<'_>, node: NodeIndex) -> Option<String> {
+    let NodeKind::String { token } = tree.node(node).kind else {
+        return None;
+    };
+
+    if !matches!(
+        tree.token(token).kind,
+        TokenKind::QuotedString | TokenKind::RawString
+    ) {
+        return None;
+    }
+
+    String::from_utf8(literal::decode(tree.text(node))?).ok()
 }

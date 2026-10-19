@@ -1,0 +1,3 @@
+local result = (
+    first
+) + second

@@ -19,7 +19,7 @@ impl Workspace {
     pub fn write(&self, module: &str, original: &str, proposed: &str) -> Result<(), Error> {
         let path = Path::new(module);
 
-        if self.sources.contains_key(module) || self.module(path)? != module {
+        if self.sources.borrow().contains_key(module) || self.module(path)? != module {
             return Err(Error::Path {
                 path: path.to_owned(),
                 reason: "source is not an authorized disk destination",

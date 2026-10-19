@@ -1,0 +1,9 @@
+[
+    Finding {
+        rule: "MultiLineStatement",
+        severity: Warning,
+        range: 35..41,
+        message: "statement spans multiple lines; indent its continuation",
+        edits: [],
+    },
+]

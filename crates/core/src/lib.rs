@@ -1,5 +1,6 @@
 //! Project services, formatting, and linting for Instar.
 
+pub mod analysis;
 pub mod assets;
 pub mod format;
 pub mod lint;

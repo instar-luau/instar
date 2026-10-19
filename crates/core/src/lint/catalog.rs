@@ -1,6 +1,6 @@
 use std::sync::LazyLock;
 
-use crate::lint::{analysis, syntax};
+use crate::lint::{analysis, expression};
 
 const OPTIONAL: &[&str] = &[
     "and_or_conditional",
@@ -39,5 +39,5 @@ pub(crate) struct Definition {
 
 /// Return the supported lint rule names.
 pub fn rules() -> impl Iterator<Item = &'static str> {
-    syntax::RULES.iter().chain(analysis::RULES).copied()
+    expression::RULES.iter().chain(analysis::RULES).copied()
 }

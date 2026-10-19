@@ -4,12 +4,13 @@ use std::{error::Error, fs, path::PathBuf};
 
 use instar_core::{
     format::{Prepared, format},
-    settings::format::Configuration,
+    lint::{self, Symbols},
+    settings::Configuration,
 };
 
 #[test]
 fn fixtures() -> Result<(), Box<dyn Error>> {
-    let mut pending = vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")];
+    let mut pending = vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/format")];
     let mut cases = Vec::new();
 
     while let Some(directory) = pending.pop() {
@@ -28,6 +29,7 @@ fn fixtures() -> Result<(), Box<dyn Error>> {
     cases.sort();
     assert!(!cases.is_empty(), "formatter fixtures must exist");
     let mut failures = Vec::new();
+    let symbols = Symbols::default();
 
     for input in &cases {
         let directory = input.parent().expect("fixture directory");
@@ -39,12 +41,12 @@ fn fixtures() -> Result<(), Box<dyn Error>> {
             Configuration::default()
         };
 
-        let configuration = Prepared::new(&configuration)?;
+        let formatter = Prepared::new(&configuration.format)?;
 
         let source = fs::read_to_string(input)?;
         let expected = fs::read_to_string(directory.join("expected.luau"))?;
 
-        let output = match format(&source, &configuration) {
+        let output = match format(&source, &formatter) {
             Ok(output) => output,
 
             Err(error) => {
@@ -60,7 +62,7 @@ fn fixtures() -> Result<(), Box<dyn Error>> {
             ));
         }
 
-        match format(&output, &configuration) {
+        match format(&output, &formatter) {
             Ok(repeated) if repeated == output => {}
 
             Ok(repeated) => failures.push(format!(
@@ -69,6 +71,36 @@ fn fixtures() -> Result<(), Box<dyn Error>> {
             )),
 
             Err(error) => failures.push(format!("idempotence: {}: {error}", input.display())),
+        }
+
+        let path = directory.join("expected.txt");
+
+        if path.try_exists()? {
+            let configuration =
+                lint::Prepared::new(&configuration.lint, configuration.format.indent_width)?;
+
+            let expected = fs::read_to_string(path)?;
+
+            let output = match lint::lint(&output, &configuration, &symbols) {
+                Ok(output) => format!("{output:#?}\n"),
+
+                Err(failure) => {
+                    let (code, error) = match failure {
+                        lint::Failure::Syntax(error) => ("syntax", error),
+                        lint::Failure::Directive(error) => ("lint", error),
+                    };
+
+                    failures.push(format!("lint: {}: {code}: {error}", input.display()));
+                    continue;
+                }
+            };
+
+            if output != expected {
+                failures.push(format!(
+                    "lint: {}:\nexpected: {expected:?}\nactual:   {output:?}",
+                    input.display()
+                ));
+            }
         }
     }
 

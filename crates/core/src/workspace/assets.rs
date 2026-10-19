@@ -2,11 +2,13 @@ use std::{
     fs::{self, File, OpenOptions, TryLockError},
     io::{self, Write as _},
     path::{Path, PathBuf},
+    rc::Rc,
+    thread,
     time::Duration,
 };
 
 use reqwest::Client;
-use tokio::{runtime::Builder, time};
+use tokio::{runtime::Builder, sync::oneshot, time};
 
 use super::{Error, Workspace, environment, process};
 use crate::assets::digest;
@@ -42,8 +44,30 @@ impl Namespace {
     }
 }
 
-pub(super) fn directory(workspace: &Workspace, namespace: Namespace) -> Result<PathBuf, Error> {
-    let cancelled = workspace.cancelled;
+pub(super) struct Refresh {
+    cancellation: Option<oneshot::Sender<()>>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl Drop for Refresh {
+    fn drop(&mut self) {
+        drop(self.cancellation.take());
+
+        if let Some(thread) = self.thread.take()
+            && thread.join().is_err()
+        {
+            tracing::warn!("asset refresh worker panicked");
+        }
+    }
+}
+
+pub(super) fn directory(
+    workspace: &Workspace,
+    namespace: Namespace,
+    refreshes: &mut Vec<Refresh>,
+) -> Result<PathBuf, Error> {
+    let cancellation = Rc::clone(&workspace.cancelled.borrow());
+    let cancelled = cancellation.as_ref();
     process::interrupted(cancelled)?;
 
     let parent = dirs::cache_dir()
@@ -70,7 +94,7 @@ pub(super) fn directory(workspace: &Workspace, namespace: Namespace) -> Result<P
                     time::sleep(Duration::from_millis(50)).await;
                 }
             } => Err(Error::Cancelled),
-            result = acquire(&parent, namespace, cancelled) => result,
+            result = acquire(&parent, namespace, refreshes, cancelled) => result,
         }
     })
 }
@@ -78,17 +102,26 @@ pub(super) fn directory(workspace: &Workspace, namespace: Namespace) -> Result<P
 async fn acquire(
     parent: &Path,
     namespace: Namespace,
-    cancelled: fn() -> bool,
+    refreshes: &mut Vec<Refresh>,
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<PathBuf, Error> {
-    let lock_path = parent.join("lock");
+    if let Some(directory) = cached(parent)? {
+        validate(&directory, namespace, cancelled)?;
+        process::interrupted(cancelled)?;
 
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock_path)
-        .map_err(|source| filesystem(&lock_path, source))?;
+        match update(parent.to_owned(), namespace) {
+            Ok(refresh) => refreshes.push(refresh),
+
+            Err(error) => {
+                tracing::warn!(%error, namespace = namespace.name(), "cannot start asset refresh");
+            }
+        }
+
+        return Ok(directory);
+    }
+
+    let lock_path = parent.join("lock");
+    let lock = lockfile(&lock_path)?;
 
     loop {
         process::interrupted(cancelled)?;
@@ -100,32 +133,78 @@ async fn acquire(
         }
     }
 
-    let cached = cached(parent)?;
+    if let Some(directory) = cached(parent)? {
+        validate(&directory, namespace, cancelled)?;
 
-    match refresh(parent, namespace, cached.as_deref(), cancelled).await {
-        Ok(directory) => Ok(directory),
-
-        Err(error) => {
-            if matches!(error, Error::Download { .. })
-                && let Some(directory) = cached
-            {
-                validate(&directory, namespace, cancelled)?;
-                process::interrupted(cancelled)?;
-                tracing::warn!(%error, namespace = namespace.name(), "cannot refresh assets; using cached bundle");
-
-                return Ok(directory);
-            }
-
-            Err(error)
-        }
+        return Ok(directory);
     }
+
+    refresh(parent, namespace, None, cancelled).await
+}
+
+fn update(parent: PathBuf, namespace: Namespace) -> io::Result<Refresh> {
+    let (cancellation, cancelled) = oneshot::channel();
+
+    let thread = thread::Builder::new()
+        .name(format!("{} assets", namespace.name()))
+        .spawn(move || {
+            let result = Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(Error::Runtime)
+                .and_then(|runtime| {
+                    runtime.block_on(async {
+                        tokio::select! {
+                            biased;
+
+                            _ = cancelled => Ok(()),
+                            result = async {
+                                let lock_path = parent.join("lock");
+                                let lock = lockfile(&lock_path)?;
+
+                                match lock.try_lock() {
+                                    Ok(()) => {}
+                                    Err(TryLockError::WouldBlock) => return Ok(()),
+                                    Err(TryLockError::Error(source)) => {
+                                        return Err(filesystem(&lock_path, source));
+                                    }
+                                }
+
+                                let cached = cached(&parent)?;
+                                refresh(&parent, namespace, cached.as_deref(), &|| false).await?;
+
+                                Ok(())
+                            } => result,
+                        }
+                    })
+                });
+
+            if let Err(error) = result {
+                tracing::warn!(%error, namespace = namespace.name(), "cannot refresh cached assets");
+            }
+        })?;
+
+    Ok(Refresh {
+        cancellation: Some(cancellation),
+        thread: Some(thread),
+    })
+}
+
+fn lockfile(path: &Path) -> Result<File, Error> {
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .map_err(|source| filesystem(path, source))
 }
 
 async fn refresh(
     parent: &Path,
     namespace: Namespace,
     cached: Option<&Path>,
-    cancelled: fn() -> bool,
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<PathBuf, Error> {
     let staging = tempfile::tempdir_in(parent).map_err(|source| filesystem(parent, source))?;
     let bundle = staging.path().join("bundle");
@@ -200,7 +279,7 @@ async fn download(
     address: &str,
     filename: &str,
     destination: &Path,
-    cancelled: fn() -> bool,
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<(), Error> {
     process::interrupted(cancelled)?;
 
@@ -246,7 +325,11 @@ fn cached(parent: &Path) -> Result<Option<PathBuf>, Error> {
     Ok(exists(&directory)?.then_some(directory))
 }
 
-fn validate(directory: &Path, namespace: Namespace, cancelled: fn() -> bool) -> Result<(), Error> {
+fn validate(
+    directory: &Path,
+    namespace: Namespace,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<(), Error> {
     process::interrupted(cancelled)?;
     let metadata = directory.join("metadata.json");
     let contents = fs::read(&metadata).map_err(|source| filesystem(&metadata, source))?;

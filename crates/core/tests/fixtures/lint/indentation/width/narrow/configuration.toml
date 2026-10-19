@@ -1,0 +1,8 @@
+[format]
+indent_width = 2
+
+[lint]
+presets = ["none"]
+
+[lint.rules.MultiLineStatement]
+enabled = true

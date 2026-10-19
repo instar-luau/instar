@@ -5,7 +5,10 @@ use vermis::{
     tree::{ListEntry, NodeIndex, NodeKind, TokenIndex},
 };
 
-use super::{document::Document, plan::Builder};
+use super::{
+    document::{Document, Nesting},
+    plan::Builder,
+};
 
 use crate::{
     format::imports::{self, Require},
@@ -443,7 +446,7 @@ impl Builder<'_, '_> {
 
         if let NodeKind::Block { statements } = &self.tree.node(body).kind {
             result.push(Document::Indent {
-                conditional: false,
+                nesting: Nesting::Always,
                 content: self.block(
                     self.tree.list(statements),
                     interior_start..interior.end,
@@ -489,14 +492,7 @@ impl Builder<'_, '_> {
                     .expect("internal error: missing require in import run")
                     .path;
 
-                if self.configuration.require.order == Order::Grouped {
-                    self.prepared
-                        .group(left)
-                        .cmp(&self.prepared.group(right))
-                        .then_with(|| left.cmp(right))
-                } else {
-                    left.cmp(right)
-                }
+                imports::compare(self.prepared, left, right)
             });
         }
     }

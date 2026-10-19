@@ -15,7 +15,9 @@ use serde::{
 
 use serde_json::Value;
 
-use super::{Error, Workspace, assets, instances, model::Scope, paths};
+use super::{
+    Error, InvalidSource, Origin, SymbolOutcome, Workspace, assets, instances, model::Scope, paths,
+};
 
 use crate::{
     assets::{Documentation as DocumentationMetadata, Metadata, digest},
@@ -26,6 +28,7 @@ use crate::{
 #[derive(Default)]
 pub(super) struct Registry {
     assets: BTreeMap<assets::Namespace, PathBuf>,
+    refreshes: Vec<assets::Refresh>,
     builtin_documentation: BTreeMap<assets::Namespace, Documentation>,
     inputs: BTreeMap<Inputs, usize>,
     prepared: Vec<Environment>,
@@ -74,19 +77,22 @@ impl Registry {
         name: Option<&str>,
         globals: &[String],
         builtins: &str,
-    ) -> Result<Arc<Symbols>, Error> {
+    ) -> SymbolOutcome {
         let key = (name.map(str::to_owned), globals.to_owned());
 
         if let Some(symbols) = self.symbols.get(&key) {
-            return Ok(Arc::clone(symbols));
+            return SymbolOutcome::Ready(Arc::clone(symbols));
         }
 
         let mut symbols = Symbols::default();
 
-        symbols.declare(builtins).map_err(|source| Error::Syntax {
-            path: PathBuf::from("<builtins>"),
-            source,
-        })?;
+        if let Err(error) = symbols.declare(builtins) {
+            return SymbolOutcome::Invalid(InvalidSource {
+                origin: Origin::Builtins,
+                text: Arc::from(builtins),
+                error,
+            });
+        }
 
         if let Some(prepared) = name.and_then(|name| self.get(name)) {
             if prepared.enumerations.is_some() {
@@ -98,12 +104,13 @@ impl Registry {
             }
 
             for definition in &prepared.definitions {
-                symbols
-                    .declare(&definition.source)
-                    .map_err(|source| Error::Syntax {
-                        path: PathBuf::from(&definition.name),
-                        source,
-                    })?;
+                if let Err(error) = symbols.declare(&definition.source) {
+                    return SymbolOutcome::Invalid(InvalidSource {
+                        origin: Origin::File(PathBuf::from(&definition.name)),
+                        text: Arc::from(definition.source.as_str()),
+                        error,
+                    });
+                }
             }
         }
 
@@ -111,7 +118,7 @@ impl Registry {
         let symbols = Arc::new(symbols);
         self.symbols.insert(key, Arc::clone(&symbols));
 
-        Ok(symbols)
+        SymbolOutcome::Ready(symbols)
     }
 
     pub(super) fn documents(&mut self, groups: &[Group]) -> Result<&[Documentation], Error> {
@@ -162,7 +169,8 @@ impl Registry {
             Entry::Occupied(entry) => Ok(entry.get().clone()),
 
             Entry::Vacant(entry) => {
-                let directory = paths::canonical(&assets::directory(workspace, namespace)?)?;
+                let directory = assets::directory(workspace, namespace, &mut self.refreshes)?;
+                let directory = paths::canonical(&directory)?;
 
                 Ok(entry.insert(directory).clone())
             }
@@ -430,7 +438,7 @@ fn prepare(inputs: &Inputs) -> Result<Environment, Error> {
 pub(super) fn validate(
     directory: &Path,
     namespace: assets::Namespace,
-    cancelled: fn() -> bool,
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<(), Error> {
     super::process::interrupted(cancelled)?;
     documentation(directory, namespace)?;

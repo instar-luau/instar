@@ -6,7 +6,7 @@ use vermis::{
 };
 
 use super::{
-    document::{Choice, Document, Layout},
+    document::{Choice, Document, Layout, Nesting},
     plan::Builder,
 };
 
@@ -85,7 +85,7 @@ impl Builder<'_, '_> {
         let content = vec![
             Document::Token(opening),
             Document::Indent {
-                conditional: true,
+                nesting: Nesting::Broken,
                 content: iter::once(Document::Soft(1)).chain(interior).collect(),
             },
             Document::Soft(1),
@@ -113,11 +113,18 @@ impl Builder<'_, '_> {
             return self.sequence(opening.start..closing.end, &[]);
         }
 
+        if let [entry] = entries
+            && entry.separator.is_none()
+            && self.enclosed(opening.end..closing.start, entry.node)
+        {
+            return self.sequence(opening.start..closing.end, &[entry.node]);
+        }
+
         let list = self.list(opening.end..closing.start, entries);
         let mut content = self.sequence(opening, &[]);
 
         content.push(Document::Indent {
-            conditional: true,
+            nesting: Nesting::Broken,
             content: iter::once(Document::Soft(0)).chain(list.content).collect(),
         });
 
@@ -166,7 +173,7 @@ impl Builder<'_, '_> {
 
             let values = if values.len() > 1 {
                 connection.push(Document::Indent {
-                    conditional: true,
+                    nesting: Nesting::Broken,
                     content: iter::once(Document::Soft(1))
                         .chain(values_list.content)
                         .collect(),
@@ -194,7 +201,7 @@ impl Builder<'_, '_> {
                     probe: Rc::clone(&inline),
                     inline,
                     expanded: vec![Document::Indent {
-                        conditional: false,
+                        nesting: Nesting::Always,
                         content: iter::once(Document::Line(1)).chain(connection).collect(),
                     }]
                     .into(),
@@ -228,7 +235,7 @@ impl Builder<'_, '_> {
             continuation.extend(values);
 
             prefix.push(Document::Indent {
-                conditional: false,
+                nesting: Nesting::Always,
                 content: continuation,
             });
 
@@ -268,7 +275,7 @@ impl Builder<'_, '_> {
 
             if !continuation.is_empty() {
                 content.push(Document::Indent {
-                    conditional: true,
+                    nesting: Nesting::Broken,
                     content: continuation,
                 });
             }

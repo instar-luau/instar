@@ -7,7 +7,7 @@ use std::{
 
 use super::Error;
 
-pub(super) fn interrupted(cancelled: fn() -> bool) -> Result<(), Error> {
+pub(super) fn interrupted(cancelled: &dyn Fn() -> bool) -> Result<(), Error> {
     if cancelled() {
         Err(Error::Cancelled)
     } else {
@@ -17,7 +17,7 @@ pub(super) fn interrupted(cancelled: fn() -> bool) -> Result<(), Error> {
 
 pub(super) fn wait(
     child: &mut Child,
-    cancelled: fn() -> bool,
+    cancelled: &dyn Fn() -> bool,
     failure: impl Fn(io::Error) -> Error,
 ) -> Result<ExitStatus, Error> {
     let result = loop {

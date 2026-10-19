@@ -1,7 +1,5 @@
 use std::{io, path::PathBuf, sync::Arc};
 
-use crate::lint;
-
 /// A workspace filesystem, path, or selection failure.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -68,15 +66,6 @@ pub enum Error {
     /// Native environment settings could not be validated.
     #[error("cannot prepare analysis")]
     Analysis(#[source] instar_bridge::Error),
-
-    /// A declaration source contains invalid syntax.
-    #[error("cannot parse `{}`", path.display())]
-    Syntax {
-        /// The declaration source.
-        path: PathBuf,
-        /// The syntax failure.
-        source: lint::Error,
-    },
 
     /// Environment metadata or documentation could not be decoded.
     #[error("cannot decode `{}`", path.display())]

@@ -1,0 +1,3 @@
+type Value =
+    First
+    | Second

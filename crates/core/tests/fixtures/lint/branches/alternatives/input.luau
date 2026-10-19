@@ -1,0 +1,7 @@
+if ready then
+    work()
+elseif retry then
+    retry_work()
+else
+    stop()
+end

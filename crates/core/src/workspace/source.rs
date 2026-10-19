@@ -21,7 +21,7 @@ impl Workspace {
             return Ok(source.clone());
         }
 
-        let source = if let Some(source) = self.sources.get(module) {
+        let source = if let Some(source) = self.sources.borrow().get(module) {
             Some(Arc::clone(source))
         } else {
             let path = Path::new(module);
@@ -88,11 +88,7 @@ impl Workspace {
     ///
     /// # Errors
     /// Returns inaccessible, non-UTF-8, or unsupported source paths.
-    pub fn set_source(
-        &mut self,
-        path: &Path,
-        source: impl Into<Arc<str>>,
-    ) -> Result<String, Error> {
+    pub fn set_source(&self, path: &Path, source: impl Into<Arc<str>>) -> Result<String, Error> {
         let path = paths::identity(&self.root.join(path))?;
 
         if !paths::source(&path)
@@ -106,8 +102,20 @@ impl Workspace {
 
         let module = paths::text(&path)?;
         self.invalidate(&module);
-        self.sources.insert(module.clone(), source.into());
+
+        self.sources
+            .borrow_mut()
+            .insert(module.clone(), source.into());
 
         Ok(module)
+    }
+
+    /// Remove a source overlay and discard its cached snapshot.
+    ///
+    /// Returns whether an overlay was present. Subsequent reads use the disk source.
+    pub fn remove_source(&self, module: &str) -> bool {
+        self.invalidate(module);
+
+        self.sources.borrow_mut().remove(module).is_some()
     }
 }

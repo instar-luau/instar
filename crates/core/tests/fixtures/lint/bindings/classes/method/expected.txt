@@ -1,0 +1,16 @@
+[
+    Finding {
+        rule: "unused_variable",
+        severity: Warning,
+        range: 37..41,
+        message: "binding is never read",
+        edits: [],
+    },
+    Finding {
+        rule: "LocalUnused",
+        severity: Warning,
+        range: 37..41,
+        message: "binding is never used; prefix with `_` to silence",
+        edits: [],
+    },
+]

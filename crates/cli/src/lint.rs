@@ -4,9 +4,9 @@ use codespan_reporting::diagnostic::{Diagnostic, Label};
 use eyre::{Result, eyre};
 
 use instar_core::{
-    lint::{self, Symbols},
+    lint,
     settings::lint::Severity,
-    workspace::{Error, Workspace},
+    workspace::{Error, Origin, SymbolOutcome, Workspace},
 };
 
 use super::{
@@ -17,7 +17,7 @@ use super::{
     workers,
 };
 
-type Environments = BTreeMap<String, Result<Arc<Symbols>, Arc<Error>>>;
+type Environments = BTreeMap<String, Result<SymbolOutcome, Arc<Error>>>;
 
 pub(super) fn session(
     arguments: &Arguments,
@@ -84,51 +84,52 @@ fn process(
         .get(module)
         .ok_or_else(|| eyre!("cannot load lint environment for `{module}`"))?
     {
-        Ok(symbols) => symbols,
+        Ok(SymbolOutcome::Ready(symbols)) => symbols,
 
-        Err(error) => {
-            let Error::Syntax {
-                path,
-                source: error,
-            } = error.as_ref()
-            else {
-                return Err(Arc::clone(error).into());
+        Ok(SymbolOutcome::Invalid(invalid)) => {
+            let module = match &invalid.origin {
+                Origin::File(path) => path
+                    .to_str()
+                    .ok_or_else(|| eyre!("declaration path must be UTF-8"))?,
+
+                Origin::Builtins => "<builtins>",
             };
-
-            let module = path
-                .to_str()
-                .ok_or_else(|| eyre!("declaration path must be UTF-8"))?;
-
-            let text = workspace
-                .source(module)?
-                .ok_or_else(|| eyre!("cannot read declaration source `{module}`"))?;
 
             batch.findings.push(
                 Diagnostic::error()
                     .with_code("syntax")
-                    .with_message(error.message.clone())
+                    .with_message(invalid.error.message.clone())
                     .with_labels(vec![Label::primary(
                         Source {
                             module: module.to_owned(),
-                            text,
+                            text: Arc::clone(&invalid.text),
                         },
-                        error.range.clone(),
+                        invalid.error.range.clone(),
                     )]),
             );
 
             return Ok(batch);
         }
+
+        Err(error) => return Err(Arc::clone(error).into()),
     };
 
     match lint::lint(&source.text, &configuration, symbols) {
         Ok(findings) => pending.push((source, findings)),
 
-        Err(error) => batch.findings.push(
-            Diagnostic::error()
-                .with_code("syntax")
-                .with_message(error.message)
-                .with_labels(vec![Label::primary(source, error.range)]),
-        ),
+        Err(failure) => {
+            let (code, error) = match failure {
+                lint::Failure::Syntax(error) => ("syntax", error),
+                lint::Failure::Directive(error) => ("lint", error),
+            };
+
+            batch.findings.push(
+                Diagnostic::error()
+                    .with_code(code)
+                    .with_message(error.message)
+                    .with_labels(vec![Label::primary(source, error.range)]),
+            );
+        }
     }
 
     Ok(batch)
@@ -139,20 +140,8 @@ fn complete(
     pending: Vec<(Source, Vec<lint::Finding>)>,
     corrections: bool,
 ) -> Result<Batch> {
-    for (source, mut findings) in pending {
+    for (source, findings) in pending {
         let mut completed = Batch::default();
-
-        if let Err(error) = lint::suppress(&source.text, &mut findings) {
-            completed.findings.push(
-                Diagnostic::error()
-                    .with_code("lint")
-                    .with_message(error.message)
-                    .with_labels(vec![Label::primary(source, error.range)]),
-            );
-
-            batch.append(completed);
-            continue;
-        }
 
         if corrections {
             let text = lint::apply(&source.text, &findings)?;

@@ -3,7 +3,7 @@ use vermis::tree::Tree;
 use crate::{
     format::{
         Error, Prepared,
-        directives::{self, Kind},
+        directives::{self, Directives, Kind},
         imports::Imports,
         layout, preservation,
     },
@@ -53,13 +53,34 @@ fn formatted(source: &str, configuration: &Prepared) -> Result<String, Error> {
     let imports =
         (configuration.settings().require.order != Order::Preserve).then(|| Imports::new(&tree));
 
-    let plan = layout::Builder::build(&tree, configuration, imports.as_ref(), &directives)?;
-    let bytes = layout::emit(&tree, configuration.settings(), &plan)?;
+    render(&tree, configuration, imports.as_ref(), &directives)
+}
+
+pub(crate) fn render(
+    tree: &Tree<'_>,
+    configuration: &Prepared,
+    imports: Option<&Imports>,
+    directives: &Directives,
+) -> Result<String, Error> {
+    let plan = layout::Builder::build(tree, configuration, imports, directives)?;
+    let bytes = layout::emit(tree, configuration.settings(), &plan)?;
 
     let output = String::from_utf8(bytes).map_err(|error| {
         Error::internal(0..0, format!("formatter produced invalid UTF-8: {error}"))
     })?;
 
+    validate(tree, &output, configuration, imports, directives)?;
+
+    Ok(output)
+}
+
+pub(crate) fn validate(
+    tree: &Tree<'_>,
+    output: &str,
+    configuration: &Prepared,
+    imports: Option<&Imports>,
+    directives: &Directives,
+) -> Result<(), Error> {
     let proposed = parse(output.as_bytes()).map_err(|error| {
         Error::internal(0..0, format!("formatter produced invalid syntax: {error}"))
     })?;
@@ -72,13 +93,13 @@ fn formatted(source: &str, configuration: &Prepared) -> Result<String, Error> {
     })?;
 
     preservation::validate(
-        &tree,
+        tree,
         &proposed,
         configuration.settings(),
-        imports.as_ref(),
-        &directives,
+        imports,
+        directives,
         &proposed_directives,
     )?;
 
-    Ok(output)
+    Ok(())
 }

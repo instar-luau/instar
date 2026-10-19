@@ -6,7 +6,7 @@ use vermis::{
 };
 
 use super::{
-    document::{Document, Layout},
+    document::{Document, Layout, Nesting},
     plan::Builder,
 };
 
@@ -18,39 +18,44 @@ impl Builder<'_, '_> {
         right: NodeIndex,
     ) -> Vec<Document> {
         let family = operator_family(self.tree.token(operator).kind);
-        let mut terms = vec![(operator, right)];
-        let mut first = left;
+        let mut pending = vec![(Some(operator), right), (None, left)];
+        let mut terms = Vec::new();
 
-        while let NodeKind::Binary {
-            left,
-            operator,
-            right,
-        }
-        | NodeKind::TypeUnion {
-            left: Some(left),
-            operator,
-            right,
-        }
-        | NodeKind::TypeIntersection {
-            left: Some(left),
-            operator,
-            right,
-        } = &self.tree.node(first).kind
-        {
-            if operator_family(self.tree.token(*operator).kind) != family {
-                break;
+        while let Some((preceding, index)) = pending.pop() {
+            match &self.tree.node(index).kind {
+                NodeKind::Binary {
+                    left,
+                    operator,
+                    right,
+                }
+                | NodeKind::TypeUnion {
+                    left: Some(left),
+                    operator,
+                    right,
+                }
+                | NodeKind::TypeIntersection {
+                    left: Some(left),
+                    operator,
+                    right,
+                } if operator_family(self.tree.token(*operator).kind) == family => {
+                    pending.push((Some(*operator), *right));
+                    pending.push((preceding, *left));
+                }
+
+                _ => terms.push((preceding, index)),
             }
-
-            terms.push((*operator, *right));
-            first = *left;
         }
+
+        let mut terms = terms.into_iter();
+        let (_, first) = terms.next().expect("binary expression");
 
         let mut content = self.node(first);
         let mut continuation = Vec::new();
         let mut previous = self.tree.node(first).tokens.end.get() - 1;
         let mut comments = false;
 
-        for (operator, right) in terms.into_iter().rev() {
+        for (operator, right) in terms {
+            let operator = operator.expect("binary operator");
             let start = self.tree.node(right).tokens.start.get();
             comments |= self.comments(previous + 1..start);
             continuation.extend(self.breakpoint(previous, operator.get(), 1));
@@ -61,7 +66,7 @@ impl Builder<'_, '_> {
         }
 
         content.push(Document::Indent {
-            conditional: true,
+            nesting: Nesting::Continuation,
             content: continuation,
         });
 
@@ -82,6 +87,10 @@ impl Builder<'_, '_> {
         closing: TokenIndex,
         spaces: usize,
     ) -> Vec<Document> {
+        if self.enclosed(opening.get() + 1..closing.get(), expression) {
+            return self.sequence(opening.get()..closing.get() + 1, &[expression]);
+        }
+
         self.framed(
             opening,
             self.tree.node(expression).tokens.start.get()
@@ -140,7 +149,7 @@ impl Builder<'_, '_> {
             content: vec![
                 Document::Token(prefix),
                 Document::Indent {
-                    conditional: true,
+                    nesting: Nesting::Broken,
                     content: continuation,
                 },
             ],
@@ -173,19 +182,6 @@ impl Builder<'_, '_> {
                 content
             }
 
-            NodeKind::Group {
-                opening,
-                expression,
-                closing: Some(closing),
-            } => self.framed(
-                *opening,
-                self.tree.node(*expression).tokens.start.get()
-                    ..self.tree.node(*expression).tokens.end.get(),
-                *closing,
-                0,
-                self.condition(*expression),
-            ),
-
             _ => self.node(index),
         }
     }
@@ -204,7 +200,7 @@ impl Builder<'_, '_> {
         let mut content = vec![
             Document::Token(opening),
             Document::Indent {
-                conditional: true,
+                nesting: Nesting::Broken,
                 content: continuation,
             },
         ];
@@ -330,7 +326,7 @@ impl Builder<'_, '_> {
         }
 
         content.push(Document::Indent {
-            conditional: true,
+            nesting: Nesting::Continuation,
             content: continuation,
         });
 
@@ -358,7 +354,7 @@ impl Builder<'_, '_> {
             header.extend(self.condition(*condition));
 
             let mut header = vec![Document::Indent {
-                conditional: true,
+                nesting: Nesting::Broken,
                 content: header,
             }];
 
@@ -367,7 +363,7 @@ impl Builder<'_, '_> {
 
             if content.is_empty() {
                 header = vec![Document::Indent {
-                    conditional: true,
+                    nesting: Nesting::Broken,
                     content: header,
                 }];
             }
@@ -390,7 +386,7 @@ impl Builder<'_, '_> {
             value.extend(self.node(*truthy));
 
             continuation.push(Document::Indent {
-                conditional: true,
+                nesting: Nesting::Broken,
                 content: value,
             });
 
@@ -412,7 +408,7 @@ impl Builder<'_, '_> {
                 value.extend(self.node(*falsy));
 
                 continuation.push(Document::Indent {
-                    conditional: true,
+                    nesting: Nesting::Broken,
                     content: value,
                 });
 
@@ -429,7 +425,7 @@ impl Builder<'_, '_> {
         }
 
         content.push(Document::Indent {
-            conditional: true,
+            nesting: Nesting::Broken,
             content: continuation,
         });
 
@@ -437,6 +433,20 @@ impl Builder<'_, '_> {
             layout: Layout::Fit,
             content,
         }]
+    }
+
+    pub(super) fn enclosed(&self, interior: Range<usize>, index: NodeIndex) -> bool {
+        let node = self.tree.node(index);
+
+        matches!(
+            node.kind,
+            NodeKind::Group { .. }
+                | NodeKind::TypeGroup { .. }
+                | NodeKind::Table { .. }
+                | NodeKind::TypeTable { .. }
+                | NodeKind::Function { name: None, .. }
+        ) && !self.comments(interior.start..node.tokens.start.get())
+            && !self.comments(node.tokens.end.get()..interior.end)
     }
 
     fn breakpoint(&self, left: usize, right: usize, spaces: usize) -> Vec<Document> {

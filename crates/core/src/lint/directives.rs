@@ -1,19 +1,22 @@
 use std::{ops::Range, str};
 
-use vermis::{token::TokenKind, tree::NodeKind};
+use vermis::{
+    token::TokenKind,
+    tree::{NodeKind, Tree},
+};
 
-use crate::lint::{Error, Finding, catalog::RULES, syntax};
+use crate::lint::{Error, Finding, catalog::RULES};
 
 struct Directive<'source> {
     range: Range<usize>,
     rules: Vec<&'source str>,
 }
 
-/// Apply file, region, and following-statement lint suppressions.
-///
-/// # Errors
-/// Rejects unknown rules, malformed directives, unmatched regions, and missing statements.
-pub fn suppress(source: &str, findings: &mut Vec<Finding>) -> Result<(), Error> {
+pub(super) fn suppress(
+    source: &str,
+    tree: &Tree<'_>,
+    findings: &mut Vec<Finding>,
+) -> Result<(), Error> {
     if !source.contains("instar-lint")
         && !source.contains("instar-ignore")
         && !source.contains("!nolint")
@@ -21,8 +24,6 @@ pub fn suppress(source: &str, findings: &mut Vec<Finding>) -> Result<(), Error> 
         return Ok(());
     }
 
-    let prefix = usize::from(source.starts_with('\u{feff}')) * 3;
-    let tree = syntax::parse(source)?;
     let mut statements = Vec::new();
 
     for node in &tree.nodes {
@@ -54,12 +55,12 @@ pub fn suppress(source: &str, findings: &mut Vec<Finding>) -> Result<(), Error> 
         }
 
         let text = str::from_utf8(token.bytes(tree.source)).map_err(|error| Error {
-            range: token.span.start + prefix..token.span.end + prefix,
+            range: token.span.start..token.span.end,
             message: error.to_string(),
         })?;
 
         let body = text.trim_start_matches('-').trim();
-        let location = token.span.start + prefix..token.span.end + prefix;
+        let location = token.span.start..token.span.end;
 
         let invalid = |message: &str| Error {
             range: location.clone(),
@@ -69,7 +70,7 @@ pub fn suppress(source: &str, findings: &mut Vec<Finding>) -> Result<(), Error> 
         let following = || {
             statements
                 .get(statements.partition_point(|span| span.start < token.span.end))
-                .map(|span| span.start + prefix..span.end + prefix)
+                .map(|span| span.start..span.end)
                 .ok_or_else(|| invalid("lint directive has no following statement"))
         };
 

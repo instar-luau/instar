@@ -118,7 +118,7 @@ pub(crate) fn validate(
         original,
         proposed,
         before: imports,
-        after: imports.map(|_| Imports::new(proposed)),
+        after: imports.map(|imports| imports.proposed(proposed)),
         original_directives,
         proposed_directives,
         nodes: vec![None; original.nodes.len()],

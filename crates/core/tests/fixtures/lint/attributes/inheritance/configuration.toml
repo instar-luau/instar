@@ -1,0 +1,5 @@
+[lint]
+presets = ["none"]
+
+[lint.rules.MultiLineStatement]
+enabled = true

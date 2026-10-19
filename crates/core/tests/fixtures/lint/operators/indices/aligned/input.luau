@@ -1,0 +1,3 @@
+local value = values[
+key
+]

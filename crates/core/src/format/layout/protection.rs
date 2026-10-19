@@ -49,17 +49,11 @@ impl Protection<'_> {
                     }
                 }
 
-                Document::Indent {
-                    conditional,
-                    content,
-                } => {
+                Document::Indent { nesting, content } => {
                     let content = self.apply(content);
 
                     if !content.is_empty() {
-                        result.push(Document::Indent {
-                            conditional,
-                            content,
-                        });
+                        result.push(Document::Indent { nesting, content });
                     }
                 }
 
