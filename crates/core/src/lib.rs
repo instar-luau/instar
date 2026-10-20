@@ -7,4 +7,5 @@ pub mod lint;
 pub mod settings;
 pub mod workspace;
 
+mod edit;
 mod syntax;

@@ -1,19 +1,6 @@
 use std::ops::Range;
 
-use crate::settings::lint::Severity;
-
-/// A byte-range replacement guarded by its original source text.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Edit {
-    /// Half-open UTF-8 byte range in the original source.
-    pub range: Range<usize>,
-
-    /// Required original contents of the range.
-    pub expected: String,
-
-    /// Replacement source text.
-    pub replacement: String,
-}
+use crate::{edit::Edit, settings::lint::Severity};
 
 /// A configured finding and its validated correction proposals.
 #[derive(Clone, Debug)]

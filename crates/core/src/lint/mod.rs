@@ -20,8 +20,10 @@ pub use self::{
     analysis::lint,
     catalog::rules,
     error::{Error, Failure},
-    finding::{Edit, Finding},
+    finding::Finding,
     fixes::apply,
     settings::Prepared,
     symbols::Symbols,
 };
+
+pub use crate::edit::Edit;
