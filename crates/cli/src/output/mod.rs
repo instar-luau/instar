@@ -1,13 +1,14 @@
 mod delivery;
+mod diagnostics;
+mod logging;
 mod progress;
-mod report;
+mod publication;
+mod summary;
 
-pub(super) use self::delivery::{
-    generation, generator, initialize, root, styles, watching, workers,
-};
-
-pub(super) use self::progress::Progress;
-
-pub(super) use self::report::{
-    Validation, failure, findings, generated, interrupted, relative, summary, unformatted,
+pub(crate) use self::{
+    delivery::{generation, generator, initialize, root, styles, watching, workers},
+    diagnostics::{Validation, failure, findings},
+    progress::Progress,
+    publication::publish,
+    summary::{generated, interrupted, summary, unformatted},
 };

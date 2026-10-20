@@ -11,9 +11,7 @@ use instar_core::{
 use super::{
     arguments::Operation,
     batch::{Batch, Finding, Label, Output, Severity as FindingSeverity, Source},
-    execution::{Outcome, Project},
-    watch::Watcher,
-    workers,
+    execution::{Outcome, Project, Watcher, workers},
 };
 
 type Environments = BTreeMap<String, Result<SymbolOutcome, Arc<Error>>>;
@@ -25,7 +23,7 @@ pub(super) fn session(
     started: Instant,
 ) -> Result<Outcome> {
     let environments = prepare(project);
-    let corrections = matches!(operation, Operation::Lint(lint) if lint.corrections);
+    let should_fix = matches!(operation, Operation::Lint(lint) if lint.should_fix);
 
     workers::session(
         operation,
@@ -41,7 +39,7 @@ pub(super) fn session(
                 })
             })?;
 
-            complete(batch, pending, corrections)
+            complete(batch, pending, should_fix)
         },
     )
 }
@@ -135,12 +133,12 @@ fn process(
 fn complete(
     mut batch: Batch,
     pending: Vec<(Source, Vec<lint::Finding>)>,
-    corrections: bool,
+    should_fix: bool,
 ) -> Result<Batch> {
     for (source, findings) in pending {
         let mut completed = Batch::default();
 
-        if corrections {
+        if should_fix {
             let text = lint::apply(&source.text, &findings)?;
 
             completed.outputs.push(Output {

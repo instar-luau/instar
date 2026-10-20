@@ -8,12 +8,12 @@ use eyre::{Result, WrapErr as _, bail, eyre};
 use instar_core::workspace;
 use toml_edit::{Array, DocumentMut, InlineTable, Item, Table, TableLike, Value};
 
-use super::{interrupt, output};
+use crate::{interrupt, paths::relative};
 
 const PATTERN: &str = "**/instar.toml";
 
 #[derive(Copy, Clone, clap::ValueEnum)]
-pub(super) enum Association {
+pub(crate) enum Association {
     Tombi,
     Taplo,
 }
@@ -156,7 +156,7 @@ pub(super) fn prepare(
 
     let directory = normalize(directory);
     let schema = normalize(schema);
-    let address = output::relative(&schema, &directory);
+    let address = relative(&schema, &directory);
 
     let address = address
         .to_str()

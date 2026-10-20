@@ -14,18 +14,18 @@ pub(super) fn main() -> ExitCode {
         let result = match &arguments.command {
             Command::Generate(options) => generate::run(&arguments, options),
             Command::Files(operation) => execution::run(&arguments, operation),
-            Command::Server => instar_server::run(interrupt::requested),
+            Command::Server => instar_server::run(interrupt::is_requested),
         };
 
-        if interrupt::requested() {
+        if interrupt::is_requested() {
             output::interrupted(&arguments);
 
-            let watching = matches!(
+            let is_watching = matches!(
                 &arguments.command,
-                Command::Files(operation) if operation.options().watch
+                Command::Files(operation) if operation.options().should_watch
             );
 
-            Ok(if watching { 0 } else { 130 })
+            Ok(if is_watching { 0 } else { 130 })
         } else {
             result
         }

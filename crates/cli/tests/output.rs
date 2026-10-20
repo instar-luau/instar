@@ -33,7 +33,7 @@ fn format(flags: &[&str], source: &str) -> Result<Output, Box<dyn Error>> {
 
 #[test]
 fn modes() -> Result<(), Box<dyn Error>> {
-    for (flags, detailed, debug, quiet) in [
+    for (flags, is_detailed, is_debug, is_quiet) in [
         (Vec::new(), false, false, false),
         (vec!["--verbose"], true, false, false),
         (vec!["--debug"], true, true, false),
@@ -47,35 +47,35 @@ fn modes() -> Result<(), Box<dyn Error>> {
 
         assert_eq!(
             stderr.contains("Project  "),
-            detailed,
+            is_detailed,
             "{flags:?}: {stderr}"
         );
 
         assert_eq!(
             stderr.contains("Workers  "),
-            detailed,
+            is_detailed,
             "{flags:?}: {stderr}"
         );
 
         assert_eq!(
             stderr.contains("Formatting  stdin.luau"),
-            detailed,
+            is_detailed,
             "{flags:?}: {stderr}"
         );
 
         assert_eq!(
             stderr.contains("Processing batch"),
-            debug,
+            is_debug,
             "{flags:?}: {stderr}"
         );
 
         assert_eq!(
             stderr.contains("Formatted 1 file in "),
-            !quiet,
+            !is_quiet,
             "{flags:?}: {stderr}"
         );
 
-        if quiet {
+        if is_quiet {
             assert!(stderr.is_empty(), "{stderr}");
         }
     }

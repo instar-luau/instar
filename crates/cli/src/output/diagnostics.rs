@@ -3,31 +3,27 @@ use std::{
     error::Error,
     fmt,
     io::{self, Write as _},
-    path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Instant,
+    path::Path,
+    sync::{Arc, atomic::Ordering},
 };
 
 use eyre::{Report, Result, WrapErr as _};
+use instar_core::workspace::Error as WorkspaceError;
 
 use miette::{
     Diagnostic, GraphicalReportHandler, GraphicalTheme, LabeledSpan, MietteDiagnostic, NamedSource,
     SourceCode,
 };
 
-use instar_core::{assets::Generated, workspace::Error as WorkspaceError};
-
-use super::delivery::{self, Capture, Mode};
-
-use crate::{
-    arguments::{Arguments, Command, Operation},
-    batch::{Finding, Severity, Summary},
+use super::{
+    delivery::{self, HAS_DETAILS, Mode},
+    logging::Capture,
 };
 
-static DETAILS: AtomicBool = AtomicBool::new(false);
+use crate::{
+    batch::{Finding, Severity},
+    paths::relative,
+};
 
 #[derive(Debug)]
 pub(crate) struct Validation {
@@ -112,171 +108,6 @@ impl Diagnostic for View<'_> {
     }
 }
 
-pub(crate) fn summary(summary: &Summary, operation: &Operation, files: usize, started: Instant) {
-    if delivery::mode() == Mode::Quiet {
-        return;
-    }
-
-    let errors = summary.errors + summary.failures;
-
-    let action = match operation {
-        Operation::Check(_) => "Checked",
-        Operation::Format(format) if format.check => "Checked formatting of",
-        Operation::Format(format) if format.preview => "Previewed formatting for",
-        Operation::Format(_) => "Formatted",
-        Operation::Lint(lint) if lint.preview => "Previewed fixes for",
-        Operation::Lint(_) => "Linted",
-    };
-
-    let action = console::style(action).for_stderr().bold();
-
-    let action = if errors != 0 {
-        action.red()
-    } else if summary.warnings != 0
-        || (matches!(operation, Operation::Format(format) if format.check) && summary.changed != 0)
-    {
-        action.yellow()
-    } else {
-        action.green()
-    };
-
-    let mut details = Vec::new();
-
-    if errors != 0 {
-        details.push(format!(
-            "{errors} {}",
-            delivery::plural(errors, "error", "errors")
-        ));
-    }
-
-    if summary.warnings != 0 {
-        details.push(format!(
-            "{} {}",
-            summary.warnings,
-            delivery::plural(summary.warnings, "warning", "warnings"),
-        ));
-    }
-
-    if summary.changed != 0 {
-        let count = summary.changed;
-        let word = delivery::plural(count, "file", "files");
-
-        details.push(match operation {
-            Operation::Format(format) if format.check => format!(
-                "{count} {word} {} formatting",
-                delivery::plural(count, "needs", "need"),
-            ),
-
-            Operation::Format(format) if format.preview => format!("{count} {word} would change"),
-            Operation::Lint(lint) if lint.preview => format!("{count} {word} would change"),
-
-            Operation::Check(_) | Operation::Format(_) | Operation::Lint(_) => {
-                format!("{count} {word} changed")
-            }
-        });
-    }
-
-    let detail = if details.is_empty() {
-        if files == 0 {
-            "No files selected.".to_owned()
-        } else {
-            match operation {
-                Operation::Check(_) => "No errors.",
-                Operation::Format(format) if format.check => "All files are formatted.",
-                Operation::Format(_) => "No changes needed.",
-                Operation::Lint(lint) if lint.preview => "No changes needed.",
-                Operation::Lint(_) => "No errors or warnings.",
-            }
-            .to_owned()
-        }
-    } else {
-        format!("{}.", details.join(delivery::separator()))
-    };
-
-    if DETAILS.swap(false, Ordering::Relaxed) {
-        delivery::message("");
-    }
-
-    delivery::message(format_args!(
-        "{action} {files} {} in {:.2}s\n  {detail}",
-        delivery::plural(files, "file", "files"),
-        started.elapsed().as_secs_f64(),
-    ));
-}
-
-pub(crate) fn generated(
-    generated: &Generated,
-    root: &Path,
-    association: Option<&Path>,
-    started: Instant,
-) {
-    delivery::progress().finish_and_clear();
-
-    if delivery::mode() == Mode::Quiet {
-        return;
-    }
-
-    let width = if association.is_some() {
-        "Associated".len()
-    } else {
-        "Generated".len()
-    } + 2;
-
-    for path in &generated.files {
-        delivery::file("Generated", &relative(path, root), width);
-    }
-
-    if let Some(path) = association {
-        delivery::file("Associated", &relative(path, root), width);
-    }
-
-    let detail = if generated.changed == 0 {
-        "No changes needed.".to_owned()
-    } else {
-        format!(
-            "{} {} changed.",
-            generated.changed,
-            delivery::plural(generated.changed, "file", "files"),
-        )
-    };
-
-    delivery::message(format_args!(
-        "{} {} {} in {:.2}s\n  {detail}",
-        console::style("Generated").for_stderr().green().bold(),
-        generated.files.len(),
-        delivery::plural(generated.files.len(), "file", "files"),
-        started.elapsed().as_secs_f64(),
-    ));
-}
-
-pub(crate) fn interrupted(arguments: &Arguments) {
-    delivery::progress().finish_and_clear();
-
-    if delivery::mode() == Mode::Quiet {
-        return;
-    }
-
-    let message = if matches!(
-        &arguments.command,
-        Command::Files(operation) if operation.options().watch
-    ) {
-        "Stopped watching."
-    } else {
-        match &arguments.command {
-            Command::Generate(_) => "Generation interrupted.",
-            Command::Server => "Server interrupted.",
-
-            Command::Files(operation) => match operation.as_ref() {
-                Operation::Check(_) => "Check interrupted.",
-                Operation::Format(_) => "Formatting interrupted.",
-                Operation::Lint(_) => "Linting interrupted.",
-            },
-        }
-    };
-
-    delivery::message(console::style(message).for_stderr().yellow().bold());
-}
-
 pub(crate) fn failure(error: &Report) {
     delivery::progress().finish_and_clear();
     let mut view = View::new(MietteDiagnostic::new(error.to_string()));
@@ -311,7 +142,7 @@ pub(crate) fn failure(error: &Report) {
         ));
     }
 
-    DETAILS.store(true, Ordering::Relaxed);
+    HAS_DETAILS.store(true, Ordering::Relaxed);
 }
 
 pub(super) fn panic(message: &str, capture: &Capture) {
@@ -347,12 +178,12 @@ pub(crate) fn findings(root: &Path, findings: Vec<Finding>) -> Result<()> {
         let primary = finding
             .labels
             .iter()
-            .find(|label| label.primary)
+            .find(|label| label.is_primary)
             .or_else(|| finding.labels.first())
             .map(|label| label.source.clone());
 
         for label in finding.labels {
-            let span = if label.primary {
+            let span = if label.is_primary {
                 LabeledSpan::new_primary_with_span(label.message, label.range)
             } else {
                 LabeledSpan::new_with_span(label.message, label.range)
@@ -404,14 +235,14 @@ pub(crate) fn findings(root: &Path, findings: Vec<Finding>) -> Result<()> {
             return Err(error).wrap_err("Could not render the diagnostic.");
         }
 
-        DETAILS.store(true, Ordering::Relaxed);
+        HAS_DETAILS.store(true, Ordering::Relaxed);
     }
 
     Ok(())
 }
 
 fn render(diagnostic: &dyn Diagnostic, severity: Severity) -> Result<()> {
-    let mut theme = match (delivery::unicode(), console::colors_enabled_stderr()) {
+    let mut theme = match (delivery::is_interactive(), console::colors_enabled_stderr()) {
         (true, true) => GraphicalTheme::unicode(),
         (true, false) => GraphicalTheme::unicode_nocolor(),
         (false, true) => GraphicalTheme::ascii(),
@@ -446,28 +277,4 @@ fn render(diagnostic: &dyn Diagnostic, severity: Severity) -> Result<()> {
         .render_report(&mut output, diagnostic)?;
 
     delivery::suspend(|| io::stderr().lock().write_all(output.as_bytes())).map_err(Report::from)
-}
-
-pub(crate) fn unformatted(path: &Path) {
-    delivery::message(format_args!(
-        "{}  {}",
-        console::style("Needs formatting").for_stderr().yellow(),
-        path.display(),
-    ));
-
-    DETAILS.store(true, Ordering::Relaxed);
-}
-
-pub(crate) fn relative(path: &Path, root: &Path) -> PathBuf {
-    let mut prefix = PathBuf::new();
-
-    for ancestor in root.ancestors() {
-        if let Ok(path) = path.strip_prefix(ancestor) {
-            return prefix.join(path);
-        }
-
-        prefix.push("..");
-    }
-
-    path.to_owned()
 }

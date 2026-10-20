@@ -6,12 +6,14 @@ use std::{
 use eyre::{Result, WrapErr as _, bail};
 use instar_core::assets::{self, Target};
 
-use super::{
+use super::association;
+
+use crate::{
     arguments::{Arguments, Generate},
-    association, interrupt, output,
+    interrupt, output,
 };
 
-pub(super) fn run(arguments: &Arguments, options: &Generate) -> Result<u8> {
+pub(crate) fn run(arguments: &Arguments, options: &Generate) -> Result<u8> {
     let started = Instant::now();
 
     if arguments.stdin_filepath.is_some() {
@@ -91,7 +93,7 @@ pub(super) fn run(arguments: &Arguments, options: &Generate) -> Result<u8> {
         &output,
         &options.targets,
         options.revision.as_deref(),
-        interrupt::requested,
+        interrupt::is_requested,
     )?;
 
     interrupt::check()?;

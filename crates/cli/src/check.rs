@@ -11,9 +11,8 @@ use instar_core::workspace::{Purpose, Workspace};
 use super::{
     arguments::Operation,
     batch::{Batch, Finding, Label, Severity, Source},
-    execution::{self, Outcome, Project, Response},
+    execution::{self, Outcome, Project, Response, Watcher},
     interrupt,
-    watch::Watcher,
 };
 
 pub(super) fn session(
@@ -32,7 +31,7 @@ pub(super) fn session(
             Progress::Advanced { completed, total } => project.progress.advance(completed, total),
         }
 
-        !interrupt::requested()
+        !interrupt::is_requested()
     };
 
     let context = Context::new(workspace).with_progress(&update);
@@ -43,14 +42,14 @@ pub(super) fn session(
         project,
         watcher,
         started,
-        |selected, dirty, discovery, _| {
+        |selected, dirty, should_discover, _| {
             let checks = frontend.checks();
 
             for module in dirty {
                 frontend.invalidate(module)?;
             }
 
-            if discovery {
+            if should_discover {
                 frontend.refresh()?;
             }
 
@@ -100,7 +99,7 @@ fn process(
         );
 
         if !diagnostic.module.is_empty() {
-            let file = match files.entry(diagnostic.module.clone()) {
+            let (source, lines) = match files.entry(diagnostic.module.clone()) {
                 Entry::Occupied(entry) => entry.into_mut(),
 
                 Entry::Vacant(entry) => {
@@ -122,15 +121,15 @@ fn process(
                 }
             };
 
-            let start = file.1.get(diagnostic.start_line as usize).ok_or_else(|| {
+            let start = lines.get(diagnostic.start_line as usize).ok_or_else(|| {
                 eyre!("Internal error: could not locate the start of the diagnostic.")
             })? + diagnostic.start_column as usize;
 
-            let end = file.1.get(diagnostic.end_line as usize).ok_or_else(|| {
+            let end = lines.get(diagnostic.end_line as usize).ok_or_else(|| {
                 eyre!("Internal error: could not locate the end of the diagnostic.")
             })? + diagnostic.end_column as usize;
 
-            finding.labels.push(Label::new(file.0.clone(), start..end));
+            finding.labels.push(Label::new(source.clone(), start..end));
         }
 
         batch.findings.push(finding);

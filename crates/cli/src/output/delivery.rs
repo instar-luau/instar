@@ -1,12 +1,7 @@
 use std::{
-    backtrace::{Backtrace, BacktraceStatus},
-    env,
-    error::Error,
-    fmt,
-    io::{self, Write as _},
-    panic,
+    env, fmt,
     path::Path,
-    sync::OnceLock,
+    sync::{OnceLock, atomic::AtomicBool},
     time::Duration,
 };
 
@@ -15,27 +10,17 @@ use clap::{
     builder::styling::{AnsiColor, Styles},
 };
 
-use eyre::{EyreHandler, Report, Result, WrapErr as _, bail};
+use eyre::{Result, WrapErr as _, bail};
 use indicatif::{ProgressBar, ProgressStyle};
-use tracing::{Event, Subscriber};
-use tracing_error::{ErrorLayer, SpanTrace};
 
-use tracing_subscriber::{
-    filter::LevelFilter,
-    fmt::{
-        self as tracing_format, FmtContext, FormatEvent, FormatFields, FormattedFields,
-        format::Writer,
-    },
-    layer::SubscriberExt as _,
-    registry::LookupSpan,
-    util::SubscriberInitExt as _,
-};
-
+use super::logging;
 use crate::arguments::Arguments;
+
+pub(super) static HAS_DETAILS: AtomicBool = AtomicBool::new(false);
 
 static DISPLAY: OnceLock<Display> = OnceLock::new();
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Copy, Clone, Eq, PartialEq)]
 pub(super) enum Mode {
     Quiet,
     Normal,
@@ -44,7 +29,7 @@ pub(super) enum Mode {
 }
 
 impl Mode {
-    pub(super) fn detailed(self) -> bool {
+    pub(super) fn is_detailed(self) -> bool {
         matches!(self, Self::Verbose | Self::Debug)
     }
 }
@@ -54,127 +39,6 @@ struct Display {
     progress: ProgressBar,
 }
 
-pub(super) struct Capture {
-    pub(super) backtrace: Backtrace,
-    pub(super) spans: Option<SpanTrace>,
-}
-
-impl Capture {
-    fn new(debug: bool) -> Self {
-        Self {
-            backtrace: if debug {
-                Backtrace::force_capture()
-            } else {
-                Backtrace::capture()
-            },
-            spans: debug.then(SpanTrace::capture),
-        }
-    }
-
-    pub(super) fn details(&self) -> Vec<String> {
-        let mut details = Vec::new();
-
-        if let Some(trace) = &self.spans {
-            let trace = trace.to_string();
-
-            if !trace.is_empty() {
-                details.push(format!("Span trace:\n{trace}"));
-            }
-        }
-
-        if self.backtrace.status() == BacktraceStatus::Captured {
-            details.push(format!("Backtrace:\n{}", self.backtrace));
-        }
-
-        details
-    }
-}
-
-impl EyreHandler for Capture {
-    fn debug(
-        &self,
-        error: &(dyn Error + 'static),
-        formatter: &mut fmt::Formatter<'_>,
-    ) -> fmt::Result {
-        fmt::Display::fmt(error, formatter)
-    }
-}
-
-#[derive(Default)]
-struct Trace {
-    bytes: Vec<u8>,
-}
-
-impl io::Write for Trace {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.bytes.extend_from_slice(bytes);
-
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        if !self.bytes.is_empty() {
-            suspend(|| io::stderr().lock().write_all(&self.bytes))?;
-            self.bytes.clear();
-        }
-
-        Ok(())
-    }
-}
-
-impl Drop for Trace {
-    fn drop(&mut self) {
-        drop(self.flush());
-    }
-}
-
-struct Log;
-
-impl<SubscriberType, Fields> FormatEvent<SubscriberType, Fields> for Log
-where
-    SubscriberType: Subscriber + for<'span> LookupSpan<'span>,
-    Fields: for<'writer> FormatFields<'writer> + 'static,
-{
-    fn format_event(
-        &self,
-        context: &FmtContext<'_, SubscriberType, Fields>,
-        mut writer: Writer<'_>,
-        event: &Event<'_>,
-    ) -> fmt::Result {
-        let level = console::style(event.metadata().level()).for_stderr();
-
-        let level = match *event.metadata().level() {
-            tracing::Level::ERROR => level.red().bold(),
-            tracing::Level::WARN => level.yellow().bold(),
-            tracing::Level::DEBUG => level.cyan(),
-            tracing::Level::TRACE => level.dim(),
-            tracing::Level::INFO => level,
-        };
-
-        write!(writer, "{level}  ")?;
-
-        context
-            .field_format()
-            .format_fields(writer.by_ref(), event)?;
-
-        if let Some(scope) = context.event_scope() {
-            for span in scope.from_root() {
-                write!(writer, " {}", span.name())?;
-
-                let extensions = span.extensions();
-
-                if let Some(fields) = extensions.get::<FormattedFields<Fields>>()
-                    && !fields.is_empty()
-                {
-                    write!(writer, "{{{fields}}}")?;
-                }
-            }
-        }
-
-        writeln!(writer)
-    }
-}
-
 pub(crate) fn initialize(arguments: &Arguments) -> Result<()> {
     match arguments.color.unwrap_or_default() {
         ColorChoice::Always => console::set_colors_enabled_stderr(true),
@@ -182,11 +46,11 @@ pub(crate) fn initialize(arguments: &Arguments) -> Result<()> {
         ColorChoice::Auto => {}
     }
 
-    let mode = if arguments.quiet {
+    let mode = if arguments.is_quiet {
         Mode::Quiet
-    } else if arguments.debug {
+    } else if arguments.is_debug {
         Mode::Debug
-    } else if arguments.verbose {
+    } else if arguments.is_verbose {
         Mode::Verbose
     } else {
         Mode::Normal
@@ -195,7 +59,7 @@ pub(crate) fn initialize(arguments: &Arguments) -> Result<()> {
     if DISPLAY
         .set(Display {
             mode,
-            progress: if mode == Mode::Quiet || !interactive() {
+            progress: if mode == Mode::Quiet || !is_interactive() {
                 ProgressBar::hidden()
             } else {
                 ProgressBar::new_spinner()
@@ -206,53 +70,7 @@ pub(crate) fn initialize(arguments: &Arguments) -> Result<()> {
         bail!("Internal error: output is already initialized.");
     }
 
-    eyre::set_hook(Box::new(move |_| {
-        Box::new(if mode == Mode::Debug {
-            Capture::new(true)
-        } else {
-            Capture {
-                backtrace: Backtrace::disabled(),
-                spans: None,
-            }
-        })
-    }))
-    .map_err(Report::msg)
-    .wrap_err("Could not initialize error reporting.")?;
-
-    panic::set_hook(Box::new(move |information| {
-        let payload = information
-            .payload()
-            .downcast_ref::<String>()
-            .map(String::as_str)
-            .or_else(|| information.payload().downcast_ref::<&str>().copied())
-            .unwrap_or("Unknown panic payload.");
-
-        let message = information.location().map_or_else(
-            || format!("Internal error: {payload}"),
-            |location| format!("Internal error: {payload}\n{location}"),
-        );
-
-        super::report::panic(&message, &Capture::new(mode == Mode::Debug));
-    }));
-
-    tracing_subscriber::registry()
-        .with(ErrorLayer::default())
-        .with(
-            tracing_format::layer()
-                .event_format(Log)
-                .with_writer(Trace::default)
-                .with_ansi(console::colors_enabled_stderr()),
-        )
-        .with(LevelFilter::from_level(if mode == Mode::Debug {
-            tracing::Level::DEBUG
-        } else {
-            tracing::Level::WARN
-        }))
-        .try_init()
-        .map_err(Report::msg)
-        .wrap_err("Could not initialize logging.")?;
-
-    Ok(())
+    logging::initialize(mode)
 }
 
 pub(super) fn mode() -> Mode {
@@ -271,31 +89,25 @@ pub(super) fn message(message: impl fmt::Display) {
     suspend(|| eprintln!("{message}"));
 }
 
-pub(super) fn interactive() -> bool {
+pub(super) fn is_interactive() -> bool {
     console::Term::stderr().is_term()
         && env::var_os("TERM").is_none_or(|terminal| terminal != "dumb")
 }
 
-pub(super) fn unicode() -> bool {
-    interactive()
-}
-
 pub(super) fn ellipsis() -> &'static str {
-    if unicode() { "…" } else { "..." }
+    if is_interactive() { "…" } else { "..." }
 }
 
 pub(super) fn separator() -> &'static str {
-    if unicode() { " · " } else { "; " }
+    if is_interactive() { " · " } else { "; " }
 }
 
 pub(crate) fn root(path: &Path) {
-    if mode().detailed() {
-        file("Project", path, 9);
-    }
+    file("Project", path, 9);
 }
 
 pub(super) fn file(action: &str, path: &Path, width: usize) {
-    if mode().detailed() {
+    if mode().is_detailed() {
         message(format_args!(
             "{}{:padding$}{}",
             console::style(action).for_stderr().cyan().bold(),
@@ -307,7 +119,7 @@ pub(super) fn file(action: &str, path: &Path, width: usize) {
 }
 
 pub(crate) fn workers(count: usize) {
-    if mode().detailed() {
+    if mode().is_detailed() {
         message(format_args!(
             "{}  {count}\n",
             console::style("Workers").for_stderr().cyan().bold(),

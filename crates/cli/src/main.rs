@@ -1,7 +1,6 @@
 //! Instar's command-line interface.
 
 mod arguments;
-mod association;
 mod batch;
 mod check;
 mod command;
@@ -11,7 +10,6 @@ mod generate;
 mod interrupt;
 mod lint;
 mod output;
-mod watch;
-mod workers;
+mod paths;
 
 use self::command::main;

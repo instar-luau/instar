@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, env, num::NonZeroUsize, path::PathBuf};
 use clap::{ColorChoice, CommandFactory as _, FromArgMatches as _, Parser, Subcommand};
 use instar_core::{assets::Target, lint};
 
-use super::{association::Association, output};
+use super::{generate::Association, output};
 
 #[derive(Parser)]
 #[command(
@@ -14,23 +14,30 @@ use super::{association::Association, output};
 )]
 pub(super) struct Arguments {
     #[arg(
-        long,
+        id = "verbose",
+        long = "verbose",
         global = true,
         help = "Show project details and file activity",
         conflicts_with = "quiet"
     )]
-    pub(super) verbose: bool,
+    pub(super) is_verbose: bool,
 
     #[arg(
-        long,
+        id = "debug",
+        long = "debug",
         global = true,
         help = "Show verbose output and internal debug logs",
         conflicts_with = "quiet"
     )]
-    pub(super) debug: bool,
+    pub(super) is_debug: bool,
 
-    #[arg(long, global = true, help = "Hide progress and summaries")]
-    pub(super) quiet: bool,
+    #[arg(
+        id = "quiet",
+        long = "quiet",
+        global = true,
+        help = "Hide progress and summaries"
+    )]
+    pub(super) is_quiet: bool,
 
     #[arg(
         long,
@@ -114,44 +121,6 @@ pub(super) enum Operation {
     Lint(Lint),
 }
 
-#[derive(clap::Args)]
-pub(super) struct Generate {
-    #[arg(
-        value_name = "TARGET",
-        help = "Select schema, luau, or roblox files. Defaults to all targets"
-    )]
-    pub(super) targets: Vec<Target>,
-
-    #[arg(
-        long,
-        value_name = "DIRECTORY",
-        help = "Write generated files to this directory"
-    )]
-    pub(super) output: PathBuf,
-
-    #[arg(
-        long,
-        value_name = "PATH",
-        help = "Resolve output and TOML tool configuration from this project directory"
-    )]
-    pub(super) root: Option<PathBuf>,
-
-    #[arg(
-        long,
-        value_enum,
-        value_name = "TOOL",
-        help = "Associate the generated schema with the project's TOML tool configuration"
-    )]
-    pub(super) associate: Option<Association>,
-
-    #[arg(
-        long,
-        value_name = "COMMIT",
-        help = "Generate upstream files from this 40-character tracker commit"
-    )]
-    pub(super) revision: Option<String>,
-}
-
 impl Operation {
     pub(super) fn options(&self) -> &Options {
         match self {
@@ -194,9 +163,9 @@ impl Operation {
                 .map(str::to_owned)
                 .chain(lint.rule.iter().cloned())
                 .map(|name| {
-                    let enabled = lint.rule.contains(&name);
+                    let is_enabled = lint.rule.contains(&name);
 
-                    (name, BTreeMap::from([("enabled", enabled)]))
+                    (name, BTreeMap::from([("enabled", is_enabled)]))
                 })
                 .collect();
 
@@ -208,6 +177,44 @@ impl Operation {
 }
 
 #[derive(clap::Args)]
+pub(super) struct Generate {
+    #[arg(
+        value_name = "TARGET",
+        help = "Select schema, luau, or roblox files. Defaults to all targets"
+    )]
+    pub(super) targets: Vec<Target>,
+
+    #[arg(
+        long,
+        value_name = "DIRECTORY",
+        help = "Write generated files to this directory"
+    )]
+    pub(super) output: PathBuf,
+
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Resolve output and TOML tool configuration from this project directory"
+    )]
+    pub(super) root: Option<PathBuf>,
+
+    #[arg(
+        long,
+        value_enum,
+        value_name = "TOOL",
+        help = "Associate the generated schema with the project's TOML tool configuration"
+    )]
+    pub(super) associate: Option<Association>,
+
+    #[arg(
+        long,
+        value_name = "COMMIT",
+        help = "Generate upstream files from this 40-character tracker commit"
+    )]
+    pub(super) revision: Option<String>,
+}
+
+#[derive(clap::Args)]
 pub(super) struct Options {
     #[arg(
         value_name = "INPUT",
@@ -215,8 +222,8 @@ pub(super) struct Options {
     )]
     pub(super) inputs: Vec<PathBuf>,
 
-    #[arg(long, help = "Run again when files change")]
-    pub(super) watch: bool,
+    #[arg(id = "watch", long = "watch", help = "Run again when files change")]
+    pub(super) should_watch: bool,
 
     #[arg(
         long,
@@ -277,17 +284,19 @@ pub(super) struct Format {
     pub(super) jobs: Option<NonZeroUsize>,
 
     #[arg(
-        long,
+        id = "check",
+        long = "check",
         conflicts_with = "preview",
         help = "Report files that need formatting without writing changes"
     )]
-    pub(super) check: bool,
+    pub(super) should_check: bool,
 
     #[arg(
-        long,
+        id = "preview",
+        long = "preview",
         help = "Show formatting changes as a unified diff without writing"
     )]
-    pub(super) preview: bool,
+    pub(super) should_preview: bool,
 }
 
 #[derive(clap::Args)]
@@ -305,13 +314,14 @@ pub(super) struct Lint {
     #[arg(long, value_name = "RULE", num_args = 1.., help = "Run only the selected lint rules")]
     pub(super) rule: Vec<String>,
 
-    #[arg(long = "fix", help = "Apply safe fixes")]
-    pub(super) corrections: bool,
+    #[arg(id = "corrections", long = "fix", help = "Apply safe fixes")]
+    pub(super) should_fix: bool,
 
     #[arg(
-        long,
+        id = "preview",
+        long = "preview",
         requires = "corrections",
         help = "Show safe fixes as a unified diff without writing"
     )]
-    pub(super) preview: bool,
+    pub(super) should_preview: bool,
 }

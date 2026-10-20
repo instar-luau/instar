@@ -8,8 +8,8 @@ use std::{
 use eyre::{Result, WrapErr as _};
 use indicatif::{ProgressBar, ProgressStyle};
 
-use super::{delivery, report};
-use crate::arguments::Operation;
+use super::delivery;
+use crate::{arguments::Operation, paths::relative};
 
 #[derive(Clone)]
 pub(crate) struct Progress {
@@ -18,7 +18,7 @@ pub(crate) struct Progress {
     root: PathBuf,
     action: &'static str,
     operation: &'static str,
-    concurrent: bool,
+    is_concurrent: bool,
     width: usize,
 }
 
@@ -28,7 +28,7 @@ struct State {
     completed: BTreeSet<String>,
     total: Option<usize>,
     position: usize,
-    begun: bool,
+    has_begun: bool,
 }
 
 impl Progress {
@@ -39,7 +39,7 @@ impl Progress {
             Operation::Lint(_) => ("Linting", "linting"),
         };
 
-        let concurrent = !matches!(operation, Operation::Check(_));
+        let is_concurrent = !matches!(operation, Operation::Check(_));
         let bar = delivery::progress();
 
         bar.set_style(
@@ -55,7 +55,7 @@ impl Progress {
             root: root.to_owned(),
             action,
             operation: operation_name,
-            concurrent,
+            is_concurrent,
             width: action.len().max("Writing".len()) + 2,
         };
 
@@ -66,8 +66,8 @@ impl Progress {
 
     pub(crate) fn reset(&self, files: usize) {
         let state = State {
-            total: self.concurrent.then_some(files),
-            begun: self.action == "Writing",
+            total: self.is_concurrent.then_some(files),
+            has_begun: self.action == "Writing",
             ..State::default()
         };
 
@@ -89,7 +89,7 @@ impl Progress {
             state: Arc::default(),
             action: "Writing",
             operation: "writes",
-            concurrent: true,
+            is_concurrent: true,
             ..self.clone()
         };
 
@@ -105,16 +105,16 @@ impl Progress {
             .lock()
             .expect("Internal error: the progress-state lock is poisoned.");
 
-        state.begun = true;
+        state.has_begun = true;
 
-        if !self.concurrent {
+        if !self.is_concurrent {
             state.active.clear();
         }
 
         if state.active.insert(module.to_owned()) {
             delivery::file(
                 self.action,
-                &report::relative(Path::new(module), &self.root),
+                &relative(Path::new(module), &self.root),
                 self.width,
             );
         }
@@ -131,7 +131,7 @@ impl Progress {
         state.active.remove(module);
         state.completed.insert(module.to_owned());
 
-        if self.concurrent {
+        if self.is_concurrent {
             state.position = state.completed.len();
         }
 
@@ -153,7 +153,7 @@ impl Progress {
             .expect("Internal error: the progress-state lock is poisoned.");
 
         state.active.clear();
-        state.begun = true;
+        state.has_begun = true;
         state.total = Some(total);
         state.position = completed;
         self.update(&state);
@@ -176,10 +176,10 @@ impl Progress {
             return;
         }
 
-        let complete =
+        let is_complete =
             state.active.is_empty() && state.total.is_some_and(|total| state.position == total);
 
-        let mut message = if !state.begun {
+        let mut message = if !state.has_begun {
             console::style(format!(
                 "Preparing {}{}",
                 self.operation,
@@ -189,7 +189,7 @@ impl Progress {
             .cyan()
             .bold()
             .to_string()
-        } else if complete {
+        } else if is_complete {
             console::style(format!(
                 "Finalizing {}{}",
                 self.operation,
@@ -201,9 +201,13 @@ impl Progress {
             .to_string()
         } else {
             let counts = state.total.map_or_else(String::new, |total| {
-                let unit = if self.concurrent { "file" } else { "module" };
+                let unit = if self.is_concurrent { "file" } else { "module" };
 
-                let plural = if self.concurrent { "files" } else { "modules" };
+                let plural = if self.is_concurrent {
+                    "files"
+                } else {
+                    "modules"
+                };
 
                 format!(
                     "{}/{total} {}",
@@ -228,7 +232,7 @@ impl Progress {
         };
 
         if let Some(module) = state.active.first() {
-            let path = report::relative(Path::new(module), &self.root)
+            let path = relative(Path::new(module), &self.root)
                 .display()
                 .to_string();
 

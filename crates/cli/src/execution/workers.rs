@@ -10,11 +10,15 @@ use eyre::{Report, Result, WrapErr as _, eyre};
 use instar_core::workspace::Workspace;
 
 use super::{
+    project::{self, Project},
+    session::{self, Outcome, Response},
+    watch::Watcher,
+};
+
+use crate::{
     arguments::Operation,
     batch::Batch,
-    execution::{self, Outcome, Project, Response},
     output::{self, Progress},
-    watch::Watcher,
 };
 
 struct Request {
@@ -38,9 +42,7 @@ impl Worker<'_> {
             for module in &request.dirty {
                 if workspace.should_reload(module)? {
                     self.responses
-                        .send(Ok(Response::Reload {
-                            configuration: true,
-                        }))
+                        .send(Ok(Response::Reload { should_reset: true }))
                         .wrap_err("Could not send the worker response.")?;
 
                     return Ok(());
@@ -87,7 +89,7 @@ impl Pool {
         }
 
         let mut batch = Batch::default();
-        let mut configuration = None;
+        let mut should_reset_generators = None;
         let mut failure = None;
 
         for connection in &self.connections {
@@ -98,9 +100,9 @@ impl Pool {
             {
                 Ok(Response::Completed(completed)) => batch.append(completed),
 
-                Ok(Response::Reload {
-                    configuration: changed,
-                }) => *configuration.get_or_insert(false) |= changed,
+                Ok(Response::Reload { should_reset }) => {
+                    *should_reset_generators.get_or_insert(false) |= should_reset;
+                }
 
                 Err(error) => {
                     failure.get_or_insert(error);
@@ -108,8 +110,8 @@ impl Pool {
             }
         }
 
-        if let Some(configuration) = configuration {
-            Ok(Response::Reload { configuration })
+        if let Some(should_reset) = should_reset_generators {
+            Ok(Response::Reload { should_reset })
         } else if let Some(error) = failure {
             Err(error)
         } else {
@@ -118,7 +120,7 @@ impl Pool {
     }
 }
 
-pub(super) fn session(
+pub(crate) fn session(
     operation: &Operation,
     project: &Project,
     watcher: Option<&mut Watcher>,
@@ -143,7 +145,7 @@ pub(super) fn session(
     let options = operation.options();
     let overrides = &project.overrides;
     let stdin = project.stdin.as_ref();
-    let generation = project.generation.as_ref();
+    let generators = project.generators.as_ref();
     let generated = project.workspace.generated();
 
     output::workers(jobs);
@@ -151,10 +153,10 @@ pub(super) fn session(
     let run_worker = |worker: Worker<'_>| -> Result<()> {
         let span = tracing::debug_span!("worker", files = worker.modules.len());
         let _entered = span.enter();
-        let (mut workspace, _) = execution::open(root, options, overrides, stdin)?;
+        let (mut workspace, _) = project::open(root, options, overrides, stdin)?;
 
-        if let Some(generation) = generation {
-            workspace = workspace.with_generators(generation.clone());
+        if let Some(generators) = generators {
+            workspace = workspace.with_generators(generators.clone());
         }
 
         workspace.set_generated(generated.clone());
@@ -208,7 +210,7 @@ pub(super) fn session(
             if failure.is_some() {
                 Ok(Outcome::Completed(0))
             } else {
-                execution::session(
+                session::session(
                     operation,
                     project,
                     watcher,
@@ -216,7 +218,7 @@ pub(super) fn session(
                     |selected, dirty, _, progress| {
                         if selected != &project.selected {
                             return Ok(Response::Reload {
-                                configuration: false,
+                                should_reset: false,
                             });
                         }
 
@@ -227,8 +229,8 @@ pub(super) fn session(
         };
 
         if (result.is_err() || failure.is_some())
-            && let Some(generation) = generation
-            && let Err(error) = execution::shutdown(generation)
+            && let Some(generators) = generators
+            && let Err(error) = project::shutdown(generators)
         {
             failure.get_or_insert(error);
         }

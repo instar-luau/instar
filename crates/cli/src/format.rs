@@ -10,9 +10,7 @@ use instar_core::{
 use super::{
     arguments::Operation,
     batch::{Batch, Finding, Label, Output, Severity, Source},
-    execution::{Outcome, Project},
-    watch::Watcher,
-    workers,
+    execution::{Outcome, Project, Watcher, workers},
 };
 
 pub(super) fn session(

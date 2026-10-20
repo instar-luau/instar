@@ -16,12 +16,13 @@ use notify::{
     event::ModifyKind,
 };
 
-use super::{arguments::Options, execution, interrupt, output};
+use super::project;
+use crate::{arguments::Options, interrupt, output};
 
 pub(super) enum Change {
     Sources {
         paths: BTreeSet<String>,
-        discovery: bool,
+        should_discover: bool,
         started: Instant,
     },
 
@@ -30,7 +31,7 @@ pub(super) enum Change {
     },
 }
 
-pub(super) struct Watcher {
+pub(crate) struct Watcher {
     subscription: RecommendedWatcher,
     receiver: Receiver<notify::Result<Event>>,
     directories: BTreeMap<PathBuf, bool>,
@@ -73,11 +74,11 @@ impl Watcher {
         let mut subscription = notify::recommended_watcher(sender)
             .wrap_err("Could not start the filesystem watcher.")?;
 
-        for (directory, recursive) in &directories {
+        for (directory, is_recursive) in &directories {
             subscription
                 .watch(
                     directory,
-                    if *recursive {
+                    if *is_recursive {
                         RecursiveMode::Recursive
                     } else {
                         RecursiveMode::NonRecursive
@@ -95,7 +96,7 @@ impl Watcher {
             roots,
             reload: BTreeMap::new(),
             observed: BTreeMap::new(),
-            generators: Generators::new(interrupt::requested, output::generator),
+            generators: Generators::new(interrupt::is_requested, output::generator),
             debounce: Duration::from_millis(options.debounce),
         };
 
@@ -116,10 +117,10 @@ impl Watcher {
     pub(super) fn reset(&mut self) -> Result<()> {
         let previous = mem::replace(
             &mut self.generators,
-            Generators::new(interrupt::requested, output::generator),
+            Generators::new(interrupt::is_requested, output::generator),
         );
 
-        execution::shutdown(&previous)?;
+        project::shutdown(&previous)?;
 
         Ok(())
     }
@@ -127,11 +128,11 @@ impl Watcher {
     pub(super) fn observe(
         &mut self,
         paths: impl IntoIterator<Item = PathBuf>,
-        reload: bool,
+        should_reload: bool,
     ) -> Result<()> {
         for path in paths {
             if let Some(target) = self.observed.get(&path)
-                && (!reload || self.reload.contains_key(target))
+                && (!should_reload || self.reload.contains_key(target))
             {
                 continue;
             }
@@ -152,27 +153,31 @@ impl Watcher {
                     "Internal error: the watched path is outside its ancestor directory.",
                 )?);
 
-            let recursive =
+            let is_recursive =
                 target.parent() != Some(directory.as_path()) || self.roots.contains(&directory);
 
             self.observed.insert(path.clone(), target.clone());
             let canonical = canonical(&path)?;
 
-            if reload {
+            if should_reload {
                 self.reload.insert(target.clone(), canonical.is_some());
             }
 
             let parent = target.parent().filter(|_| ancestor == path.as_path());
 
-            for (directory, recursive) in parent
+            for (directory, is_recursive) in parent
                 .map(|parent| (parent.to_owned(), false))
                 .into_iter()
-                .chain(iter::once((directory, recursive)))
+                .chain(iter::once((directory, is_recursive)))
             {
-                if self.directories.iter().any(|(watched, subtree)| {
-                    (*subtree && directory.starts_with(watched))
-                        || (!recursive && &directory == watched)
-                }) {
+                if self
+                    .directories
+                    .iter()
+                    .any(|(watched, is_watched_recursively)| {
+                        (*is_watched_recursively && directory.starts_with(watched))
+                            || (!is_recursive && &directory == watched)
+                    })
+                {
                     continue;
                 }
 
@@ -183,7 +188,7 @@ impl Watcher {
                 self.subscription
                     .watch(
                         &directory,
-                        if recursive {
+                        if is_recursive {
                             RecursiveMode::Recursive
                         } else {
                             RecursiveMode::NonRecursive
@@ -191,13 +196,13 @@ impl Watcher {
                     )
                     .wrap_err_with(|| format!("Could not watch `{}`.", directory.display()))?;
 
-                self.directories.insert(directory, recursive);
+                self.directories.insert(directory, is_recursive);
             }
 
             if let Some(canonical) = canonical
                 && canonical != target
             {
-                self.observe([canonical], reload)?;
+                self.observe([canonical], should_reload)?;
             }
         }
 
@@ -205,10 +210,10 @@ impl Watcher {
     }
 
     pub(super) fn changed(&mut self, workspace: &Workspace) -> Result<Change> {
-        let (events, generated) = self.wait(false)?;
+        let (events, has_generated_changes) = self.wait(false)?;
         let started = Instant::now();
         let mut paths = BTreeSet::new();
-        let mut discovery = false;
+        let mut should_discover = false;
 
         for event in events {
             tracing::debug!(kind = ?event.kind, paths = ?event.paths, "Processing filesystem event");
@@ -221,13 +226,13 @@ impl Watcher {
                 return Ok(Change::Reload { started });
             }
 
-            let structural = !modified(&event);
+            let is_structural = !is_modified(&event);
 
             for path in event.paths {
-                for (dependency, existed) in &self.reload {
+                for (dependency, did_exist) in &self.reload {
                     if path.starts_with(dependency)
                         || (dependency.starts_with(&path)
-                            && (*existed || canonical(dependency)?.is_some()))
+                            && (*did_exist || canonical(dependency)?.is_some()))
                         || (dependency.parent() == path.parent()
                             && canonical(dependency)?.as_ref() == Some(&path))
                     {
@@ -249,12 +254,12 @@ impl Watcher {
                     }
                 }
 
-                discovery |= structural;
+                should_discover |= is_structural;
                 paths.insert(workspace.normalize(&path)?);
             }
         }
 
-        if generated {
+        if has_generated_changes {
             tracing::debug!("Reloading after generated sourcemaps changed");
 
             return Ok(Change::Reload { started });
@@ -262,26 +267,26 @@ impl Watcher {
 
         Ok(Change::Sources {
             paths,
-            discovery,
+            should_discover,
             started,
         })
     }
 
-    pub(super) fn wait(&mut self, recovery: bool) -> Result<(Vec<Event>, bool)> {
+    pub(super) fn wait(&mut self, is_recovering: bool) -> Result<(Vec<Event>, bool)> {
         let mut events = Vec::new();
         let mut updated = Instant::now();
-        let mut generated = false;
+        let mut has_generated_changes = false;
 
         loop {
             interrupt::check()?;
 
-            if !recovery {
-                generated |= self.generators.advance()?;
+            if !is_recovering {
+                has_generated_changes |= self.generators.advance()?;
             }
 
             let remaining = self.debounce.saturating_sub(updated.elapsed());
 
-            let timeout = if generated && events.is_empty() {
+            let timeout = if has_generated_changes && events.is_empty() {
                 Duration::ZERO
             } else if events.is_empty() {
                 interrupt::INTERVAL
@@ -293,7 +298,7 @@ impl Watcher {
                 Ok(event) => event.wrap_err("Could not observe filesystem changes.")?,
 
                 Err(RecvTimeoutError::Timeout) => {
-                    if (generated && events.is_empty())
+                    if (has_generated_changes && events.is_empty())
                         || (!events.is_empty() && updated.elapsed() >= self.debounce)
                     {
                         break;
@@ -305,7 +310,7 @@ impl Watcher {
                 Err(error) => return Err(error).wrap_err("Could not receive filesystem changes."),
             };
 
-            if self.relevant(&event, recovery)? {
+            if self.is_relevant(&event, is_recovering)? {
                 events.push(event);
                 updated = Instant::now();
             }
@@ -329,7 +334,7 @@ impl Watcher {
             self.unwatch(&directory)?;
         }
 
-        Ok((events, generated))
+        Ok((events, has_generated_changes))
     }
 
     fn unwatch(&mut self, directory: &Path) -> Result<()> {
@@ -349,7 +354,7 @@ impl Watcher {
         Ok(())
     }
 
-    fn relevant(&self, event: &Event, recovery: bool) -> Result<bool> {
+    fn is_relevant(&self, event: &Event, is_recovering: bool) -> Result<bool> {
         if event.need_rescan() || event.paths.is_empty() {
             return Ok(true);
         }
@@ -359,22 +364,22 @@ impl Watcher {
         }
 
         for path in &event.paths {
-            let directory = path.is_dir();
+            let is_directory = path.is_dir();
 
-            if !recovery && modified(event) && directory {
+            if !is_recovering && is_modified(event) && is_directory {
                 continue;
             }
 
-            let source = path
+            let is_source = path
                 .extension()
                 .is_some_and(|extension| extension == "lua" || extension == "luau")
-                && !directory;
+                && !is_directory;
 
-            if ((recovery || source || directory)
+            if ((is_recovering || is_source || is_directory)
                 && self.roots.iter().any(|root| path.starts_with(root)))
                 || self.observed.values().any(|observed| {
                     observed.starts_with(path)
-                        || ((recovery || source) && path.starts_with(observed))
+                        || ((is_recovering || is_source) && path.starts_with(observed))
                 })
                 || self
                     .reload
@@ -428,7 +433,7 @@ fn canonical(path: &Path) -> Result<Option<PathBuf>> {
     }
 }
 
-fn modified(event: &Event) -> bool {
+fn is_modified(event: &Event) -> bool {
     matches!(
         event.kind,
         EventKind::Modify(ModifyKind::Any | ModifyKind::Data(_) | ModifyKind::Metadata(_))
