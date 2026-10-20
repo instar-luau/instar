@@ -14,23 +14,23 @@ use crate::{
 };
 
 pub(in crate::assets) struct Publication {
-    pub(super) originals: BTreeMap<PathBuf, Option<Original>>,
+    originals: BTreeMap<PathBuf, Option<Original>>,
     directory: PathBuf,
-    existing: bool,
+    is_existing: bool,
     _lock: File,
 }
 
 #[derive(Eq, PartialEq)]
-pub(super) struct Original {
-    pub(super) contents: String,
-    pub(super) permissions: Permissions,
-    pub(super) identity: Handle,
+struct Original {
+    contents: String,
+    permissions: Permissions,
+    identity: Handle,
 }
 
-pub(super) struct Installed {
-    pub(super) relative: PathBuf,
-    pub(super) identity: Handle,
-    pub(super) permissions: Permissions,
+struct Installed {
+    relative: PathBuf,
+    identity: Handle,
+    permissions: Permissions,
 }
 
 impl Publication {
@@ -41,7 +41,7 @@ impl Publication {
         validate_directory(&directory)?;
         let lock = lock(&directory)?;
         validate_directory(&directory)?;
-        let existing = exists(&directory)?;
+        let is_existing = is_present(&directory)?;
         let mut originals = BTreeMap::new();
 
         for relative in targets.iter().flat_map(|target| target.files()) {
@@ -51,7 +51,7 @@ impl Publication {
             validate_directory(
                 destination
                     .parent()
-                    .expect("internal error: output has no parent"),
+                    .expect("Internal error: output has no parent directory."),
             )?;
 
             originals.insert(relative, original(&destination)?);
@@ -60,25 +60,25 @@ impl Publication {
         Ok(Self {
             originals,
             directory,
-            existing,
+            is_existing,
             _lock: lock,
         })
     }
 
-    pub(in crate::assets) fn contains(&self, path: &Path) -> bool {
+    pub(in crate::assets) fn has_path(&self, path: &Path) -> bool {
         self.originals.contains_key(path)
     }
 
     pub(in crate::assets) fn write(
         self,
         files: &BTreeMap<PathBuf, String>,
-        cancelled: fn() -> bool,
+        is_cancelled: fn() -> bool,
     ) -> Result<Generated, Error> {
-        interrupted(cancelled)?;
+        interrupted(is_cancelled)?;
 
         if !files.keys().eq(self.originals.keys()) {
             return Err(Error::Invalid {
-                reason: "generated files do not match the selected targets".to_owned(),
+                reason: "Generated files do not match the selected targets.".to_owned(),
             });
         }
 
@@ -110,9 +110,9 @@ impl Publication {
         let mut replacements = BTreeMap::new();
 
         for (relative, contents) in files {
-            interrupted(cancelled)?;
+            interrupted(is_cancelled)?;
 
-            if !self.existing {
+            if !self.is_existing {
                 stage(&staging.path().join(relative), contents, None)?;
                 continue;
             }
@@ -146,9 +146,9 @@ impl Publication {
         }
 
         self.validate(files)?;
-        interrupted(cancelled)?;
+        interrupted(is_cancelled)?;
 
-        if !self.existing {
+        if !self.is_existing {
             fs::rename(staging.path(), &self.directory)
                 .map_err(|source| filesystem(&self.directory, source))?;
 
@@ -175,7 +175,7 @@ impl Publication {
 
                 let parent = destination
                     .parent()
-                    .expect("internal error: output has no parent");
+                    .expect("Internal error: output has no parent directory.");
 
                 validate_directory(parent)?;
                 fs::create_dir_all(parent).map_err(|source| filesystem(parent, source))?;
@@ -206,7 +206,7 @@ impl Publication {
         Ok(generated)
     }
 
-    pub(super) fn recover(
+    fn recover(
         &self,
         files: &BTreeMap<PathBuf, String>,
         staging: TempDir,
@@ -223,7 +223,7 @@ impl Publication {
                 validate_directory(
                     destination
                         .parent()
-                        .expect("internal error: output has no parent"),
+                        .expect("Internal error: output has no parent directory."),
                 )?;
 
                 if let Some(original) = &self.originals[&installed.relative] {
@@ -266,21 +266,25 @@ impl Publication {
     fn validate(&self, files: &BTreeMap<PathBuf, String>) -> Result<(), Error> {
         validate_directory(&self.directory)?;
 
-        if exists(&self.directory)? != self.existing {
+        if is_present(&self.directory)? != self.is_existing {
             return Err(filesystem(
                 &self.directory,
-                io::Error::other("output directory changed during generation"),
+                io::Error::other("Output directory changed during generation."),
             ));
         }
 
         for (relative, expected) in &self.originals {
             let path = self.directory.join(relative);
-            validate_directory(path.parent().expect("internal error: output has no parent"))?;
+
+            validate_directory(
+                path.parent()
+                    .expect("Internal error: output has no parent directory."),
+            )?;
 
             if original(&path)? != *expected {
                 return Err(filesystem(
                     &path,
-                    io::Error::other("output changed during generation"),
+                    io::Error::other("Output changed during generation."),
                 ));
             }
 
@@ -294,7 +298,7 @@ impl Publication {
             {
                 return Err(filesystem(
                     &path,
-                    io::Error::other("refusing to replace a read-only file"),
+                    io::Error::other("Cannot replace a read-only file."),
                 ));
             }
         }
@@ -311,7 +315,7 @@ fn validate_directory(path: &Path) -> Result<(), Error> {
             Ok(_) => {
                 return Err(filesystem(
                     ancestor,
-                    io::Error::other("output parent is not a regular directory"),
+                    io::Error::other("Output parent is not a regular directory."),
                 ));
             }
 
@@ -341,7 +345,7 @@ fn original(path: &Path) -> Result<Option<Original>, Error> {
             {
                 return Err(filesystem(
                     path,
-                    io::Error::other("output changed during generation"),
+                    io::Error::other("Output changed during generation."),
                 ));
             }
 
@@ -354,7 +358,7 @@ fn original(path: &Path) -> Result<Option<Original>, Error> {
 
         Ok(_) => Err(filesystem(
             path,
-            io::Error::other("output is not a regular file"),
+            io::Error::other("Output is not a regular file."),
         )),
 
         Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(None),
@@ -362,7 +366,7 @@ fn original(path: &Path) -> Result<Option<Original>, Error> {
     }
 }
 
-fn exists(path: &Path) -> Result<bool, Error> {
+fn is_present(path: &Path) -> Result<bool, Error> {
     match fs::symlink_metadata(path) {
         Ok(_) => Ok(true),
         Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(false),
@@ -375,7 +379,7 @@ fn lock(directory: &Path) -> Result<File, Error> {
     fs::create_dir_all(parent).map_err(|source| filesystem(parent, source))?;
     validate_directory(parent)?;
 
-    let directory = if exists(directory)? {
+    let directory = if is_present(directory)? {
         fs::canonicalize(directory).map_err(|source| filesystem(directory, source))?
     } else {
         fs::canonicalize(parent)
@@ -389,14 +393,14 @@ fn lock(directory: &Path) -> Result<File, Error> {
     name.push(".lock");
     let path = parent.join(name);
 
-    if exists(&path)?
+    if is_present(&path)?
         && !fs::symlink_metadata(&path)
             .map_err(|source| filesystem(&path, source))?
             .is_file()
     {
         return Err(filesystem(
             &path,
-            io::Error::other("publication lock is not a regular file"),
+            io::Error::other("Publication lock is not a regular file."),
         ));
     }
 
@@ -421,19 +425,18 @@ fn lock(directory: &Path) -> Result<File, Error> {
     {
         return Err(filesystem(
             &path,
-            io::Error::other("publication lock changed before acquisition"),
+            io::Error::other("Publication lock changed before acquisition."),
         ));
     }
 
     Ok(file)
 }
 
-pub(super) fn stage(
-    path: &Path,
-    contents: &str,
-    permissions: Option<&Permissions>,
-) -> Result<(), Error> {
-    let parent = path.parent().expect("internal error: output has no parent");
+fn stage(path: &Path, contents: &str, permissions: Option<&Permissions>) -> Result<(), Error> {
+    let parent = path
+        .parent()
+        .expect("Internal error: output has no parent directory.");
+
     fs::create_dir_all(parent).map_err(|source| filesystem(parent, source))?;
     let mut file = File::create(path).map_err(|source| filesystem(path, source))?;
 
@@ -448,7 +451,7 @@ pub(super) fn stage(
     file.sync_all().map_err(|source| filesystem(path, source))
 }
 
-pub(super) fn filesystem(path: &Path, source: io::Error) -> Error {
+fn filesystem(path: &Path, source: io::Error) -> Error {
     Error::Filesystem {
         path: path.to_owned(),
         source,

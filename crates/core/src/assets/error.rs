@@ -6,7 +6,7 @@ use crate::format;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// A local output could not be accessed.
-    #[error("cannot access `{path}`")]
+    #[error("Could not access `{path}`.")]
     Filesystem {
         /// The affected output path.
         path: PathBuf,
@@ -15,7 +15,7 @@ pub enum Error {
     },
 
     /// Publication failed and some installed files could not be recovered safely.
-    #[error("cannot recover {unrecovered:?}; original backups retained at `{backup}`")]
+    #[error("Could not recover {unrecovered:?}. Original backups retained at `{backup}`.")]
     Recovery {
         /// The original publication failure.
         #[source]
@@ -27,11 +27,11 @@ pub enum Error {
     },
 
     /// The asynchronous runtime could not start.
-    #[error("cannot start asset generation runtime")]
+    #[error("Could not start the asset generation runtime.")]
     Runtime(#[source] io::Error),
 
     /// An upstream input could not be downloaded.
-    #[error("cannot download `{address}`")]
+    #[error("Could not download `{address}`.")]
     Download {
         /// The requested input URL.
         address: String,
@@ -40,7 +40,7 @@ pub enum Error {
     },
 
     /// An input could not be decoded as JSON.
-    #[error("cannot decode `{input}`")]
+    #[error("Could not process `{input}` as JSON.")]
     Data {
         /// The input identity.
         input: String,
@@ -49,7 +49,7 @@ pub enum Error {
     },
 
     /// An input does not meet the generation contract.
-    #[error("cannot generate assets: {reason}")]
+    #[error("Could not generate assets. {reason}")]
     Invalid {
         /// The invalid input or output condition.
         reason: String,
@@ -64,6 +64,6 @@ pub enum Error {
     Format(#[from] format::Error),
 
     /// Generation was cancelled before publication.
-    #[error("asset generation cancelled")]
+    #[error("Asset generation cancelled.")]
     Cancelled,
 }

@@ -28,7 +28,7 @@ pub enum Target {
 }
 
 impl Target {
-    pub(super) fn files(self) -> &'static [&'static str] {
+    pub(crate) fn files(self) -> &'static [&'static str] {
         match self {
             Self::Schema => &["schema.json"],
             Self::Luau => &["luau/metadata.json", "luau/documentation.json"],
@@ -55,7 +55,9 @@ impl FromStr for Target {
             "roblox" => Ok(Self::Roblox),
 
             _ => Err(Error::Invalid {
-                reason: format!("unknown target `{value}`; expected schema, luau, or roblox"),
+                reason: format!(
+                    "Unknown target `{value}`. Expected `schema`, `luau`, or `roblox`."
+                ),
             }),
         }
     }
@@ -87,9 +89,9 @@ pub fn generate(
     directory: &Path,
     targets: &[Target],
     revision: Option<&str>,
-    cancelled: fn() -> bool,
+    is_cancelled: fn() -> bool,
 ) -> Result<Generated, Error> {
-    interrupted(cancelled)?;
+    interrupted(is_cancelled)?;
 
     let targets = if targets.is_empty() {
         &[Target::Schema, Target::Luau, Target::Roblox]
@@ -97,12 +99,12 @@ pub fn generate(
         targets
     };
 
-    let upstream = targets.iter().any(|target| *target != Target::Schema);
+    let needs_upstream = targets.iter().any(|target| *target != Target::Schema);
 
     if let Some(revision) = revision {
-        if !upstream {
+        if !needs_upstream {
             return Err(Error::Invalid {
-                reason: "revision requires a luau or roblox target".to_owned(),
+                reason: "A revision requires a `luau` or `roblox` target.".to_owned(),
             });
         }
 
@@ -123,7 +125,7 @@ pub fn generate(
         files.insert(PathBuf::from("schema.json"), source);
     }
 
-    if upstream {
+    if needs_upstream {
         let runtime = Builder::new_current_thread()
             .enable_all()
             .build()
@@ -134,7 +136,7 @@ pub fn generate(
                 biased;
 
                 () = async {
-                    while !cancelled() {
+                    while !is_cancelled() {
                         time::sleep(Duration::from_millis(50)).await;
                     }
                 } => Err(Error::Cancelled),
@@ -142,7 +144,7 @@ pub fn generate(
             }
         })?;
 
-        interrupted(cancelled)?;
+        interrupted(is_cancelled)?;
         let builtins = instar_bridge::declarations()?;
 
         let mut rendered = rendering::render(
@@ -150,14 +152,14 @@ pub fn generate(
             &inputs.source,
             inputs.documentation,
             &builtins,
-            cancelled,
+            is_cancelled,
         )?;
 
-        rendered.retain(|path, _| publication.contains(path));
+        rendered.retain(|path, _| publication.has_path(path));
         files.extend(rendered);
     }
 
-    publication.write(&files, cancelled)
+    publication.write(&files, is_cancelled)
 }
 
 async fn acquire(revision: Option<&str>) -> Result<Inputs, Error> {
@@ -182,7 +184,7 @@ async fn acquire(revision: Option<&str>) -> Result<Inputs, Error> {
             .get("sha")
             .and_then(Value::as_str)
             .ok_or_else(|| Error::Invalid {
-                reason: "missing tracker revision".to_owned(),
+                reason: "Missing tracker revision.".to_owned(),
             })?
             .to_owned(),
     };
@@ -194,7 +196,7 @@ async fn acquire(revision: Option<&str>) -> Result<Inputs, Error> {
     let source = download(&client, &format!("{tracker}/LuauTypes.d.luau")).await?;
 
     let source = String::from_utf8(source).map_err(|error| Error::Invalid {
-        reason: format!("invalid UTF-8 in tracker declarations: {error}"),
+        reason: format!("Tracker declarations are not valid UTF-8. {error}"),
     })?;
 
     let documentation = document(&client, &format!("{tracker}/api-docs/en-us.json")).await?;
@@ -234,15 +236,16 @@ fn validate_revision(revision: &str) -> Result<(), Error> {
             .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
     {
         return Err(Error::Invalid {
-            reason: "invalid tracker revision".to_owned(),
+            reason: "Invalid tracker revision. Expected 40 lowercase hexadecimal characters."
+                .to_owned(),
         });
     }
 
     Ok(())
 }
 
-pub(super) fn interrupted(cancelled: fn() -> bool) -> Result<(), Error> {
-    if cancelled() {
+pub(super) fn interrupted(is_cancelled: fn() -> bool) -> Result<(), Error> {
+    if is_cancelled() {
         Err(Error::Cancelled)
     } else {
         Ok(())
