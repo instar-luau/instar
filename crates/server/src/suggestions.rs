@@ -3,7 +3,7 @@ use std::{ops::Range, path::Path};
 use instar_bridge::{Completion, CompletionKind, Frontend};
 
 use instar_core::{
-    analysis::{self, TokenKind},
+    analysis::{self, TokenKind, is_identifier},
     lint::Symbols,
     presentation::{self, Surface},
     workspace::{Purpose, SymbolOutcome},
@@ -463,7 +463,7 @@ fn import_name(target: &str) -> Option<&str> {
                 .and_then(Path::file_name)
                 .and_then(|name| name.to_str())
         })
-        .filter(|name| identifier(name))
+        .filter(|name| is_identifier(name))
 }
 
 fn imported(
@@ -710,38 +710,4 @@ fn insertion(source: &str) -> usize {
     }
 
     offset
-}
-
-fn identifier(name: &str) -> bool {
-    let mut characters = name.chars();
-
-    characters
-        .next()
-        .is_some_and(|character| character.is_ascii_alphabetic() || character == '_')
-        && characters.all(|character| character.is_ascii_alphanumeric() || character == '_')
-        && !matches!(
-            name,
-            "and"
-                | "break"
-                | "do"
-                | "else"
-                | "elseif"
-                | "end"
-                | "false"
-                | "for"
-                | "function"
-                | "if"
-                | "in"
-                | "local"
-                | "nil"
-                | "not"
-                | "or"
-                | "repeat"
-                | "return"
-                | "then"
-                | "true"
-                | "until"
-                | "while"
-                | "const"
-        )
 }
