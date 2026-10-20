@@ -6,10 +6,7 @@ use tower_lsp_server::{
     jsonrpc::{Error, Result},
 };
 
-use crate::{
-    output::documentation,
-    project::{Project, failure},
-};
+use crate::{error::failure, output::documentation, project::Project};
 
 pub(crate) fn annotation(position: Position, hint: &Hint) -> Result<InlayHint> {
     let label = match hint.kind {
@@ -48,7 +45,9 @@ pub(crate) fn annotation(position: Position, hint: &Hint) -> Result<InlayHint> {
 
 pub(crate) fn tooltip(project: &Project, module: &str, information: &[Hint]) -> Result<Tooltip> {
     let mut details = Vec::new();
-    let markdown = documentation::markdown(project, "/textDocument/hover/contentFormat");
+
+    let should_use_markdown =
+        documentation::should_use_markdown(project, "/textDocument/hover/contentFormat");
 
     for information in information {
         let sections =
@@ -63,10 +62,15 @@ pub(crate) fn tooltip(project: &Project, module: &str, information: &[Hint]) -> 
             metadata.as_ref()
         };
 
-        let documentation =
-            documentation::render(project, module, value, &information.documentation, markdown)?;
+        let documentation = documentation::render(
+            project,
+            module,
+            value,
+            &information.documentation,
+            should_use_markdown,
+        )?;
 
-        let detail = documentation::presentation(&sections, &documentation, markdown)?;
+        let detail = documentation::presentation(&sections, &documentation, should_use_markdown)?;
 
         if !details.contains(&detail) {
             details.push(detail);
@@ -75,6 +79,6 @@ pub(crate) fn tooltip(project: &Project, module: &str, information: &[Hint]) -> 
 
     Ok(Tooltip::MarkupContent(documentation::markup(
         details.join("\n\n"),
-        markdown,
+        should_use_markdown,
     )))
 }

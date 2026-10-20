@@ -1,6 +1,5 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
-    fmt::Display,
     fs,
     path::{Path, PathBuf},
     rc::Rc,
@@ -26,12 +25,13 @@ use tower_lsp_server::{
         DocumentChange, Edit, OptionalVersionedTextDocumentIdentifier, SemanticToken,
         TextDocumentEdit, TextDocumentIdentifier, TextEdit, Uri, WorkspaceEdit,
     },
-    jsonrpc::{Error, ErrorCode, Result},
+    jsonrpc::{Error, Result},
 };
 
 use super::{
     configuration::Configuration,
     document::{self, Document, Encoding},
+    error::failure,
 };
 
 static GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -51,7 +51,7 @@ pub(super) struct Project {
     pub(super) observed: BTreeMap<String, Arc<str>>,
     pub(super) tokens: BTreeMap<String, Tokens>,
     pub(super) published: BTreeSet<String>,
-    pub(super) indexed: bool,
+    pub(super) should_index: bool,
     pub(super) nested: BTreeSet<PathBuf>,
     native_dependencies: BTreeSet<PathBuf>,
     native_reload_dependencies: BTreeSet<PathBuf>,
@@ -80,7 +80,7 @@ impl Project {
             observed: BTreeMap::new(),
             tokens: BTreeMap::new(),
             published: BTreeSet::new(),
-            indexed: true,
+            should_index: true,
             nested: BTreeSet::new(),
             native_dependencies: BTreeSet::new(),
             native_reload_dependencies: BTreeSet::new(),
@@ -128,11 +128,11 @@ impl Project {
         self.documents.insert(module, document);
     }
 
-    pub(super) fn owns(&self, module: &str) -> bool {
+    pub(super) fn is_owner(&self, module: &str) -> bool {
         let path = Path::new(module);
 
         !self.nested.iter().any(|root| path.starts_with(root))
-            && (self.indexed && path.starts_with(self.workspace.directory())
+            && (self.should_index && path.starts_with(self.workspace.directory())
                 || self
                     .documents
                     .get(module)
@@ -141,7 +141,7 @@ impl Project {
 
     pub(super) fn index(&self) -> Result<Vec<String>> {
         let mut modules: BTreeSet<_> =
-            if self.indexed && self.workspace.directory().try_exists().map_err(failure)? {
+            if self.should_index && self.workspace.directory().try_exists().map_err(failure)? {
                 self.workspace
                     .select(&[], Purpose::Index, Access::Read)
                     .map_err(failure)?
@@ -160,7 +160,7 @@ impl Project {
 
         Ok(modules
             .into_iter()
-            .filter(|module| self.owns(module))
+            .filter(|module| self.is_owner(module))
             .collect())
     }
 
@@ -176,7 +176,7 @@ impl Project {
         lint::lint(source, &settings, &symbols).map_err(failure)
     }
 
-    pub(super) fn supports(&self, pointer: &str) -> bool {
+    pub(super) fn has_capability(&self, pointer: &str) -> bool {
         self.capabilities.pointer(pointer).and_then(Value::as_bool) == Some(true)
     }
 
@@ -257,7 +257,7 @@ impl Project {
                 })
                 .collect::<Result<_>>()?;
 
-            if self.supports("/workspace/workspaceEdit/documentChanges") {
+            if self.has_capability("/workspace/workspaceEdit/documentChanges") {
                 documents.push(DocumentChange::TextDocumentEdit(TextDocumentEdit {
                     text_document: OptionalVersionedTextDocumentIdentifier {
                         version: document.version,
@@ -356,7 +356,7 @@ impl Project {
             generation: self.generation,
             invalidation: self.invalidation,
             published: self.published.clone(),
-            indexed: self.indexed,
+            should_index: self.should_index,
             nested: self.nested.clone(),
         }
     }
@@ -377,7 +377,7 @@ impl Project {
             .map(|(module, document)| (module.clone(), Arc::clone(&document.text)))
             .collect();
 
-        let refresh = previous.keys().ne(sources.keys());
+        let should_refresh = previous.keys().ne(sources.keys());
 
         for module in previous
             .keys()
@@ -393,7 +393,7 @@ impl Project {
                 continue;
             }
 
-            let changed = self.workspace.snapshot(module).as_ref() != Some(source);
+            let has_changed = self.workspace.snapshot(module).as_ref() != Some(source);
 
             let identity = self
                 .workspace
@@ -406,7 +406,7 @@ impl Project {
 
             self.documents.remove(module);
 
-            if changed {
+            if has_changed {
                 frontend.invalidate(module).map_err(failure)?;
             }
         }
@@ -425,10 +425,10 @@ impl Project {
 
         self.generation = snapshot.generation;
         self.invalidation = snapshot.invalidation;
-        self.indexed = snapshot.indexed;
+        self.should_index = snapshot.should_index;
         self.nested = snapshot.nested;
 
-        if refresh {
+        if should_refresh {
             frontend.refresh().map_err(failure)?;
         }
 
@@ -455,7 +455,7 @@ impl Project {
         }
     }
 
-    pub(super) fn accept(&mut self, feedback: Feedback, published: bool) {
+    pub(super) fn accept(&mut self, feedback: Feedback, should_publish: bool) {
         self.native_dependencies.extend(feedback.dependencies);
 
         self.native_reload_dependencies
@@ -463,7 +463,7 @@ impl Project {
 
         self.observed.extend(feedback.observed);
 
-        if published {
+        if should_publish {
             self.published = feedback.published;
         }
     }
@@ -479,7 +479,7 @@ pub(super) struct Snapshot {
     pub(super) generation: u64,
     pub(super) invalidation: u64,
     pub(super) published: BTreeSet<String>,
-    pub(super) indexed: bool,
+    pub(super) should_index: bool,
     pub(super) nested: BTreeSet<PathBuf>,
 }
 
@@ -497,14 +497,6 @@ struct Resolve {
     revision: u64,
     generation: u64,
     value: Value,
-}
-
-pub(super) fn failure(error: impl Display) -> Error {
-    Error {
-        code: ErrorCode::ServerError(-32803),
-        message: error.to_string().into(),
-        data: None,
-    }
 }
 
 pub(super) fn resolved_uri(data: Option<&Value>) -> Result<Uri> {

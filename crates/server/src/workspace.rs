@@ -15,8 +15,8 @@ use tower_lsp_server::{
 use super::{
     configuration::Configuration,
     document::{self, Encoding},
-    files,
-    project::{Project, failure},
+    error::failure,
+    project::Project,
 };
 
 pub(super) type Documents = BTreeMap<PathBuf, BTreeMap<String, Stamp>>;
@@ -24,6 +24,7 @@ pub(super) type Documents = BTreeMap<PathBuf, BTreeMap<String, Stamp>>;
 pub(super) struct State {
     pub(super) projects: BTreeMap<PathBuf, Project>,
     pub(super) configuration: Configuration,
+    pub(super) configuration_revision: u64,
     pub(super) capabilities: Arc<Value>,
     pub(super) encoding: Encoding,
     pub(super) events: Vec<PathBuf>,
@@ -37,6 +38,7 @@ impl State {
         Self {
             projects: BTreeMap::new(),
             configuration: Configuration::default(),
+            configuration_revision: 0,
             capabilities: Arc::new(Value::Null),
             encoding: Encoding::default(),
             events: Vec::new(),
@@ -67,10 +69,10 @@ impl State {
 
         let previous: usize = self.documents.values().map(BTreeMap::len).sum();
 
-        let unchanged = count == previous
+        let is_unchanged = count == previous
             && self.topology.len() == self.projects.len()
             && self.projects.iter().all(|(root, project)| {
-                self.topology.get(root) == Some(&project.indexed)
+                self.topology.get(root) == Some(&project.should_index)
                     && project.documents.iter().all(|(module, document)| {
                         document.version.is_none()
                             || self
@@ -86,7 +88,7 @@ impl State {
                     })
             });
 
-        if unchanged {
+        if is_unchanged {
             return;
         }
 
@@ -118,7 +120,7 @@ impl State {
         self.topology = self
             .projects
             .iter()
-            .map(|(root, project)| (root.clone(), project.indexed))
+            .map(|(root, project)| (root.clone(), project.should_index))
             .collect();
     }
 
@@ -166,20 +168,24 @@ impl State {
         if self
             .projects
             .get(&root)
-            .is_some_and(|project| project.indexed)
+            .is_some_and(|project| project.should_index)
         {
             return Ok(());
         }
 
-        let previous = self.projects.get(&root).map(|project| project.indexed);
-        self.projects.entry(root.clone()).or_insert(project).indexed = true;
+        let previous = self.projects.get(&root).map(|project| project.should_index);
+
+        self.projects
+            .entry(root.clone())
+            .or_insert(project)
+            .should_index = true;
 
         if let Err(error) = self.reconcile() {
-            if let Some(indexed) = previous {
+            if let Some(should_index) = previous {
                 self.projects
                     .get_mut(&root)
                     .expect("Internal error: added project is missing.")
-                    .indexed = indexed;
+                    .should_index = should_index;
             } else {
                 self.projects.remove(&root);
             }
@@ -197,7 +203,7 @@ impl State {
             return Ok(Vec::new());
         };
 
-        if !project.indexed {
+        if !project.should_index {
             return Ok(Vec::new());
         }
 
@@ -207,9 +213,9 @@ impl State {
             .map(|module| document::uri(Path::new(module)))
             .collect::<Result<_>>()?;
 
-        let indexed = project.indexed;
+        let should_index = project.should_index;
         let published = mem::take(&mut project.published);
-        project.indexed = false;
+        project.should_index = false;
 
         if let Err(error) = self.reconcile() {
             let project = self
@@ -217,7 +223,7 @@ impl State {
                 .get_mut(&root)
                 .expect("Internal error: removed project is missing.");
 
-            project.indexed = indexed;
+            project.should_index = should_index;
             project.published = published;
 
             return Err(error);
@@ -229,7 +235,7 @@ impl State {
     fn owner(&self, path: &Path) -> Option<&PathBuf> {
         self.projects
             .iter()
-            .filter(|(root, project)| project.indexed && path.starts_with(root))
+            .filter(|(root, project)| project.should_index && path.starts_with(root))
             .max_by_key(|(root, _)| root.components().count())
             .map(|(root, _)| root)
             .or_else(|| {
@@ -245,7 +251,7 @@ impl State {
             .or_else(|| {
                 self.projects
                     .iter()
-                    .filter(|(root, project)| !project.indexed && path.starts_with(root))
+                    .filter(|(root, project)| !project.should_index && path.starts_with(root))
                     .max_by_key(|(root, _)| root.components().count())
                     .map(|(root, _)| root)
             })
@@ -302,7 +308,7 @@ impl State {
                 .set_source(Path::new(module), Arc::clone(&document.text))
                 .map_err(failure)
                 .and_then(|identity| {
-                    let matches = identity == *module;
+                    let is_matching = identity == *module;
 
                     let previous = self.projects[destination]
                         .documents
@@ -312,7 +318,7 @@ impl State {
 
                     overlays.push((destination.clone(), identity, previous));
 
-                    if matches {
+                    if is_matching {
                         Ok(())
                     } else {
                         Err(Error::content_modified())
@@ -320,7 +326,7 @@ impl State {
                 });
 
             if let Err(error) = result {
-                files::restore(self, overlays)?;
+                self.restore(overlays)?;
 
                 return Err(error);
             }
@@ -358,7 +364,7 @@ impl State {
         let roots: BTreeSet<_> = self
             .projects
             .iter()
-            .filter(|(_, project)| project.indexed)
+            .filter(|(_, project)| project.should_index)
             .map(|(root, _)| root.clone())
             .collect();
 
@@ -375,7 +381,7 @@ impl State {
         }
 
         self.projects.retain(|_, project| {
-            project.indexed
+            project.should_index
                 || !project.published.is_empty()
                 || project
                     .documents
@@ -414,7 +420,7 @@ impl State {
             return Err(Error::invalid_params("Open document owners collide."));
         }
 
-        let changed = project.borrowed.len() != borrowed.len()
+        let has_changed = project.borrowed.len() != borrowed.len()
             || borrowed.iter().any(|(module, document)| {
                 project.borrowed.get(module).is_none_or(|previous| {
                     previous.uri != document.uri
@@ -424,7 +430,7 @@ impl State {
                 })
             });
 
-        if !changed {
+        if !has_changed {
             return Ok(());
         }
 
@@ -451,10 +457,10 @@ impl State {
                         .or_else(|| project.borrowed.get(&identity))
                         .map(|document| Arc::clone(&document.text));
 
-                    let matches = identity == *module;
+                    let is_matching = identity == *module;
                     overlays.push((root.to_owned(), identity, previous));
 
-                    if matches {
+                    if is_matching {
                         Ok(())
                     } else {
                         Err(Error::content_modified())
@@ -462,7 +468,7 @@ impl State {
                 });
 
             if let Err(error) = result {
-                files::restore(self, overlays)?;
+                self.restore(overlays)?;
 
                 return Err(error);
             }
@@ -517,11 +523,38 @@ impl State {
             self.encoding,
         )?;
 
-        project.indexed = false;
+        project.should_index = false;
         let root = project.workspace.directory().to_owned();
         self.projects.entry(root.clone()).or_insert(project);
 
         Ok(root)
+    }
+
+    pub(super) fn restore(&self, overlays: Vec<(PathBuf, String, Option<Arc<str>>)>) -> Result<()> {
+        let mut restore_error = None;
+
+        for (root, module, previous) in overlays.into_iter().rev() {
+            let workspace = &self.projects[&root].workspace;
+
+            let result = if let Some(previous) = previous {
+                workspace
+                    .set_source(Path::new(&module), previous)
+                    .map(|_| ())
+                    .map_err(failure)
+            } else {
+                workspace.remove_source(&module);
+
+                Ok(())
+            };
+
+            if let Err(error) = result
+                && restore_error.is_none()
+            {
+                restore_error = Some(error);
+            }
+        }
+
+        restore_error.map_or(Ok(()), Err)
     }
 
     fn path(&self, uri: &Uri) -> Result<PathBuf> {

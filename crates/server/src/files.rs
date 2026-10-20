@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     io::ErrorKind,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     rc::Rc,
     slice,
     sync::Arc,
@@ -22,7 +22,9 @@ use tower_lsp_server::{
 
 use super::{
     document::{self, Document},
-    project::{Project, failure},
+    error::failure,
+    paths::{destination, identity, is_intersecting, lexical},
+    project::Project,
     workspace::State,
 };
 
@@ -30,7 +32,7 @@ struct Relocation {
     root: PathBuf,
     workspace: Rc<Workspace>,
     documents: BTreeMap<String, Document>,
-    retained: bool,
+    is_retained: bool,
 }
 
 pub(super) fn changed(state: &mut State, paths: &[PathBuf]) -> Result<bool> {
@@ -40,17 +42,17 @@ pub(super) fn changed(state: &mut State, paths: &[PathBuf]) -> Result<bool> {
         .collect::<Result<Vec<_>>>()?;
 
     state.observe(&paths)?;
-    let mut changed = false;
+    let mut has_changed = false;
 
     for project in state.projects.values_mut() {
-        if !affected(project, &paths)? {
+        if !is_affected(project, &paths)? {
             continue;
         }
 
         let mut relevant = Vec::new();
 
         for path in &paths {
-            if affected(project, slice::from_ref(path))? && !unchanged(project, path)? {
+            if is_affected(project, slice::from_ref(path))? && !is_unchanged(project, path)? {
                 relevant.push(path.clone());
             }
         }
@@ -61,10 +63,10 @@ pub(super) fn changed(state: &mut State, paths: &[PathBuf]) -> Result<bool> {
 
         let dependencies = project.reload_dependencies();
         invalidate(project, &relevant, &dependencies)?;
-        changed = true;
+        has_changed = true;
     }
 
-    Ok(changed)
+    Ok(has_changed)
 }
 
 pub(super) fn invalidate(
@@ -72,7 +74,7 @@ pub(super) fn invalidate(
     paths: &[PathBuf],
     dependencies: &BTreeSet<PathBuf>,
 ) -> Result<()> {
-    let reload = paths.iter().any(|path| {
+    let should_reload = paths.iter().any(|path| {
         path.file_name().is_some_and(|name| name == "instar.toml")
             && path.starts_with(project.workspace.directory())
     }) || dependencies
@@ -80,9 +82,9 @@ pub(super) fn invalidate(
         .map(|path| identity(path))
         .collect::<Result<Vec<_>>>()?
         .iter()
-        .any(|dependency| paths.iter().any(|path| intersects(dependency, path)));
+        .any(|dependency| paths.iter().any(|path| is_intersecting(dependency, path)));
 
-    if reload {
+    if should_reload {
         project.reload()?;
 
         return Ok(());
@@ -148,7 +150,7 @@ pub(super) fn renamed(state: &mut State, parameters: RenameFilesParams) -> Resul
     let mut affected_roots = BTreeSet::new();
 
     for (root, project) in &state.projects {
-        if affected(project, &paths)? || roots[root] != *root {
+        if is_affected(project, &paths)? || roots[root] != *root {
             affected_roots.insert(root.clone());
         }
 
@@ -163,7 +165,7 @@ pub(super) fn renamed(state: &mut State, parameters: RenameFilesParams) -> Resul
             let destination = roots
                 .iter()
                 .filter(|(original, root)| {
-                    state.projects[*original].indexed && module.starts_with(root)
+                    state.projects[*original].should_index && module.starts_with(root)
                 })
                 .max_by_key(|(_, root)| root.components().count())
                 .map_or(root, |(original, _)| original);
@@ -202,9 +204,9 @@ pub(super) fn renamed(state: &mut State, parameters: RenameFilesParams) -> Resul
             .expect("Internal error: renamed project is missing.");
 
         let destination = roots[&root].clone();
-        let retained = destination == root;
+        let is_retained = destination == root;
 
-        let workspace = if retained {
+        let workspace = if is_retained {
             project.reload()?;
 
             Rc::clone(&project.workspace)
@@ -218,7 +220,7 @@ pub(super) fn renamed(state: &mut State, parameters: RenameFilesParams) -> Resul
 
         let documents = documents.remove(&root).unwrap_or_default();
 
-        if !retained {
+        if !is_retained {
             for (module, document) in &documents {
                 let identity = workspace
                     .set_source(Path::new(module), Arc::clone(&document.text))
@@ -240,7 +242,7 @@ pub(super) fn renamed(state: &mut State, parameters: RenameFilesParams) -> Resul
                 root: destination,
                 workspace,
                 documents,
-                retained,
+                is_retained,
             },
         );
     }
@@ -248,7 +250,7 @@ pub(super) fn renamed(state: &mut State, parameters: RenameFilesParams) -> Resul
     let mut overlays = Vec::new();
 
     for (root, relocation) in &relocations {
-        if !relocation.retained {
+        if !relocation.is_retained {
             continue;
         }
 
@@ -275,10 +277,10 @@ pub(super) fn renamed(state: &mut State, parameters: RenameFilesParams) -> Resul
                         .filter(|document| document.version.is_some())
                         .map(|document| Arc::clone(&document.text));
 
-                    let matches = identity == *module;
+                    let is_matching = identity == *module;
                     overlays.push((root.clone(), identity, previous));
 
-                    if matches {
+                    if is_matching {
                         Ok(())
                     } else {
                         Err(Error::content_modified())
@@ -289,7 +291,7 @@ pub(super) fn renamed(state: &mut State, parameters: RenameFilesParams) -> Resul
             };
 
             if let Err(error) = result {
-                restore(state, overlays)?;
+                state.restore(overlays)?;
 
                 return Err(error);
             }
@@ -306,11 +308,11 @@ pub(super) fn renamed(state: &mut State, parameters: RenameFilesParams) -> Resul
 
         project.workspace = relocation.workspace;
 
-        if !relocation.retained {
+        if !relocation.is_retained {
             project.borrowed.clear();
         }
 
-        if relocation.retained {
+        if relocation.is_retained {
             for module in project
                 .documents
                 .keys()
@@ -335,36 +337,6 @@ pub(super) fn renamed(state: &mut State, parameters: RenameFilesParams) -> Resul
     state.reconcile()?;
 
     Ok(cleared.into_iter().collect())
-}
-
-pub(super) fn restore(
-    state: &State,
-    overlays: Vec<(PathBuf, String, Option<Arc<str>>)>,
-) -> Result<()> {
-    let mut restore_error = None;
-
-    for (root, module, previous) in overlays.into_iter().rev() {
-        let workspace = &state.projects[&root].workspace;
-
-        let result = if let Some(previous) = previous {
-            workspace
-                .set_source(Path::new(&module), previous)
-                .map(|_| ())
-                .map_err(failure)
-        } else {
-            workspace.remove_source(&module);
-
-            Ok(())
-        };
-
-        if let Err(error) = result
-            && restore_error.is_none()
-        {
-            restore_error = Some(error);
-        }
-    }
-
-    restore_error.map_or(Ok(()), Err)
 }
 
 pub(super) fn deleted(state: &mut State, parameters: DeleteFilesParams) -> Result<Vec<Uri>> {
@@ -411,7 +383,7 @@ pub(super) fn will_rename(
     for module in project.index()? {
         let document = project.snapshot(&module)?;
         let future_module = relocated(Path::new(&module), &mappings);
-        let moved = future_module != Path::new(&module);
+        let is_moved = future_module != Path::new(&module);
         let mut imports: BTreeMap<(usize, usize), BTreeSet<(String, String)>> = BTreeMap::new();
 
         for import in frontend.imports(&module).map_err(failure)? {
@@ -419,8 +391,7 @@ pub(super) fn will_rename(
                 return Err(Error::content_modified());
             }
 
-            let range = document.native_range(import.location.range, project.encoding)?;
-            let range = document.bytes(range, project.encoding)?;
+            let range = document.native_bytes(import.location.range)?;
 
             imports
                 .entry((range.start, range.end))
@@ -432,7 +403,7 @@ pub(super) fn will_rename(
             return Err(Error::content_modified());
         }
 
-        if moved
+        if is_moved
             && document.analysis.imports.iter().any(|import| {
                 !imports
                     .keys()
@@ -447,7 +418,7 @@ pub(super) fn will_rename(
         let mut edits = Vec::new();
 
         for ((start, end), targets) in imports {
-            if !moved
+            if !is_moved
                 && targets
                     .iter()
                     .all(|(target, _)| relocated(Path::new(target), &mappings) == Path::new(target))
@@ -484,7 +455,7 @@ pub(super) fn will_rename(
                 ));
             }
 
-            let instance = matches!(style.expression, ImportExpression::Instance(_));
+            let is_instance = matches!(style.expression, ImportExpression::Instance(_));
 
             if matches!(&style.expression, ImportExpression::Path(path)
                 if path.split('/').next().is_some_and(|alias| alias.eq_ignore_ascii_case("@game")))
@@ -507,17 +478,17 @@ pub(super) fn will_rename(
 
             let replacement = project
                 .workspace
-                .import(&future_module, &future_target, instance)
+                .import(&future_module, &future_target, is_instance)
                 .map_err(failure)?
                 .ok_or_else(|| {
-                    failure(if instance {
+                    failure(if is_instance {
                         "Cannot generate an unambiguous instance import for the renamed source."
                     } else {
                         "Cannot generate an unambiguous import for the renamed source."
                     })
                 })?;
 
-            if instance && !unshadowed(&document, &replacement) {
+            if is_instance && !is_unshadowed(&document, &replacement) {
                 return Err(failure(
                     "Renamed instance import would use a shadowed or written global.",
                 ));
@@ -567,9 +538,9 @@ pub(super) fn will_rename(
     }
 }
 
-fn affected(project: &Project, paths: &[PathBuf]) -> Result<bool> {
+fn is_affected(project: &Project, paths: &[PathBuf]) -> Result<bool> {
     if paths.iter().any(|path| {
-        intersects(project.workspace.directory(), path)
+        is_intersecting(project.workspace.directory(), path)
             && (path
                 .extension()
                 .is_some_and(|extension| extension == "luau" || extension == "lua")
@@ -583,7 +554,7 @@ fn affected(project: &Project, paths: &[PathBuf]) -> Result<bool> {
     for dependency in project.dependencies() {
         let dependency = identity(&dependency)?;
 
-        if paths.iter().any(|path| intersects(&dependency, path)) {
+        if paths.iter().any(|path| is_intersecting(&dependency, path)) {
             return Ok(true);
         }
     }
@@ -591,9 +562,9 @@ fn affected(project: &Project, paths: &[PathBuf]) -> Result<bool> {
     Ok(false)
 }
 
-fn unchanged(project: &Project, path: &Path) -> Result<bool> {
+fn is_unchanged(project: &Project, path: &Path) -> Result<bool> {
     for dependency in project.reload_dependencies() {
-        if intersects(&identity(&dependency)?, path) {
+        if is_intersecting(&identity(&dependency)?, path) {
             return Ok(false);
         }
     }
@@ -629,13 +600,13 @@ fn unchanged(project: &Project, path: &Path) -> Result<bool> {
     }
 }
 
-fn mappings(parameters: RenameFilesParams, before: bool) -> Result<Vec<(PathBuf, PathBuf)>> {
+fn mappings(parameters: RenameFilesParams, is_pending: bool) -> Result<Vec<(PathBuf, PathBuf)>> {
     let mut mappings = Vec::new();
 
     for file in parameters.files {
         let old = path(&file.old_uri)?;
 
-        let old = if before {
+        let old = if is_pending {
             identity(&old)?
         } else {
             lexical(&old)?
@@ -660,7 +631,7 @@ fn mappings(parameters: RenameFilesParams, before: bool) -> Result<Vec<(PathBuf,
         if mappings[..index]
             .iter()
             .any(|(previous_old, previous_new)| {
-                intersects(old, previous_old) || intersects(new, previous_new)
+                is_intersecting(old, previous_old) || is_intersecting(new, previous_new)
             })
         {
             return Err(Error::invalid_params(
@@ -668,7 +639,7 @@ fn mappings(parameters: RenameFilesParams, before: bool) -> Result<Vec<(PathBuf,
             ));
         }
 
-        if before
+        if is_pending
             && new.try_exists().map_err(failure)?
             && !mappings.iter().any(|(source, _)| new.starts_with(source))
             && identity(new)? != identity(old)?
@@ -697,10 +668,6 @@ fn relocated(path: &Path, mappings: &[(PathBuf, PathBuf)]) -> PathBuf {
         .unwrap_or_else(|| path.to_owned())
 }
 
-fn intersects(left: &Path, right: &Path) -> bool {
-    left.starts_with(right) || right.starts_with(left)
-}
-
 fn path(uri: &Uri) -> Result<PathBuf> {
     if uri.query().is_some() || uri.fragment().is_some() {
         return Err(Error::invalid_params(
@@ -711,81 +678,7 @@ fn path(uri: &Uri) -> Result<PathBuf> {
     document::path(uri)
 }
 
-fn destination(path: &Path) -> Result<PathBuf> {
-    let path = lexical(path)?;
-
-    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
-        return Err(Error::invalid_params(
-            "File rename destination has no name.",
-        ));
-    };
-
-    Ok(identity(parent)?.join(name))
-}
-
-pub(super) fn identity(path: &Path) -> Result<PathBuf> {
-    let normalized = lexical(path)?;
-    let mut ancestor = normalized.as_path();
-    let mut remainder = Vec::new();
-
-    while !ancestor.try_exists().map_err(failure)? {
-        let (Some(parent), Some(name)) = (ancestor.parent(), ancestor.file_name()) else {
-            return Err(Error::invalid_params(
-                "File operation path has no existing ancestor.",
-            ));
-        };
-
-        remainder.push(name);
-        ancestor = parent;
-    }
-
-    let mut canonical = ancestor.canonicalize().map_err(failure)?;
-
-    for component in remainder.into_iter().rev() {
-        canonical.push(component);
-    }
-
-    lexical(&canonical)
-}
-
-fn lexical(path: &Path) -> Result<PathBuf> {
-    if !path.is_absolute() || path.to_str().is_none_or(|path| path.contains('\0')) {
-        return Err(Error::invalid_params(
-            "File operation paths must be absolute UTF-8 paths without null characters.",
-        ));
-    }
-
-    let mut normalized = PathBuf::new();
-
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-
-            Component::ParentDir => {
-                normalized.pop();
-            }
-
-            component => normalized.push(component.as_os_str()),
-        }
-    }
-
-    let text = normalized
-        .to_str()
-        .ok_or_else(|| Error::invalid_params("File operation path is not UTF-8."))?;
-
-    #[cfg(windows)]
-    let text = if let Some(network) = text.strip_prefix(r"\\?\UNC\") {
-        format!("//{}", network.replace('\\', "/"))
-    } else {
-        text.strip_prefix(r"\\?\")
-            .unwrap_or(text)
-            .replace('\\', "/")
-    };
-
-    Ok(PathBuf::from(text))
-}
-
-fn unshadowed(document: &Document, expression: &str) -> bool {
+fn is_unshadowed(document: &Document, expression: &str) -> bool {
     let root = expression.split(['.', ':', '[']).next().unwrap_or_default();
 
     matches!(root, "script" | "game" | "workspace")

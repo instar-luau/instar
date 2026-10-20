@@ -20,8 +20,9 @@ use tower_lsp_server::{
 
 use super::{
     document::{Document, Encoding},
+    error::failure,
     output::actions,
-    project::{Project, failure},
+    project::Project,
 };
 
 pub(super) fn code_action(
@@ -33,7 +34,7 @@ pub(super) fn code_action(
     let range = document.bytes(parameters.range, project.encoding)?;
     let mut actions = Vec::new();
 
-    let requested = |kind: &str| {
+    let is_requested = |kind: &str| {
         parameters.context.only.as_ref().is_none_or(|kinds| {
             kinds.iter().any(|value| {
                 let value = String::from(value.clone());
@@ -43,15 +44,15 @@ pub(super) fn code_action(
         })
     };
 
-    let findings = if requested("quickfix") || requested("source.fixAll.instar") {
+    let findings = if is_requested("quickfix") || is_requested("source.fixAll.instar") {
         project.findings(&module, &document.text)?
     } else {
         Vec::new()
     };
 
-    if requested("quickfix") {
+    if is_requested("quickfix") {
         for finding in &findings {
-            if finding.edits.is_empty() || !intersects(&range, &finding.range) {
+            if finding.edits.is_empty() || !is_intersecting(&range, &finding.range) {
                 continue;
             }
 
@@ -67,7 +68,7 @@ pub(super) fn code_action(
                             .is_none_or(|source| source == "instar")
                         && document
                             .bytes(diagnostic.range, project.encoding)
-                            .is_ok_and(|range| intersects(&range, &finding.range))
+                            .is_ok_and(|range| is_intersecting(&range, &finding.range))
                 })
                 .cloned()
                 .collect();
@@ -90,7 +91,7 @@ pub(super) fn code_action(
         }
     }
 
-    if requested("source.fixAll.instar") {
+    if is_requested("source.fixAll.instar") {
         let rules: BTreeSet<_> = parameters
             .context
             .diagnostics
@@ -119,15 +120,15 @@ pub(super) fn code_action(
             .collect();
 
         if let Ok(edit) = fix(project, &module, &document, &selected)
-            && changed(&edit)
+            && has_changes(&edit)
         {
             actions.push(actions::fix_all(edit));
         }
     }
 
-    if requested("source.organizeImports")
+    if is_requested("source.organizeImports")
         && let Ok(edit) = organize(project, &module)
-        && changed(&edit)
+        && has_changes(&edit)
     {
         actions.push(actions::organize(edit));
     }
@@ -272,8 +273,7 @@ pub(super) fn rename(
     for occurrence in occurrences {
         let target = occurrence.location.module;
         let document = project.snapshot(&target)?;
-        let range = document.native_range(occurrence.location.range, project.encoding)?;
-        let range = document.bytes(range, project.encoding)?;
+        let range = document.native_bytes(occurrence.location.range)?;
 
         changes.entry(target).or_default().push(Edit {
             range,
@@ -368,7 +368,7 @@ fn fix(
     project.edits(BTreeMap::from([(module.to_owned(), edits)]))
 }
 
-fn intersects(left: &Range<usize>, right: &Range<usize>) -> bool {
+fn is_intersecting(left: &Range<usize>, right: &Range<usize>) -> bool {
     if left.is_empty() {
         right.start <= left.start && left.start <= right.end
     } else {
@@ -376,7 +376,7 @@ fn intersects(left: &Range<usize>, right: &Range<usize>) -> bool {
     }
 }
 
-fn changed(edit: &WorkspaceEdit) -> bool {
+fn has_changes(edit: &WorkspaceEdit) -> bool {
     edit.changes.as_ref().is_some_and(|changes| changes.values().any(|edits| !edits.is_empty()))
         || edit.document_changes.as_ref().is_some_and(|changes| changes.iter().any(|change| {
             matches!(change, DocumentChange::TextDocumentEdit(document) if !document.edits.is_empty())

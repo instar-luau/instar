@@ -7,7 +7,7 @@ use pulldown_cmark_to_cmark::{calculate_code_block_token_count, cmark};
 use scraper::{ElementRef, Html};
 use tower_lsp_server::{gen_lsp_types::Uri, jsonrpc::Result};
 
-use crate::project::failure;
+use crate::error::failure;
 
 type Inline = Vec<Event<'static>>;
 
@@ -45,7 +45,7 @@ impl Source {
     }
 }
 
-pub(in crate::output) fn render(text: &str, markdown: bool) -> Result<String> {
+pub(in crate::output) fn render(text: &str, should_use_markdown: bool) -> Result<String> {
     if text.is_empty() {
         return Ok(String::new());
     }
@@ -110,11 +110,11 @@ pub(in crate::output) fn render(text: &str, markdown: bool) -> Result<String> {
         &mut events,
     );
 
-    serialize(&events, markdown)
+    serialize(&events, should_use_markdown)
 }
 
-pub(in crate::output) fn code(text: &str, markdown: bool) -> Result<String> {
-    if !markdown {
+pub(in crate::output) fn code(text: &str, should_use_markdown: bool) -> Result<String> {
+    if !should_use_markdown {
         return Ok(text.to_owned());
     }
 
@@ -128,7 +128,7 @@ pub(in crate::output) fn code(text: &str, markdown: bool) -> Result<String> {
     )
 }
 
-pub(in crate::output) fn link(label: &str, url: &str, markdown: bool) -> Result<String> {
+pub(in crate::output) fn link(label: &str, url: &str, should_use_markdown: bool) -> Result<String> {
     let mut events = vec![
         Event::Start(Tag::Paragraph),
         Event::Text(format!("{label} (").into()),
@@ -138,7 +138,7 @@ pub(in crate::output) fn link(label: &str, url: &str, markdown: bool) -> Result<
     events.push(Event::Text(")".into()));
     events.push(Event::End(TagEnd::Paragraph));
 
-    serialize(&events, markdown)
+    serialize(&events, should_use_markdown)
 }
 
 fn blocks(element: ElementRef<'_>, source: &Source) -> Vec<Block> {
@@ -193,10 +193,10 @@ fn blocks(element: ElementRef<'_>, source: &Source) -> Vec<Block> {
                 output.push(Block::Separator);
             }
 
-            name if block(name)
+            name if is_block(name)
                 || child
                     .descendent_elements()
-                    .any(|element| block(element.value().name())) =>
+                    .any(|element| is_block(element.value().name())) =>
             {
                 paragraph(&mut output, &mut pending);
                 output.extend(blocks(child, source));
@@ -211,7 +211,7 @@ fn blocks(element: ElementRef<'_>, source: &Source) -> Vec<Block> {
     output
 }
 
-fn block(name: &str) -> bool {
+fn is_block(name: &str) -> bool {
     matches!(
         name,
         "address"
@@ -381,7 +381,7 @@ fn table(element: ElementRef<'_>, source: &Source) -> Vec<Block> {
     let mut output = Vec::new();
     let mut headers = Vec::new();
 
-    let spanning = element
+    let has_spans = element
         .descendent_elements()
         .any(|child| child.attr("rowspan").is_some() || child.attr("colspan").is_some());
 
@@ -405,9 +405,9 @@ fn table(element: ElementRef<'_>, source: &Source) -> Vec<Block> {
         row_number += 1;
 
         let cells: Vec<_> = child.child_elements().collect();
-        let heading = cells.iter().all(|cell| cell.value().name() == "th");
+        let is_heading = cells.iter().all(|cell| cell.value().name() == "th");
 
-        if heading && !spanning {
+        if is_heading && !has_spans {
             let mut row = Vec::new();
 
             headers = cells
@@ -434,7 +434,7 @@ fn table(element: ElementRef<'_>, source: &Source) -> Vec<Block> {
             for (index, cell) in cells.iter().enumerate() {
                 let mut contents = blocks(*cell, source);
 
-                let label = if spanning {
+                let label = if has_spans {
                     let kind = if cell.value().name() == "th" {
                         "header"
                     } else {
@@ -476,7 +476,7 @@ fn table(element: ElementRef<'_>, source: &Source) -> Vec<Block> {
     output
 }
 
-fn flatten(blocks: &[Block], context: &str, item: bool, output: &mut Inline) {
+fn flatten(blocks: &[Block], context: &str, is_item: bool, output: &mut Inline) {
     let label = blocks
         .iter()
         .find_map(|block| match block {
@@ -488,7 +488,7 @@ fn flatten(blocks: &[Block], context: &str, item: bool, output: &mut Inline) {
     for block in blocks {
         match block {
             Block::Paragraph(events) => {
-                if item {
+                if is_item {
                     output.push(Event::Start(Tag::List(None)));
                     output.push(Event::Start(Tag::Item));
                 } else {
@@ -501,7 +501,7 @@ fn flatten(blocks: &[Block], context: &str, item: bool, output: &mut Inline) {
 
                 output.extend(events.iter().cloned());
 
-                if item {
+                if is_item {
                     output.push(Event::End(TagEnd::Item));
                     output.push(Event::End(TagEnd::List(false)));
                 } else {
@@ -521,7 +521,7 @@ fn flatten(blocks: &[Block], context: &str, item: bool, output: &mut Inline) {
             Block::Separator => output.push(Event::Rule),
 
             Block::List { start, items } => {
-                let parent = if item && !label.trim().is_empty() {
+                let parent = if is_item && !label.trim().is_empty() {
                     format!("{context}{} — ", label.trim())
                 } else {
                     context.to_owned()
@@ -541,35 +541,35 @@ fn flatten(blocks: &[Block], context: &str, item: bool, output: &mut Inline) {
     }
 }
 
-fn serialize(events: &[Event<'_>], markdown: bool) -> Result<String> {
-    if !markdown {
+fn serialize(events: &[Event<'_>], should_use_markdown: bool) -> Result<String> {
+    if !should_use_markdown {
         let mut output = String::new();
-        let mut separated = false;
+        let mut should_separate = false;
 
         for event in events {
             match event {
                 Event::Start(Tag::Item) => {
-                    if separated {
+                    if should_separate {
                         separate(&mut output);
                     }
 
                     output.push_str("• ");
-                    separated = false;
+                    should_separate = false;
                 }
 
                 Event::Text(text) | Event::Code(text) => {
-                    if separated {
+                    if should_separate {
                         separate(&mut output);
                     }
 
                     output.push_str(text);
-                    separated = false;
+                    should_separate = false;
                 }
 
                 Event::SoftBreak | Event::HardBreak => output.push('\n'),
 
                 Event::End(TagEnd::Paragraph | TagEnd::Item | TagEnd::CodeBlock) | Event::Rule => {
-                    separated = true;
+                    should_separate = true;
                 }
 
                 _ => {}

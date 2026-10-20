@@ -10,7 +10,8 @@ use tower_lsp_server::{
 
 use super::{
     document::{self, Document},
-    project::{Project, failure},
+    error::failure,
+    project::Project,
 };
 
 pub(super) fn open(project: &mut Project, parameters: DidOpenTextDocumentParams) -> Result<()> {

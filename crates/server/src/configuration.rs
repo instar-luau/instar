@@ -9,7 +9,9 @@ use tower_lsp_server::jsonrpc::{Error, Result};
 #[serde(default, deny_unknown_fields)]
 pub(super) struct Configuration {
     pub(super) diagnostic_scope: Scope,
-    pub(super) completion_snippets: bool,
+
+    #[serde(rename = "completion_snippets")]
+    pub(super) should_use_completion_snippets: bool,
 
     #[serde(rename = "import")]
     pub(super) imports: Imports,
@@ -26,14 +28,14 @@ impl Configuration {
                 .map_err(|error| Error::invalid_params(error.to_string()))?
         };
 
-        configuration.hints.retain(|_hint, enabled| !*enabled);
+        configuration.hints.retain(|_hint, is_enabled| !*is_enabled);
         configuration.imports.inclusion = patterns(&configuration.imports.include)?;
         configuration.imports.exclusion = patterns(&configuration.imports.exclude)?;
 
         Ok(configuration)
     }
 
-    pub(super) fn hint(&self, setting: Hint) -> bool {
+    pub(super) fn is_hint_enabled(&self, setting: Hint) -> bool {
         self.hints.get(&setting).copied().unwrap_or(true)
     }
 }
@@ -42,7 +44,7 @@ impl Default for Configuration {
     fn default() -> Self {
         Self {
             diagnostic_scope: Scope::OpenFiles,
-            completion_snippets: true,
+            should_use_completion_snippets: true,
             imports: Imports::default(),
             hints: BTreeMap::new(),
         }
@@ -59,7 +61,9 @@ pub(super) enum Scope {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(super) struct Imports {
-    pub(super) enabled: bool,
+    #[serde(rename = "enabled")]
+    pub(super) is_enabled: bool,
+
     pub(super) require: Require,
     pub(super) binding: Binding,
     pub(super) include: Vec<String>,
@@ -73,10 +77,10 @@ pub(super) struct Imports {
 }
 
 impl Imports {
-    pub(super) fn accepts(&self, root: &Path, path: &Path) -> bool {
+    pub(super) fn can_import(&self, root: &Path, path: &Path) -> bool {
         let path = path.strip_prefix(root).unwrap_or(path);
 
-        self.enabled
+        self.is_enabled
             && (self.inclusion.is_empty()
                 || self.inclusion.iter().any(|pattern| pattern.is_match(path)))
             && !self.exclusion.iter().any(|pattern| pattern.is_match(path))
@@ -86,7 +90,7 @@ impl Imports {
 impl Default for Imports {
     fn default() -> Self {
         Self {
-            enabled: true,
+            is_enabled: true,
             require: Require::String,
             binding: Binding::Local,
             include: Vec::new(),

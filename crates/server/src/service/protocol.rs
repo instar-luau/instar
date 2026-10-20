@@ -1,15 +1,11 @@
 use std::{
-    collections::{BTreeSet, HashMap},
-    future::Future,
-    ops::ControlFlow,
-    path::PathBuf,
+    collections::HashMap,
     sync::{
         Arc, Mutex, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
-use instar_bridge::Frontend;
 use serde_json::{Value, json};
 use tokio::sync;
 
@@ -18,102 +14,71 @@ use tower_lsp_server::{
     gen_lsp_types::{
         CodeActionParams, CodeActionResponse, ColorInformation, ColorPresentation,
         ColorPresentationParams, CompletionItem, CompletionParams, CompletionResponse,
-        ConfigurationItem, CreateFilesParams, DefinitionParams, DefinitionResponse,
-        DeleteFilesParams, DidChangeConfigurationParams, DidChangeTextDocumentParams,
-        DidChangeWatchedFilesParams, DidChangeWorkspaceFoldersParams, DidCloseTextDocumentParams,
-        DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentColorParams,
-        DocumentFormattingParams, DocumentHighlight, DocumentHighlightParams, DocumentLink,
-        DocumentLinkParams, DocumentRangeFormattingParams, DocumentSymbolParams,
-        DocumentSymbolResponse, ExecuteCommandParams, FoldingRange, FoldingRangeParams, Hover,
-        HoverParams, InitializeParams, InitializeResult, InitializedParams, InlayHint,
-        InlayHintParams, Location, PrepareRenameResult, ProgressToken, Range, ReferenceParams,
-        Registration, RenameFilesParams, RenameParams, SelectionRange, SelectionRangeParams,
-        SemanticTokens, SemanticTokensDeltaParams, SemanticTokensDeltaResponse,
-        SemanticTokensParams, SemanticTokensRangeParams, ShowDocumentParams, SignatureHelp,
-        SignatureHelpParams, TextDocumentPositionParams, TextEdit, TypeDefinitionParams,
-        TypeDefinitionResponse, Unregistration, Uri, WorkDoneProgressCancelParams, WorkspaceEdit,
-        WorkspaceSymbolParams, WorkspaceSymbolResponse,
+        CreateFilesParams, DefinitionParams, DefinitionResponse, DeleteFilesParams,
+        DidChangeConfigurationParams, DidChangeTextDocumentParams, DidChangeWatchedFilesParams,
+        DidChangeWorkspaceFoldersParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+        DidSaveTextDocumentParams, DocumentColorParams, DocumentFormattingParams,
+        DocumentHighlight, DocumentHighlightParams, DocumentLink, DocumentLinkParams,
+        DocumentRangeFormattingParams, DocumentSymbolParams, DocumentSymbolResponse,
+        ExecuteCommandParams, FoldingRange, FoldingRangeParams, Hover, HoverParams,
+        InitializeParams, InitializeResult, InitializedParams, InlayHint, InlayHintParams,
+        Location, PrepareRenameResult, ReferenceParams, RenameFilesParams, RenameParams,
+        SelectionRange, SelectionRangeParams, SemanticTokens, SemanticTokensDeltaParams,
+        SemanticTokensDeltaResponse, SemanticTokensParams, SemanticTokensRangeParams,
+        ShowDocumentParams, SignatureHelp, SignatureHelpParams, TextDocumentPositionParams,
+        TextEdit, TypeDefinitionParams, TypeDefinitionResponse, Uri, WorkDoneProgressCancelParams,
+        WorkspaceEdit, WorkspaceSymbolParams, WorkspaceSymbolResponse,
     },
     jsonrpc::{Error, Result},
 };
 
-use super::{
-    analysis,
+use super::registration::Registrations;
+
+use crate::{
     configuration::Configuration,
-    connection::{Connection, Operation},
+    connection::Connection,
     document::{self, Encoding},
-    editing, files, navigation,
-    output::{
-        messages,
-        progress::{Progress, Registry},
-    },
+    editing,
+    error::failure,
+    files, navigation,
+    output::{messages, progress::Registry},
     presentation,
-    project::{Project, failure, resolved_uri},
+    project::resolved_uri,
     suggestions, synchronization,
 };
 
-pub(super) struct Service {
-    client: Client,
-    connection: Arc<Connection>,
-    shutdown: Arc<AtomicBool>,
-    capabilities: Mutex<Arc<Value>>,
-    registrations: sync::Mutex<Registrations>,
-    formatting: Arc<sync::Semaphore>,
-    progress: Registry,
-    sequence: AtomicU64,
-    configuration_sequence: AtomicU64,
-    configuration_revision: Arc<Mutex<u64>>,
-}
-
-#[derive(Default)]
-struct Registrations {
-    installed: Vec<Registration>,
-    stopping: bool,
-}
-
-impl Registrations {
-    async fn unregister(&mut self, client: &Client) -> Result<()> {
-        if !self.installed.is_empty() {
-            client
-                .unregister_capability(
-                    self.installed
-                        .iter()
-                        .map(|registration| Unregistration {
-                            id: registration.id.clone(),
-                            method: registration.method.clone(),
-                        })
-                        .collect(),
-                )
-                .await?;
-
-            self.installed.clear();
-        }
-
-        Ok(())
-    }
+pub(crate) struct Service {
+    pub(super) client: Client,
+    pub(super) connection: Arc<Connection>,
+    pub(super) has_shutdown: Arc<AtomicBool>,
+    pub(super) capabilities: Mutex<Arc<Value>>,
+    pub(super) registrations: sync::Mutex<Registrations>,
+    pub(super) formatting: Arc<sync::Semaphore>,
+    pub(super) progress: Registry,
+    pub(super) sequence: AtomicU64,
+    pub(super) configuration_sequence: AtomicU64,
 }
 
 impl Service {
-    pub(super) fn new(
+    pub(crate) fn new(
         client: Client,
         connection: Arc<Connection>,
-        shutdown: Arc<AtomicBool>,
+        has_shutdown: Arc<AtomicBool>,
     ) -> Self {
         Self {
             client,
             connection,
-            shutdown,
+            has_shutdown,
             capabilities: Mutex::new(Arc::new(Value::Null)),
             registrations: sync::Mutex::new(Registrations::default()),
             formatting: Arc::new(sync::Semaphore::new(1)),
             progress: Arc::new(Mutex::new(HashMap::new())),
             sequence: AtomicU64::new(0),
             configuration_sequence: AtomicU64::new(0),
-            configuration_revision: Arc::new(Mutex::new(0)),
         }
     }
 
-    pub(super) fn cancel_progress(&self, parameters: &WorkDoneProgressCancelParams) {
+    pub(crate) fn cancel_progress(&self, parameters: &WorkDoneProgressCancelParams) {
         if let Some(operation) = self
             .progress
             .lock()
@@ -125,448 +90,13 @@ impl Service {
         }
     }
 
-    fn supports(&self, pointer: &str) -> bool {
+    pub(super) fn has_capability(&self, pointer: &str) -> bool {
         self.capabilities
             .lock()
             .expect("Internal error: client capabilities mutex is poisoned.")
             .pointer(pointer)
             .and_then(Value::as_bool)
             == Some(true)
-    }
-
-    async fn perform<Output, Pending>(
-        &self,
-        token: Option<ProgressToken>,
-        execute: impl FnOnce(Arc<Operation>) -> Pending + Send,
-    ) -> Result<Output>
-    where
-        Output: Send,
-        Pending: Future<Output = Result<Output>> + Send,
-    {
-        let operation = Arc::new(Operation::new(
-            token.clone().map(|token| (self.client.clone(), token)),
-        ));
-
-        let progress = Progress::new(
-            self.client.clone(),
-            token,
-            &operation,
-            Arc::clone(&self.progress),
-        );
-
-        progress.begin().await;
-        let result = execute(operation).await;
-        progress.finish().await;
-
-        result
-    }
-
-    async fn query<Parameters, Output>(
-        &self,
-        uri: Uri,
-        token: Option<ProgressToken>,
-        parameters: Parameters,
-        execute: impl FnOnce(&mut Project, &mut Frontend<'_>, Parameters) -> Result<Output>
-        + Send
-        + 'static,
-    ) -> Result<Output>
-    where
-        Parameters: Send + 'static,
-        Output: Send + 'static,
-    {
-        self.perform(token, |operation| {
-            self.connection
-                .query(uri, operation, move |project, frontend| {
-                    execute(project, frontend, parameters)
-                })
-        })
-        .await
-    }
-
-    async fn source<Parameters, Output>(
-        &self,
-        uri: Uri,
-        token: Option<ProgressToken>,
-        parameters: Parameters,
-        execute: impl FnOnce(&mut Project, Parameters) -> Result<Output> + Send + 'static,
-    ) -> Result<Output>
-    where
-        Parameters: Send + 'static,
-        Output: Send + 'static,
-    {
-        self.perform(token, |operation| {
-            self.connection
-                .source(uri, operation, move |project| execute(project, parameters))
-        })
-        .await
-    }
-
-    async fn source_or_query<Parameters, Output>(
-        &self,
-        uri: Uri,
-        token: Option<ProgressToken>,
-        parameters: Parameters,
-        source: impl FnOnce(&mut Project, &Parameters) -> Result<ControlFlow<Output>> + Send + 'static,
-        query: impl FnOnce(&mut Project, &mut Frontend<'_>, Parameters) -> Result<Output>
-        + Send
-        + 'static,
-    ) -> Result<Output>
-    where
-        Parameters: Send + 'static,
-        Output: Send + 'static,
-    {
-        self.perform(token, |operation| async move {
-            let prepared = self
-                .connection
-                .source(
-                    uri.clone(),
-                    Arc::clone(&operation),
-                    move |project| match source(project, &parameters)? {
-                        ControlFlow::Break(output) => Ok(ControlFlow::Break(output)),
-
-                        ControlFlow::Continue(()) => Ok(ControlFlow::Continue((
-                            parameters,
-                            project.workspace.directory().to_owned(),
-                            project.generation,
-                            project.invalidation,
-                        ))),
-                    },
-                )
-                .await?;
-
-            let (parameters, root, generation, invalidation) = match prepared {
-                ControlFlow::Break(output) => return Ok(output),
-                ControlFlow::Continue(prepared) => prepared,
-            };
-
-            self.connection
-                .query(uri, operation, move |project, frontend| {
-                    if project.workspace.directory() != root
-                        || project.generation != generation
-                        || project.invalidation != invalidation
-                    {
-                        return Err(Error::content_modified());
-                    }
-
-                    query(project, frontend, parameters)
-                })
-                .await
-        })
-        .await
-    }
-
-    async fn format(
-        &self,
-        uri: Uri,
-        token: Option<ProgressToken>,
-        range: Option<Range>,
-    ) -> Result<Option<Vec<TextEdit>>> {
-        self.perform(token, |operation| async move {
-            let permit = Arc::clone(&self.formatting)
-                .acquire_owned()
-                .await
-                .map_err(failure)?;
-
-            self.connection
-                .formatting(uri, operation, permit, range)
-                .await
-        })
-        .await
-    }
-
-    async fn notify<Parameters>(
-        &self,
-        uri: Uri,
-        parameters: Parameters,
-        execute: impl FnOnce(&mut Project, Parameters) -> Result<()> + Send + 'static,
-    ) where
-        Parameters: Send + 'static,
-    {
-        let result = async {
-            self.connection
-                .update(uri.clone(), move |project| execute(project, parameters))
-                .await?;
-
-            self.publish(uri, false).await
-        }
-        .await;
-
-        if let Err(error) = result {
-            messages::report(&self.client, error).await;
-        }
-    }
-
-    async fn publish(&self, uri: Uri, progress: bool) -> Result<()> {
-        let token = if progress && self.supports("/window/workDoneProgress") {
-            let token = ProgressToken::String(format!(
-                "instar/{}",
-                self.sequence.fetch_add(1, Ordering::Relaxed)
-            ));
-
-            self.client.create_work_done_progress(token.clone()).await?;
-
-            Some(token)
-        } else {
-            None
-        };
-
-        let publications = self
-            .perform(token, |operation| {
-                self.connection.query(uri, operation, |project, frontend| {
-                    analysis::collect(project, frontend)
-                })
-            })
-            .await?;
-
-        for publication in publications {
-            self.client
-                .publish_diagnostics(
-                    publication.uri,
-                    publication.diagnostics,
-                    publication.version,
-                )
-                .await;
-        }
-
-        Ok(())
-    }
-
-    async fn revalidate(&self, progress: bool) -> Result<()> {
-        let roots = self.connection.control(|state| state.roots()).await?;
-
-        for root in roots {
-            if let Err(error) = self.publish(root, progress).await {
-                messages::report(&self.client, error).await;
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn refresh(&self) {
-        for (pointer, result) in [
-            ("/workspace/semanticTokens/refreshSupport", 0),
-            ("/workspace/inlayHint/refreshSupport", 1),
-            ("/workspace/foldingRange/refreshSupport", 2),
-        ] {
-            if self.supports(pointer) {
-                let response = match result {
-                    0 => self.client.semantic_tokens_refresh().await,
-                    1 => self.client.inlay_hint_refresh().await,
-                    _ => self.client.folding_range_refresh().await,
-                };
-
-                if let Err(error) = response {
-                    messages::warning(&self.client, &error).await;
-                }
-            }
-        }
-    }
-
-    async fn configuration(&self, settings: Option<Value>) -> Result<bool> {
-        let settings = settings
-            .map(|settings| settings.get("instar").cloned().unwrap_or(settings))
-            .filter(|settings| !settings.is_null())
-            .map(Configuration::load)
-            .transpose()?;
-
-        let sequence = self
-            .configuration_sequence
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |sequence| {
-                sequence.checked_add(1)
-            })
-            .map_err(|_sequence| Error::internal_error())?;
-
-        let roots = self.connection.control(|state| state.roots()).await?;
-
-        let configurations = if self.supports("/workspace/configuration") {
-            let items = if roots.is_empty() {
-                vec![ConfigurationItem {
-                    scope_uri: None,
-                    section: Some("instar".to_owned()),
-                }]
-            } else {
-                roots
-                    .iter()
-                    .map(|uri| ConfigurationItem {
-                        scope_uri: Some(uri.clone()),
-                        section: Some("instar".to_owned()),
-                    })
-                    .collect()
-            };
-
-            let expected = items.len();
-            let values = self.client.configuration(items).await?;
-
-            if values.len() != expected {
-                return Err(Error::invalid_params(
-                    "Client returned an incorrect number of configurations.",
-                ));
-            }
-
-            values
-                .into_iter()
-                .map(|value| {
-                    if value.is_null() {
-                        Ok(None)
-                    } else {
-                        Configuration::load(value).map(Some)
-                    }
-                })
-                .collect::<Result<Vec<_>>>()?
-        } else {
-            vec![None; roots.len().max(1)]
-        };
-
-        if settings.is_none() && configurations.iter().all(Option::is_none) {
-            return Ok(false);
-        }
-
-        let revision = Arc::clone(&self.configuration_revision);
-
-        self.connection
-            .control(move |state| {
-                let mut revision = revision
-                    .lock()
-                    .expect("Internal error: configuration revision mutex is poisoned.");
-
-                if sequence < *revision {
-                    return Ok(false);
-                }
-
-                let paths = roots
-                    .iter()
-                    .map(document::path)
-                    .collect::<Result<Vec<_>>>()?;
-
-                if paths.iter().any(|path| !state.projects.contains_key(path)) {
-                    return Err(Error::content_modified());
-                }
-
-                let mut changed = false;
-
-                let fallback = if roots.is_empty() {
-                    configurations
-                        .first()
-                        .and_then(Option::as_ref)
-                        .or(settings.as_ref())
-                } else {
-                    settings.as_ref()
-                };
-
-                if let Some(configuration) = fallback
-                    && serde_json::to_value(&state.configuration).map_err(failure)?
-                        != serde_json::to_value(configuration).map_err(failure)?
-                {
-                    state.configuration = configuration.clone();
-                    changed = true;
-                }
-
-                for (path, configuration) in paths.into_iter().zip(configurations) {
-                    let Some(configuration) = configuration.or_else(|| settings.clone()) else {
-                        continue;
-                    };
-
-                    let project = state
-                        .projects
-                        .get_mut(&path)
-                        .ok_or_else(Error::content_modified)?;
-
-                    if serde_json::to_value(&project.configuration).map_err(failure)?
-                        != serde_json::to_value(&configuration).map_err(failure)?
-                    {
-                        project.changed()?;
-                        project.configuration = configuration;
-                        changed = true;
-                    }
-                }
-
-                *revision = sequence;
-
-                Ok(changed)
-            })
-            .await
-    }
-
-    async fn register(&self) -> Result<()> {
-        let mut acknowledged = self.registrations.lock().await;
-
-        if acknowledged.stopping {
-            return Ok(());
-        }
-
-        let mut registrations = Vec::new();
-
-        if self.supports("/workspace/didChangeWatchedFiles/dynamicRegistration") {
-            let dependencies = self
-                .connection
-                .control(|state| {
-                    Ok(state
-                        .projects
-                        .values()
-                        .flat_map(Project::dependencies)
-                        .collect::<BTreeSet<_>>())
-                })
-                .await?;
-
-            let mut watchers = vec![json!({"globPattern":"**/*.{lua,luau,toml,json}"})];
-
-            watchers.extend(dependencies.into_iter().filter_map(|path| {
-                path.to_str()
-                    .map(|path| json!({"globPattern":globset::escape(&path.replace('\\', "/"))}))
-            }));
-
-            registrations.push(Registration {
-                id: "instar.files".to_owned(),
-                method: "workspace/didChangeWatchedFiles".to_owned(),
-                register_options: Some(json!({"watchers":watchers})),
-            });
-        }
-
-        if self.supports("/workspace/didChangeConfiguration/dynamicRegistration") {
-            registrations.push(Registration {
-                id: "instar.configuration".to_owned(),
-                method: "workspace/didChangeConfiguration".to_owned(),
-                register_options: None,
-            });
-        }
-
-        if registrations == acknowledged.installed {
-            return Ok(());
-        }
-
-        acknowledged.unregister(&self.client).await?;
-
-        if !registrations.is_empty() {
-            self.client
-                .register_capability(registrations.clone())
-                .await?;
-
-            acknowledged.installed = registrations;
-        }
-
-        Ok(())
-    }
-
-    async fn maintain(&self, progress: bool) -> Result<()> {
-        self.register().await?;
-        self.refresh().await;
-        self.revalidate(progress).await?;
-
-        Ok(())
-    }
-
-    async fn changed(&self, paths: Vec<PathBuf>) -> Result<()> {
-        let changed = self
-            .connection
-            .control(move |state| files::changed(state, &paths))
-            .await?;
-
-        if !changed {
-            return Ok(());
-        }
-
-        self.maintain(false).await
     }
 }
 
@@ -668,7 +198,7 @@ impl LanguageServer for Service {
         let result = async {
             messages::initialized(&self.client).await;
 
-            if self.supports("/workspace/workspaceFolders")
+            if self.has_capability("/workspace/workspaceFolders")
                 && let Some(folders) = self.client.workspace_folders().await?
             {
                 self.connection
@@ -696,7 +226,7 @@ impl LanguageServer for Service {
 
     async fn shutdown(&self) -> Result<()> {
         let mut registrations = self.registrations.lock().await;
-        registrations.stopping = true;
+        registrations.is_stopping = true;
 
         self.connection
             .control(|state| {
@@ -710,7 +240,7 @@ impl LanguageServer for Service {
             messages::warning(&self.client, &error).await;
         }
 
-        self.shutdown.store(true, Ordering::Relaxed);
+        self.has_shutdown.store(true, Ordering::Relaxed);
 
         Ok(())
     }
@@ -1103,7 +633,6 @@ impl LanguageServer for Service {
 
         self.perform(token, |operation| async move {
             let roots = self.connection.control(|state| state.roots()).await?;
-            let mut symbols = Vec::new();
             let mut information = Vec::new();
 
             for root in roots {
@@ -1116,26 +645,12 @@ impl LanguageServer for Service {
                     })
                     .await?;
 
-                match result {
-                    Some(WorkspaceSymbolResponse::WorkspaceSymbolList(values)) => {
-                        symbols.extend(values);
-                    }
-
-                    Some(WorkspaceSymbolResponse::SymbolInformationList(values)) => {
-                        information.extend(values);
-                    }
-
-                    None => {}
-                }
+                information.extend(result);
             }
 
-            if symbols.is_empty() {
-                Ok(Some(WorkspaceSymbolResponse::SymbolInformationList(
-                    information,
-                )))
-            } else {
-                Ok(Some(WorkspaceSymbolResponse::WorkspaceSymbolList(symbols)))
-            }
+            Ok(Some(WorkspaceSymbolResponse::SymbolInformationList(
+                information,
+            )))
         })
         .await
     }
@@ -1300,7 +815,7 @@ impl LanguageServer for Service {
 
     async fn execute_command(&self, parameters: ExecuteCommandParams) -> Result<Option<Value>> {
         if parameters.command == "instar.openConfiguration" {
-            if !self.supports("/window/showDocument/support") {
+            if !self.has_capability("/window/showDocument/support") {
                 return Err(Error::invalid_params(
                     "Client does not support opening documents.",
                 ));
@@ -1318,12 +833,12 @@ impl LanguageServer for Service {
 
                 let uri = document::uri(&document::path(&root)?.join("instar.toml"))?;
 
-                let opened = self
+                let is_opened = self
                     .client
                     .show_document(ShowDocumentParams::new(uri, None, Some(true), None))
                     .await?;
 
-                return Ok(Some(Value::Bool(opened)));
+                return Ok(Some(Value::Bool(is_opened)));
             }
 
             return Ok(None);
@@ -1335,7 +850,7 @@ impl LanguageServer for Service {
             _ => return Err(Error::invalid_params("Unknown Instar command.")),
         };
 
-        if !self.supports("/workspace/applyEdit") {
+        if !self.has_capability("/workspace/applyEdit") {
             return Err(Error::invalid_params(
                 "Client does not support workspace edits.",
             ));

@@ -9,12 +9,9 @@ use tower_lsp_server::{
     jsonrpc::Result,
 };
 
-use crate::{
-    output::content,
-    project::{Project, failure},
-};
+use crate::{error::failure, output::content, project::Project};
 
-pub(crate) fn markdown(project: &Project, pointer: &str) -> bool {
+pub(crate) fn should_use_markdown(project: &Project, pointer: &str) -> bool {
     project
         .capabilities
         .pointer(pointer)
@@ -32,12 +29,15 @@ pub(crate) fn markdown(project: &Project, pointer: &str) -> bool {
 pub(crate) fn presentation(
     sections: &[Section],
     documentation: &str,
-    markdown: bool,
+    should_use_markdown: bool,
 ) -> Result<String> {
     let mut output = String::new();
 
     if let Some(primary) = sections.first() {
-        append(&mut output, &content::code(&primary.content, markdown)?);
+        append(
+            &mut output,
+            &content::code(&primary.content, should_use_markdown)?,
+        );
     }
 
     if !documentation.is_empty() {
@@ -47,16 +47,20 @@ pub(crate) fn presentation(
     Ok(output)
 }
 
-pub(crate) fn hover(sections: &[String], markdown: bool) -> MarkupContent {
+pub(crate) fn hover(sections: &[String], should_use_markdown: bool) -> MarkupContent {
     markup(
-        sections.join(if markdown { "\n\n---\n\n" } else { "\n\n" }),
-        markdown,
+        sections.join(if should_use_markdown {
+            "\n\n---\n\n"
+        } else {
+            "\n\n"
+        }),
+        should_use_markdown,
     )
 }
 
-pub(crate) fn markup(value: String, markdown: bool) -> MarkupContent {
+pub(crate) fn markup(value: String, should_use_markdown: bool) -> MarkupContent {
     MarkupContent {
-        kind: if markdown {
+        kind: if should_use_markdown {
             MarkupKind::Markdown
         } else {
             MarkupKind::PlainText
@@ -70,11 +74,17 @@ pub(crate) fn documentation(
     module: &str,
     symbol: &str,
     fallback: &str,
-    markdown: bool,
+    should_use_markdown: bool,
 ) -> Result<String> {
     let value = metadata(project, module, symbol)?;
 
-    render(project, module, value.as_ref(), fallback, markdown)
+    render(
+        project,
+        module,
+        value.as_ref(),
+        fallback,
+        should_use_markdown,
+    )
 }
 
 pub(crate) fn metadata(project: &Project, module: &str, symbol: &str) -> Result<Option<Value>> {
@@ -91,7 +101,7 @@ pub(crate) fn metadata(project: &Project, module: &str, symbol: &str) -> Result<
             .documentation(module, &symbol)
             .map_err(failure)?;
 
-        if let Some(reference) = value.as_ref().and_then(body).filter(|text| alias(text)) {
+        if let Some(reference) = value.as_ref().and_then(body).filter(|text| is_alias(text)) {
             reference.clone_into(&mut symbol);
         } else {
             return Ok(value);
@@ -121,11 +131,11 @@ pub(crate) fn render(
     module: &str,
     value: Option<&Value>,
     fallback: &str,
-    markdown: bool,
+    should_use_markdown: bool,
 ) -> Result<String> {
     let referenced;
 
-    let value = if let Some(reference) = value.and_then(body).filter(|text| alias(text)) {
+    let value = if let Some(reference) = value.and_then(body).filter(|text| is_alias(text)) {
         referenced = metadata(project, module, reference)?;
 
         referenced.as_ref()
@@ -133,14 +143,17 @@ pub(crate) fn render(
         value
     };
 
-    let mut text = content::render(value.and_then(body).unwrap_or(fallback), markdown)?;
+    let mut text = content::render(
+        value.and_then(body).unwrap_or(fallback),
+        should_use_markdown,
+    )?;
 
     if let Some(sample) = value
         .and_then(|value| value.get("code_sample"))
         .and_then(Value::as_str)
         .filter(|sample| !sample.is_empty())
     {
-        append(&mut text, &content::code(sample, markdown)?);
+        append(&mut text, &content::code(sample, should_use_markdown)?);
     }
 
     if let Some(link) = value
@@ -151,7 +164,10 @@ pub(crate) fn render(
                 .is_ok_and(|uri| matches!(uri.scheme(), "http" | "https"))
         })
     {
-        append(&mut text, &content::link("Learn more", link, markdown)?);
+        append(
+            &mut text,
+            &content::link("Learn more", link, should_use_markdown)?,
+        );
     }
 
     Ok(text)
@@ -163,7 +179,7 @@ fn body(value: &Value) -> Option<&str> {
         .or_else(|| value.get("documentation").and_then(Value::as_str))
 }
 
-fn alias(text: &str) -> bool {
+fn is_alias(text: &str) -> bool {
     text.starts_with('@') && text.contains('/') && !text.contains(char::is_whitespace)
 }
 

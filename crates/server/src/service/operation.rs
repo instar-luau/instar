@@ -1,0 +1,181 @@
+use std::{future::Future, ops::ControlFlow, sync::Arc};
+
+use instar_bridge::Frontend;
+
+use tower_lsp_server::{
+    gen_lsp_types::{ProgressToken, Range, TextEdit, Uri},
+    jsonrpc::{Error, Result},
+};
+
+use super::protocol::Service;
+
+use crate::{
+    connection::Operation,
+    error::failure,
+    output::{messages, progress::Progress},
+    project::Project,
+};
+
+impl Service {
+    pub(super) async fn perform<Output, Pending>(
+        &self,
+        token: Option<ProgressToken>,
+        execute: impl FnOnce(Arc<Operation>) -> Pending + Send,
+    ) -> Result<Output>
+    where
+        Output: Send,
+        Pending: Future<Output = Result<Output>> + Send,
+    {
+        let operation = Arc::new(Operation::new(
+            token.clone().map(|token| (self.client.clone(), token)),
+        ));
+
+        let progress = Progress::new(
+            self.client.clone(),
+            token,
+            &operation,
+            Arc::clone(&self.progress),
+        );
+
+        progress.begin().await;
+        let result = execute(operation).await;
+        progress.finish().await;
+
+        result
+    }
+
+    pub(super) async fn query<Parameters, Output>(
+        &self,
+        uri: Uri,
+        token: Option<ProgressToken>,
+        parameters: Parameters,
+        execute: impl FnOnce(&mut Project, &mut Frontend<'_>, Parameters) -> Result<Output>
+        + Send
+        + 'static,
+    ) -> Result<Output>
+    where
+        Parameters: Send + 'static,
+        Output: Send + 'static,
+    {
+        self.perform(token, |operation| {
+            self.connection
+                .query(uri, operation, move |project, frontend| {
+                    execute(project, frontend, parameters)
+                })
+        })
+        .await
+    }
+
+    pub(super) async fn source<Parameters, Output>(
+        &self,
+        uri: Uri,
+        token: Option<ProgressToken>,
+        parameters: Parameters,
+        execute: impl FnOnce(&mut Project, Parameters) -> Result<Output> + Send + 'static,
+    ) -> Result<Output>
+    where
+        Parameters: Send + 'static,
+        Output: Send + 'static,
+    {
+        self.perform(token, |operation| {
+            self.connection
+                .source(uri, operation, move |project| execute(project, parameters))
+        })
+        .await
+    }
+
+    pub(super) async fn source_or_query<Parameters, Output>(
+        &self,
+        uri: Uri,
+        token: Option<ProgressToken>,
+        parameters: Parameters,
+        source: impl FnOnce(&mut Project, &Parameters) -> Result<ControlFlow<Output>> + Send + 'static,
+        query: impl FnOnce(&mut Project, &mut Frontend<'_>, Parameters) -> Result<Output>
+        + Send
+        + 'static,
+    ) -> Result<Output>
+    where
+        Parameters: Send + 'static,
+        Output: Send + 'static,
+    {
+        self.perform(token, |operation| async move {
+            let prepared = self
+                .connection
+                .source(
+                    uri.clone(),
+                    Arc::clone(&operation),
+                    move |project| match source(project, &parameters)? {
+                        ControlFlow::Break(output) => Ok(ControlFlow::Break(output)),
+
+                        ControlFlow::Continue(()) => Ok(ControlFlow::Continue((
+                            parameters,
+                            project.workspace.directory().to_owned(),
+                            project.generation,
+                            project.invalidation,
+                        ))),
+                    },
+                )
+                .await?;
+
+            let (parameters, root, generation, invalidation) = match prepared {
+                ControlFlow::Break(output) => return Ok(output),
+                ControlFlow::Continue(prepared) => prepared,
+            };
+
+            self.connection
+                .query(uri, operation, move |project, frontend| {
+                    if project.workspace.directory() != root
+                        || project.generation != generation
+                        || project.invalidation != invalidation
+                    {
+                        return Err(Error::content_modified());
+                    }
+
+                    query(project, frontend, parameters)
+                })
+                .await
+        })
+        .await
+    }
+
+    pub(super) async fn format(
+        &self,
+        uri: Uri,
+        token: Option<ProgressToken>,
+        range: Option<Range>,
+    ) -> Result<Option<Vec<TextEdit>>> {
+        self.perform(token, |operation| async move {
+            let permit = Arc::clone(&self.formatting)
+                .acquire_owned()
+                .await
+                .map_err(failure)?;
+
+            self.connection
+                .formatting(uri, operation, permit, range)
+                .await
+        })
+        .await
+    }
+
+    pub(super) async fn notify<Parameters>(
+        &self,
+        uri: Uri,
+        parameters: Parameters,
+        execute: impl FnOnce(&mut Project, Parameters) -> Result<()> + Send + 'static,
+    ) where
+        Parameters: Send + 'static,
+    {
+        let result = async {
+            self.connection
+                .update(uri.clone(), move |project| execute(project, parameters))
+                .await?;
+
+            self.publish(uri, false).await
+        }
+        .await;
+
+        if let Err(error) = result {
+            messages::report(&self.client, error).await;
+        }
+    }
+}

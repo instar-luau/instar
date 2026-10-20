@@ -14,14 +14,15 @@ use tower_lsp_server::{
         DocumentLinkParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, Location,
         Range as ProtocolRange, ReferenceParams, SymbolInformation, SymbolKind,
         TextDocumentPositionParams, TypeDefinitionParams, TypeDefinitionResponse, Uri,
-        WorkspaceSymbolParams, WorkspaceSymbolResponse,
+        WorkspaceSymbolParams,
     },
     jsonrpc::Result,
 };
 
 use super::{
     document::{self, Document, Encoding},
-    project::{Project, failure},
+    error::failure,
+    project::Project,
 };
 
 pub(super) fn goto_definition(
@@ -37,7 +38,7 @@ pub(super) fn goto_definition(
     )?;
 
     Ok(Some(
-        if project.supports("/textDocument/definition/linkSupport") {
+        if project.has_capability("/textDocument/definition/linkSupport") {
             DefinitionResponse::DefinitionLinkList(links)
         } else {
             DefinitionResponse::Definition(Definition::LocationList(locations(links)))
@@ -58,7 +59,7 @@ pub(super) fn goto_type_definition(
     )?;
 
     Ok(Some(
-        if project.supports("/textDocument/typeDefinition/linkSupport") {
+        if project.has_capability("/textDocument/typeDefinition/linkSupport") {
             TypeDefinitionResponse::DefinitionLinkList(links)
         } else {
             TypeDefinitionResponse::Definition(Definition::LocationList(locations(links)))
@@ -126,7 +127,7 @@ pub(super) fn references(
             binding
                 .occurrences
                 .iter()
-                .any(|occurrence| contains(&occurrence.range, offset))
+                .any(|occurrence| is_contained(&occurrence.range, offset))
         }) {
             for occurrence in &binding.occurrences {
                 if parameters.context.include_declaration || occurrence.range != binding.declaration
@@ -157,9 +158,9 @@ pub(super) fn references(
 
         for module in modules {
             for occurrence in frontend.occurrences(&module).map_err(failure)? {
-                if declarations.iter().any(|(declaration, namespace)| {
+                if declarations.iter().any(|(declaration, is_type_namespace)| {
                     declaration == &occurrence.declaration
-                        && *namespace == occurrence.type_namespace
+                        && *is_type_namespace == occurrence.type_namespace
                 }) && (parameters.context.include_declaration
                     || occurrence.role != OccurrenceRole::Declaration)
                 {
@@ -189,7 +190,7 @@ pub(super) fn document_highlight_source(
         binding
             .occurrences
             .iter()
-            .any(|occurrence| contains(&occurrence.range, offset))
+            .any(|occurrence| is_contained(&occurrence.range, offset))
     }) {
         return binding
             .occurrences
@@ -227,8 +228,9 @@ pub(super) fn document_highlight(
 
     for occurrence in occurrences {
         if occurrence.location.module != module
-            || !declarations.iter().any(|(declaration, namespace)| {
-                declaration == &occurrence.declaration && *namespace == occurrence.type_namespace
+            || !declarations.iter().any(|(declaration, is_type_namespace)| {
+                declaration == &occurrence.declaration
+                    && *is_type_namespace == occurrence.type_namespace
             })
         {
             continue;
@@ -262,7 +264,8 @@ pub(super) fn document_symbol(
     let document = project.snapshot(&module)?;
 
     Ok(Some(
-        if project.supports("/textDocument/documentSymbol/hierarchicalDocumentSymbolSupport") {
+        if project.has_capability("/textDocument/documentSymbol/hierarchicalDocumentSymbolSupport")
+        {
             DocumentSymbolResponse::DocumentSymbolList(
                 document
                     .analysis
@@ -290,7 +293,7 @@ pub(super) fn document_symbol(
 pub(super) fn symbol(
     project: &mut Project,
     parameters: &WorkspaceSymbolParams,
-) -> Result<Option<WorkspaceSymbolResponse>> {
+) -> Result<Vec<SymbolInformation>> {
     let query = parameters.query.to_lowercase();
     let mut information = Vec::new();
 
@@ -300,7 +303,7 @@ pub(super) fn symbol(
         indexed(&document.analysis.symbols, None, &mut entries);
 
         for (symbol, container) in entries {
-            if !matches(&symbol.name, &query) {
+            if !is_match(&symbol.name, &query) {
                 continue;
             }
 
@@ -322,9 +325,7 @@ pub(super) fn symbol(
         }
     }
 
-    Ok(Some(WorkspaceSymbolResponse::SymbolInformationList(
-        information,
-    )))
+    Ok(information)
 }
 
 pub(super) fn document_link(
@@ -351,7 +352,7 @@ fn definitions(
     project: &mut Project,
     frontend: &mut Frontend<'_>,
     position: &TextDocumentPositionParams,
-    types: bool,
+    should_find_types: bool,
 ) -> Result<Vec<DefinitionLink>> {
     let module = project.module(&position.text_document.uri)?;
     let document = project.snapshot(&module)?;
@@ -376,12 +377,12 @@ fn definitions(
     let mut result = Vec::new();
 
     for declaration in frontend
-        .definitions(&module, line, column, types)
+        .definitions(&module, line, column, should_find_types)
         .map_err(failure)?
     {
         let target = project.snapshot(&declaration.module)?;
-        let selection = target.native_range(declaration.range, project.encoding)?;
-        let bytes = target.bytes(selection, project.encoding)?;
+        let bytes = target.native_bytes(declaration.range)?;
+        let selection = target.range(bytes.clone(), project.encoding)?;
 
         let range = enclosing(&target.analysis.symbols, &bytes)
             .map(|symbol| target.range(symbol.range.clone(), project.encoding))
@@ -401,12 +402,12 @@ fn definitions(
     }
 
     if result.is_empty()
-        && !types
+        && !should_find_types
         && let Some(binding) = document.analysis.bindings.iter().find(|binding| {
             binding
                 .occurrences
                 .iter()
-                .any(|occurrence| contains(&occurrence.range, offset))
+                .any(|occurrence| is_contained(&occurrence.range, offset))
         })
     {
         let selection = document.range(binding.declaration.clone(), project.encoding)?;
@@ -465,7 +466,7 @@ fn declarations(
         .collect()
 }
 
-fn contains(range: &Range<usize>, offset: usize) -> bool {
+fn is_contained(range: &Range<usize>, offset: usize) -> bool {
     range.start <= offset && offset <= range.end
 }
 
@@ -555,7 +556,7 @@ fn kind(kind: SourceSymbolKind) -> SymbolKind {
     }
 }
 
-fn matches(name: &str, query: &str) -> bool {
+fn is_match(name: &str, query: &str) -> bool {
     let name = name.to_lowercase();
     let mut characters = name.chars();
 

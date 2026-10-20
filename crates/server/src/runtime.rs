@@ -51,21 +51,21 @@ impl RequestService<Request> for Transport {
 ///
 /// # Errors
 /// Returns runtime initialization or analysis worker shutdown failures.
-pub fn run(cancelled: fn() -> bool) -> Result<u8> {
+pub fn run(is_cancelled: fn() -> bool) -> Result<u8> {
     let runtime = Builder::new_current_thread()
         .enable_all()
         .build()
         .wrap_err("Could not create the server runtime.")?;
 
     let connection = Arc::new(Connection::new().wrap_err("Could not start the analysis worker.")?);
-    let shutdown = Arc::new(AtomicBool::new(false));
+    let has_shutdown = Arc::new(AtomicBool::new(false));
 
     runtime.block_on(async {
         let connection = Arc::clone(&connection);
-        let shutdown = Arc::clone(&shutdown);
+        let has_shutdown = Arc::clone(&has_shutdown);
 
         let (service, socket) =
-            LspService::build(move |client| Service::new(client, connection, shutdown))
+            LspService::build(move |client| Service::new(client, connection, has_shutdown))
                 .custom_method(
                     "window/workDoneProgress/cancel",
                     |service: &Service, parameters| {
@@ -86,7 +86,7 @@ pub fn run(cancelled: fn() -> bool) -> Result<u8> {
         loop {
             tokio::select! {
                 () = &mut serving => break,
-                _ = interval.tick() => if cancelled() { break; },
+                _ = interval.tick() => if is_cancelled() { break; },
             }
         }
     });
@@ -95,5 +95,7 @@ pub fn run(cancelled: fn() -> bool) -> Result<u8> {
     runtime.shutdown_background();
     stopped.wrap_err("Could not stop the analysis worker.")?;
 
-    Ok(u8::from(!shutdown.load(Ordering::Relaxed) && !cancelled()))
+    Ok(u8::from(
+        !has_shutdown.load(Ordering::Relaxed) && !is_cancelled(),
+    ))
 }

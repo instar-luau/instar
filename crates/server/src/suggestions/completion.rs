@@ -14,20 +14,16 @@ use serde_json::Value;
 
 use tower_lsp_server::{
     gen_lsp_types::{
-        ActiveParameter, CompletionItem, CompletionItemKind, CompletionItemTag,
-        CompletionItemTextEdit, CompletionList, CompletionParams, CompletionResponse, Contents,
-        Documentation, Hover, HoverParams, InsertReplaceEdit, InsertTextFormat,
-        ParameterInformation, ParameterInformationLabel, Position, Range as ProtocolRange,
-        SignatureHelp, SignatureHelpParams, SignatureInformation, TextEdit,
+        CompletionItem, CompletionItemKind, CompletionItemTag, CompletionItemTextEdit,
+        CompletionList, CompletionParams, CompletionResponse, Documentation, InsertReplaceEdit,
+        InsertTextFormat, Position, Range as ProtocolRange, TextEdit,
     },
     jsonrpc::{Error, Result},
 };
 
 use crate::{
-    configuration::Require,
-    document::Document,
-    output::documentation,
-    project::{Project, failure},
+    configuration::Require, document::Document, error::failure, output::documentation,
+    project::Project,
 };
 
 #[derive(Deserialize, Serialize)]
@@ -43,47 +39,6 @@ enum Resolve {
         position: Position,
         target: String,
     },
-}
-
-pub(crate) fn hover(
-    project: &mut Project,
-    frontend: &mut Frontend<'_>,
-    parameters: HoverParams,
-) -> Result<Option<Hover>> {
-    let position = parameters.text_document_position_params;
-    let module = project.module(&position.text_document.uri)?;
-    let document = project.snapshot(&module)?;
-    let (line, column) = document.native(position.position, project.encoding)?;
-    let markdown = documentation::markdown(project, "/textDocument/hover/contentFormat");
-    let mut sections = Vec::new();
-    let mut range = None;
-
-    for value in frontend.hover(&module, line, column).map_err(failure)? {
-        let detail = presentation::hover(&value).map_err(failure)?;
-
-        let documentation = documentation::documentation(
-            project,
-            &module,
-            &value.documentation_symbol,
-            &value.documentation,
-            markdown,
-        )?;
-
-        let section = documentation::presentation(&detail, &documentation, markdown)?;
-
-        if !sections.contains(&section) {
-            sections.push(section);
-        }
-
-        if range.is_none() {
-            range = Some(document.native_range(value.location.range, project.encoding)?);
-        }
-    }
-
-    Ok((!sections.is_empty()).then(|| Hover {
-        contents: Contents::MarkupContent(documentation::hover(&sections, markdown)),
-        range,
-    }))
 }
 
 pub(crate) fn completion(
@@ -105,7 +60,7 @@ pub(crate) fn completion(
     for (index, candidate) in candidates.iter().enumerate() {
         if candidates[..index]
             .iter()
-            .any(|previous| same_completion(previous, candidate))
+            .any(|previous| is_same_completion(previous, candidate))
         {
             continue;
         }
@@ -114,7 +69,7 @@ pub(crate) fn completion(
             continue;
         };
 
-        if !resolves(project, "documentation") {
+        if !can_resolve(project, "documentation") {
             item.documentation = completion_documentation(project, &module, candidate)?;
         }
 
@@ -139,7 +94,7 @@ pub(crate) fn completion(
         .chars()
         .next_back();
 
-    let expression = candidates.iter().any(|candidate| {
+    let is_expression = candidates.iter().any(|candidate| {
         matches!(
             candidate.kind,
             CompletionKind::Binding | CompletionKind::Module
@@ -151,8 +106,8 @@ pub(crate) fn completion(
                 && matches!(token.kind, TokenKind::String | TokenKind::Comment)
         });
 
-    if project.configuration.imports.enabled
-        && expression
+    if project.configuration.imports.is_enabled
+        && is_expression
         && let SymbolOutcome::Ready(symbols) =
             project.workspace.symbols(&module).map_err(failure)?
     {
@@ -178,11 +133,11 @@ pub(crate) fn completion(
                 name,
                 &symbols,
             )? {
-                if resolves(project, "detail") {
+                if can_resolve(project, "detail") {
                     item.detail = None;
                 }
 
-                if resolves(project, "additionalTextEdits") {
+                if can_resolve(project, "additionalTextEdits") {
                     item.additional_text_edits = None;
                 }
 
@@ -265,122 +220,16 @@ pub(crate) fn completion_resolve(
     }
 }
 
-pub(crate) fn signature_help(
-    project: &mut Project,
-    frontend: &mut Frontend<'_>,
-    parameters: SignatureHelpParams,
-) -> Result<Option<SignatureHelp>> {
-    let position = parameters.text_document_position_params;
-    let module = project.module(&position.text_document.uri)?;
-    let document = project.snapshot(&module)?;
-    let (line, column) = document.native(position.position, project.encoding)?;
-
-    let markdown = documentation::markdown(
-        project,
-        "/textDocument/signatureHelp/signatureInformation/documentationFormat",
-    );
-
-    let mut signatures = Vec::new();
-    let mut active_signature = None;
-    let mut active_parameter = None;
-
-    let offsets = project.supports(
-        "/textDocument/signatureHelp/signatureInformation/parameterInformation/labelOffsetSupport",
-    );
-
-    for signature in frontend
-        .signatures(&module, line, column)
-        .map_err(failure)?
-    {
-        let rendered = presentation::signature(&signature).map_err(failure)?;
-
-        if rendered.parameters.len() != signature.parameters.len() {
-            return Err(failure(
-                "Signature parameter spans do not match the visible parameters.",
-            ));
-        }
-
-        let active = signature
-            .active_parameter
-            .min(u32::try_from(signature.parameters.len().saturating_sub(1)).map_err(failure)?);
-
-        let metadata = documentation::metadata(project, &module, &signature.documentation_symbol)?;
-
-        let documentation = documentation::render(
-            project,
-            &module,
-            metadata.as_ref(),
-            &signature.documentation,
-            markdown,
-        )?;
-
-        let text = documentation::presentation(&rendered.detail, &documentation, markdown)?;
-
-        let parameters = signature
-            .parameters
-            .iter()
-            .zip(&rendered.parameters)
-            .map(|(parameter, span)| {
-                let label = parameter_label(&rendered.label, span.clone(), offsets)?;
-
-                let entry = documentation::parameter(
-                    metadata.as_ref(),
-                    &parameter.name,
-                    parameter.source_index,
-                );
-
-                let text = documentation::render(
-                    project,
-                    &module,
-                    entry.and_then(|entry| entry.get("documentation")),
-                    &parameter.documentation,
-                    markdown,
-                )?;
-
-                Ok(ParameterInformation {
-                    label,
-                    documentation: (!text.is_empty()).then(|| {
-                        Documentation::MarkupContent(documentation::markup(text, markdown))
-                    }),
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-
-        let value = SignatureInformation {
-            label: rendered.label,
-            documentation: (!text.is_empty())
-                .then(|| Documentation::MarkupContent(documentation::markup(text, markdown))),
-            parameters: Some(parameters),
-            active_parameter: project
-                .supports("/textDocument/signatureHelp/signatureInformation/activeParameterSupport")
-                .then_some(ActiveParameter::Int(active)),
-        };
-
-        if signature.selected || active_signature.is_none() {
-            active_signature = Some(u32::try_from(signatures.len()).map_err(failure)?);
-            active_parameter = Some(ActiveParameter::Int(active));
-        }
-
-        signatures.push(value);
-    }
-
-    Ok((!signatures.is_empty()).then_some(SignatureHelp {
-        signatures,
-        active_signature,
-        active_parameter,
-    }))
-}
-
 fn semantic(
     project: &Project,
     document: &Document,
     position: Position,
     candidate: &Completion,
 ) -> Result<Option<CompletionItem>> {
-    let snippets = project.configuration.completion_snippets
-        && project.supports("/textDocument/completion/completionItem/snippetSupport");
+    let should_use_snippets = project.configuration.should_use_completion_snippets
+        && project.has_capability("/textDocument/completion/completionItem/snippetSupport");
 
-    let insertion = if candidate.snippet && !snippets {
+    let insertion = if candidate.snippet && !should_use_snippets {
         candidate.insert_text.replace("$0", "")
     } else {
         candidate.insert_text.clone()
@@ -430,7 +279,7 @@ fn semantic(
                 .pointer("/textDocument/completion/completionItem/tagSupport")
                 .is_some())
         .then_some(vec![CompletionItemTag::Deprecated]),
-        detail: if resolves(project, "detail") {
+        detail: if can_resolve(project, "detail") {
             None
         } else {
             candidate
@@ -441,7 +290,7 @@ fn semantic(
                 })
                 .transpose()?
         },
-        insert_text_format: Some(if candidate.snippet && snippets {
+        insert_text_format: Some(if candidate.snippet && should_use_snippets {
             InsertTextFormat::Snippet
         } else {
             InsertTextFormat::PlainText
@@ -479,7 +328,7 @@ fn imported(
         || !project
             .configuration
             .imports
-            .accepts(project.workspace.directory(), Path::new(target))
+            .can_import(project.workspace.directory(), Path::new(target))
         || project
             .workspace
             .is_excluded(target, Purpose::Index)
@@ -494,8 +343,8 @@ fn imported(
             .bindings
             .iter()
             .any(|binding| binding.name == name || binding.name == "require")
-        || written(document, "require")
-        || written(document, name)
+        || is_written(document, "require")
+        || is_written(document, name)
     {
         return Ok(None);
     }
@@ -516,7 +365,7 @@ fn imported(
 
     if !expression.starts_with(['\'', '"'])
         && (root == name
-            || written(document, root)
+            || is_written(document, root)
             || document
                 .analysis
                 .bindings
@@ -541,7 +390,7 @@ fn imported(
         project.configuration.imports.binding.keyword()
     );
 
-    let combined = insertion == replacement.start;
+    let is_combined = insertion == replacement.start;
 
     if insertion > replacement.start {
         return Ok(None);
@@ -565,14 +414,14 @@ fn imported(
             project,
             replacement,
             position,
-            if combined {
+            if is_combined {
                 format!("{declaration}{name}")
             } else {
                 name.to_owned()
             },
         )),
         insert_text_format: Some(InsertTextFormat::PlainText),
-        additional_text_edits: if combined {
+        additional_text_edits: if is_combined {
             None
         } else {
             Some(vec![TextEdit {
@@ -585,7 +434,7 @@ fn imported(
     }))
 }
 
-fn written(document: &Document, name: &str) -> bool {
+fn is_written(document: &Document, name: &str) -> bool {
     document.analysis.tokens.iter().any(|token| {
         token.access.is_write() && document.text.get(token.range.clone()) == Some(name)
     })
@@ -597,7 +446,7 @@ fn text_edit(
     position: Position,
     new_text: String,
 ) -> CompletionItemTextEdit {
-    if project.supports("/textDocument/completion/completionItem/insertReplaceSupport")
+    if project.has_capability("/textDocument/completion/completionItem/insertReplaceSupport")
         && replacement.start.line == replacement.end.line
         && replacement.start <= position
         && position <= replacement.end
@@ -618,7 +467,7 @@ fn text_edit(
     }
 }
 
-fn resolves(project: &Project, property: &str) -> bool {
+fn can_resolve(project: &Project, property: &str) -> bool {
     project
         .capabilities
         .pointer("/textDocument/completion/completionItem/resolveSupport/properties")
@@ -631,7 +480,7 @@ fn completion_documentation(
     module: &str,
     candidate: &Completion,
 ) -> Result<Option<Documentation>> {
-    let markdown = documentation::markdown(
+    let should_use_markdown = documentation::should_use_markdown(
         project,
         "/textDocument/completion/completionItem/documentationFormat",
     );
@@ -641,33 +490,14 @@ fn completion_documentation(
         module,
         &candidate.documentation_symbol,
         &candidate.documentation,
-        markdown,
+        should_use_markdown,
     )?;
 
     Ok((!text.is_empty())
-        .then(|| Documentation::MarkupContent(documentation::markup(text, markdown))))
+        .then(|| Documentation::MarkupContent(documentation::markup(text, should_use_markdown))))
 }
 
-fn parameter_label(
-    signature: &str,
-    span: Range<usize>,
-    offsets: bool,
-) -> Result<ParameterInformationLabel> {
-    let label = signature
-        .get(span.clone())
-        .ok_or_else(|| failure("Signature parameter span is outside the final label."))?;
-
-    if offsets {
-        return Ok(ParameterInformationLabel::Tuple((
-            u32::try_from(signature[..span.start].encode_utf16().count()).map_err(failure)?,
-            u32::try_from(signature[..span.end].encode_utf16().count()).map_err(failure)?,
-        )));
-    }
-
-    Ok(ParameterInformationLabel::String(label.to_owned()))
-}
-
-fn same_completion(left: &Completion, right: &Completion) -> bool {
+fn is_same_completion(left: &Completion, right: &Completion) -> bool {
     left.label == right.label
         && left.insert_text == right.insert_text
         && left.replacement.range == right.replacement.range

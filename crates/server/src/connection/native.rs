@@ -1,7 +1,7 @@
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
-    path::{Path, PathBuf},
+    path::PathBuf,
     rc::Rc,
     sync::{
         Arc, Mutex, Weak,
@@ -13,9 +13,14 @@ use instar_bridge::{Context, Frontend, Progress};
 use tower_lsp_server::jsonrpc::{Error, Result};
 
 use super::{
-    connection::{Completion, Message, Operation, Work},
-    files,
-    project::{Project, failure},
+    message::{Completion, Message, Work},
+    operation::Operation,
+};
+
+use crate::{
+    error::failure,
+    paths::{identity, is_intersecting},
+    project::Project,
     workspace::History,
 };
 
@@ -41,7 +46,7 @@ pub(super) fn run(
 
         let cached = projects
             .remove(&root)
-            .filter(|cached| reusable(&cached.project, cached.sequence, &work));
+            .filter(|cached| is_reusable(&cached.project, cached.sequence, &work));
 
         let (project, mut sequence) = cached.map_or_else(
             || {
@@ -62,12 +67,12 @@ pub(super) fn run(
             Ok(project) => project,
 
             Err(error) => {
-                let (success, deliver) = (work.action)(Err(error));
+                let (is_successful, deliver) = (work.action)(Err(error));
 
                 drop(sender.send(Message::Complete(Completion {
                     identifier: work.identifier,
                     feedback: None,
-                    success,
+                    is_successful,
                     deliver,
                 })));
 
@@ -79,9 +84,9 @@ pub(super) fn run(
         let operation = RefCell::new(Arc::clone(&work.operation));
         let update = |stage: Progress<'_>| operation.borrow().report(stage);
 
-        let discarded = {
+        let is_discarded = {
             let cancelled = Arc::clone(&work.operation);
-            workspace.set_cancellation(move || cancelled.requested());
+            workspace.set_cancellation(move || cancelled.is_cancelled());
 
             *current
                 .lock()
@@ -106,15 +111,15 @@ pub(super) fn run(
 
                 *operation.borrow_mut() = Arc::clone(&next.operation);
                 let cancelled = Arc::clone(&next.operation);
-                workspace.set_cancellation(move || cancelled.requested());
+                workspace.set_cancellation(move || cancelled.is_cancelled());
 
                 if let Ok(cancellation) = &cancellation {
                     next.operation.attach(cancellation);
                 }
 
-                let mut discarded = false;
+                let mut is_discarded = false;
 
-                let session = if next.operation.requested() {
+                let session = if next.operation.is_cancelled() {
                     Err(Error::request_cancelled())
                 } else {
                     match &cancellation {
@@ -122,7 +127,7 @@ pub(super) fn run(
                             if let Err(error) =
                                 invalidate(&mut project, sequence, &next.history, frontend)
                             {
-                                discarded = true;
+                                is_discarded = true;
 
                                 return Err(error);
                             }
@@ -130,7 +135,7 @@ pub(super) fn run(
                             let applied = next.history.sequence;
 
                             if let Err(error) = project.apply(next.snapshot, frontend) {
-                                discarded = true;
+                                is_discarded = true;
 
                                 return Err(error);
                             }
@@ -144,7 +149,7 @@ pub(super) fn run(
                     }
                 };
 
-                let (success, deliver) = (next.action)(session);
+                let (is_successful, deliver) = (next.action)(session);
                 next.operation.detach();
                 workspace.set_cancellation(|| false);
 
@@ -156,7 +161,7 @@ pub(super) fn run(
                     .send(Message::Complete(Completion {
                         identifier: next.identifier,
                         feedback: Some(project.feedback()),
-                        success,
+                        is_successful,
                         deliver,
                     }))
                     .is_err()
@@ -164,13 +169,13 @@ pub(super) fn run(
                     return;
                 }
 
-                if discarded || cancellation.is_err() {
-                    break discarded;
+                if is_discarded || cancellation.is_err() {
+                    break is_discarded;
                 }
 
                 match receiver.recv() {
                     Ok(work)
-                        if work.snapshot.root == root && reusable(&project, sequence, &work) =>
+                        if work.snapshot.root == root && is_reusable(&project, sequence, &work) =>
                     {
                         next = work;
                     }
@@ -185,15 +190,15 @@ pub(super) fn run(
             }
         };
 
-        if !discarded {
+        if !is_discarded {
             projects.insert(root, Cached { project, sequence });
         }
     }
 }
 
-fn reusable(project: &Project, sequence: u64, work: &Work) -> bool {
+fn is_reusable(project: &Project, sequence: u64, work: &Work) -> bool {
     if project.invalidation != work.snapshot.invalidation
-        || project.indexed != work.snapshot.indexed
+        || project.should_index != work.snapshot.should_index
         || project.nested != work.snapshot.nested
     {
         return false;
@@ -210,7 +215,7 @@ fn reusable(project: &Project, sequence: u64, work: &Work) -> bool {
     let Ok(dependencies) = project
         .reload_dependencies()
         .iter()
-        .map(|path| files::identity(path))
+        .map(|path| identity(path))
         .collect::<Result<Vec<_>>>()
     else {
         return false;
@@ -222,7 +227,7 @@ fn reusable(project: &Project, sequence: u64, work: &Work) -> bool {
                 && path.starts_with(project.workspace.directory())
                 || dependencies
                     .iter()
-                    .any(|dependency| intersects(dependency, path)))
+                    .any(|dependency| is_intersecting(dependency, path)))
         })
     })
 }
@@ -247,7 +252,12 @@ fn invalidate(
             .into_iter()
             .chain(project.documents.keys().map(PathBuf::from))
             .chain(project.borrowed.keys().map(PathBuf::from))
-            .filter(|module| change.paths.iter().any(|path| intersects(module, path)))
+            .filter(|module| {
+                change
+                    .paths
+                    .iter()
+                    .any(|path| is_intersecting(module, path))
+            })
             .filter(|module| {
                 module
                     .extension()
@@ -265,8 +275,4 @@ fn invalidate(
     frontend.refresh().map_err(failure)?;
 
     Ok(())
-}
-
-fn intersects(left: &Path, right: &Path) -> bool {
-    left.starts_with(right) || right.starts_with(left)
 }

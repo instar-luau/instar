@@ -103,23 +103,23 @@ impl Document {
         range: instar_bridge::Range,
         encoding: Encoding,
     ) -> Result<ProtocolRange> {
-        let start = self.offset(
-            Position {
-                line: range.start.line,
-                character: range.start.column,
+        self.range(self.native_bytes(range)?, encoding)
+    }
+
+    pub(super) fn native_bytes(&self, range: instar_bridge::Range) -> Result<Range<usize>> {
+        self.bytes(
+            ProtocolRange {
+                start: Position {
+                    line: range.start.line,
+                    character: range.start.column,
+                },
+                end: Position {
+                    line: range.end.line,
+                    character: range.end.column,
+                },
             },
             Encoding::Bytes,
-        )?;
-
-        let end = self.offset(
-            Position {
-                line: range.end.line,
-                character: range.end.column,
-            },
-            Encoding::Bytes,
-        )?;
-
-        self.range(start..end, encoding)
+        )
     }
 
     pub(super) fn changed(
