@@ -27,15 +27,15 @@ pub(super) fn quote(bytes: &[u8], style: Quotes) -> Option<Vec<u8>> {
         }
     }
 
-    let single = content.contains(&b'\'');
-    let double = content.contains(&b'"');
+    let has_single_quote = content.contains(&b'\'');
+    let has_double_quote = content.contains(&b'"');
 
     let delimiter = match style {
         Quotes::Single => b'\'',
         Quotes::Double | Quotes::Preserve => b'"',
 
         Quotes::PreferSingle => {
-            if single && !double {
+            if has_single_quote && !has_double_quote {
                 b'"'
             } else {
                 b'\''
@@ -43,7 +43,7 @@ pub(super) fn quote(bytes: &[u8], style: Quotes) -> Option<Vec<u8>> {
         }
 
         Quotes::PreferDouble => {
-            if double && !single {
+            if has_double_quote && !has_single_quote {
                 b'\''
             } else {
                 b'"'

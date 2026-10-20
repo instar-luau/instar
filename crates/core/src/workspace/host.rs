@@ -47,8 +47,8 @@ impl Host for Workspace {
 
         let mode = match configuration.check.mode {
             check::Mode::Strict => Mode::Strict,
-            check::Mode::Nonstrict => Mode::Nonstrict,
-            check::Mode::Nocheck => Mode::NoCheck,
+            check::Mode::NonStrict => Mode::NonStrict,
+            check::Mode::NoCheck => Mode::NoCheck,
         };
 
         let locations = instances::configuration(self, &scope, Path::new(module))
@@ -70,7 +70,7 @@ impl Host for Workspace {
         let prepared = environments.get(name).ok_or_else(|| HostError {
             module: name.to_owned(),
             operation: Operation::Environment,
-            source: "unknown declaration environment".into(),
+            source: "Unknown declaration environment.".into(),
         })?;
 
         self.snapshots
@@ -93,7 +93,7 @@ impl Host for Workspace {
         self.instances.borrow().get(name).ok_or_else(|| HostError {
             module: name.to_owned(),
             operation: Operation::Hierarchy,
-            source: "unknown instance hierarchy".into(),
+            source: "Unknown instance hierarchy.".into(),
         })
     }
 
@@ -131,7 +131,7 @@ pub(super) fn flags(configuration: &ProjectConfiguration) -> BTreeMap<String, Fl
         .iter()
         .map(|(name, flag)| {
             let flag = match flag {
-                ConfigurationFlag::Boolean(value) => Flag::Boolean(*value),
+                ConfigurationFlag::Boolean(is_true) => Flag::Boolean(*is_true),
                 ConfigurationFlag::Integer(value) => Flag::Integer(*value),
             };
 
@@ -141,7 +141,7 @@ pub(super) fn flags(configuration: &ProjectConfiguration) -> BTreeMap<String, Fl
 }
 
 pub(super) fn logical(path: &Path) -> Result<PathBuf, Error> {
-    if paths::source(path) && !paths::metadata(path)?.is_some_and(|metadata| metadata.is_dir()) {
+    if paths::is_source(path) && !paths::metadata(path)?.is_some_and(|metadata| metadata.is_dir()) {
         if path.file_stem().is_some_and(|stem| stem == "init") {
             return Ok(path.parent().unwrap_or(path).to_owned());
         }
@@ -167,7 +167,7 @@ fn resolve(workspace: &Workspace, path: &Path) -> Result<Navigation, Error> {
             let file = PathBuf::from(file);
             workspace.observed_paths.borrow_mut().insert(file.clone());
 
-            if source(workspace, &file)? {
+            if is_source(workspace, &file)? {
                 if candidate.is_some() {
                     return Ok(Navigation::Ambiguous);
                 }
@@ -195,7 +195,7 @@ fn directory(workspace: &Workspace, path: &Path) -> Result<Navigation, Error> {
         let file = path.join(name);
         workspace.observed_paths.borrow_mut().insert(file.clone());
 
-        if source(workspace, &file)? {
+        if is_source(workspace, &file)? {
             if candidate.is_some() {
                 return Ok(Navigation::Ambiguous);
             }
@@ -207,7 +207,7 @@ fn directory(workspace: &Workspace, path: &Path) -> Result<Navigation, Error> {
     found(candidate.as_deref().unwrap_or(path))
 }
 
-fn source(workspace: &Workspace, path: &Path) -> Result<bool, Error> {
+fn is_source(workspace: &Workspace, path: &Path) -> Result<bool, Error> {
     if paths::metadata(path)?.is_some_and(|metadata| metadata.is_file()) {
         return Ok(true);
     }

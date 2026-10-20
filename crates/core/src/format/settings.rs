@@ -33,7 +33,7 @@ impl Prepared {
                     {
                         return Err(invalid(
                             index,
-                            "custom require groups need a nonreserved name and at least one pattern",
+                            "Custom `require` groups need a nonempty name other than `alias`, `relative`, or `other`, and at least one pattern.",
                         ));
                     }
 
@@ -41,7 +41,10 @@ impl Prepared {
 
                     for pattern in &group.patterns {
                         if pattern.trim().is_empty() {
-                            return Err(invalid(index, "require group patterns must not be empty"));
+                            return Err(invalid(
+                                index,
+                                "`require` group patterns must not be empty or whitespace-only.",
+                            ));
                         }
 
                         patterns.add(
@@ -59,7 +62,7 @@ impl Prepared {
             };
 
             if !names.insert(name) {
-                return Err(invalid(index, "require group names must be unique"));
+                return Err(invalid(index, "`require` group names must be unique."));
             }
 
             groups.push(matcher);

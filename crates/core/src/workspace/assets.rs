@@ -11,7 +11,7 @@ use reqwest::Client;
 use tokio::{runtime::Builder, sync::oneshot, time};
 
 use super::{Error, Workspace, environment, process};
-use crate::assets::digest;
+use crate::assets::{Target, digest};
 
 const ADDRESS: &str = "https://instar-luau.github.io/instar";
 
@@ -29,18 +29,21 @@ impl Namespace {
         }
     }
 
-    fn files(self) -> &'static [&'static str] {
-        match self {
-            Self::Luau => &["documentation.json"],
+    fn files(self) -> impl Iterator<Item = &'static str> {
+        let target = match self {
+            Self::Luau => Target::Luau,
+            Self::Roblox => Target::Roblox,
+        };
 
-            Self::Roblox => &[
-                "documentation.json",
-                "none.d.luau",
-                "local.d.luau",
-                "plugin.d.luau",
-                "roblox.d.luau",
-            ],
-        }
+        target
+            .files()
+            .iter()
+            .map(|path| {
+                path.split_once('/')
+                    .expect("Internal error: environment asset has no namespace.")
+                    .1
+            })
+            .filter(|name| *name != "metadata.json")
     }
 }
 
@@ -56,7 +59,7 @@ impl Drop for Refresh {
         if let Some(thread) = self.thread.take()
             && thread.join().is_err()
         {
-            tracing::warn!("asset refresh worker panicked");
+            tracing::warn!("Asset refresh worker panicked.");
         }
     }
 }
@@ -66,14 +69,14 @@ pub(super) fn directory(
     namespace: Namespace,
     refreshes: &mut Vec<Refresh>,
 ) -> Result<PathBuf, Error> {
-    let cancellation = Rc::clone(&workspace.cancelled.borrow());
-    let cancelled = cancellation.as_ref();
-    process::interrupted(cancelled)?;
+    let cancellation = Rc::clone(&workspace.is_cancelled.borrow());
+    let is_cancelled = cancellation.as_ref();
+    process::interrupted(is_cancelled)?;
 
     let parent = dirs::cache_dir()
         .ok_or_else(|| Error::Path {
             path: workspace.root.clone(),
-            reason: "the operating system cache directory is unavailable",
+            reason: "The operating system cache directory is unavailable.",
         })?
         .join("instar")
         .join(namespace.name());
@@ -90,11 +93,11 @@ pub(super) fn directory(
             biased;
 
             () = async {
-                while !cancelled() {
+                while !is_cancelled() {
                     time::sleep(Duration::from_millis(50)).await;
                 }
             } => Err(Error::Cancelled),
-            result = acquire(&parent, namespace, refreshes, cancelled) => result,
+            result = acquire(&parent, namespace, refreshes, is_cancelled) => result,
         }
     })
 }
@@ -103,17 +106,17 @@ async fn acquire(
     parent: &Path,
     namespace: Namespace,
     refreshes: &mut Vec<Refresh>,
-    cancelled: &dyn Fn() -> bool,
+    is_cancelled: &dyn Fn() -> bool,
 ) -> Result<PathBuf, Error> {
     if let Some(directory) = cached(parent)? {
-        validate(&directory, namespace, cancelled)?;
-        process::interrupted(cancelled)?;
+        validate(&directory, namespace, is_cancelled)?;
+        process::interrupted(is_cancelled)?;
 
         match update(parent.to_owned(), namespace) {
             Ok(refresh) => refreshes.push(refresh),
 
             Err(error) => {
-                tracing::warn!(%error, namespace = namespace.name(), "cannot start asset refresh");
+                tracing::warn!(%error, namespace = namespace.name(), "Could not start asset refresh.");
             }
         }
 
@@ -124,7 +127,7 @@ async fn acquire(
     let lock = lockfile(&lock_path)?;
 
     loop {
-        process::interrupted(cancelled)?;
+        process::interrupted(is_cancelled)?;
 
         match lock.try_lock() {
             Ok(()) => break,
@@ -134,12 +137,12 @@ async fn acquire(
     }
 
     if let Some(directory) = cached(parent)? {
-        validate(&directory, namespace, cancelled)?;
+        validate(&directory, namespace, is_cancelled)?;
 
         return Ok(directory);
     }
 
-    refresh(parent, namespace, None, cancelled).await
+    refresh(parent, namespace, None, is_cancelled).await
 }
 
 fn update(parent: PathBuf, namespace: Namespace) -> io::Result<Refresh> {
@@ -180,7 +183,7 @@ fn update(parent: PathBuf, namespace: Namespace) -> io::Result<Refresh> {
                 });
 
             if let Err(error) = result {
-                tracing::warn!(%error, namespace = namespace.name(), "cannot refresh cached assets");
+                tracing::warn!(%error, namespace = namespace.name(), "Could not refresh cached assets.");
             }
         })?;
 
@@ -204,7 +207,7 @@ async fn refresh(
     parent: &Path,
     namespace: Namespace,
     cached: Option<&Path>,
-    cancelled: &dyn Fn() -> bool,
+    is_cancelled: &dyn Fn() -> bool,
 ) -> Result<PathBuf, Error> {
     let staging = tempfile::tempdir_in(parent).map_err(|source| filesystem(parent, source))?;
     let bundle = staging.path().join("bundle");
@@ -223,13 +226,13 @@ async fn refresh(
         })?;
 
     let metadata = bundle.join("metadata.json");
-    download(&client, &address, "metadata.json", &metadata, cancelled).await?;
+    download(&client, &address, "metadata.json", &metadata, is_cancelled).await?;
     let contents = fs::read(&metadata).map_err(|source| filesystem(&metadata, source))?;
     let identity = digest(&contents);
     let directory = parent.join(&identity);
 
-    if exists(&directory)? {
-        validate(&directory, namespace, cancelled)?;
+    if is_present(&directory)? {
+        validate(&directory, namespace, is_cancelled)?;
     } else {
         for filename in namespace.files() {
             download(
@@ -237,17 +240,17 @@ async fn refresh(
                 &address,
                 filename,
                 &bundle.join(filename),
-                cancelled,
+                is_cancelled,
             )
             .await?;
         }
 
-        environment::validate(&bundle, namespace, cancelled)?;
-        process::interrupted(cancelled)?;
+        environment::validate(&bundle, namespace, is_cancelled)?;
+        process::interrupted(is_cancelled)?;
         fs::rename(&bundle, &directory).map_err(|source| filesystem(&directory, source))?;
     }
 
-    process::interrupted(cancelled)?;
+    process::interrupted(is_cancelled)?;
 
     if cached != Some(directory.as_path()) {
         let pointer = parent.join("current");
@@ -264,7 +267,7 @@ async fn refresh(
             .sync_all()
             .map_err(|source| filesystem(&pointer, source))?;
 
-        process::interrupted(cancelled)?;
+        process::interrupted(is_cancelled)?;
 
         staged
             .persist(&pointer)
@@ -279,9 +282,9 @@ async fn download(
     address: &str,
     filename: &str,
     destination: &Path,
-    cancelled: &dyn Fn() -> bool,
+    is_cancelled: &dyn Fn() -> bool,
 ) -> Result<(), Error> {
-    process::interrupted(cancelled)?;
+    process::interrupted(is_cancelled)?;
 
     let url = format!("{address}/{filename}");
 
@@ -295,7 +298,7 @@ async fn download(
     let mut file = File::create(destination).map_err(|source| filesystem(destination, source))?;
 
     while let Some(chunk) = response.chunk().await.map_err(failure)? {
-        process::interrupted(cancelled)?;
+        process::interrupted(is_cancelled)?;
 
         file.write_all(&chunk)
             .map_err(|source| filesystem(destination, source))?;
@@ -316,37 +319,37 @@ fn cached(parent: &Path) -> Result<Option<PathBuf>, Error> {
     if identity.len() != 64 || !identity.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(Error::Path {
             path: pointer,
-            reason: "invalid cached asset identity",
+            reason: "Invalid cached asset identity.",
         });
     }
 
     let directory = parent.join(identity);
 
-    Ok(exists(&directory)?.then_some(directory))
+    Ok(is_present(&directory)?.then_some(directory))
 }
 
 fn validate(
     directory: &Path,
     namespace: Namespace,
-    cancelled: &dyn Fn() -> bool,
+    is_cancelled: &dyn Fn() -> bool,
 ) -> Result<(), Error> {
-    process::interrupted(cancelled)?;
+    process::interrupted(is_cancelled)?;
     let metadata = directory.join("metadata.json");
     let contents = fs::read(&metadata).map_err(|source| filesystem(&metadata, source))?;
 
     if directory.file_name().and_then(|name| name.to_str()) != Some(digest(&contents).as_str()) {
         return Err(Error::Path {
             path: metadata,
-            reason: "cached asset metadata does not match its identity",
+            reason: "Cached asset metadata does not match its identity.",
         });
     }
 
-    environment::validate(directory, namespace, cancelled)?;
+    environment::validate(directory, namespace, is_cancelled)?;
 
     Ok(())
 }
 
-fn exists(path: &Path) -> Result<bool, Error> {
+fn is_present(path: &Path) -> Result<bool, Error> {
     match fs::symlink_metadata(path) {
         Ok(_) => Ok(true),
         Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(false),

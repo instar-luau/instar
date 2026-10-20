@@ -10,10 +10,10 @@ use eyre::{Report, Result, WrapErr as _, eyre};
 use instar_core::workspace::Workspace;
 
 use super::{
-    arguments::{Arguments, Operation},
+    arguments::Operation,
+    batch::Batch,
     execution::{self, Outcome, Project, Response},
-    progress::Progress,
-    report::Batch,
+    output::{self, Progress},
     watch::Watcher,
 };
 
@@ -36,12 +36,12 @@ impl Worker<'_> {
     ) -> Result<()> {
         for request in self.requests {
             for module in &request.dirty {
-                if workspace.requires_reload(module)? {
+                if workspace.should_reload(module)? {
                     self.responses
                         .send(Ok(Response::Reload {
                             configuration: true,
                         }))
-                        .wrap_err("cannot send worker response")?;
+                        .wrap_err("Could not send the worker response.")?;
 
                     return Ok(());
                 }
@@ -83,7 +83,7 @@ impl Pool {
                     dirty: dirty.clone(),
                     progress: progress.clone(),
                 })
-                .wrap_err("cannot send worker request")?;
+                .wrap_err("Could not send the worker request.")?;
         }
 
         let mut batch = Batch::default();
@@ -94,7 +94,7 @@ impl Pool {
             match connection
                 .responses
                 .recv()
-                .wrap_err("cannot receive worker response")?
+                .wrap_err("Could not receive the worker response.")?
             {
                 Ok(Response::Completed(completed)) => batch.append(completed),
 
@@ -119,7 +119,6 @@ impl Pool {
 }
 
 pub(super) fn session(
-    arguments: &Arguments,
     operation: &Operation,
     project: &Project,
     watcher: Option<&mut Watcher>,
@@ -147,13 +146,7 @@ pub(super) fn session(
     let generation = project.generation.as_ref();
     let generated = project.workspace.generated();
 
-    if arguments.verbose {
-        eprintln!(
-            "{}: {}",
-            console::style("worker limit").for_stderr().dim(),
-            console::style(jobs).for_stderr().blue().bold()
-        );
-    }
+    output::workers(jobs);
 
     let run_worker = |worker: Worker<'_>| -> Result<()> {
         let span = tracing::debug_span!("worker", files = worker.modules.len());
@@ -206,7 +199,7 @@ pub(super) fn session(
                     }
 
                     Err(error) => {
-                        failure = Some(Report::from(error).wrap_err("cannot start worker"));
+                        failure = Some(Report::from(error).wrap_err("Could not start a worker."));
                         break;
                     }
                 }
@@ -216,7 +209,6 @@ pub(super) fn session(
                 Ok(Outcome::Completed(0))
             } else {
                 execution::session(
-                    arguments,
                     operation,
                     project,
                     watcher,
@@ -236,9 +228,9 @@ pub(super) fn session(
 
         if (result.is_err() || failure.is_some())
             && let Some(generation) = generation
-            && let Err(error) = generation.shutdown()
+            && let Err(error) = execution::shutdown(generation)
         {
-            failure.get_or_insert_with(|| error.into());
+            failure.get_or_insert(error);
         }
 
         for thread in threads {
@@ -254,10 +246,11 @@ pub(super) fn session(
                         .downcast_ref::<String>()
                         .map(String::as_str)
                         .or_else(|| panic.downcast_ref::<&str>().copied())
-                        .unwrap_or("unknown panic payload");
+                        .unwrap_or("Unknown panic payload.");
 
-                    failure
-                        .get_or_insert_with(|| eyre!("internal error: worker panicked: {reason}"));
+                    failure.get_or_insert_with(|| {
+                        eyre!("Internal error: a worker panicked: {reason}")
+                    });
                 }
             }
         }

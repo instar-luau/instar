@@ -29,7 +29,7 @@ pub enum Mode {
 
     /// Infer types with permissive unannotated values.
     #[default]
-    Nonstrict,
+    NonStrict,
 
     /// Check inferred and annotated types strictly.
     Strict,

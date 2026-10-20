@@ -28,7 +28,7 @@ impl Patterns {
         let directory = source.base(base);
 
         if directory.to_str().is_none() {
-            return Err(source.error("pattern base directories must be UTF-8"));
+            return Err(source.error("Pattern base directories must be valid UTF-8."));
         }
 
         let mut builder = GitignoreBuilder::new(directory);
@@ -37,7 +37,7 @@ impl Patterns {
             let field = source.field(&index.to_string());
 
             if rule.contains('\0') {
-                return Err(field.error("selection patterns must not contain null characters"));
+                return Err(field.error("Selection patterns must not contain NUL characters."));
             }
 
             builder
@@ -52,9 +52,9 @@ impl Patterns {
         Ok(())
     }
 
-    pub(crate) fn matches(&self, path: &Path, inclusion: bool) -> bool {
-        let mut matched =
-            inclusion && self.matcher.num_ignores() == 0 && self.matcher.num_whitelists() != 0;
+    pub(crate) fn is_match(&self, path: &Path, is_inclusion: bool) -> bool {
+        let mut is_matched =
+            is_inclusion && self.matcher.num_ignores() == 0 && self.matcher.num_whitelists() != 0;
 
         let ancestors: Vec<_> = path
             .ancestors()
@@ -63,14 +63,14 @@ impl Patterns {
 
         for ancestor in ancestors.into_iter().rev() {
             match self.matcher.matched(ancestor, ancestor != path) {
-                Match::Ignore(_) if !inclusion => return true,
-                Match::Whitelist(_) if inclusion => return false,
-                Match::Ignore(_) => matched = true,
-                Match::Whitelist(_) => matched = false,
+                Match::Ignore(_) if !is_inclusion => return true,
+                Match::Whitelist(_) if is_inclusion => return false,
+                Match::Ignore(_) => is_matched = true,
+                Match::Whitelist(_) => is_matched = false,
                 Match::None => {}
             }
         }
 
-        matched
+        is_matched
     }
 }

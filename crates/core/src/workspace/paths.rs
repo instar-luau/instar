@@ -23,7 +23,7 @@ pub(super) fn identity(path: &Path) -> Result<PathBuf, Error> {
     let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
         return Err(Error::Path {
             path: path.to_owned(),
-            reason: "expected a source file path",
+            reason: "Expected a source file path.",
         });
     };
 
@@ -40,7 +40,7 @@ pub(super) fn read(path: &Path) -> Result<String, Error> {
 pub(super) fn text(path: &Path) -> Result<String, Error> {
     let text = path.to_str().ok_or_else(|| Error::Path {
         path: path.to_owned(),
-        reason: "module paths must be UTF-8",
+        reason: "Module paths must be valid UTF-8.",
     })?;
 
     #[cfg(windows)]
@@ -75,14 +75,14 @@ pub(super) fn directory(path: &Path) -> Result<PathBuf, Error> {
     if !metadata(&canonical)?.is_some_and(|metadata| metadata.is_dir()) {
         return Err(Error::Path {
             path: canonical,
-            reason: "expected a directory",
+            reason: "Expected a directory.",
         });
     }
 
     Ok(canonical)
 }
 
-pub(super) fn source(path: &Path) -> bool {
+pub(super) fn is_source(path: &Path) -> bool {
     path.extension()
         .is_some_and(|extension| extension == "luau" || extension == "lua")
 }

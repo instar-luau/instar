@@ -39,8 +39,8 @@ namespace instar::luau {
         std::optional<std::string> getEnvironmentForModule(const Luau::ModuleName &name) const override;
         Environment environment(const std::string &name) const;
 
-        const Instances *
-        prepare(Luau::Frontend &native, const Luau::ModuleName &name, const Luau::ScopePtr &scope) const;
+        const Instances *instances(Luau::Frontend &native, const Luau::ModuleName &name) const;
+        void bind(Luau::Frontend &native, const Luau::ModuleName &name, const Luau::ScopePtr &scope) const;
 
         std::vector<std::string> modules(const Luau::ModuleName &name) const;
         void invalidate(const Luau::ModuleName &name);

@@ -1,16 +1,14 @@
 use std::process::ExitCode;
 
-use clap::Parser as _;
-
 use super::{
     arguments::{Arguments, Command},
-    execution, generate, interrupt, report,
+    execution, generate, interrupt, output,
 };
 
-pub(super) fn run() -> ExitCode {
+pub(super) fn main() -> ExitCode {
     let arguments = Arguments::parse();
 
-    let result = report::initialize(arguments.color, arguments.verbose).and_then(|()| {
+    let result = output::initialize(&arguments).and_then(|()| {
         interrupt::initialize()?;
 
         let result = match &arguments.command {
@@ -20,7 +18,7 @@ pub(super) fn run() -> ExitCode {
         };
 
         if interrupt::requested() {
-            report::interrupted(&arguments);
+            output::interrupted(&arguments);
 
             let watching = matches!(
                 &arguments.command,
@@ -37,7 +35,7 @@ pub(super) fn run() -> ExitCode {
         Ok(status) => ExitCode::from(status),
 
         Err(error) => {
-            report::failure(&error);
+            output::failure(&error);
 
             ExitCode::from(2)
         }

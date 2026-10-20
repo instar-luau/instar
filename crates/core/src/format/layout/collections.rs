@@ -12,7 +12,7 @@ use super::{
 
 struct List {
     content: Vec<Document>,
-    comments: bool,
+    has_comments: bool,
     continuation: usize,
 }
 
@@ -26,15 +26,15 @@ impl Builder<'_, '_> {
     ) -> Vec<Document> {
         if entries.is_empty()
             && element.is_none()
-            && !self.comments(opening.get() + 1..closing.get())
+            && !self.has_comments(opening.get() + 1..closing.get())
         {
             return vec![Document::Token(opening), Document::Token(closing)];
         }
 
-        let forced = entries
+        let is_forced = entries
             .last()
             .is_some_and(|entry| entry.separator.is_some())
-            || self.comments(opening.get() + 1..closing.get());
+            || self.has_comments(opening.get() + 1..closing.get());
 
         let mut interior = Vec::new();
         let mut position = opening.get() + 1;
@@ -56,7 +56,7 @@ impl Builder<'_, '_> {
                 let tail = self.inline_end(finish, next);
 
                 if offset > 0 {
-                    if self.blank(position, node.tokens.start.get()) {
+                    if self.has_blank_line(position, node.tokens.start.get()) {
                         interior.push(Document::Line(2));
                     } else {
                         interior.push(Document::Soft(1));
@@ -76,7 +76,7 @@ impl Builder<'_, '_> {
                 position = tail;
             }
 
-            if self.comments(position..closing.get()) {
+            if self.has_comments(position..closing.get()) {
                 interior.push(Document::Line(1));
                 interior.extend(self.trivia(position..closing.get(), true));
             }
@@ -93,7 +93,7 @@ impl Builder<'_, '_> {
         ];
 
         vec![Document::Group {
-            layout: if forced {
+            layout: if is_forced {
                 Layout::Vertical
             } else {
                 Layout::Table
@@ -109,13 +109,13 @@ impl Builder<'_, '_> {
         entries: &[ListEntry],
         layout: Layout,
     ) -> Vec<Document> {
-        if entries.is_empty() && !self.comments(opening.end..closing.start) {
+        if entries.is_empty() && !self.has_comments(opening.end..closing.start) {
             return self.sequence(opening.start..closing.end, &[]);
         }
 
         if let [entry] = entries
             && entry.separator.is_none()
-            && self.enclosed(opening.end..closing.start, entry.node)
+            && self.is_enclosed(opening.end..closing.start, entry.node)
         {
             return self.sequence(opening.start..closing.end, &[entry.node]);
         }
@@ -132,7 +132,11 @@ impl Builder<'_, '_> {
         content.extend(self.sequence(closing, &[]));
 
         vec![Document::Group {
-            layout: if list.comments { Layout::Fit } else { layout },
+            layout: if list.has_comments {
+                Layout::Fit
+            } else {
+                layout
+            },
             content,
         }]
     }
@@ -145,7 +149,12 @@ impl Builder<'_, '_> {
 
             let end = self
                 .tree
-                .node(bindings.last().expect("bindings").node)
+                .node(
+                    bindings
+                        .last()
+                        .expect("Internal error: binding list is empty.")
+                        .node,
+                )
                 .tokens
                 .end
                 .get();
@@ -154,7 +163,12 @@ impl Builder<'_, '_> {
 
             let value_end = self
                 .tree
-                .node(values.last().expect("values").node)
+                .node(
+                    values
+                        .last()
+                        .expect("Internal error: value list is empty.")
+                        .node,
+                )
                 .tokens
                 .end
                 .get();
@@ -197,7 +211,7 @@ impl Builder<'_, '_> {
 
                 vec![Document::Choice(Box::new(Choice {
                     range: end..range.end,
-                    prefix: true,
+                    has_prefix: true,
                     probe: Rc::clone(&inline),
                     inline,
                     expanded: vec![Document::Indent {
@@ -241,7 +255,7 @@ impl Builder<'_, '_> {
 
             return vec![Document::Choice(Box::new(Choice {
                 range,
-                prefix: false,
+                has_prefix: false,
                 probe: probe.into(),
                 inline: inline.into(),
                 expanded: prefix.into(),
@@ -251,14 +265,19 @@ impl Builder<'_, '_> {
         let mut content = Vec::new();
         let mut position = range.start;
         let mut previous = None;
-        let mut comments = false;
+        let mut has_comments = false;
 
         for entries in lists.iter().filter(|entries| !entries.is_empty()) {
             let start = self.tree.node(entries[0].node).tokens.start.get();
 
             let end = self
                 .tree
-                .node(entries.last().expect("nonempty list").node)
+                .node(
+                    entries
+                        .last()
+                        .expect("Internal error: expected a nonempty list.")
+                        .node,
+                )
                 .tokens
                 .end
                 .get();
@@ -280,7 +299,7 @@ impl Builder<'_, '_> {
                 });
             }
 
-            comments |= list.comments;
+            has_comments |= list.has_comments;
             previous = Some(end - 1);
             position = end;
         }
@@ -288,7 +307,7 @@ impl Builder<'_, '_> {
         self.tokens(position..range.end, &mut previous, &mut content);
 
         vec![Document::Group {
-            layout: if comments {
+            layout: if has_comments {
                 Layout::Fit
             } else {
                 Layout::Arguments
@@ -300,7 +319,7 @@ impl Builder<'_, '_> {
     fn list(&self, range: Range<usize>, entries: &[ListEntry]) -> List {
         let mut list = List {
             content: Vec::new(),
-            comments: self.comments(
+            has_comments: self.has_comments(
                 range.start..entries.first().map_or(range.end, |entry| {
                     self.tree.node(entry.node).tokens.start.get()
                 }),
@@ -335,7 +354,7 @@ impl Builder<'_, '_> {
                 self.tree.node(entry.node).tokens.start.get()
             });
 
-            list.comments |= self.comments(node.tokens.end.get()..next);
+            list.has_comments |= self.has_comments(node.tokens.end.get()..next);
 
             let tail = self.inline_end(finish, next);
             interior.extend(self.trivia(finish..tail, false));

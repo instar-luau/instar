@@ -1,6 +1,5 @@
 use std::time::Instant;
 
-use codespan_reporting::diagnostic::{Diagnostic, Label};
 use eyre::{Result, eyre};
 
 use instar_core::{
@@ -9,22 +8,20 @@ use instar_core::{
 };
 
 use super::{
-    arguments::{Arguments, Operation},
+    arguments::Operation,
+    batch::{Batch, Finding, Label, Output, Severity, Source},
     execution::{Outcome, Project},
-    report::{Batch, Output, Source},
     watch::Watcher,
     workers,
 };
 
 pub(super) fn session(
-    arguments: &Arguments,
     operation: &Operation,
     project: &Project,
     watcher: Option<&mut Watcher>,
     started: Instant,
 ) -> Result<Outcome> {
     workers::session(
-        arguments,
         operation,
         project,
         watcher,
@@ -44,7 +41,7 @@ fn process(workspace: &Workspace, module: &str) -> Result<Batch> {
         module: module.to_owned(),
         text: workspace
             .source(module)?
-            .ok_or_else(|| eyre!("cannot read source `{module}`"))?,
+            .ok_or_else(|| eyre!("Could not read source `{module}`."))?,
     };
 
     let configuration = workspace.formatting(module)?;
@@ -54,17 +51,17 @@ fn process(workspace: &Workspace, module: &str) -> Result<Batch> {
         Ok(text) => batch.outputs.push(Output { source, text }),
 
         Err(error) => {
-            let diagnostic = match error.kind {
-                Kind::Input => Diagnostic::error(),
-                Kind::Internal => Diagnostic::bug(),
+            let severity = match error.kind {
+                Kind::Input => Severity::Error,
+                Kind::Internal => Severity::Internal,
             };
 
-            batch.findings.push(
-                diagnostic
-                    .with_code("format")
-                    .with_message(error.message)
-                    .with_labels(vec![Label::primary(source, error.range)]),
-            );
+            batch.findings.push(Finding::new(
+                severity,
+                "format",
+                error.message,
+                vec![Label::new(source, error.range)],
+            ));
         }
     }
 

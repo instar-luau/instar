@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet},
     path::Path,
     sync::Arc,
 };
@@ -8,25 +8,22 @@ use instar_bridge::{Frontend, Position as NativePosition, Range as NativeRange};
 
 use instar_core::{
     lint,
-    settings::lint::Severity,
     workspace::{Access, InvalidSource, Origin, Purpose, SymbolOutcome},
 };
 
 use tower_lsp_server::{
-    gen_lsp_types::{
-        Code, Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Location, Message,
-        PublishDiagnosticsParams, Range,
-    },
+    gen_lsp_types::{Diagnostic, PublishDiagnosticsParams, Range},
     jsonrpc::Result,
 };
 
-use super::{
+use crate::{
     configuration::Scope,
     document::{self, Document, Encoding},
+    output::diagnostics,
     project::{Project, failure},
 };
 
-pub(super) fn collect(
+pub(crate) fn collect(
     project: &mut Project,
     frontend: &mut Frontend<'_>,
 ) -> Result<Vec<PublishDiagnosticsParams>> {
@@ -94,12 +91,12 @@ pub(super) fn collect(
             && ((checked.contains(module)
                 && !project
                     .workspace
-                    .excluded(module, Purpose::Check)
+                    .is_excluded(module, Purpose::Check)
                     .map_err(failure)?)
                 || (linted.contains(module)
                     && !project
                         .workspace
-                        .excluded(module, Purpose::Lint)
+                        .is_excluded(module, Purpose::Lint)
                         .map_err(failure)?))
         {
             environment(project, module, invalid, &mut findings, &mut versions)?;
@@ -145,7 +142,7 @@ pub(super) fn collect(
                 || (!workspace && !open.contains(destination))
                 || project
                     .workspace
-                    .excluded(destination, Purpose::Check)
+                    .is_excluded(destination, Purpose::Check)
                     .map_err(failure)?
             {
                 continue;
@@ -183,12 +180,7 @@ pub(super) fn collect(
             let (range, message) = if conflicting {
                 (
                     Range::default(),
-                    format!(
-                        "invalid environment at {target}:{}:{}: {}",
-                        range.start.line + 1,
-                        range.start.character + 1,
-                        diagnostic.message,
-                    ),
+                    diagnostics::conflict(target, range.start, &diagnostic.message),
                 )
             } else {
                 (range, diagnostic.message)
@@ -197,21 +189,14 @@ pub(super) fn collect(
             findings
                 .entry(destination.to_owned())
                 .or_default()
-                .push(Diagnostic {
-                    range,
-                    severity: Some(DiagnosticSeverity::Error),
-                    code: Some(Code::Int(diagnostic.code)),
-                    source: Some("luau".to_owned()),
-                    message: Message::String(message),
-                    ..Diagnostic::default()
-                });
+                .push(diagnostics::native(range, diagnostic.code, message));
         }
     }
 
     for module in &linted {
         if project
             .workspace
-            .excluded(module, Purpose::Lint)
+            .is_excluded(module, Purpose::Lint)
             .map_err(failure)?
         {
             continue;
@@ -232,21 +217,12 @@ pub(super) fn collect(
         match result {
             Ok(findings) => {
                 for finding in findings {
-                    let severity = match finding.severity {
-                        Severity::Error => DiagnosticSeverity::Error,
-                        Severity::Warning => DiagnosticSeverity::Warning,
-                        Severity::Information => DiagnosticSeverity::Information,
-                        Severity::Hint => DiagnosticSeverity::Hint,
-                    };
-
-                    diagnostics.push(Diagnostic {
-                        range: source.range(finding.range, project.encoding)?,
-                        severity: Some(severity),
-                        code: Some(Code::String(finding.rule)),
-                        source: Some("instar".to_owned()),
-                        message: Message::String(finding.message),
-                        ..Diagnostic::default()
-                    });
+                    diagnostics.push(diagnostics::finding(
+                        source.range(finding.range, project.encoding)?,
+                        finding.rule,
+                        finding.severity,
+                        finding.message,
+                    ));
                 }
             }
 
@@ -256,14 +232,11 @@ pub(super) fn collect(
                     lint::Failure::Directive(error) => ("lint", error),
                 };
 
-                diagnostics.push(Diagnostic {
-                    range: source.range(error.range, project.encoding)?,
-                    severity: Some(DiagnosticSeverity::Error),
-                    code: Some(Code::String(code.to_owned())),
-                    source: Some("instar".to_owned()),
-                    message: Message::String(error.message),
-                    ..Diagnostic::default()
-                });
+                diagnostics.push(diagnostics::error(
+                    source.range(error.range, project.encoding)?,
+                    code,
+                    error.message,
+                ));
             }
         }
     }
@@ -275,9 +248,7 @@ pub(super) fn collect(
     let mut publications = Vec::new();
     let mut published = BTreeSet::new();
 
-    for (module, mut diagnostics) in findings {
-        let mut unique = HashSet::new();
-        diagnostics.retain(|diagnostic| unique.insert(diagnostic.clone()));
+    for (module, diagnostics) in findings {
         let uri = document::uri(Path::new(&module))?;
 
         let version = versions.get(&module).copied().unwrap_or_else(|| {
@@ -291,11 +262,7 @@ pub(super) fn collect(
             published.insert(module);
         }
 
-        publications.push(PublishDiagnosticsParams {
-            uri,
-            version,
-            diagnostics,
-        });
+        publications.push(diagnostics::publication(uri, version, diagnostics));
     }
 
     project.published = published;
@@ -310,9 +277,9 @@ fn environment(
     findings: &mut BTreeMap<String, Vec<Diagnostic>>,
     versions: &mut BTreeMap<String, Option<i32>>,
 ) -> Result<()> {
-    let (origin, target) = match &invalid.origin {
-        Origin::File(path) => (path.display().to_string(), Some(path)),
-        Origin::Builtins => ("<builtins>".to_owned(), None),
+    let target = match &invalid.origin {
+        Origin::File(path) => Some(path),
+        Origin::Builtins => None,
     };
 
     let uri = match target {
@@ -348,44 +315,26 @@ fn environment(
         findings
             .entry(target.to_owned())
             .or_default()
-            .push(Diagnostic {
+            .push(diagnostics::error(
                 range,
-                severity: Some(DiagnosticSeverity::Error),
-                code: Some(Code::String("syntax".to_owned())),
-                source: Some("instar".to_owned()),
-                message: Message::String(invalid.error.message.clone()),
-                ..Diagnostic::default()
-            });
+                "syntax",
+                invalid.error.message.clone(),
+            ));
 
         return Ok(());
     }
 
-    let related_information = if target.is_some() && matching {
-        Some(vec![DiagnosticRelatedInformation {
-            location: Location { uri, range },
-            message: invalid.error.message.clone(),
-        }])
-    } else {
-        None
-    };
+    let related = (target.is_some() && matching).then_some((uri, range));
 
     findings
         .entry(module.to_owned())
         .or_default()
-        .push(Diagnostic {
-            range: Range::default(),
-            severity: Some(DiagnosticSeverity::Error),
-            code: Some(Code::String("syntax".to_owned())),
-            source: Some("instar".to_owned()),
-            message: Message::String(format!(
-                "invalid lint environment at {origin}:{}:{}: {}",
-                position.line + 1,
-                position.character + 1,
-                invalid.error.message,
-            )),
-            related_information,
-            ..Diagnostic::default()
-        });
+        .push(diagnostics::environment(
+            &invalid.origin,
+            position,
+            &invalid.error.message,
+            related,
+        ));
 
     Ok(())
 }

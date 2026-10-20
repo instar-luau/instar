@@ -30,7 +30,7 @@ namespace instar::luau {
 
         Luau::TypeId superclass(const Luau::ExternType &type) {
             if (!type.parent) {
-                throw std::logic_error("instance type has no superclass");
+                throw std::logic_error("Instance type has no superclass.");
             }
 
             return *type.parent;
@@ -106,14 +106,14 @@ namespace instar::luau {
         }
 
         void
-        children(const Metadata &instance, std::string_view name, bool recursive, std::vector<Luau::TypeId> &found) {
+        children(const Metadata &instance, std::string_view name, bool is_recursive, std::vector<Luau::TypeId> &found) {
             for (Luau::TypeId child : instance.children) {
                 if (metadata(child)->name == name) {
                     found.push_back(child);
                 }
             }
 
-            if (found.empty() && recursive) {
+            if (found.empty() && is_recursive) {
                 for (Luau::TypeId child : instance.children) {
                     std::vector<Luau::TypeId> nested;
                     children(*metadata(child), name, true, nested);
@@ -135,14 +135,17 @@ namespace instar::luau {
             const auto &node = instances[index];
 
             if ((index == 0 && node.has_parent) || (index != 0 && (!node.has_parent || node.parent >= index))) {
-                throw std::invalid_argument("instance hierarchy must contain one root with parents before children");
+                throw std::invalid_argument("Instance hierarchy must contain one root with parents before children.");
             }
 
             const auto declared = scope->lookupType(std::string(node.class_name));
             const auto *base = declared ? Luau::get<Luau::ExternType>(Luau::follow(declared->type)) : nullptr;
 
             if (!declared || !base || !base_instance || !Luau::isSubclass(base, base_instance)) {
-                throw std::invalid_argument("unknown instance class `" + std::string(node.class_name) + "`");
+                throw std::invalid_argument(
+                    "Instance class `" + std::string(node.class_name) +
+                    "` has no supported `Instance` subclass declaration."
+                );
             }
 
             auto data = std::make_shared<Metadata>();
@@ -188,7 +191,7 @@ namespace instar::luau {
                         const auto readable = property->second.readTy;
 
                         if (!readable) {
-                            throw std::logic_error("instance child property is not readable");
+                            throw std::logic_error("Instance child property is not readable.");
                         }
 
                         property->second = Luau::Property::readonly(arena.addType(Luau::UnionType{{*readable, type}}));
@@ -235,60 +238,25 @@ namespace instar::luau {
     }
 
     void Instances::bind(Luau::GlobalTypes &globals, const Luau::ScopePtr &scope, std::optional<size_t> script) const {
-        if (script) {
-            if (*script >= types.size()) {
-                throw std::invalid_argument("script index is outside its instance hierarchy");
-            }
-
-            Luau::addGlobalBinding(globals, scope, "script", types[*script], "@roblox");
+        if (script && *script >= types.size()) {
+            throw std::invalid_argument("Script index is outside its instance hierarchy.");
         }
 
-        if (types.empty()) {
-            return;
-        }
-
-        const auto *root = metadata(types[0]);
-
-        if (root->class_name == "DataModel") {
-            Luau::addGlobalBinding(globals, scope, "game", types[0], "@roblox");
-
-            if (auto workspace = lookup_instance(types[0], InstanceQuery::Service, "Workspace")) {
-                Luau::addGlobalBinding(globals, scope, "workspace", *workspace, "@roblox");
+        for (const auto &[query, name] : {
+                 std::pair{InstanceQuery::Script, "script"},
+                 std::pair{InstanceQuery::Game, "game"},
+                 std::pair{InstanceQuery::Workspace, "workspace"},
+             }) {
+            if (const auto type = select(query, script)) {
+                Luau::addGlobalBinding(globals, scope, name, *type, "@roblox");
             }
-        } else if (root->class_name == "Workspace") {
-            Luau::addGlobalBinding(globals, scope, "workspace", types[0], "@roblox");
         }
     }
 
     std::optional<std::string> Instances::global(InstanceQuery query, std::optional<size_t> script) const {
-        if (query == InstanceQuery::Script) {
-            return script && *script < types.size() ? std::optional<std::string>{metadata(types[*script])->identity}
-                                                    : std::nullopt;
-        }
+        const auto type = select(query, script);
 
-        if (types.empty()) {
-            return std::nullopt;
-        }
-
-        const auto *root = metadata(types[0]);
-
-        if (query == InstanceQuery::Game && root->class_name == "DataModel") {
-            return root->identity;
-        }
-
-        if (query == InstanceQuery::Workspace) {
-            if (root->class_name == "Workspace") {
-                return root->identity;
-            }
-
-            if (root->class_name == "DataModel") {
-                if (const auto workspace = lookup_instance(types[0], InstanceQuery::Service, "Workspace")) {
-                    return metadata(*workspace)->identity;
-                }
-            }
-        }
-
-        return std::nullopt;
+        return type ? std::optional<std::string>{metadata(*type)->identity} : std::nullopt;
     }
 
     std::optional<std::string>
@@ -321,6 +289,35 @@ namespace instar::luau {
         const auto result = lookup_instance(found->second, query, name);
 
         return result ? std::optional<std::string>{metadata(*result)->identity} : std::nullopt;
+    }
+
+    std::optional<Luau::TypeId> Instances::select(InstanceQuery query, std::optional<size_t> script) const {
+        if (query == InstanceQuery::Script) {
+            return script && *script < types.size() ? std::optional<Luau::TypeId>{types[*script]} : std::nullopt;
+        }
+
+        if (types.empty()) {
+            return std::nullopt;
+        }
+
+        const auto root = types[0];
+        const auto *data = metadata(root);
+
+        if (query == InstanceQuery::Game && data->class_name == "DataModel") {
+            return root;
+        }
+
+        if (query == InstanceQuery::Workspace) {
+            if (data->class_name == "Workspace") {
+                return root;
+            }
+
+            if (data->class_name == "DataModel") {
+                return lookup_instance(root, InstanceQuery::Service, "Workspace");
+            }
+        }
+
+        return std::nullopt;
     }
 
     std::string instance_identity(const std::string &hierarchy, size_t script) {

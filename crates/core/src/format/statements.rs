@@ -54,7 +54,7 @@ pub(super) fn ranges(tree: &Tree<'_>, entries: &[ListEntry]) -> Vec<Range<usize>
     result
 }
 
-pub(super) fn isolated(
+pub(super) fn is_isolated(
     tree: &Tree<'_>,
     entries: &[ListEntry],
     selected: &Range<usize>,

@@ -42,6 +42,8 @@ namespace instar::luau {
         resolve(const std::string &context, InstanceQuery query, const std::string &name) const;
 
     private:
+        std::optional<Luau::TypeId> select(InstanceQuery query, std::optional<size_t> script) const;
+
         Luau::TypeArena arena;
         std::vector<Luau::TypeId> types;
         std::unordered_map<std::string, Luau::TypeId> identities;

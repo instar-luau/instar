@@ -27,7 +27,7 @@ pub(crate) struct Directives {
 }
 
 impl Directives {
-    pub(crate) fn blocks(&self, tree: &Tree<'_>, index: NodeIndex) -> bool {
+    pub(crate) fn is_blocked(&self, tree: &Tree<'_>, index: NodeIndex) -> bool {
         let node = tree.node(index);
 
         self.barriers.contains(&index.get())
@@ -92,7 +92,7 @@ impl Directives {
             if directive.scope.start < end {
                 return Err(Error::input(
                     directive.scope.clone(),
-                    "overlapping formatting directives",
+                    "Formatting directives overlap.",
                 ));
             }
 
@@ -110,7 +110,7 @@ pub(crate) fn collect(tree: &Tree<'_>) -> Result<Directives, Error> {
     let mut boundaries = Vec::new();
     let mut formatting: Option<Directive> = None;
     let mut linting: Option<Range<usize>> = None;
-    let mut leading = true;
+    let mut is_leading = true;
 
     let mut statements: Vec<_> = tree
         .nodes
@@ -147,7 +147,7 @@ pub(crate) fn collect(tree: &Tree<'_>) -> Result<Directives, Error> {
         }
 
         if !matches!(token.kind, TokenKind::Comment | TokenKind::BlockComment) {
-            leading = false;
+            is_leading = false;
             continue;
         }
 
@@ -185,7 +185,10 @@ pub(crate) fn collect(tree: &Tree<'_>) -> Result<Directives, Error> {
             let (scope, kind) = match command.trim() {
                 "off" | "ignore start" => {
                     if formatting.is_some() {
-                        return Err(Error::input(location, "nested formatting region"));
+                        return Err(Error::input(
+                            location,
+                            "Formatting regions cannot be nested.",
+                        ));
                     }
 
                     formatting = Some(Directive {
@@ -202,7 +205,10 @@ pub(crate) fn collect(tree: &Tree<'_>) -> Result<Directives, Error> {
 
                 "on" | "ignore end" => {
                     let opening = formatting.take().ok_or_else(|| {
-                        Error::input(location.clone(), "unmatched formatting region end")
+                        Error::input(
+                            location.clone(),
+                            "Formatting region end has no matching start.",
+                        )
                     })?;
 
                     let start = tree
@@ -219,13 +225,13 @@ pub(crate) fn collect(tree: &Tree<'_>) -> Result<Directives, Error> {
                         tree,
                         following,
                         &location,
-                        "formatting directive has no following statement",
+                        "Formatting directive has no following statement.",
                     )?,
                     Kind::Verbatim,
                 ),
 
                 "ignore all" => (0..tree.source.len(), Kind::Remainder),
-                _ => return Err(Error::input(location, "unknown formatting directive")),
+                _ => return Err(Error::input(location, "Unknown formatting directive.")),
             };
 
             Directive { scope, kind }
@@ -235,7 +241,10 @@ pub(crate) fn collect(tree: &Tree<'_>) -> Result<Directives, Error> {
             let (scope, kind) = match words.as_slice() {
                 ["off", ..] => {
                     if linting.is_some() {
-                        return Err(Error::input(location, "nested lint suppression region"));
+                        return Err(Error::input(
+                            location,
+                            "An `instar-lint off` region is already open.",
+                        ));
                     }
 
                     linting = Some(location);
@@ -244,7 +253,10 @@ pub(crate) fn collect(tree: &Tree<'_>) -> Result<Directives, Error> {
 
                 ["on"] => {
                     let opening = linting.take().ok_or_else(|| {
-                        Error::input(location.clone(), "unmatched lint suppression region end")
+                        Error::input(
+                            location.clone(),
+                            "`instar-lint on` has no matching `instar-lint off`.",
+                        )
                     })?;
 
                     (opening.start..location.end, Kind::Attached)
@@ -257,16 +269,21 @@ pub(crate) fn collect(tree: &Tree<'_>) -> Result<Directives, Error> {
                         tree,
                         following,
                         &location,
-                        "lint directive has no following statement",
+                        "This lint directive must be followed by a statement.",
                     )?,
                     Kind::Attached,
                 ),
 
-                _ => return Err(Error::input(location, "unknown lint suppression directive")),
+                _ => {
+                    return Err(Error::input(
+                        location,
+                        "Lint suppression directive is not recognized.",
+                    ));
+                }
             };
 
             Directive { scope, kind }
-        } else if body.starts_with("!nolint") || leading && body.starts_with('!') {
+        } else if body.starts_with("!nolint") || is_leading && body.starts_with('!') {
             Directive {
                 scope: 0..tree.source.len(),
                 kind: Kind::Global,
@@ -277,7 +294,7 @@ pub(crate) fn collect(tree: &Tree<'_>) -> Result<Directives, Error> {
                     tree,
                     following,
                     &location,
-                    "lint directive has no following statement",
+                    "This lint directive must be followed by a statement.",
                 )?,
                 kind: Kind::Attached,
             }
@@ -301,7 +318,7 @@ pub(crate) fn collect(tree: &Tree<'_>) -> Result<Directives, Error> {
         if opening.kind != Kind::Remainder {
             return Err(Error::input(
                 opening.scope,
-                "unmatched formatting region start",
+                "Formatting region start has no matching end.",
             ));
         }
 
@@ -314,7 +331,7 @@ pub(crate) fn collect(tree: &Tree<'_>) -> Result<Directives, Error> {
     if let Some(location) = linting {
         return Err(Error::input(
             location,
-            "unmatched lint suppression region start",
+            "This `instar-lint off` region has no matching `instar-lint on`.",
         ));
     }
 

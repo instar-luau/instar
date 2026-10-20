@@ -1,29 +1,14 @@
-use vermis::tree::{NodeIndex, NodeKind, Tree};
+use vermis::tree::{NodeIndex, NodeKind};
 
 use crate::{
     lint::{context::Context, layout},
-    syntax::{
-        bindings::{Bindings, Category},
-        expression::unwrap,
-    },
+    syntax::{bindings::Category, expression::unwrap},
 };
-
-impl Bindings {
-    pub(super) fn same(&self, tree: &Tree<'_>, left: NodeIndex, right: NodeIndex) -> bool {
-        let left = unwrap(tree, left);
-        let right = unwrap(tree, right);
-
-        matches!(tree.node(left).kind, NodeKind::Name { .. })
-            && matches!(tree.node(right).kind, NodeKind::Name { .. })
-            && self.references[left.get()] == self.references[right.get()]
-            && tree.text(left) == tree.text(right)
-    }
-}
 
 pub(super) fn finish(context: &mut Context<'_, '_>) {
     let tree = context.tree;
 
-    if context.active(&[
+    if context.is_active(&[
         "unused_variable",
         "LocalUnused",
         "FunctionUnused",
@@ -35,79 +20,102 @@ pub(super) fn finish(context: &mut Context<'_, '_>) {
         "ignored_pcall_result",
     ]) {
         for binding in &context.bindings().locals {
-            let used = !binding.reads.is_empty() || !binding.type_reads.is_empty();
+            let name = &binding.name;
+            let is_used = !binding.reads.is_empty() || !binding.type_reads.is_empty();
 
-            let exported = binding.category == Category::Local
-                && context.bindings().exported(tree, binding.statement);
+            let is_exported = binding.category == Category::Local
+                && context.bindings().is_exported(tree, binding.statement);
 
-            let constant = matches!(tree.node(binding.statement).kind, NodeKind::Constant { .. })
-                || matches!(tree.node(binding.statement).kind, NodeKind::Function { prefix, .. }
-                if exported || prefix.is_some_and(|prefix| tree.token(prefix).bytes(tree.source) == b"const"));
+            let is_constant = matches!(
+                tree.node(binding.statement).kind,
+                NodeKind::Constant { .. }
+            ) || matches!(tree.node(binding.statement).kind, NodeKind::Function { prefix, .. }
+                if is_exported || prefix.is_some_and(|prefix| tree.token(prefix).bytes(tree.source) == b"const"));
 
-            let function = matches!(tree.node(binding.statement).kind, NodeKind::Function { .. });
+            let is_function =
+                matches!(tree.node(binding.statement).kind, NodeKind::Function { .. });
 
-            let import = binding.value.is_some_and(|value| matches!(tree.node(unwrap(tree, value)).kind, NodeKind::Call { callee, .. } if context.bindings().global(tree, callee, "require")));
+            let is_import = binding.value.is_some_and(|value| matches!(tree.node(unwrap(tree, value)).kind, NodeKind::Call { callee, .. } if context.bindings().is_global(tree, callee, "require")));
 
-            if context.active(&["unused_variable"])
-                && !exported
-                && !used
+            if context.is_active(&["unused_variable"])
+                && !is_exported
+                && !is_used
                 && !context.settings.ignored.is_match(&binding.name)
-                && (binding.category != Category::Parameter || context.settings.unused.parameters)
-                && (binding.category != Category::Loop || context.settings.unused.loop_variables)
+                && (binding.category != Category::Parameter
+                    || context.settings.unused.should_check_parameters)
+                && (binding.category != Category::Loop
+                    || context.settings.unused.should_check_loop_variables)
             {
-                context.warn(
+                let category = match binding.category {
+                    Category::Local if is_function => "Function",
+                    Category::Local => "Variable",
+                    Category::Parameter => "Parameter",
+                    Category::Loop => "Loop variable",
+                };
+
+                context.emit(
                     binding.declaration,
                     "unused_variable",
-                    "binding is never read",
+                    &format!("{category} `{name}` is never read."),
                 );
             }
 
-            if context.active(&["LocalUnused", "FunctionUnused", "ImportUnused"])
-                && !used
+            if context.is_active(&["LocalUnused", "FunctionUnused", "ImportUnused"])
+                && !is_used
                 && binding.category == Category::Local
                 && !binding.name.starts_with('_')
             {
-                context.warn(
+                let category = if is_function {
+                    "Local function"
+                } else if is_import {
+                    "Imported binding"
+                } else {
+                    "Local binding"
+                };
+
+                context.emit(
                     binding.declaration,
-                    if function {
+                    if is_function {
                         "FunctionUnused"
-                    } else if import {
+                    } else if is_import {
                         "ImportUnused"
                     } else {
                         "LocalUnused"
                     },
-                    "binding is never used; prefix with `_` to silence",
+                    &format!("{category} `{name}` is never used; prefix its name with `_` to suppress this diagnostic."),
                 );
             }
 
-            if context.active(&["DuplicateLocal", "LocalShadow"])
+            if context.is_active(&["DuplicateLocal", "LocalShadow"])
                 && let Some(shadow) = binding.shadow
             {
                 let shadow = &context.bindings().locals[shadow];
 
                 if shadow.statement == binding.statement && binding.name != "_" {
-                    if context.active(&["DuplicateLocal"]) {
-                        context.warn(
+                    if context.is_active(&["DuplicateLocal"]) {
+                        context.emit(
                             binding.declaration,
                             "DuplicateLocal",
-                            "binding has already been declared in this statement",
+                            &format!(
+                                "Binding `{name}` has already been declared in this statement."
+                            ),
                         );
                     }
-                } else if context.active(&["LocalShadow"])
-                    && used
+                } else if context.is_active(&["LocalShadow"])
+                    && is_used
                     && shadow.function == binding.function
-                    && !(function
+                    && !(is_function
                         && matches!(tree.node(shadow.statement).kind, NodeKind::Function { .. })
                         && context.settings.enabled("DuplicateFunction").is_some())
                 {
-                    context.warn(
+                    context.emit(
                         binding.declaration,
                         "LocalShadow",
-                        "binding shadows a previous local declaration",
+                        &format!("Binding `{name}` shadows a previous local declaration."),
                     );
                 }
-            } else if context.active(&["LocalShadow"])
-                && used
+            } else if context.is_active(&["LocalShadow"])
+                && is_used
                 && context
                     .bindings()
                     .globals
@@ -115,57 +123,57 @@ pub(super) fn finish(context: &mut Context<'_, '_>) {
                     .is_some_and(|global| !global.references.is_empty())
                 && !context.symbols.globals.contains(&binding.name)
             {
-                context.warn(
+                context.emit(
                     binding.declaration,
                     "LocalShadow",
-                    "binding shadows a global used in this module",
+                    &format!("Binding `{name}` shadows a global referenced in this module."),
                 );
             }
 
-            if context.active(&["UninitializedLocal"])
-                && !binding.initialized
-                && !binding.assigned
+            if context.is_active(&["UninitializedLocal"])
+                && !binding.is_initialized
+                && !binding.is_assigned
                 && binding.category == Category::Local
                 && let Some(first) = binding.reads.first()
             {
-                context.warn(
+                context.emit(
                     *first,
                     "UninitializedLocal",
-                    "binding is never initialized or assigned; initialize with nil to silence",
+                    &format!("Local binding `{name}` is never initialized or assigned; initialize it with `nil` to suppress this diagnostic."),
                 );
             }
 
             if let Some(value) = binding.value {
-                let keep_local = context.settings.immutable.mutated_tables_stay_local
-                    && binding.mutated
+                let should_keep_local = context.settings.immutable.should_keep_mutated_tables_local
+                    && binding.is_mutated
                     && matches!(tree.node(unwrap(tree, value)).kind, NodeKind::Table { .. });
 
-                if context.active(&["prefer_const"])
-                    && !(binding.assigned || constant || keep_local)
+                if context.is_active(&["prefer_const"])
+                    && !(binding.is_assigned || is_constant || should_keep_local)
                     && binding.category == Category::Local
                 {
-                    context.warn(
+                    context.emit(
                         binding.declaration,
                         "prefer_const",
-                        "unchanged local binding can be declared const",
+                        &format!("Local binding `{name}` is never reassigned; consider declaring it with `const`."),
                     );
                 }
 
-                if context.active(&["ignored_pcall_result"])
+                if context.is_active(&["ignored_pcall_result"])
                     && binding.reads.is_empty()
-                    && matches!(tree.node(unwrap(tree, value)).kind, NodeKind::Call { callee, .. } if context.bindings().global(tree, callee, "pcall") || context.bindings().global(tree, callee, "xpcall"))
+                    && matches!(tree.node(unwrap(tree, value)).kind, NodeKind::Call { callee, .. } if context.bindings().is_global(tree, callee, "pcall") || context.bindings().is_global(tree, callee, "xpcall"))
                 {
-                    context.warn(
+                    context.emit(
                         binding.declaration,
                         "ignored_pcall_result",
-                        "protected-call success status is never read",
+                        "The success result of this protected call is never read.",
                     );
                 }
             }
         }
     }
 
-    if context.active(&[
+    if context.is_active(&[
         "global_usage",
         "UnknownGlobal",
         "BuiltinGlobalWrite",
@@ -174,117 +182,120 @@ pub(super) fn finish(context: &mut Context<'_, '_>) {
         "FunctionUnused",
     ]) {
         for (name, global) in &context.bindings().globals {
-            let known = context.symbols.globals.contains(name)
+            let is_known = context.symbols.globals.contains(name)
                 || context.bindings().declared.contains(name);
 
             for reference in &global.references {
-                if context.active(&["global_usage"]) {
-                    context.warn(*reference, "global_usage", "access to a global binding");
+                if context.is_active(&["global_usage"]) {
+                    context.emit(
+                        *reference,
+                        "global_usage",
+                        &format!("Global `{name}` is accessed."),
+                    );
                 }
 
-                if context.active(&["UnknownGlobal"]) && !known && global.writes.is_empty() {
-                    context.warn(
+                if context.is_active(&["UnknownGlobal"]) && !is_known && global.writes.is_empty() {
+                    context.emit(
                         *reference,
                         "UnknownGlobal",
-                        "unknown global; consider assigning to it first",
+                        &format!("Unknown global `{name}`."),
                     );
                 }
             }
 
-            if context.active(&[if known {
+            if context.is_active(&[if is_known {
                 "BuiltinGlobalWrite"
             } else {
                 "unscoped_variables"
             }]) {
                 for write in &global.writes {
-                    context.warn(
+                    context.emit(
                         *write,
-                        if known {
+                        if is_known {
                             "BuiltinGlobalWrite"
                         } else {
                             "unscoped_variables"
                         },
-                        if known {
-                            "built-in global is overwritten"
-                        } else {
-                            "assignment creates an undeclared global"
-                        },
+                        &format!(
+                            "Assignment writes to {} global `{name}`.",
+                            if is_known { "declared" } else { "undeclared" }
+                        ),
                     );
                 }
             }
 
-            if context.active(&["GlobalUsedAsLocal"])
-                && !known
+            if context.is_active(&["GlobalUsedAsLocal"])
+                && !is_known
                 && name != "_"
                 && !global.writes.is_empty()
                 && (!global.functions.is_empty()
-                    || (!global.read_before_write && !global.module_assignment))
+                    || (!global.is_read_before_write && !global.has_module_assignment))
                 && let Some(first) = global.references.first()
             {
-                context.warn(
+                context.emit(
                     *first,
                     "GlobalUsedAsLocal",
-                    "global is only used locally; consider declaring a local",
+                    &format!("Global `{name}` may be intended as a local binding."),
                 );
             }
 
-            if context.active(&["FunctionUnused"])
+            if context.is_active(&["FunctionUnused"])
                 && let Some(definition) = global.definition
-                && !global.read
+                && !global.is_read
                 && !name.starts_with('_')
             {
-                context.warn(
+                context.emit(
                     definition,
                     "FunctionUnused",
-                    "function is never used; prefix with `_` to silence",
+                    &format!("Function `{name}` is not read in this module; prefix its name with `_` to suppress this diagnostic."),
                 );
             }
         }
     }
 
-    if context.active(&["FunctionUnused"]) {
+    if context.is_active(&["FunctionUnused"]) {
         for binding in &context.bindings().types {
             if matches!(tree.node(binding.statement).kind, NodeKind::Function { .. })
-                && !binding.used
-                && !context.bindings().exported(tree, binding.statement)
+                && !binding.is_used
+                && !context.bindings().is_exported(tree, binding.statement)
                 && !binding.name.starts_with('_')
             {
-                context.warn(
+                context.emit(
                     binding.declaration,
                     "FunctionUnused",
-                    "function is never used; prefix with `_` to silence",
+                    &format!("Type function `{}` is never used; prefix its name with `_` to suppress this diagnostic.", binding.name),
                 );
             }
         }
     }
 
-    if context.active(&["restricted_globals"]) && !context.settings.globals.is_empty() {
+    if context.is_active(&["restricted_globals"]) && !context.settings.globals.is_empty() {
         for (name, global) in &context.bindings().globals {
             if let Some(reason) = context.settings.globals.get(name) {
-                let message = format!("global `{name}` is restricted: {reason}");
+                let message = format!("Global `{name}` is restricted.\n{reason}");
 
                 for reference in &global.references {
-                    context.warn(*reference, "restricted_globals", &message);
+                    context.emit(*reference, "restricted_globals", &message);
                 }
             }
         }
     }
 
-    if context.active(&["PlaceholderRead"]) {
+    if context.is_active(&["PlaceholderRead"]) {
         for index in 0..tree.nodes.len() {
             let node = NodeIndex::new(index);
 
-            if context.bindings().reads[index] && tree.text(node) == b"_" {
-                context.warn(
+            if context.bindings().is_read[index] && tree.text(node) == b"_" {
+                context.emit(
                     node,
                     "PlaceholderRead",
-                    "placeholder value `_` is read; use a named variable",
+                    "Placeholder value `_` is read; use a named variable.",
                 );
             }
         }
     }
 
-    if context.active(&["CommentDirective", "RedundantNativeAttribute"]) {
+    if context.is_active(&["CommentDirective", "RedundantNativeAttribute"]) {
         layout::comments(context);
     }
 }

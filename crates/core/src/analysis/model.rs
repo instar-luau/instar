@@ -1,5 +1,7 @@
 use std::ops::Range;
 
+use super::Color;
+
 /// Owned source facts whose ranges are UTF-8 byte offsets in the original document.
 #[derive(Clone, Debug)]
 pub struct Analysis {
@@ -28,7 +30,7 @@ pub struct Analysis {
     pub(super) selections: Vec<Range<usize>>,
     pub(super) identities: Vec<Identity>,
     pub(super) scopes: Vec<usize>,
-    pub(super) complete: bool,
+    pub(super) is_complete: bool,
 }
 
 /// A named declaration and its nested declarations.
@@ -85,16 +87,16 @@ pub struct Token {
     pub kind: TokenKind,
 
     /// Whether this occurrence declares a binding.
-    pub declaration: bool,
+    pub is_declaration: bool,
 
     /// Whether the referenced binding is immutable.
-    pub readonly: bool,
+    pub is_read_only: bool,
 
     /// Binding access performed by this occurrence.
     pub access: Access,
 }
 
-/// Binding access performed by a token.
+/// Binding access performed by an occurrence.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Access {
     /// No binding access.
@@ -113,18 +115,18 @@ pub enum Access {
 impl Access {
     /// Whether this access reads a binding.
     #[must_use]
-    pub fn read(self) -> bool {
+    pub fn is_read(self) -> bool {
         matches!(self, Self::Read | Self::ReadWrite)
     }
 
     /// Whether this access writes a binding.
     #[must_use]
-    pub fn write(self) -> bool {
+    pub fn is_write(self) -> bool {
         matches!(self, Self::Write | Self::ReadWrite)
     }
 
-    pub(super) fn new(read: bool, write: bool) -> Self {
-        match (read, write) {
+    pub(super) fn new(is_read: bool, is_write: bool) -> Self {
+        match (is_read, is_write) {
             (false, false) => Self::None,
             (true, false) => Self::Read,
             (false, true) => Self::Write,
@@ -232,16 +234,6 @@ pub struct Link {
     pub target: String,
 }
 
-/// A statically recognized Roblox Color3 constructor.
-#[derive(Clone, Debug)]
-pub struct Color {
-    /// Complete constructor expression.
-    pub range: Range<usize>,
-
-    /// Red, green, blue, and alpha in the inclusive zero-to-one interval.
-    pub components: [f64; 4],
-}
-
 /// A lexical binding and every source occurrence resolved to it.
 #[derive(Clone, Debug)]
 pub struct Binding {
@@ -258,10 +250,10 @@ pub struct Binding {
     pub occurrences: Vec<Occurrence>,
 
     /// Whether the declaration has an explicit, renameable source name.
-    pub renameable: bool,
+    pub can_rename: bool,
 
     /// Whether this declaration is an exported type alias or type function.
-    pub exported: bool,
+    pub is_exported: bool,
 }
 
 /// Lexical binding categories.
@@ -289,21 +281,8 @@ pub struct Occurrence {
     /// Identifier byte range.
     pub range: Range<usize>,
 
-    /// Whether this occurrence reads the binding.
-    pub read: bool,
-
-    /// Whether this occurrence writes or declares the binding.
-    pub write: bool,
-}
-
-/// A validated lexical rename target.
-#[derive(Clone, Debug)]
-pub struct RenameTarget {
-    /// Selected identifier range.
-    pub range: Range<usize>,
-
-    /// Existing name for a rename prompt.
-    pub name: String,
+    /// Binding access performed by this occurrence.
+    pub access: Access,
 }
 
 /// A protocol-independent source replacement.
@@ -314,26 +293,6 @@ pub struct Edit {
 
     /// Replacement source text.
     pub replacement: String,
-}
-
-/// A rejected lexical rename.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum RenameError {
-    /// The position does not identify a renameable local binding.
-    #[error("no renameable lexical binding at this position")]
-    Target,
-
-    /// The replacement is not a valid Luau identifier.
-    #[error("the replacement is not a valid Luau identifier")]
-    Name,
-
-    /// The document is incomplete and lexical safety cannot be established.
-    #[error("rename requires a syntactically complete document")]
-    Incomplete,
-
-    /// Renaming would conflict with or capture another binding.
-    #[error("the replacement conflicts with or captures another binding")]
-    Conflict,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

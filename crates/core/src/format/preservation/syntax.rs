@@ -28,7 +28,7 @@ struct Comparison<'tree, 'source> {
 }
 
 impl Comparison<'_, '_> {
-    fn matches(&mut self, original: NodeIndex, proposed: NodeIndex) -> Option<bool> {
+    fn is_match(&mut self, original: NodeIndex, proposed: NodeIndex) -> Option<bool> {
         let left = self.original.node(original);
         let right = self.proposed.node(proposed);
 
@@ -55,7 +55,7 @@ impl Comparison<'_, '_> {
             }
 
             for (original, proposed) in left.into_iter().zip(right) {
-                if !self.matches(original, proposed)? {
+                if !self.is_match(original, proposed)? {
                     return Some(false);
                 }
             }
@@ -83,12 +83,12 @@ impl Comparison<'_, '_> {
                 return None;
             }
 
-            if !equivalent(
+            if !is_equivalent(
                 self.original,
                 left_position..left_child.tokens.start.get(),
                 self.proposed,
                 right_position..right_child.tokens.start.get(),
-            )? || !self.matches(original, proposed)?
+            )? || !self.is_match(original, proposed)?
             {
                 return Some(false);
             }
@@ -97,7 +97,7 @@ impl Comparison<'_, '_> {
             right_position = right_child.tokens.end.get();
         }
 
-        equivalent(
+        is_equivalent(
             self.original,
             left_position..left.tokens.end.get(),
             self.proposed,
@@ -124,20 +124,20 @@ pub(crate) fn validate(
         nodes: vec![None; original.nodes.len()],
     };
 
-    match comparison.matches(original.root, proposed.root) {
+    match comparison.is_match(original.root, proposed.root) {
         Some(true) => {}
 
         Some(false) => {
             return Err(Error::internal(
                 0..0,
-                "formatter changed syntax or literal values",
+                "Formatter changed syntax or literal values.",
             ));
         }
 
         None => {
             return Err(Error::internal(
                 0..0,
-                "cannot validate syntax or literal values",
+                "Cannot validate syntax or literal values.",
             ));
         }
     }
@@ -148,15 +148,15 @@ pub(crate) fn validate(
         imports.is_some(),
         original_directives,
     )
-    .ok_or_else(|| Error::internal(0..0, "cannot validate original comment attachment"))?;
+    .ok_or_else(|| Error::internal(0..0, "Cannot validate original comment attachment."))?;
 
     let after = comments::attached(proposed, None, imports.is_some(), proposed_directives)
-        .ok_or_else(|| Error::internal(0..0, "cannot validate proposed comment attachment"))?;
+        .ok_or_else(|| Error::internal(0..0, "Cannot validate proposed comment attachment."))?;
 
     comments::validate(original, proposed, &before, &after, configuration)?;
 
     if original_directives.policies.len() != proposed_directives.policies.len() {
-        return Err(Error::internal(0..0, "formatter changed directives"));
+        return Err(Error::internal(0..0, "Formatter changed directives."));
     }
 
     for (before, after) in original_directives
@@ -164,7 +164,7 @@ pub(crate) fn validate(
         .iter()
         .zip(&proposed_directives.policies)
     {
-        let preserved = before.kind == after.kind
+        let is_preserved = before.kind == after.kind
             && match before.kind {
                 Kind::Verbatim | Kind::Remainder => original
                     .source
@@ -174,7 +174,7 @@ pub(crate) fn validate(
                 Kind::Global => true,
 
                 Kind::Attached => {
-                    equivalent(
+                    is_equivalent(
                         original,
                         tokens(original, &before.scope),
                         proposed,
@@ -183,10 +183,10 @@ pub(crate) fn validate(
                 }
             };
 
-        if !preserved {
+        if !is_preserved {
             return Err(Error::internal(
                 0..0,
-                "formatter changed protected source or directive scopes",
+                "Formatter changed protected source or directive scopes.",
             ));
         }
     }
@@ -194,7 +194,7 @@ pub(crate) fn validate(
     Ok(())
 }
 
-pub(super) fn substantive(kind: TokenKind) -> bool {
+pub(super) fn is_substantive(kind: TokenKind) -> bool {
     !matches!(
         kind,
         TokenKind::Whitespace
@@ -205,7 +205,7 @@ pub(super) fn substantive(kind: TokenKind) -> bool {
     )
 }
 
-fn equivalent(
+fn is_equivalent(
     original: &Tree<'_>,
     left: Range<usize>,
     proposed: &Tree<'_>,
@@ -215,30 +215,31 @@ fn equivalent(
         .tokens
         .get(left)?
         .iter()
-        .filter(|token| substantive(token.kind));
+        .filter(|token| is_substantive(token.kind));
 
     let mut right = proposed
         .tokens
         .get(right)?
         .iter()
-        .filter(|token| substantive(token.kind));
+        .filter(|token| is_substantive(token.kind));
 
     loop {
         match (left.next(), right.next()) {
             (None, None) => return Some(true),
 
             (Some(left), Some(right)) => {
-                let equal = if matches!(left.kind, TokenKind::QuotedString | TokenKind::RawString)
-                    && matches!(right.kind, TokenKind::QuotedString | TokenKind::RawString)
-                {
-                    literal::decode(left.bytes(original.source))?
-                        == literal::decode(right.bytes(proposed.source))?
-                } else {
-                    left.kind == right.kind
-                        && left.bytes(original.source) == right.bytes(proposed.source)
-                };
+                let is_equal =
+                    if matches!(left.kind, TokenKind::QuotedString | TokenKind::RawString)
+                        && matches!(right.kind, TokenKind::QuotedString | TokenKind::RawString)
+                    {
+                        literal::decode(left.bytes(original.source))?
+                            == literal::decode(right.bytes(proposed.source))?
+                    } else {
+                        left.kind == right.kind
+                            && left.bytes(original.source) == right.bytes(proposed.source)
+                    };
 
-                if !equal {
+                if !is_equal {
                     return Some(false);
                 }
             }
@@ -270,7 +271,7 @@ fn statements(
             tree.text(
                 require
                     .as_ref()
-                    .expect("internal error: missing require in import run")
+                    .expect("Internal error: missing `require` in import run.")
                     .binding,
             )
         });

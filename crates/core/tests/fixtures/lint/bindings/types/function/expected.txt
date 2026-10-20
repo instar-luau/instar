@@ -3,7 +3,7 @@
         rule: "FunctionUnused",
         severity: Warning,
         range: 65..71,
-        message: "function is never used; prefix with `_` to silence",
+        message: "Type function `unused` is never used; prefix its name with `_` to suppress this diagnostic.",
         edits: [],
     },
 ]

@@ -23,7 +23,7 @@ pub fn range(
     range: Range<usize>,
 ) -> Result<Option<Edit>, Error> {
     if source.get(range.clone()).is_none() {
-        return Err(Error::input(range, "invalid formatting range"));
+        return Err(Error::input(range, "Invalid formatting range."));
     }
 
     let prefix = usize::from(source.starts_with('\u{feff}')) * 3;
@@ -117,18 +117,20 @@ fn select(
             extend(&mut ranges, original.source.len());
         }
 
-        let first = ranges.iter().position(|range| intersects(range, requested));
+        let first = ranges
+            .iter()
+            .position(|range| is_intersecting(range, requested));
 
         let last = ranges
             .iter()
-            .rposition(|range| intersects(range, requested));
+            .rposition(|range| is_intersecting(range, requested));
 
         if let (Some(first), Some(last)) = (first, last) {
             let boundary = ranges[first].start..ranges[last].end;
 
             if boundary.start <= requested.start
                 && requested.end <= boundary.end
-                && statements::isolated(original, before, &(first..last + 1), &boundary)
+                && statements::is_isolated(original, before, &(first..last + 1), &boundary)
                 && selection.as_ref().is_none_or(|selection| {
                     boundary.end - boundary.start
                         < selection.original.end - selection.original.start
@@ -142,7 +144,7 @@ fn select(
 
                 let replacement = ranges[first].start..ranges[last].end;
 
-                if statements::isolated(proposed, after, &(first..last + 1), &replacement) {
+                if statements::is_isolated(proposed, after, &(first..last + 1), &replacement) {
                     *selection = Some(Selection {
                         original: boundary,
                         proposed: replacement,
@@ -166,7 +168,7 @@ fn select(
     }
 }
 
-fn intersects(boundary: &Range<usize>, requested: &Range<usize>) -> bool {
+fn is_intersecting(boundary: &Range<usize>, requested: &Range<usize>) -> bool {
     if requested.is_empty() {
         boundary.start <= requested.start && requested.start < boundary.end
     } else {

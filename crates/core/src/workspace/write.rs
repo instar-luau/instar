@@ -22,7 +22,7 @@ impl Workspace {
         if self.sources.borrow().contains_key(module) || self.module(path)? != module {
             return Err(Error::Path {
                 path: path.to_owned(),
-                reason: "source is not an authorized disk destination",
+                reason: "Source is not an authorized disk destination.",
             });
         }
 
@@ -92,7 +92,7 @@ impl Replacement {
 
         if current != *permissions {
             return Err(io::Error::other(
-                "write destination changed before recovery",
+                "Write destination changed before recovery.",
             ));
         }
 
@@ -104,7 +104,7 @@ impl Replacement {
     fn prepare(path: &Path, proposed: &str, permissions: Permissions) -> io::Result<Self> {
         let parent = path
             .parent()
-            .ok_or_else(|| io::Error::other("write destination has no parent"))?;
+            .ok_or_else(|| io::Error::other("Write destination has no parent directory."))?;
 
         let mut staged = NamedTempFile::new_in(parent)?;
         staged.write_all(proposed.as_bytes())?;
@@ -133,7 +133,7 @@ fn guarded(
 
     if permissions != current {
         return Err(io::Error::other(
-            "write destination changed before replacement",
+            "Write destination changed before replacement.",
         ));
     }
 
@@ -150,7 +150,7 @@ fn locked(path: &Path) -> io::Result<(File, Permissions)> {
 
     if !metadata.is_file() || metadata.permissions().readonly() {
         return Err(io::Error::other(
-            "refusing to replace a nonregular or read-only file",
+            "Cannot replace a nonregular or read-only file.",
         ));
     }
 
@@ -158,7 +158,7 @@ fn locked(path: &Path) -> io::Result<(File, Permissions)> {
     file.try_lock().map_err(io::Error::other)?;
 
     if !file.metadata()?.is_file() {
-        return Err(io::Error::other("refusing to replace a nonregular file"));
+        return Err(io::Error::other("Cannot replace a nonregular file."));
     }
 
     Ok((file, metadata.permissions()))
@@ -182,14 +182,16 @@ fn validate(
         .read_to_end(&mut current)?;
 
     if current != original.as_bytes() {
-        return Err(io::Error::other("file changed before replacement"));
+        return Err(io::Error::other(
+            "File contents changed before replacement.",
+        ));
     }
 
     let current_metadata = fs::symlink_metadata(path)?;
 
     if !current_metadata.is_file() || current_metadata.permissions() != *permissions {
         return Err(io::Error::other(
-            "write destination changed before replacement",
+            "Write destination changed before replacement.",
         ));
     }
 
@@ -198,7 +200,7 @@ fn validate(
     if current != Handle::from_path(path)? || identity.is_some_and(|identity| *identity != current)
     {
         return Err(io::Error::other(
-            "write destination changed before replacement",
+            "Write destination changed before replacement.",
         ));
     }
 

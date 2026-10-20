@@ -3,7 +3,7 @@ use std::{
     ops::{ControlFlow, Range},
 };
 
-use instar_bridge::{Frontend, Hint, HintKind, OccurrenceRole};
+use instar_bridge::{Frontend, Hint, HintKind, HintSelector, OccurrenceRole, Position};
 use instar_core::analysis::{self, FoldKind, TokenKind};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -11,11 +11,10 @@ use serde_json::Value;
 use tower_lsp_server::{
     gen_lsp_types::{
         Color, ColorInformation, ColorPresentation, ColorPresentationParams, DocumentColorParams,
-        FoldingRange, FoldingRangeKind, FoldingRangeParams, InlayHint, InlayHintKind,
-        InlayHintParams, Label, SelectionRange, SelectionRangeParams, SemanticToken,
-        SemanticTokens, SemanticTokensDelta, SemanticTokensDeltaParams,
-        SemanticTokensDeltaResponse, SemanticTokensEdit, SemanticTokensLegend,
-        SemanticTokensParams, SemanticTokensRangeParams, TextEdit, Tooltip,
+        FoldingRange, FoldingRangeKind, FoldingRangeParams, InlayHint, InlayHintParams,
+        SelectionRange, SelectionRangeParams, SemanticToken, SemanticTokens, SemanticTokensDelta,
+        SemanticTokensDeltaParams, SemanticTokensDeltaResponse, SemanticTokensEdit,
+        SemanticTokensLegend, SemanticTokensParams, SemanticTokensRangeParams, TextEdit,
     },
     jsonrpc::{Error, ErrorCode, Result},
 };
@@ -23,6 +22,7 @@ use tower_lsp_server::{
 use super::{
     configuration,
     document::Document,
+    output::hints,
     project::{Project, failure},
 };
 
@@ -48,9 +48,16 @@ const TOKEN_MODIFIERS: &[&str] = &["declaration", "readonly", "modification"];
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Annotation {
-    offset: usize,
     kind: String,
-    label: String,
+    selectors: Vec<Selector>,
+}
+
+#[derive(Deserialize, Serialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct Selector {
+    identity: String,
+    line: u32,
+    column: u32,
 }
 
 pub(super) fn legend(capabilities: &Value) -> SemanticTokensLegend {
@@ -108,10 +115,33 @@ pub(super) fn inlay_hint(
 ) -> Result<Option<Vec<InlayHint>>> {
     let module = project.module(&parameters.text_document.uri)?;
     let document = project.snapshot(&module)?;
-    let range = document.bytes(parameters.range, project.encoding)?;
-    let mut hints = Vec::new();
+    document.bytes(parameters.range, project.encoding)?;
 
-    for hint in frontend.hints(&module).map_err(failure)? {
+    let deferred = project
+        .capabilities
+        .pointer("/textDocument/inlayHint/resolveSupport/properties")
+        .and_then(Value::as_array)
+        .is_some_and(|properties| properties.iter().any(|property| property == "tooltip"));
+
+    let (start_line, start_column) = document.native(parameters.range.start, project.encoding)?;
+    let (end_line, end_column) = document.native(parameters.range.end, project.encoding)?;
+    let mut grouped: Vec<(InlayHint, Annotation, Vec<Hint>)> = Vec::new();
+
+    for hint in frontend
+        .hints_range(
+            &module,
+            Position {
+                line: start_line,
+                column: start_column,
+            },
+            Position {
+                line: end_line,
+                column: end_column,
+            },
+            !deferred,
+        )
+        .map_err(failure)?
+    {
         if hint.location.module != module || !enabled(project, &hint) {
             continue;
         }
@@ -120,29 +150,46 @@ pub(super) fn inlay_hint(
             .native_range(hint.location.range, project.encoding)?
             .start;
 
-        let offset = document.offset(position, project.encoding)?;
+        let annotation = hints::annotation(position, &hint)?;
+        let kind = category(hint.kind)?.to_owned();
 
-        if offset < range.start || offset > range.end {
-            continue;
-        }
+        let selector = Selector {
+            identity: hint.location.identity.clone(),
+            line: hint.location.range.start.line,
+            column: hint.location.range.start.column,
+        };
 
-        let data = project.data(
-            &module,
-            Annotation {
-                offset,
-                kind: category(hint.kind)?.to_owned(),
-                label: hint.label.clone(),
-            },
-        )?;
-
-        let mut hint = annotation(project, &document, &hint)?;
-        hint.data = Some(data);
-
-        if !hints.iter().any(|previous: &InlayHint| {
-            previous.position == hint.position && previous.label == hint.label
+        if let Some((_, record, information)) = grouped.iter_mut().find(|(previous, record, _)| {
+            previous.position == annotation.position
+                && previous.label == annotation.label
+                && record.kind == kind
         }) {
-            hints.push(hint);
+            if !record.selectors.contains(&selector) {
+                record.selectors.push(selector);
+            }
+
+            information.push(hint);
+        } else {
+            grouped.push((
+                annotation,
+                Annotation {
+                    kind,
+                    selectors: vec![selector],
+                },
+                vec![hint],
+            ));
         }
+    }
+
+    let mut hints = Vec::with_capacity(grouped.len());
+
+    for (mut hint, record, information) in grouped {
+        if !deferred {
+            hint.tooltip = Some(hints::tooltip(project, &module, &information)?);
+        }
+
+        hint.data = Some(project.data(&module, record)?);
+        hints.push(hint);
     }
 
     Ok(Some(hints))
@@ -172,80 +219,69 @@ pub(super) fn inlay_hint_resolve_source(
 pub(super) fn inlay_hint_resolve(
     project: &mut Project,
     frontend: &mut Frontend<'_>,
-    parameters: InlayHint,
+    mut parameters: InlayHint,
 ) -> Result<InlayHint> {
-    let (module, record): (_, Annotation) = project.resolve(parameters.data)?;
+    let (module, record): (_, Annotation) = project.resolve(parameters.data.clone())?;
 
     if !configured(project, &record.kind) {
         return Err(Error::content_modified());
     }
 
-    let document = project.snapshot(&module)?;
+    parameters.tooltip = Some(hints::tooltip(
+        project,
+        &module,
+        &subjects(project, frontend, &module, &record)?,
+    )?);
 
-    let hint = frontend
-        .hints(&module)
-        .map_err(failure)?
-        .into_iter()
-        .find(|hint| {
-            hint.location.module == module
-                && enabled(project, hint)
-                && category(hint.kind).is_ok_and(|kind| kind == record.kind)
-                && hint.label == record.label
-                && document
-                    .native_range(hint.location.range, project.encoding)
-                    .and_then(|range| document.offset(range.start, project.encoding))
-                    .is_ok_and(|offset| offset == record.offset)
+    parameters.data = Some(project.data(&module, record)?);
+
+    Ok(parameters)
+}
+
+fn subjects(
+    project: &Project,
+    frontend: &mut Frontend<'_>,
+    module: &str,
+    record: &Annotation,
+) -> Result<Vec<Hint>> {
+    let kind = match record.kind.as_str() {
+        "type" => HintKind::Type,
+        "parameter" => HintKind::Parameter,
+        "return" => HintKind::Return,
+        _ => return Err(Error::content_modified()),
+    };
+
+    let selectors: Vec<_> = record
+        .selectors
+        .iter()
+        .map(|selector| HintSelector {
+            identity: selector.identity.clone(),
+            position: Position {
+                line: selector.line,
+                column: selector.column,
+            },
+            kind,
         })
-        .ok_or_else(Error::content_modified)?;
+        .collect();
 
-    let mut resolved = annotation(project, &document, &hint)?;
+    let information = frontend.hint_subjects(&selectors).map_err(failure)?;
 
-    let description = match hint.kind {
-        HintKind::Type => "Inferred binding type",
-        HintKind::Parameter => "Call parameter",
-        HintKind::Return => "Inferred return type",
-        _ => return Err(Error::invalid_params("cannot resolve an unknown hint kind")),
-    };
-
-    let mut details = vec![format!(
-        "{description}: {}",
-        hint.label.trim_start_matches(": ")
-    )];
-
-    let offset = if hint.kind == HintKind::Type {
-        document
-            .analysis
-            .tokens
+    if information.is_empty()
+        || information
             .iter()
-            .find(|token| token.range.end == record.offset)
-            .map_or(record.offset, |token| token.range.start)
-    } else {
-        record.offset
-    };
-
-    let position = document.position(offset, project.encoding)?;
-    let (line, column) = document.native(position, project.encoding)?;
-
-    for information in frontend.hover(&module, line, column).map_err(failure)? {
-        let detail = if information.symbol.is_empty() {
-            information.type_name
-        } else {
-            format!("{}: {}", information.symbol, information.type_name)
-        };
-
-        if !detail.is_empty() && !details.contains(&detail) {
-            details.push(detail);
-        }
-
-        if !information.documentation.is_empty() && !details.contains(&information.documentation) {
-            details.push(information.documentation);
-        }
+            .any(|hint| hint.location.module != module || !enabled(project, hint))
+        || selectors.iter().any(|selector| {
+            !information.iter().any(|hint| {
+                hint.location.identity == selector.identity
+                    && hint.location.range.start == selector.position
+                    && hint.kind == selector.kind
+            })
+        })
+    {
+        return Err(Error::content_modified());
     }
 
-    resolved.tooltip = Some(Tooltip::String(details.join("\n\n")));
-    resolved.data = Some(project.data(&module, record)?);
-
-    Ok(resolved)
+    Ok(information)
 }
 
 pub(super) fn semantic_tokens_full(
@@ -472,7 +508,7 @@ pub(super) fn document_color(
 ) -> Result<Vec<ColorInformation>> {
     let module = project.module(&parameters.text_document.uri)?;
 
-    if !project.workspace.roblox(&module).map_err(failure)? {
+    if !project.workspace.is_roblox(&module).map_err(failure)? {
         return Ok(Vec::new());
     }
 
@@ -504,7 +540,7 @@ pub(super) fn color_presentation(
 ) -> Result<Vec<ColorPresentation>> {
     let module = project.module(&parameters.text_document.uri)?;
 
-    if !project.workspace.roblox(&module).map_err(failure)? {
+    if !project.workspace.is_roblox(&module).map_err(failure)? {
         return Ok(Vec::new());
     }
 
@@ -545,8 +581,7 @@ fn configured(project: &Project, kind: &str) -> bool {
 fn enabled(project: &Project, hint: &Hint) -> bool {
     let settings = &project.configuration;
 
-    !hint.label.is_empty()
-        && (!settings.hint(configuration::Hint::HideObvious) || !hint.obvious)
+    (!settings.hint(configuration::Hint::HideObvious) || !hint.obvious)
         && match hint.kind {
             HintKind::Type => settings.hint(configuration::Hint::VariableTypes),
             HintKind::Parameter => settings.hint(configuration::Hint::ParameterNames),
@@ -562,28 +597,9 @@ fn category(kind: HintKind) -> Result<&'static str> {
         HintKind::Return => Ok("return"),
 
         _ => Err(Error::invalid_params(
-            "cannot classify an unknown hint kind",
+            "Unknown inlay hint kind cannot be classified.",
         )),
     }
-}
-
-fn annotation(project: &Project, document: &Document, hint: &Hint) -> Result<InlayHint> {
-    Ok(InlayHint {
-        position: document
-            .native_range(hint.location.range, project.encoding)?
-            .start,
-        label: Label::String(hint.label.clone()),
-        kind: Some(if hint.kind == HintKind::Parameter {
-            InlayHintKind::Parameter
-        } else {
-            InlayHintKind::Type
-        }),
-        text_edits: None,
-        tooltip: None,
-        padding_left: Some(hint.kind != HintKind::Parameter),
-        padding_right: Some(hint.kind == HintKind::Parameter),
-        data: None,
-    })
 }
 
 fn classify(
@@ -627,8 +643,8 @@ fn classify(
 
     for token in &document.analysis.tokens {
         let mut kind = token.kind;
-        let mut declaration = token.declaration;
-        let mut modification = token.access.write() && !declaration;
+        let mut declaration = token.is_declaration;
+        let mut modification = token.access.is_write() && !declaration;
 
         if let Some(&(types, declares, writes)) = roles.get(&(token.range.start, token.range.end)) {
             if types && matches!(kind, TokenKind::Variable | TokenKind::Property) {
@@ -666,7 +682,7 @@ fn classify(
 
         for (name, present) in [
             ("declaration", declaration),
-            ("readonly", token.readonly),
+            ("readonly", token.is_read_only),
             ("modification", modification),
         ] {
             if present

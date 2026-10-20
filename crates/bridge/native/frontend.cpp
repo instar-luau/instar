@@ -7,9 +7,11 @@
 #include "cancellation.hpp"
 #include "diagnostic.hpp"
 #include "environment.hpp"
+#include "hover.hpp"
 #include "index.hpp"
 #include "instar-bridge/src/bridge.rs.h"
 #include "query.hpp"
+#include "types.hpp"
 
 #include <algorithm>
 #include <set>
@@ -18,26 +20,50 @@
 #include <vector>
 
 namespace instar::luau {
+    namespace {
+        struct CheckedModule {
+            Luau::ModulePtr module;
+            const Luau::SourceModule &source;
+        };
+
+        CheckedModule checked_module(Luau::Frontend &frontend, const std::string &name) {
+            const auto module = frontend.moduleResolver.getModule(name);
+            const auto *source = frontend.getSourceModule(name);
+
+            return {module, *source};
+        }
+
+        std::string semantic_text(Host &host, const std::string &name) {
+            auto text = host.readSource(name);
+
+            if (!text) {
+                throw std::runtime_error("Source is unavailable for the semantic query.");
+            }
+
+            return std::move(text->source);
+        }
+    }
+
     Frontend::Frontend(const Context &context, rust::Slice<const Flag> settings, const Luau::FrontendOptions &options)
         : callbacks(context), flags(settings), host(context, flags, *this), options(options) {
         initialize();
     }
 
-    rust::Vec<Diagnostic> Frontend::analyze(rust::Str module) {
+    rust::Vec<Diagnostic> Frontend::check(rust::Str module) {
         try {
             rust::Vec<Diagnostic> diagnostics;
             const auto names = host.modules(std::string(module));
             frontend->queueModuleCheck(names);
-            bool interrupted = false;
+            bool is_interrupted = false;
 
             const auto checked_names =
                 frontend->checkQueuedModules({}, {}, [&](std::size_t completed, std::size_t total) {
-                    interrupted = !callbacks.advance(completed, total);
-                    return !interrupted;
+                    is_interrupted = !callbacks.advance(completed, total);
+                    return !is_interrupted;
                 });
 
-            if (interrupted || options.cancellationToken->requested()) {
-                throw std::runtime_error("analysis interrupted");
+            if (is_interrupted || options.cancellationToken->requested()) {
+                throw std::runtime_error("Analysis interrupted.");
             }
 
             for (const std::string &checked_name : checked_names) {
@@ -46,7 +72,7 @@ namespace instar::luau {
                 }
 
                 if (!callbacks.progress(host.getHumanReadableModuleName(checked_name), true)) {
-                    throw std::runtime_error("analysis interrupted");
+                    throw std::runtime_error("Analysis interrupted.");
                 }
             }
 
@@ -54,12 +80,14 @@ namespace instar::luau {
                 const auto result = frontend->getCheckResult(name, true);
 
                 if (!result) {
-                    throw std::runtime_error("cannot find module `" + host.getHumanReadableModuleName(name) + "`");
+                    throw std::runtime_error(
+                        "Analysis result is unavailable for module `" + host.getHumanReadableModuleName(name) + "`."
+                    );
                 }
 
                 if (!result->timeoutHits.empty()) {
                     throw std::runtime_error(
-                        "analysis timed out for `" + host.getHumanReadableModuleName(result->timeoutHits.front()) + "`"
+                        "Analysis timed out for `" + host.getHumanReadableModuleName(result->timeoutHits.front()) + "`."
                     );
                 }
 
@@ -88,10 +116,6 @@ namespace instar::luau {
 
     std::size_t Frontend::checks() const {
         return frontend->stats.filesStrict + frontend->stats.filesNonstrict;
-    }
-
-    std::uint64_t Frontend::cancellation() const {
-        return retain(options.cancellationToken);
     }
 
     void Frontend::invalidate(rust::Str module) {
@@ -149,84 +173,70 @@ namespace instar::luau {
     }
 
     const Instances *Frontend::hierarchy(const std::string &name) {
-        return host.prepare(*frontend, name, {});
+        return host.instances(*frontend, name);
     }
 
-    rust::Vec<Hover> Frontend::hover(rust::Str module, std::uint32_t line, std::uint32_t column) {
-        rust::Vec<Hover> result;
+    rust::Vec<NativeHover> Frontend::hover(rust::Str module, std::uint32_t line, std::uint32_t column) {
+        rust::Vec<NativeHover> result;
+        PresentationBudget budget{options.cancellationToken};
 
-        for (const auto &name : prepare(module)) {
-            const auto checked = frontend->moduleResolver.getModule(name);
-            const auto *source = frontend->getSourceModule(name);
-            const auto text = host.readSource(name);
+        auto names = prepare(module);
+        std::sort(names.begin(), names.end());
 
-            if (!text) {
-                throw std::runtime_error("semantic source is unavailable");
-            }
+        for (const auto &name : names) {
+            const auto [checked, source] = checked_module(*frontend, name);
+            const auto text = semantic_text(host, name);
 
-            for (auto &value : query::hover(*frontend, host, {*checked, *source, text->source}, {line, column})) {
+            for (auto &value : query::hover(*frontend, host, {*checked, source, text}, {line, column}, budget)) {
                 result.push_back(std::move(value));
             }
         }
+
+        budget.check();
 
         return result;
     }
 
-    rust::Vec<Completion> Frontend::completion(rust::Str module, std::uint32_t line, std::uint32_t column) {
-        rust::Vec<Completion> result;
-
-        for (const auto &name : prepare(module)) {
-            const auto checked = frontend->moduleResolver.getModule(name);
-            const auto *source = frontend->getSourceModule(name);
-            const auto text = host.readSource(name);
-
-            if (!text) {
-                throw std::runtime_error("semantic source is unavailable");
-            }
-
-            for (auto &value : query::completion(*frontend, host, {*checked, *source, text->source}, {line, column})) {
-                result.push_back(std::move(value));
-            }
-        }
-
-        return result;
+    rust::Vec<NativeCompletion> Frontend::completion(rust::Str module, std::uint32_t line, std::uint32_t column) {
+        return complete(module, line, column, std::nullopt);
     }
 
-    rust::Vec<Signature> Frontend::signatures(rust::Str module, std::uint32_t line, std::uint32_t column) {
-        rust::Vec<Signature> result;
+    rust::Vec<NativeCompletion>
+    Frontend::completion_detail(rust::Str module, std::uint32_t line, std::uint32_t column, std::size_t index) {
+        return complete(module, line, column, index);
+    }
 
-        for (const auto &name : prepare(module)) {
-            const auto checked = frontend->moduleResolver.getModule(name);
-            const auto *source = frontend->getSourceModule(name);
-            const auto text = host.readSource(name);
+    rust::Vec<NativeSignature> Frontend::signatures(rust::Str module, std::uint32_t line, std::uint32_t column) {
+        rust::Vec<NativeSignature> result;
+        PresentationBudget budget{options.cancellationToken};
 
-            if (!text) {
-                throw std::runtime_error("semantic source is unavailable");
-            }
+        auto names = prepare(module);
+        std::sort(names.begin(), names.end());
 
-            for (auto &value : query::signatures(host, {*checked, *source, text->source}, {line, column})) {
+        for (const auto &name : names) {
+            const auto [checked, source] = checked_module(*frontend, name);
+            const auto text = semantic_text(host, name);
+
+            for (auto &value : query::signatures(*frontend, host, {*checked, source, text}, {line, column}, budget)) {
                 result.push_back(std::move(value));
             }
         }
+
+        budget.check();
 
         return result;
     }
 
     rust::Vec<SourceLocation>
-    Frontend::definitions(rust::Str module, std::uint32_t line, std::uint32_t column, bool types) {
+    Frontend::definitions(rust::Str module, std::uint32_t line, std::uint32_t column, bool resolve_types) {
         rust::Vec<SourceLocation> result;
 
         for (const auto &name : prepare(module)) {
-            const auto checked = frontend->moduleResolver.getModule(name);
-            const auto *source = frontend->getSourceModule(name);
-            const auto text = host.readSource(name);
-
-            if (!text) {
-                throw std::runtime_error("semantic source is unavailable");
-            }
+            const auto [checked, source] = checked_module(*frontend, name);
+            const auto text = semantic_text(host, name);
 
             for (auto &value :
-                query::definitions(*frontend, host, {*checked, *source, text->source}, {line, column}, types)) {
+                query::definitions(*frontend, host, {*checked, source, text}, {line, column}, resolve_types)) {
                 result.push_back(std::move(value));
             }
         }
@@ -238,8 +248,8 @@ namespace instar::luau {
         rust::Vec<Occurrence> result;
 
         for (const auto &name : prepare(module)) {
-            const auto checked = frontend->moduleResolver.getModule(name);
-            const auto indexed = index(*frontend, *checked, *frontend->getSourceModule(name));
+            const auto [checked, source] = checked_module(*frontend, name);
+            const auto indexed = index(*frontend, *checked, source);
 
             for (const auto &entry : indexed.entries) {
                 result.push_back(query::occurrence(host, name, entry));
@@ -254,7 +264,7 @@ namespace instar::luau {
         rust::Slice<const rust::String> candidates
     ) {
         const std::string name(replacement);
-        query::identifier(name);
+        query::validate_identifier(name);
         std::vector<Entry> targets;
         std::set<std::string> sources{std::string(module)};
 
@@ -263,28 +273,23 @@ namespace instar::luau {
         }
 
         for (const auto &identity : prepare(module)) {
-            const auto checked = frontend->moduleResolver.getModule(identity);
-            const auto *source = frontend->getSourceModule(identity);
-            const auto text = host.readSource(identity);
+            const auto [checked, source] = checked_module(*frontend, identity);
+            const auto text = semantic_text(host, identity);
 
-            if (!text) {
-                throw std::runtime_error("semantic source is unavailable");
-            }
-
-            auto entry = query::target(*frontend, {*checked, *source, text->source}, {line, column});
+            auto entry = query::target(*frontend, {*checked, source, text}, {line, column});
 
             if (!targets.empty()) {
                 const auto &previous = targets.front();
 
                 if (previous.kind != entry.kind || previous.name != entry.name ||
-                    previous.type_namespace != entry.type_namespace) {
-                    throw std::invalid_argument("rename target differs between instance contexts");
+                    previous.is_type_namespace != entry.is_type_namespace) {
+                    throw std::invalid_argument("Rename target differs between instance contexts.");
                 }
 
                 if (host.getHumanReadableModuleName(previous.declaration.identity) !=
                         host.getHumanReadableModuleName(entry.declaration.identity) ||
                     previous.declaration.location != entry.declaration.location) {
-                    throw std::invalid_argument("rename declaration differs between instance contexts");
+                    throw std::invalid_argument("Rename declaration differs between instance contexts.");
                 }
             }
 
@@ -302,39 +307,75 @@ namespace instar::luau {
 
         for (const auto &source : sources) {
             for (const auto &identity : prepare(source)) {
-                const auto checked = frontend->moduleResolver.getModule(identity);
-                const auto *syntax = frontend->getSourceModule(identity);
-                const auto text = host.readSource(identity);
+                const auto [checked, syntax] = checked_module(*frontend, identity);
+                const auto text = semantic_text(host, identity);
 
-                if (!text) {
-                    throw std::runtime_error("semantic source is unavailable");
-                }
-
-                for (auto &value :
-                    query::rename(*frontend, host, {*checked, *syntax, text->source}, name, targets, declared)) {
+                for (auto &value : query::rename(*frontend, host, {*checked, syntax, text}, name, targets, declared)) {
                     result.push_back(std::move(value));
                 }
             }
         }
 
         if (std::find(declared.begin(), declared.end(), false) != declared.end()) {
-            throw std::invalid_argument("native rename validation requires an editable source declaration");
+            throw std::invalid_argument("Native rename validation requires an editable source declaration.");
         }
 
         return result;
     }
 
-    rust::Vec<Hint> Frontend::hints(rust::Str module) {
-        rust::Vec<Hint> result;
+    rust::Vec<NativeHint> Frontend::hints_range(rust::Str module, Position start, Position end, bool is_expanded) {
+        rust::Vec<NativeHint> result;
+        PresentationBudget budget{options.cancellationToken};
 
-        for (const auto &name : prepare(module)) {
-            const auto checked = frontend->moduleResolver.getModule(name);
-            const auto *source = frontend->getSourceModule(name);
+        auto names = prepare(module);
+        std::sort(names.begin(), names.end());
 
-            for (auto &value : query::hints(host, *checked, *source)) {
+        for (const auto &name : names) {
+            const auto [checked, source] = checked_module(*frontend, name);
+
+            for (auto &value : query::hints(
+                     *frontend,
+                     host,
+                     *checked,
+                     source,
+                     budget,
+                     is_expanded,
+                     {start.line, start.column},
+                     {end.line, end.column}
+                 )) {
                 result.push_back(std::move(value));
             }
         }
+
+        budget.check();
+
+        return result;
+    }
+
+    rust::Vec<NativeHint> Frontend::hint_subjects(rust::Slice<const HintSelector> selectors) {
+        rust::Vec<NativeHint> result;
+        PresentationBudget budget{options.cancellationToken};
+
+        for (const auto &selector : selectors) {
+            budget.check();
+            const std::string identity(selector.identity);
+
+            for (const auto &name : prepare(identity)) {
+                if (name != identity) {
+                    continue;
+                }
+
+                const auto [checked, source] = checked_module(*frontend, name);
+                const Luau::Position position{selector.position.line, selector.position.column};
+
+                for (auto &value :
+                    query::hints(*frontend, host, *checked, source, budget, true, position, position, selector.kind)) {
+                    result.push_back(std::move(value));
+                }
+            }
+        }
+
+        budget.check();
 
         return result;
     }
@@ -346,19 +387,19 @@ namespace instar::luau {
             limits.cancellationToken = options.cancellationToken;
 
             if (options.cancellationToken->requested()) {
-                throw std::runtime_error("analysis interrupted");
+                throw std::runtime_error("Analysis interrupted.");
             }
 
-            for (const auto &name : sourceIdentities(module)) {
+            for (const auto &name : source_identities(module)) {
                 if (options.cancellationToken->requested() ||
                     !callbacks.progress(host.getHumanReadableModuleName(name), false)) {
-                    throw std::runtime_error("analysis interrupted");
+                    throw std::runtime_error("Analysis interrupted.");
                 }
 
                 const auto text = host.readSource(name);
 
                 if (!text) {
-                    throw std::runtime_error("import source is unavailable");
+                    throw std::runtime_error("Source is unavailable for import resolution.");
                 }
 
                 Luau::SourceModule source;
@@ -372,7 +413,7 @@ namespace instar::luau {
                 );
 
                 if (options.cancellationToken->requested()) {
-                    throw std::runtime_error("analysis interrupted");
+                    throw std::runtime_error("Analysis interrupted.");
                 }
 
                 if (parsed.root) {
@@ -385,17 +426,21 @@ namespace instar::luau {
 
                 if (options.cancellationToken->requested() ||
                     !callbacks.progress(host.getHumanReadableModuleName(name), true)) {
-                    throw std::runtime_error("analysis interrupted");
+                    throw std::runtime_error("Analysis interrupted.");
                 }
             }
 
             return result;
         } catch (const DeclarationFailure &failure) {
             const auto message =
-                failure.diagnostics.empty() ? "import resolution failed" : std::string(failure.diagnostics[0].message);
+                failure.diagnostics.empty() ? "Import resolution failed." : std::string(failure.diagnostics[0].message);
 
             throw std::runtime_error(message);
         }
+    }
+
+    std::uint64_t Frontend::cancellation() const {
+        return retain(options.cancellationToken);
     }
 
     void Frontend::initialize() {
@@ -408,16 +453,16 @@ namespace instar::luau {
 
         initialized->prepareModuleScope = [this](const Luau::ModuleName &name, const Luau::ScopePtr &scope, bool) {
             if (!callbacks.progress(host.getHumanReadableModuleName(name), false)) {
-                throw std::runtime_error("analysis interrupted");
+                throw std::runtime_error("Analysis interrupted.");
             }
 
-            host.prepare(*frontend, name, scope);
+            host.bind(*frontend, name, scope);
         };
 
         frontend = std::move(initialized);
     }
 
-    std::vector<std::string> Frontend::sourceIdentities(rust::Str module) {
+    std::vector<std::string> Frontend::source_identities(rust::Str module) {
         const std::string physical(module);
         auto names = host.modules(physical);
 
@@ -437,35 +482,67 @@ namespace instar::luau {
 
     std::vector<std::string> Frontend::prepare(rust::Str module) {
         if (!options.retainFullTypeGraphs) {
-            throw std::runtime_error("semantic queries require retained full type graphs");
+            throw std::runtime_error("Semantic queries require retained full type graphs.");
         }
 
-        const auto names = sourceIdentities(module);
+        const auto names = source_identities(module);
 
         frontend->queueModuleCheck(names);
-        const auto diagnostics = analyze(module);
+        const auto diagnostics = check(module);
 
         for (const auto &name : names) {
             const auto checked = frontend->moduleResolver.getModule(name);
             const auto *source = frontend->getSourceModule(name);
 
             if (!checked || !source || !source->root || frontend->isDirty(name)) {
-                const auto message =
-                    diagnostics.empty() ? "semantic module is unavailable" : std::string(diagnostics[0].message);
+                const auto message = diagnostics.empty() ? "Module is unavailable for the semantic query."
+                                                         : std::string(diagnostics[0].message);
 
                 throw std::runtime_error(message);
             }
 
             if (checked->cancelled || options.cancellationToken->requested()) {
-                throw std::runtime_error("analysis interrupted");
+                throw std::runtime_error("Analysis interrupted.");
             }
 
             if (checked->timeout) {
-                throw std::runtime_error("semantic analysis timed out");
+                throw std::runtime_error("Semantic analysis timed out.");
             }
         }
 
         return names;
+    }
+
+    rust::Vec<NativeCompletion> Frontend::complete(
+        rust::Str module, std::uint32_t line, std::uint32_t column, std::optional<std::size_t> selected
+    ) {
+        rust::Vec<NativeCompletion> result;
+        PresentationBudget budget{options.cancellationToken};
+        std::size_t candidate_index = 0;
+
+        auto names = prepare(module);
+        std::sort(names.begin(), names.end());
+
+        for (const auto &name : names) {
+            const auto [checked, source] = checked_module(*frontend, name);
+            const auto text = semantic_text(host, name);
+
+            for (auto &value : query::completion(
+                     *frontend,
+                     host,
+                     {*checked, source, text},
+                     {line, column},
+                     budget,
+                     candidate_index,
+                     selected
+                 )) {
+                result.push_back(std::move(value));
+            }
+        }
+
+        budget.check();
+
+        return result;
     }
 
     std::unique_ptr<Frontend> create(const Context &host, bool retain_types) {

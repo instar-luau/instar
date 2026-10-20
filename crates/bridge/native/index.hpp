@@ -23,13 +23,15 @@ namespace instar::luau {
         Luau::Location location;
         Declaration declaration;
         OccurrenceRole role;
-        bool type_namespace = false;
+        bool is_type_namespace = false;
         BindingKind kind;
         std::string name;
-        bool editable = true;
+        bool is_editable = true;
     };
 
     struct Index {
+        Index(Luau::Frontend &frontend, const Luau::Module &module, const Luau::SourceModule &source);
+
         std::vector<Entry> entries;
         std::unordered_set<std::string> names;
         std::unordered_set<std::string> properties;
@@ -37,7 +39,7 @@ namespace instar::luau {
 
     Index index(Luau::Frontend &frontend, const Luau::Module &module, const Luau::SourceModule &source);
     const Entry *at(const Index &index, Luau::Position position);
-    bool same(const Declaration &left, const Declaration &right);
+    bool is_same_declaration(const Declaration &left, const Declaration &right);
     std::optional<Declaration> definition(Luau::TypeId type, unsigned depth = 0);
     Luau::TypeId local_type(const Luau::Module &module, Luau::AstLocal *local);
 

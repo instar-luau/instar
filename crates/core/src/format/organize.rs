@@ -76,7 +76,7 @@ fn organized(source: &str, configuration: &Prepared) -> Result<Vec<Edit>, Error>
         .windows(2)
         .any(|pair| pair[1].range.start < pair[0].range.end)
     {
-        return Err(Error::internal(0..0, "overlapping import edits"));
+        return Err(Error::internal(0..0, "Import edits overlap."));
     }
 
     let mut output = source.to_owned();
@@ -113,7 +113,7 @@ fn collect(
             .any(|pair| pair[1].start < pair[0].end)
             || run.start > 0 && ranges[run.start].start < ranges[run.start - 1].end
             || run.end < ranges.len() && ranges[run.end].start < boundary.end
-            || !statements::isolated(tree, entries, &run, &boundary)
+            || !statements::is_isolated(tree, entries, &run, &boundary)
         {
             continue;
         }
@@ -141,17 +141,17 @@ fn collect(
 
         for index in order {
             if let Some(previous) = previous {
-                let blank = index > run.start
+                let has_blank_line = index > run.start
                     && tree.source[ranges[index - 1].end..ranges[index].start].contains(&b'\n');
 
-                let grouped = configuration.settings().require.order == Order::Grouped
+                let is_grouped = configuration.settings().require.order == Order::Grouped
                     && configuration.settings().require.blank_lines == BlankLines::BetweenGroups
                     && configuration.group(&required(&requires, previous).path)
                         != configuration.group(&required(&requires, index).path);
 
                 replacement.push_str(ending);
 
-                if blank || grouped {
+                if has_blank_line || is_grouped {
                     replacement.push_str(ending);
                 }
             }
@@ -182,7 +182,7 @@ fn collect(
 fn required(requires: &[Option<Require>], index: usize) -> &Require {
     requires[index]
         .as_ref()
-        .expect("internal error: missing require in import run")
+        .expect("Internal error: missing `require` in import run.")
 }
 
 fn without_ending(source: &str) -> &str {

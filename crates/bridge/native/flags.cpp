@@ -49,7 +49,7 @@ namespace instar::luau {
                 return flag.integer;
             }
 
-            throw std::invalid_argument("invalid native flag kind");
+            throw std::invalid_argument("Invalid native flag kind.");
         }
 
         template <typename Type>
@@ -61,7 +61,7 @@ namespace instar::luau {
                 }
             }
 
-            throw std::invalid_argument("unregistered Luau flag or incorrect value type: " + name);
+            throw std::invalid_argument("Luau flag `" + name + "` is unregistered or has an incorrect value type.");
         }
 
         Values normalize(rust::Slice<const Flag> flags, const State &shared) {
@@ -71,7 +71,7 @@ namespace instar::luau {
                 const std::string name(flag.name);
 
                 if (!values.emplace(name, value(flag)).second) {
-                    throw std::invalid_argument("duplicate Luau flag: " + name);
+                    throw std::invalid_argument("Duplicate Luau flag `" + name + "`.");
                 }
             }
 
@@ -92,14 +92,14 @@ namespace instar::luau {
 
         void validate(const Values &values, const Values &scoped) {
             if (scoped.size() != values.size()) {
-                throw std::invalid_argument("module flags differ from the frontend flag settings");
+                throw std::invalid_argument("Module flags differ from the frontend flag settings.");
             }
 
             for (const auto &[name, setting] : scoped) {
                 const auto found = values.find(name);
 
                 if (found == values.end() || found->second != setting) {
-                    throw std::invalid_argument("module flags differ from the frontend flag settings: " + name);
+                    throw std::invalid_argument("Module flag `" + name + "` differs from the frontend flag settings.");
                 }
             }
         }
@@ -111,7 +111,7 @@ namespace instar::luau {
         values = normalize(flags, shared);
 
         if (shared.users != 0 && values != shared.active) {
-            throw std::invalid_argument("different Luau flag settings are already in use by another frontend");
+            throw std::invalid_argument("Different Luau flag settings are already in use by another frontend.");
         }
 
         if (shared.users == 0) {
@@ -144,24 +144,5 @@ namespace instar::luau {
 
     void Flags::require(rust::Slice<const Flag> flags) const {
         validate(values, normalize(flags, state()));
-    }
-
-    rust::Vec<bool>
-    selectors(rust::Slice<const Flag> settings, rust::Slice<const Flag> scoped, rust::Slice<const rust::Str> names) {
-        const State &shared = state();
-        const Values values = normalize(settings, shared);
-        validate(values, normalize(scoped, shared));
-
-        rust::Vec<bool> selected;
-        selected.reserve(names.size());
-
-        for (const rust::Str selector : names) {
-            const std::string name(selector);
-            const bool initial = registered(name, shared.booleans).second;
-            const auto found = values.find(name);
-            selected.push_back(found == values.end() ? initial : std::get<bool>(found->second));
-        }
-
-        return selected;
     }
 }

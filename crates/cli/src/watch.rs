@@ -16,7 +16,7 @@ use notify::{
     event::ModifyKind,
 };
 
-use super::{arguments::Options, interrupt};
+use super::{arguments::Options, execution, interrupt, output};
 
 pub(super) enum Change {
     Sources {
@@ -39,11 +39,10 @@ pub(super) struct Watcher {
     observed: BTreeMap<PathBuf, PathBuf>,
     pub(super) generators: Generators,
     debounce: Duration,
-    quiet: bool,
 }
 
 impl Watcher {
-    pub(super) fn new(root: &Path, options: &Options, quiet: bool) -> Result<Self> {
+    pub(super) fn new(root: &Path, options: &Options) -> Result<Self> {
         let mut directories = BTreeMap::from([(root.to_owned(), true)]);
 
         for input in &options.inputs {
@@ -59,7 +58,10 @@ impl Watcher {
 
             if let Some(directory) = directory(&path)? {
                 let canonical = directory.canonicalize().wrap_err_with(|| {
-                    format!("cannot resolve watch directory `{}`", directory.display())
+                    format!(
+                        "Could not resolve watch directory `{}`.",
+                        directory.display()
+                    )
                 })?;
 
                 directories.insert(canonical, true);
@@ -68,8 +70,8 @@ impl Watcher {
 
         let (sender, receiver) = mpsc::channel();
 
-        let mut subscription =
-            notify::recommended_watcher(sender).wrap_err("cannot start filesystem watcher")?;
+        let mut subscription = notify::recommended_watcher(sender)
+            .wrap_err("Could not start the filesystem watcher.")?;
 
         for (directory, recursive) in &directories {
             subscription
@@ -81,7 +83,7 @@ impl Watcher {
                         RecursiveMode::NonRecursive
                     },
                 )
-                .wrap_err_with(|| format!("cannot watch `{}`", directory.display()))?;
+                .wrap_err_with(|| format!("Could not watch `{}`.", directory.display()))?;
         }
 
         let roots = directories.keys().cloned().collect();
@@ -93,9 +95,8 @@ impl Watcher {
             roots,
             reload: BTreeMap::new(),
             observed: BTreeMap::new(),
-            generators: Generators::new(interrupt::requested),
+            generators: Generators::new(interrupt::requested, output::generator),
             debounce: Duration::from_millis(options.debounce),
-            quiet,
         };
 
         watcher.observe(configuration_files(root, &options.configuration), true)?;
@@ -113,8 +114,12 @@ impl Watcher {
     }
 
     pub(super) fn reset(&mut self) -> Result<()> {
-        let previous = mem::replace(&mut self.generators, Generators::new(interrupt::requested));
-        previous.shutdown()?;
+        let previous = mem::replace(
+            &mut self.generators,
+            Generators::new(interrupt::requested, output::generator),
+        );
+
+        execution::shutdown(&previous)?;
 
         Ok(())
     }
@@ -136,13 +141,16 @@ impl Watcher {
             };
 
             let directory = ancestor.canonicalize().wrap_err_with(|| {
-                format!("cannot resolve watch directory `{}`", ancestor.display())
+                format!(
+                    "Could not resolve watch directory `{}`.",
+                    ancestor.display()
+                )
             })?;
 
-            let target = directory.join(
-                path.strip_prefix(ancestor)
-                    .wrap_err("internal error: watched path is outside its ancestor")?,
-            );
+            let target =
+                directory.join(path.strip_prefix(ancestor).wrap_err(
+                    "Internal error: the watched path is outside its ancestor directory.",
+                )?);
 
             let recursive =
                 target.parent() != Some(directory.as_path()) || self.roots.contains(&directory);
@@ -181,7 +189,7 @@ impl Watcher {
                             RecursiveMode::NonRecursive
                         },
                     )
-                    .wrap_err_with(|| format!("cannot watch `{}`", directory.display()))?;
+                    .wrap_err_with(|| format!("Could not watch `{}`.", directory.display()))?;
 
                 self.directories.insert(directory, recursive);
             }
@@ -203,10 +211,10 @@ impl Watcher {
         let mut discovery = false;
 
         for event in events {
-            tracing::debug!(kind = ?event.kind, paths = ?event.paths, "processing filesystem event");
+            tracing::debug!(kind = ?event.kind, paths = ?event.paths, "Processing filesystem event");
 
             if event.need_rescan() || event.paths.is_empty() {
-                tracing::debug!("reloading after filesystem rescan request");
+                tracing::debug!("Reloading after a filesystem rescan request");
 
                 self.reset()?;
 
@@ -223,7 +231,7 @@ impl Watcher {
                         || (dependency.parent() == path.parent()
                             && canonical(dependency)?.as_ref() == Some(&path))
                     {
-                        tracing::debug!(path = %path.display(), "reloading for workspace dependency");
+                        tracing::debug!(path = %path.display(), "Reloading after a workspace dependency changed");
 
                         self.reset()?;
 
@@ -247,7 +255,7 @@ impl Watcher {
         }
 
         if generated {
-            tracing::debug!("reloading for generated sourcemaps");
+            tracing::debug!("Reloading after generated sourcemaps changed");
 
             return Ok(Change::Reload { started });
         }
@@ -257,18 +265,6 @@ impl Watcher {
             discovery,
             started,
         })
-    }
-
-    pub(super) fn ready(&self) {
-        if self.quiet {
-            return;
-        }
-
-        eprintln!(
-            "{} {}",
-            console::style("watching").for_stderr().cyan().bold(),
-            console::style("for changes").for_stderr().dim()
-        );
     }
 
     pub(super) fn wait(&mut self, recovery: bool) -> Result<(Vec<Event>, bool)> {
@@ -294,7 +290,7 @@ impl Watcher {
             };
 
             let event = match self.receiver.recv_timeout(timeout) {
-                Ok(event) => event.wrap_err("cannot observe filesystem changes")?,
+                Ok(event) => event.wrap_err("Could not observe filesystem changes.")?,
 
                 Err(RecvTimeoutError::Timeout) => {
                     if (generated && events.is_empty())
@@ -306,7 +302,7 @@ impl Watcher {
                     continue;
                 }
 
-                Err(error) => return Err(error).wrap_err("cannot receive filesystem changes"),
+                Err(error) => return Err(error).wrap_err("Could not receive filesystem changes."),
             };
 
             if self.relevant(&event, recovery)? {
@@ -342,8 +338,9 @@ impl Watcher {
             Err(error) if matches!(error.kind, WatchErrorKind::WatchNotFound) => {}
 
             Err(error) => {
-                return Err(error)
-                    .wrap_err_with(|| format!("cannot stop watching `{}`", directory.display()));
+                return Err(error).wrap_err_with(|| {
+                    format!("Could not stop watching `{}`.", directory.display())
+                });
             }
         }
 
@@ -410,7 +407,7 @@ fn directory(path: &Path) -> Result<Option<&Path>> {
 
             Err(error) => {
                 return Err(error)
-                    .wrap_err_with(|| format!("cannot inspect `{}`", ancestor.display()));
+                    .wrap_err_with(|| format!("Could not inspect `{}`.", ancestor.display()));
             }
         }
     }
@@ -426,9 +423,8 @@ fn canonical(path: &Path) -> Result<Option<PathBuf>> {
             Ok(None)
         }
 
-        Err(error) => {
-            Err(error).wrap_err_with(|| format!("cannot resolve watched path `{}`", path.display()))
-        }
+        Err(error) => Err(error)
+            .wrap_err_with(|| format!("Could not resolve watched path `{}`.", path.display())),
     }
 }
 

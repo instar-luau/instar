@@ -41,14 +41,14 @@ impl Provider for Override<'_> {
         let (field, input) = self
             .0
             .split_once('=')
-            .ok_or_else(|| Error::from("expected FIELD=JSON"))?;
+            .ok_or_else(|| Error::from("Expected an override in `FIELD=JSON` form."))?;
 
         if field
             .split('.')
             .any(|part| part.is_empty() || part.trim() != part)
         {
             return Err(Error::from(
-                "override fields must have nonempty dotted components",
+                "Override field components must be nonempty and have no leading or trailing whitespace.",
             ));
         }
 

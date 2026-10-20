@@ -8,7 +8,7 @@ use eyre::{Result, WrapErr as _, bail, eyre};
 use instar_core::workspace;
 use toml_edit::{Array, DocumentMut, InlineTable, Item, Table, TableLike, Value};
 
-use super::{interrupt, report};
+use super::{interrupt, output};
 
 const PATTERN: &str = "**/instar.toml";
 
@@ -30,11 +30,11 @@ impl Configuration {
 
         if self.original.as_deref() == Some(self.proposed.as_str()) {
             let current = fs::read_to_string(&self.path)
-                .wrap_err_with(|| format!("cannot read {}", self.path.display()))?;
+                .wrap_err_with(|| format!("Could not read `{}`.", self.path.display()))?;
 
             if current != self.proposed {
                 bail!(
-                    "TOML tool configuration `{}` changed during generation",
+                    "TOML tool configuration `{}` changed during generation.",
                     self.path.display()
                 );
             }
@@ -44,30 +44,29 @@ impl Configuration {
 
         if let Some(original) = &self.original {
             workspace::replace(&self.path, original, &self.proposed)
-                .wrap_err_with(|| format!("cannot update {}", self.path.display()))?;
+                .wrap_err_with(|| format!("Could not update `{}`.", self.path.display()))?;
         } else {
-            let directory = self
-                .path
-                .parent()
-                .ok_or_else(|| eyre!("TOML tool configuration has no parent directory"))?;
+            let directory = self.path.parent().ok_or_else(|| {
+                eyre!("The TOML tool configuration path has no parent directory.")
+            })?;
 
             let mut staged = tempfile::NamedTempFile::new_in(directory)
-                .wrap_err("cannot stage TOML tool configuration")?;
+                .wrap_err("Could not stage the TOML tool configuration.")?;
 
             staged
                 .write_all(self.proposed.as_bytes())
-                .wrap_err("cannot write TOML tool configuration")?;
+                .wrap_err("Could not write the TOML tool configuration.")?;
 
             staged
                 .as_file()
                 .sync_all()
-                .wrap_err("cannot flush TOML tool configuration")?;
+                .wrap_err("Could not flush the TOML tool configuration to disk.")?;
 
             interrupt::check()?;
 
             staged
                 .persist_noclobber(&self.path)
-                .wrap_err_with(|| format!("cannot create {}", self.path.display()))?;
+                .wrap_err_with(|| format!("Could not create `{}`.", self.path.display()))?;
         }
 
         Ok(())
@@ -105,23 +104,24 @@ pub(super) fn prepare(
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
 
             Err(error) => {
-                return Err(error).wrap_err_with(|| format!("cannot read {}", candidate.display()));
+                return Err(error)
+                    .wrap_err_with(|| format!("Could not read `{}`.", candidate.display()));
             }
         };
 
         if !metadata.is_file() {
             bail!(
-                "TOML tool configuration `{}` must be a regular file",
+                "TOML tool configuration `{}` must be a regular file.",
                 candidate.display()
             );
         }
 
         let contents = fs::read_to_string(&candidate)
-            .wrap_err_with(|| format!("cannot read {}", candidate.display()))?;
+            .wrap_err_with(|| format!("Could not read `{}`.", candidate.display()))?;
 
         let parsed = contents
             .parse::<DocumentMut>()
-            .wrap_err_with(|| format!("cannot parse {}", candidate.display()))?;
+            .wrap_err_with(|| format!("Could not parse `{}`.", candidate.display()))?;
 
         if *name == "pyproject.toml"
             && parsed
@@ -134,7 +134,7 @@ pub(super) fn prepare(
 
         if metadata.permissions().readonly() {
             bail!(
-                "TOML tool configuration `{}` is read-only",
+                "TOML tool configuration `{}` is read-only.",
                 candidate.display()
             );
         }
@@ -143,10 +143,10 @@ pub(super) fn prepare(
             .read(true)
             .write(true)
             .open(&candidate)
-            .wrap_err_with(|| format!("cannot update {}", candidate.display()))?
+            .wrap_err_with(|| format!("Could not update `{}`.", candidate.display()))?
             .try_lock()
             .map_err(io::Error::other)
-            .wrap_err_with(|| format!("cannot lock {}", candidate.display()))?;
+            .wrap_err_with(|| format!("Could not lock `{}`.", candidate.display()))?;
 
         path = candidate;
         original = Some(contents);
@@ -156,11 +156,11 @@ pub(super) fn prepare(
 
     let directory = normalize(directory);
     let schema = normalize(schema);
-    let address = report::relative(&schema, &directory);
+    let address = output::relative(&schema, &directory);
 
     let address = address
         .to_str()
-        .ok_or_else(|| eyre!("generated schema path must be valid UTF-8"))?
+        .ok_or_else(|| eyre!("The generated schema path must be valid UTF-8."))?
         .replace(MAIN_SEPARATOR, "/");
 
     let configuration: &mut dyn TableLike = if path.ends_with("pyproject.toml") {
@@ -168,7 +168,7 @@ pub(super) fn prepare(
             .get_mut("tool")
             .and_then(|tool| tool.get_mut("tombi"))
             .and_then(Item::as_table_like_mut)
-            .ok_or_else(|| eyre!("cannot associate schema: tool.tombi must be a table"))?
+            .ok_or_else(|| eyre!("Could not associate the schema: `tool.tombi` must be a table."))?
     } else {
         document.as_table_mut()
     };
@@ -178,7 +178,7 @@ pub(super) fn prepare(
         .or_insert_with(|| toml_edit::value(Array::new()));
 
     configure(entries, association, &address)
-        .wrap_err_with(|| format!("cannot update {field} in {}", path.display()))?;
+        .wrap_err_with(|| format!("Could not update `{field}` in `{}`.", path.display()))?;
 
     let proposed = document.to_string();
 
@@ -234,7 +234,7 @@ fn configure(entries: &mut Item, association: Association, address: &str) -> Res
 
         Item::Value(Value::Array(entries)) => {
             if !entries.iter().all(Value::is_inline_table) {
-                bail!("expected an array of tables");
+                bail!("Expected an array of tables.");
             }
 
             let selected = select(
@@ -253,7 +253,7 @@ fn configure(entries: &mut Item, association: Association, address: &str) -> Res
             configure_entry(
                 entry
                     .as_inline_table_mut()
-                    .ok_or_else(|| eyre!("expected an inline table"))?,
+                    .ok_or_else(|| eyre!("Expected an inline table."))?,
                 association,
                 address,
             )?;
@@ -264,7 +264,7 @@ fn configure(entries: &mut Item, association: Association, address: &str) -> Res
             }
         }
 
-        _ => bail!("expected an array of tables"),
+        _ => bail!("Expected an array of tables."),
     }
 
     Ok(())
@@ -307,7 +307,7 @@ fn configure_entry(
             .entry("schema")
             .or_insert_with(|| toml_edit::value(InlineTable::new()))
             .as_table_like_mut()
-            .ok_or_else(|| eyre!("schema must be a table"))?,
+            .ok_or_else(|| eyre!("`schema` must be a table."))?,
     };
 
     let path = schema.entry("path").or_insert(Item::None);

@@ -35,7 +35,7 @@ pub fn format(source: &str, configuration: &Prepared) -> Result<String, Error> {
 
 pub(crate) fn parse(source: &[u8]) -> Result<Tree<'_>, Error> {
     syntax::parse(source, |range, message| {
-        Error::input(range, message.unwrap_or("incomplete syntax"))
+        Error::input(range, message.unwrap_or("Syntax is incomplete."))
     })
 }
 
@@ -66,7 +66,7 @@ pub(crate) fn render(
     let bytes = layout::emit(tree, configuration.settings(), &plan)?;
 
     let output = String::from_utf8(bytes).map_err(|error| {
-        Error::internal(0..0, format!("formatter produced invalid UTF-8: {error}"))
+        Error::internal(0..0, format!("Formatter produced invalid UTF-8. {error}"))
     })?;
 
     validate(tree, &output, configuration, imports, directives)?;
@@ -82,13 +82,13 @@ pub(crate) fn validate(
     directives: &Directives,
 ) -> Result<(), Error> {
     let proposed = parse(output.as_bytes()).map_err(|error| {
-        Error::internal(0..0, format!("formatter produced invalid syntax: {error}"))
+        Error::internal(0..0, format!("Formatter produced invalid syntax. {error}"))
     })?;
 
     let proposed_directives = directives::collect(&proposed).map_err(|error| {
         Error::internal(
             0..0,
-            format!("formatter produced invalid directives: {error}"),
+            format!("Formatter produced invalid directives. {error}"),
         )
     })?;
 

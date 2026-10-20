@@ -42,7 +42,7 @@ pub(super) fn suppress(
     statements.sort_by_key(|span| (span.start, span.end));
     let mut directives = Vec::new();
     let mut region: Option<Directive<'_>> = None;
-    let mut leading = true;
+    let mut is_leading = true;
 
     for token in &tree.tokens {
         if matches!(token.kind, TokenKind::Whitespace | TokenKind::EndOfFile) {
@@ -50,7 +50,7 @@ pub(super) fn suppress(
         }
 
         if !matches!(token.kind, TokenKind::Comment | TokenKind::BlockComment) {
-            leading = false;
+            is_leading = false;
             continue;
         }
 
@@ -71,25 +71,25 @@ pub(super) fn suppress(
             statements
                 .get(statements.partition_point(|span| span.start < token.span.end))
                 .map(|span| span.start..span.end)
-                .ok_or_else(|| invalid("lint directive has no following statement"))
+                .ok_or_else(|| invalid("This lint directive must be followed by a statement."))
         };
 
-        let (range, names, opening) = if let Some(command) = body.strip_prefix("instar-lint") {
+        let (range, names, is_opening) = if let Some(command) = body.strip_prefix("instar-lint") {
             let words: Vec<_> = command.split_whitespace().collect();
 
             match words.as_slice() {
                 ["off", rules @ ..] => {
                     if region.is_some() {
-                        return Err(invalid("nested lint suppression region"));
+                        return Err(invalid("An `instar-lint off` region is already open."));
                     }
 
                     (location.clone(), rules.join(" "), true)
                 }
 
                 ["on"] => {
-                    let mut directive = region
-                        .take()
-                        .ok_or_else(|| invalid("unmatched lint suppression region end"))?;
+                    let mut directive = region.take().ok_or_else(|| {
+                        invalid("`instar-lint on` has no matching `instar-lint off`.")
+                    })?;
 
                     directive.range.end = location.end;
                     directives.push(directive);
@@ -98,11 +98,11 @@ pub(super) fn suppress(
 
                 ["ignore", "all", rules @ ..] => (0..source.len(), rules.join(" "), false),
                 ["ignore", rules @ ..] => (following()?, rules.join(" "), false),
-                _ => return Err(invalid("unknown lint suppression directive")),
+                _ => return Err(invalid("Lint suppression directive is not recognized.")),
             }
         } else if let Some(names) = body.strip_prefix("instar-ignore") {
             (following()?, names.to_owned(), false)
-        } else if let Some(names) = body.strip_prefix("!nolint").filter(|_| leading) {
+        } else if let Some(names) = body.strip_prefix("!nolint").filter(|_| is_leading) {
             (0..source.len(), names.to_owned(), false)
         } else {
             continue;
@@ -117,14 +117,14 @@ pub(super) fn suppress(
             let definition = RULES
                 .iter()
                 .find(|rule| rule.name == name)
-                .ok_or_else(|| invalid(&format!("unknown lint rule `{name}`")))?;
+                .ok_or_else(|| invalid(&format!("Lint rule `{name}` is not recognized.")))?;
 
             rules.push(definition.name.as_str());
         }
 
         let directive = Directive { range, rules };
 
-        if opening {
+        if is_opening {
             region = Some(directive);
         } else {
             directives.push(directive);
@@ -134,7 +134,7 @@ pub(super) fn suppress(
     if let Some(region) = region {
         return Err(Error {
             range: region.range,
-            message: "unmatched lint suppression region start".to_owned(),
+            message: "This `instar-lint off` region has no matching `instar-lint on`.".to_owned(),
         });
     }
 

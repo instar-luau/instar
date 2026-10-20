@@ -39,7 +39,7 @@ pub fn analyze(source: &str) -> Analysis {
         selections: iter::once(0..source.len()).collect(),
         identities: Vec::new(),
         scopes: Vec::new(),
-        complete: tree.diagnostics.is_empty()
+        is_complete: tree.diagnostics.is_empty()
             && !tree
                 .nodes
                 .iter()
@@ -84,8 +84,8 @@ pub fn analyze(source: &str) -> Analysis {
             SemanticToken {
                 range,
                 kind,
-                declaration: false,
-                readonly: false,
+                is_declaration: false,
+                is_read_only: false,
                 access: Access::None,
             },
         );
@@ -111,8 +111,8 @@ pub fn analyze(source: &str) -> Analysis {
             kind,
             declaration: range(&tree, local.declaration, prefix),
             occurrences: Vec::new(),
-            renameable: text(&tree, local.declaration) == local.name,
-            exported: false,
+            can_rename: text(&tree, local.declaration) == local.name,
+            is_exported: false,
         });
 
         result.scopes.push(local.scope);
@@ -128,8 +128,8 @@ pub fn analyze(source: &str) -> Analysis {
             },
             declaration: range(&tree, binding.declaration, prefix),
             occurrences: Vec::new(),
-            renameable: true,
-            exported: bindings.exported(&tree, binding.statement)
+            can_rename: true,
+            is_exported: bindings.is_exported(&tree, binding.statement)
                 && (matches!(tree.node(binding.statement).kind, NodeKind::TypeAlias { .. })
                     || matches!(tree.node(binding.statement).kind, NodeKind::Function { prefix: Some(prefix), .. }
                         if tree.token(prefix).bytes(tree.source) == b"type")),
@@ -156,22 +156,23 @@ pub fn analyze(source: &str) -> Analysis {
 
             if let Some(target) = target {
                 let binding = &mut result.bindings[target];
-                let declaration = binding.declaration == range(&tree, identifier, prefix);
+                let is_declaration = binding.declaration == range(&tree, identifier, prefix);
                 let access = bindings.accesses[index];
+
+                let access = Access::new(
+                    !is_declaration && (access & 1 != 0 || alias.is_some()),
+                    is_declaration || access & 2 != 0,
+                );
 
                 binding.occurrences.push(Occurrence {
                     range: range(&tree, identifier, prefix),
-                    read: !declaration && (access & 1 != 0 || alias.is_some()),
-                    write: declaration || access & 2 != 0,
+                    access,
                 });
 
                 if let Some(token) = tokens.get_mut(&node.span.start) {
-                    token.declaration = declaration;
+                    token.is_declaration = is_declaration;
 
-                    token.access = Access::new(
-                        !declaration && (access & 1 != 0 || alias.is_some()),
-                        declaration || access & 2 != 0,
-                    );
+                    token.access = access;
 
                     token.kind = match binding.kind {
                         BindingKind::Parameter => TokenKind::Parameter,
@@ -181,7 +182,7 @@ pub fn analyze(source: &str) -> Analysis {
                         BindingKind::Local | BindingKind::Loop => {
                             let local = &bindings.locals[target];
 
-                            token.readonly = matches!(
+                            token.is_read_only = matches!(
                                 tree.node(local.statement).kind,
                                 NodeKind::Constant { .. }
                             );
@@ -210,7 +211,7 @@ pub fn analyze(source: &str) -> Analysis {
                 Some(Identity::Value(local))
             } else if let Some(alias) = alias {
                 Some(Identity::Type(alias))
-            } else if bindings.type_names[index] {
+            } else if bindings.is_type_name[index] {
                 Some(Identity::External(text(&tree, identifier)))
             } else if bindings.accesses[index] != 0 {
                 Some(Identity::Global(text(&tree, identifier)))
@@ -223,7 +224,7 @@ pub fn analyze(source: &str) -> Analysis {
             }
         }
 
-        if foldable(&node.kind) && multiline(&tree, node.span.start..node.span.end) {
+        if is_foldable(&node.kind) && is_multiline(&tree, node.span.start..node.span.end) {
             result.folds.push(Fold {
                 range: range(&tree, identifier, prefix),
                 kind: FoldKind::Region,
@@ -231,7 +232,7 @@ pub fn analyze(source: &str) -> Analysis {
         }
 
         if let NodeKind::Call { callee, arguments } = node.kind
-            && bindings.global(&tree, callee, "require")
+            && bindings.is_global(&tree, callee, "require")
             && let NodeKind::Arguments { values, .. } = &tree.node(arguments).kind
             && let [argument] = tree.list(values)
         {
@@ -241,7 +242,7 @@ pub fn analyze(source: &str) -> Analysis {
                 literal::decode(tree.text(argument))
                     .and_then(|bytes| String::from_utf8(bytes).ok())
                     .map(ImportExpression::Path)
-            } else if instance(&tree, &bindings, argument) {
+            } else if is_instance(&tree, &bindings, argument) {
                 Some(ImportExpression::Instance(text(&tree, argument)))
             } else {
                 None
@@ -437,7 +438,7 @@ fn classify(tree: &Tree<'_>, node: NodeIndex, tokens: &mut BTreeMap<usize, Seman
                         TokenKind::Function
                     };
 
-                    token.declaration = true;
+                    token.is_declaration = true;
                 }
             }
         }
@@ -449,7 +450,7 @@ fn classify(tree: &Tree<'_>, node: NodeIndex, tokens: &mut BTreeMap<usize, Seman
             ..
         } => {
             if let Some(token) = tokens.get_mut(&tree.node(*name).span.start) {
-                token.declaration = true;
+                token.is_declaration = true;
             }
 
             for keyword in [keyword, open].into_iter().flatten() {
@@ -621,7 +622,7 @@ fn outline(tree: &Tree<'_>, node: NodeIndex, prefix: usize) -> Vec<Symbol> {
     symbols
 }
 
-fn foldable(kind: &NodeKind) -> bool {
+fn is_foldable(kind: &NodeKind) -> bool {
     matches!(
         kind,
         NodeKind::Function { .. }
@@ -654,14 +655,14 @@ fn import_folds(tree: &Tree<'_>, imports: &[Import], prefix: usize, folds: &mut 
         for statement in tree.list(statements) {
             let span = tree.node(statement.node).span;
 
-            let imported = matches!(
+            let is_imported = matches!(
                 tree.node(statement.node).kind,
                 NodeKind::Local { .. } | NodeKind::Constant { .. }
             ) && imports.iter().any(|import| {
                 span.start + prefix <= import.range.start && span.end + prefix >= import.range.end
             });
 
-            if imported
+            if is_imported
                 && let Some(previous) = &mut group
                 && tree
                     .source
@@ -682,8 +683,8 @@ fn import_folds(tree: &Tree<'_>, imports: &[Import], prefix: usize, folds: &mut 
                 });
             }
 
-            group = imported.then_some(span.start..span.end);
-            count = usize::from(imported);
+            group = is_imported.then_some(span.start..span.end);
+            count = usize::from(is_imported);
         }
 
         if count > 1
@@ -725,7 +726,7 @@ fn comments(tree: &Tree<'_>, prefix: usize, folds: &mut Vec<Fold>) {
             if matches!(
                 token.kind,
                 LexicalKind::BlockComment | LexicalKind::MalformedComment
-            ) && multiline(tree, token.span.start..token.span.end)
+            ) && is_multiline(tree, token.span.start..token.span.end)
             {
                 folds.push(Fold {
                     range: token.span.start + prefix..token.span.end + prefix,
@@ -745,7 +746,7 @@ fn finish_comment(
     folds: &mut Vec<Fold>,
 ) {
     if let Some(group) = group
-        && multiline(tree, group.clone())
+        && is_multiline(tree, group.clone())
     {
         folds.push(Fold {
             range: group.start + prefix..group.end + prefix,
@@ -814,18 +815,18 @@ fn documentation(source: &str, range: &Range<usize>, links: &mut Vec<Link>) {
     }
 }
 
-fn instance(tree: &Tree<'_>, bindings: &Bindings, node: NodeIndex) -> bool {
+fn is_instance(tree: &Tree<'_>, bindings: &Bindings, node: NodeIndex) -> bool {
     let node = bindings.value(tree, node);
 
     match tree.node(node).kind {
         NodeKind::Name { .. } => {
-            bindings.global(tree, node, "script") || bindings.global(tree, node, "game")
+            bindings.is_global(tree, node, "script") || bindings.is_global(tree, node, "game")
         }
 
-        NodeKind::Field { receiver, .. } => instance(tree, bindings, receiver),
+        NodeKind::Field { receiver, .. } => is_instance(tree, bindings, receiver),
 
         NodeKind::Index { receiver, key, .. } => {
-            instance(tree, bindings, receiver)
+            is_instance(tree, bindings, receiver)
                 && matches!(tree.node(key).kind, NodeKind::String { .. })
                 && literal::decode(tree.text(key)).is_some()
         }
@@ -836,7 +837,7 @@ fn instance(tree: &Tree<'_>, bindings: &Bindings, node: NodeIndex) -> bool {
             arguments,
             ..
         } => {
-            instance(tree, bindings, receiver)
+            is_instance(tree, bindings, receiver)
                 && matches!(
                     tree.text(method),
                     b"GetService" | b"WaitForChild" | b"FindFirstChild"
@@ -849,7 +850,7 @@ fn instance(tree: &Tree<'_>, bindings: &Bindings, node: NodeIndex) -> bool {
     }
 }
 
-fn multiline(tree: &Tree<'_>, range: Range<usize>) -> bool {
+fn is_multiline(tree: &Tree<'_>, range: Range<usize>) -> bool {
     tree.source
         .get(range)
         .is_some_and(|bytes| bytes.contains(&b'\n'))

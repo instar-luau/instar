@@ -21,21 +21,21 @@ impl Workspace {
         &self,
         module: &str,
         target: &str,
-        instance: bool,
+        is_instance: bool,
     ) -> Result<Option<String>, Error> {
         let module = identity(&self.root.join(module))?;
         let target = identity(&self.root.join(target))?;
 
         if module == target
-            || !paths::source(&module)
-            || !paths::source(&target)
+            || !paths::is_source(&module)
+            || !paths::is_source(&target)
             || paths::metadata(&module)?.is_some_and(|metadata| !metadata.is_file())
             || paths::metadata(&target)?.is_some_and(|metadata| !metadata.is_file())
         {
             return Ok(None);
         }
 
-        if instance {
+        if is_instance {
             return expression(self, &module, &target);
         }
 
@@ -77,7 +77,7 @@ impl Workspace {
         let target = paths::text(&target)?;
         let module = paths::text(&module)?;
 
-        let validate = (paths::metadata(Path::new(&target))?.is_some()
+        let should_validate = (paths::metadata(Path::new(&target))?.is_some()
             || self.sources.borrow().contains_key(&target))
             && paths::metadata(parent)?.is_some_and(|metadata| metadata.is_dir());
 
@@ -87,7 +87,7 @@ impl Workspace {
             .sort_by(|left, right| left.len().cmp(&right.len()).then_with(|| left.cmp(right)));
 
         for candidate in candidates {
-            if !validate
+            if !should_validate
                 || matches!(resolve(self, &module, &candidate)?, Navigation::Found(found) if found == target)
             {
                 return Ok(Some(quoted(&candidate)));
@@ -124,7 +124,7 @@ fn identity(path: &Path) -> Result<PathBuf, Error> {
         let (Some(parent), Some(name)) = (ancestor.parent(), ancestor.file_name()) else {
             return Err(Error::Path {
                 path: path.to_owned(),
-                reason: "expected an absolute source path",
+                reason: "Expected an absolute source path.",
             });
         };
 
@@ -275,18 +275,18 @@ fn expression(
     for child in children.into_iter().rev() {
         let instance = &instances[child];
 
-        if !unique(&instances, instance) {
+        if !is_unique(&instances, instance) {
             return Ok(None);
         }
 
         write!(expression, ":WaitForChild({})", quoted(&instance.name))
-            .expect("internal error: writing to a string failed");
+            .expect("Internal error: writing to a string failed.");
     }
 
     Ok(Some(expression))
 }
 
-fn unique(instances: &[Instance], target: &Instance) -> bool {
+fn is_unique(instances: &[Instance], target: &Instance) -> bool {
     instances
         .iter()
         .filter(|instance| instance.parent == target.parent && instance.name == target.name)
@@ -304,7 +304,7 @@ fn quoted(text: &str) -> String {
 
             character if character.is_ascii_control() => {
                 write!(quoted, "\\{:03}", u32::from(character))
-                    .expect("internal error: writing to a string failed");
+                    .expect("Internal error: writing to a string failed.");
             }
 
             character => quoted.push(character),

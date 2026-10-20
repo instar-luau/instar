@@ -40,10 +40,10 @@ pub(super) fn change(project: &mut Project, parameters: DidChangeTextDocumentPar
         .documents
         .get(&module)
         .cloned()
-        .ok_or_else(|| Error::invalid_params("document is not open"))?;
+        .ok_or_else(|| Error::invalid_params("Document is not open."))?;
 
     if previous.version.is_none() {
-        return Err(Error::invalid_params("document is not open"));
+        return Err(Error::invalid_params("Document is not open."));
     }
 
     let revision = project.advance()?;

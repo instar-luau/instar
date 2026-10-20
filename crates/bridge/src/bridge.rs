@@ -26,6 +26,11 @@ pub(crate) mod bindings {
         integer: i32,
     }
 
+    struct DeclarationFlags<'flags> {
+        settings: &'flags [Flag],
+        scoped: &'flags [Flag],
+    }
+
     struct Definition {
         name: String,
 
@@ -37,14 +42,14 @@ pub(crate) mod bindings {
 
     struct Property {
         name: String,
-        read: bool,
-        write: bool,
+        can_read: bool,
+        can_write: bool,
     }
 
     struct Class {
         name: String,
-        service: bool,
-        creatable: bool,
+        is_service: bool,
+        is_creatable: bool,
         properties: Vec<Property>,
     }
 
@@ -133,22 +138,49 @@ pub(crate) mod bindings {
         range: Range,
     }
 
-    /// Owned semantic hover information.
-    #[derive(Clone, Debug, Eq, PartialEq)]
-    pub struct Hover {
-        /// Hovered source range.
+    /// The selected hover subject's declaration category.
+    #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+    pub enum HoverKind {
+        /// A local binding or reference.
+        Local,
+
+        /// A global binding reference.
+        Global,
+
+        /// A type alias declaration.
+        Alias,
+
+        /// A property or named annotation parameter.
+        Field,
+
+        /// An individual type component or unnamed expression.
+        Type,
+
+        /// A locally declared function or reference to it.
+        LocalFunction,
+
+        /// A global function binding.
+        Function,
+
+        /// A function parameter or reference to it.
+        Parameter,
+
+        /// A loop variable or reference to it.
+        Loop,
+
+        /// A constant binding or reference to it.
+        Constant,
+
+        /// A constant function declaration or reference to it.
+        ConstantFunction,
+    }
+
+    struct NativeHover {
         location: SourceLocation,
-
-        /// Identifier, when available.
-        symbol: String,
-
-        /// Inferred Luau type.
-        type_name: String,
-
-        /// Native documentation catalog symbol, empty when unavailable.
+        symbol: Vec<u8>,
+        kind: HoverKind,
+        snapshot: NativeSnapshot,
         documentation_symbol: String,
-
-        /// Documentation text, empty when unavailable.
         documentation: String,
     }
 
@@ -183,85 +215,38 @@ pub(crate) mod bindings {
         HotComment,
     }
 
-    /// An owned native completion candidate.
-    #[derive(Clone, Debug, Eq, PartialEq)]
-    pub struct Completion {
-        /// Displayed candidate name.
+    struct NativeCompletion {
         label: String,
-
-        /// Candidate category.
         kind: CompletionKind,
-
-        /// Whether the followed native type is a function or an overload intersection.
         is_function: bool,
-
-        /// Inferred candidate type, empty when unavailable.
-        type_name: String,
-
-        /// Native documentation catalog symbol, empty when unavailable.
+        snapshots: Vec<NativeSnapshot>,
         documentation_symbol: String,
-
-        /// Documentation text, empty when unavailable.
         documentation: String,
-
-        /// Exact insertion text.
         insert_text: String,
-
-        /// Whether insertion text uses snippet placeholders.
-        snippet: bool,
-
-        /// Source text replaced by insertion.
+        is_snippet: bool,
         replacement: SourceLocation,
-
-        /// Whether the preceding dot must become a colon.
         replace_dot: bool,
-
-        /// Dot range when replacement is required.
         operation: Range,
-
-        /// Whether the candidate is deprecated.
-        deprecated: bool,
+        is_deprecated: bool,
     }
 
-    /// An owned function parameter.
-    #[derive(Clone, Debug, Eq, PartialEq)]
-    pub struct Parameter {
-        /// Argument name, empty when unavailable.
+    struct NativeParameter {
         name: String,
-
-        /// Inferred argument type.
-        type_name: String,
-
-        /// Documentation text, empty when unavailable.
+        subject: usize,
+        is_pack: bool,
+        source_index: u32,
         documentation: String,
-
-        /// Whether this parameter represents a variadic tail.
-        variadic: bool,
+        is_variadic: bool,
     }
 
-    /// An owned call signature.
-    #[derive(Clone, Debug, Eq, PartialEq)]
-    pub struct Signature {
-        /// Native module identity of the call.
+    struct NativeSignature {
         identity: String,
-
-        /// Displayable function signature.
-        label: String,
-
-        /// Native documentation catalog symbol, empty when unavailable.
+        snapshot: NativeSnapshot,
         documentation_symbol: String,
-
-        /// Documentation text, empty when unavailable.
         documentation: String,
-
-        /// Function parameters, excluding implicit method self.
-        parameters: Vec<Parameter>,
-
-        /// Zero-based argument containing the cursor.
+        parameters: Vec<NativeParameter>,
         active_parameter: u32,
-
-        /// Whether native overload resolution selected this signature.
-        selected: bool,
+        is_selected: bool,
     }
 
     /// Semantic occurrence role.
@@ -312,20 +297,194 @@ pub(crate) mod bindings {
         Return,
     }
 
-    /// An owned inferred inlay hint.
+    /// A direct semantic inlay selector.
     #[derive(Clone, Debug, Eq, PartialEq)]
-    pub struct Hint {
-        /// Zero-width insertion location.
-        location: SourceLocation,
+    pub struct HintSelector {
+        /// Exact native module identity.
+        identity: String,
 
-        /// Displayable inferred information.
-        label: String,
+        /// Zero-width native insertion position.
+        position: Position,
 
-        /// Hint category.
+        /// Selected subject category.
         kind: HintKind,
+    }
 
-        /// Whether the source already makes this information explicit.
-        obvious: bool,
+    struct NativeHint {
+        location: SourceLocation,
+        name: String,
+        snapshot: NativeSnapshot,
+        kind: HintKind,
+        is_obvious: bool,
+        documentation_symbol: String,
+        documentation: String,
+        has_parameter_index: bool,
+        parameter_index: u32,
+    }
+
+    #[repr(u8)]
+    enum NativeTypeKind {
+        Primitive = 0,
+        Singleton = 1,
+        Named = 2,
+        Generic = 3,
+        Function = 4,
+        Table = 5,
+        Union = 6,
+        Intersection = 7,
+        Metatable = 8,
+        Negation = 9,
+        Application = 10,
+        Reference = 11,
+        Unresolved = 12,
+        Omitted = 13,
+    }
+
+    #[repr(u8)]
+    enum NativePackKind {
+        Sequence = 0,
+        Variadic = 1,
+        Generic = 2,
+        Application = 3,
+        Reference = 4,
+        Unresolved = 5,
+        Omitted = 6,
+    }
+
+    #[repr(u8)]
+    enum NativePrimitiveState {
+        Nil = 0,
+        Boolean = 1,
+        Number = 2,
+        Integer = 3,
+        String = 4,
+        Thread = 5,
+        Function = 6,
+        Table = 7,
+        Buffer = 8,
+        Any = 9,
+        Unknown = 10,
+        Never = 11,
+        Invalid = 255,
+    }
+
+    #[repr(u8)]
+    enum NativeSingletonState {
+        Boolean = 0,
+        String = 1,
+    }
+
+    #[repr(u8)]
+    enum NativeProvenance {
+        Alias = 0,
+        External = 1,
+        Synthetic = 2,
+        Unverified = 3,
+    }
+
+    #[repr(u8)]
+    enum NativeUnresolvedState {
+        Free = 0,
+        Blocked = 1,
+        Lazy = 2,
+        Error = 3,
+        InternalRefinement = 4,
+    }
+
+    #[repr(u8)]
+    enum NativeTableState {
+        Sealed = 0,
+        Unsealed = 1,
+        Free = 2,
+        Generic = 3,
+        Exact = 4,
+        Invalid = 255,
+    }
+
+    #[repr(u8)]
+    enum NativeApplicationState {
+        Pending = 0,
+        Unreduced = 1,
+    }
+
+    #[derive(Copy, Clone)]
+    struct NativeIndex {
+        has_value: bool,
+        index: usize,
+    }
+
+    struct NativeApplication {
+        name: String,
+        qualifier: Text,
+        type_arguments: Vec<usize>,
+        pack_arguments: Vec<usize>,
+        state: NativeApplicationState,
+    }
+
+    struct NativeFunction {
+        generics: Vec<usize>,
+        generic_packs: Vec<usize>,
+        arguments: usize,
+        returns: usize,
+        argument_names: Vec<Text>,
+        is_checked: bool,
+    }
+
+    struct NativeProperty {
+        name: Vec<u8>,
+        read: NativeIndex,
+        write: NativeIndex,
+        is_shared: bool,
+    }
+
+    struct NativeIndexer {
+        key: usize,
+        value: usize,
+        is_read_only: bool,
+    }
+
+    struct NativeTable {
+        properties: Vec<NativeProperty>,
+        indexers: Vec<NativeIndexer>,
+        state: NativeTableState,
+    }
+
+    struct NativeType {
+        kind: NativeTypeKind,
+        state: u8,
+        name: String,
+        has_explicit_name: bool,
+        qualifier: Text,
+        identity: usize,
+        bytes: Vec<u8>,
+        boolean: bool,
+        types: Vec<usize>,
+        packs: Vec<usize>,
+        expansion: NativeIndex,
+        functions: Vec<NativeFunction>,
+        tables: Vec<NativeTable>,
+        applications: Vec<NativeApplication>,
+    }
+
+    struct NativePack {
+        kind: NativePackKind,
+        state: u8,
+        name: String,
+        has_explicit_name: bool,
+        identity: usize,
+        types: Vec<usize>,
+        packs: Vec<usize>,
+        tail: NativeIndex,
+        is_hidden: bool,
+        applications: Vec<NativeApplication>,
+    }
+
+    struct NativeSnapshot {
+        types: Vec<NativeType>,
+        packs: Vec<NativePack>,
+        root: usize,
+        is_root_pack: bool,
+        is_expanded: bool,
     }
 
     /// An authoritatively resolved native require argument.
@@ -342,7 +501,7 @@ pub(crate) mod bindings {
     }
 
     struct Text {
-        present: bool,
+        has_value: bool,
         value: String,
     }
 
@@ -381,7 +540,7 @@ pub(crate) mod bindings {
 
         fn hierarchy(self: &Context<'_>, name: &str) -> Result<Vec<Instance>>;
 
-        fn progress(self: &Context<'_>, module: &str, completed: bool) -> bool;
+        fn progress(self: &Context<'_>, module: &str, is_completed: bool) -> bool;
 
         fn advance(self: &Context<'_>, completed: usize, total: usize) -> bool;
     }
@@ -390,7 +549,6 @@ pub(crate) mod bindings {
         include!("native/frontend.hpp");
         include!("native/environment.hpp");
         include!("native/cancellation.hpp");
-        include!("native/flags.hpp");
         type Frontend<'host>;
 
         fn create<'host>(
@@ -398,13 +556,11 @@ pub(crate) mod bindings {
             retain_types: bool,
         ) -> Result<UniquePtr<Frontend<'host>>>;
 
-        fn analyze(self: Pin<&mut Frontend<'_>>, module: &str) -> Result<Vec<Diagnostic>>;
+        fn check(self: Pin<&mut Frontend<'_>>, module: &str) -> Result<Vec<Diagnostic>>;
 
         fn queue(self: Pin<&mut Frontend<'_>>, module: &str) -> Result<()>;
 
         fn checks(self: &Frontend<'_>) -> usize;
-
-        fn selectors(settings: &[Flag], scoped: &[Flag], names: &[&str]) -> Result<Vec<bool>>;
 
         fn invalidate(self: Pin<&mut Frontend<'_>>, module: &str) -> Result<()>;
 
@@ -417,28 +573,36 @@ pub(crate) mod bindings {
             module: &str,
             line: u32,
             column: u32,
-        ) -> Result<Vec<Hover>>;
+        ) -> Result<Vec<NativeHover>>;
 
         fn completion(
             self: Pin<&mut Frontend<'_>>,
             module: &str,
             line: u32,
             column: u32,
-        ) -> Result<Vec<Completion>>;
+        ) -> Result<Vec<NativeCompletion>>;
+
+        fn completion_detail(
+            self: Pin<&mut Frontend<'_>>,
+            module: &str,
+            line: u32,
+            column: u32,
+            index: usize,
+        ) -> Result<Vec<NativeCompletion>>;
 
         fn signatures(
             self: Pin<&mut Frontend<'_>>,
             module: &str,
             line: u32,
             column: u32,
-        ) -> Result<Vec<Signature>>;
+        ) -> Result<Vec<NativeSignature>>;
 
         fn definitions(
             self: Pin<&mut Frontend<'_>>,
             module: &str,
             line: u32,
             column: u32,
-            types: bool,
+            resolve_types: bool,
         ) -> Result<Vec<SourceLocation>>;
 
         fn occurrences(self: Pin<&mut Frontend<'_>>, module: &str) -> Result<Vec<Occurrence>>;
@@ -452,9 +616,24 @@ pub(crate) mod bindings {
             candidates: &[String],
         ) -> Result<Vec<Occurrence>>;
 
-        fn hints(self: Pin<&mut Frontend<'_>>, module: &str) -> Result<Vec<Hint>>;
+        fn hints_range(
+            self: Pin<&mut Frontend<'_>>,
+            module: &str,
+            start: Position,
+            end: Position,
+            is_expanded: bool,
+        ) -> Result<Vec<NativeHint>>;
+
+        fn hint_subjects(
+            self: Pin<&mut Frontend<'_>>,
+            selectors: &[HintSelector],
+        ) -> Result<Vec<NativeHint>>;
+
         fn imports(self: Pin<&mut Frontend<'_>>, module: &str) -> Result<Vec<Import>>;
         fn cancellation(self: &Frontend<'_>) -> Result<u64>;
+
+        fn declarations(configuration: &DeclarationFlags<'_>) -> Result<String>;
+
         fn cancel(identifier: u64);
         fn reset(identifier: u64);
         fn release(identifier: u64);
@@ -483,7 +662,7 @@ impl From<Configuration> for bindings::Configuration {
 
         let mode = match mode {
             Mode::NoCheck => bindings::Mode::NoCheck,
-            Mode::Nonstrict => bindings::Mode::NonStrict,
+            Mode::NonStrict => bindings::Mode::NonStrict,
             Mode::Strict => bindings::Mode::Strict,
         };
 
@@ -530,15 +709,15 @@ impl From<Environment> for bindings::Environment {
                 .into_iter()
                 .map(|class| bindings::Class {
                     name: class.name,
-                    service: class.service,
-                    creatable: class.creatable,
+                    is_service: class.service,
+                    is_creatable: class.creatable,
                     properties: class
                         .properties
                         .into_iter()
                         .map(|property| bindings::Property {
                             name: property.name,
-                            read: property.read,
-                            write: property.write,
+                            can_read: property.read,
+                            can_write: property.write,
                         })
                         .collect(),
                 })
@@ -562,7 +741,7 @@ impl From<Instance> for bindings::Instance {
 impl From<Option<String>> for bindings::Text {
     fn from(value: Option<String>) -> Self {
         Self {
-            present: value.is_some(),
+            has_value: value.is_some(),
             value: value.unwrap_or_default(),
         }
     }

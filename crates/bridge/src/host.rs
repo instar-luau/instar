@@ -7,7 +7,6 @@ use cxx::Exception;
 
 use crate::{
     bridge::{self, bindings},
-    builtins,
     configuration::Configuration,
     environment::Environment,
     error::{Error, HostError, Operation},
@@ -137,7 +136,10 @@ impl<'host> Context<'host> {
         let settings = bridge::flags(self.host.flags().map_err(Error::Host)?);
         let scoped = bridge::flags(flags);
 
-        self.complete(builtins::declarations(&settings, &scoped))
+        self.complete(bindings::declarations(&bindings::DeclarationFlags {
+            settings: &settings,
+            scoped: &scoped,
+        }))
     }
 
     pub(crate) fn alias(
@@ -203,9 +205,9 @@ impl<'host> Context<'host> {
         self.capture(self.host.source(module)).map(Into::into)
     }
 
-    pub(crate) fn progress(&self, module: &str, completed: bool) -> bool {
+    pub(crate) fn progress(&self, module: &str, is_completed: bool) -> bool {
         self.progress.is_none_or(|progress| {
-            progress(if completed {
+            progress(if is_completed {
                 Progress::Finished(module)
             } else {
                 Progress::Started(module)
@@ -234,7 +236,7 @@ impl<'host> Context<'host> {
         result.map_err(|error| {
             self.error.set(Some(error));
 
-            "host callback failed"
+            "Host callback failed."
         })
     }
 

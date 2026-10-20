@@ -26,7 +26,7 @@ impl Workspace {
         } else {
             let path = Path::new(module);
 
-            if !paths::source(path)
+            if !paths::is_source(path)
                 || !paths::metadata(path)?.is_some_and(|metadata| metadata.is_file())
             {
                 None
@@ -91,12 +91,12 @@ impl Workspace {
     pub fn set_source(&self, path: &Path, source: impl Into<Arc<str>>) -> Result<String, Error> {
         let path = paths::identity(&self.root.join(path))?;
 
-        if !paths::source(&path)
+        if !paths::is_source(&path)
             || paths::metadata(&path)?.is_some_and(|metadata| !metadata.is_file())
         {
             return Err(Error::Path {
                 path,
-                reason: "expected a .luau or .lua source file",
+                reason: "Expected a `.luau` or `.lua` source file.",
             });
         }
 

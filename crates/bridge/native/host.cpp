@@ -79,7 +79,7 @@ namespace instar::luau {
                     return NavigateResult::Ambiguous;
                 }
 
-                throw std::invalid_argument("invalid Luau navigation status");
+                throw std::invalid_argument("Invalid Luau navigation status.");
             }
 
             NavigateResult move(std::optional<std::string> destination) {
@@ -120,7 +120,7 @@ namespace instar::luau {
 
         Text source = callbacks.source(source_name);
 
-        if (!source.present) {
+        if (!source.has_value) {
             return std::nullopt;
         }
 
@@ -244,8 +244,7 @@ namespace instar::luau {
         return callbacks.environment(name);
     }
 
-    const Instances *
-    Host::prepare(Luau::Frontend &native, const Luau::ModuleName &name, const Luau::ScopePtr &scope) const {
+    const Instances *Host::instances(Luau::Frontend &native, const Luau::ModuleName &name) const {
         const auto &settings = resolve(name);
 
         if (!settings.hierarchy) {
@@ -273,11 +272,13 @@ namespace instar::luau {
                         .first;
         }
 
-        if (scope) {
-            found->second->bind(native.globals, scope, settings.script);
-        }
-
         return found->second.get();
+    }
+
+    void Host::bind(Luau::Frontend &native, const Luau::ModuleName &name, const Luau::ScopePtr &scope) const {
+        if (const auto *hierarchy = instances(native, name)) {
+            hierarchy->bind(native.globals, scope, resolve(name).script);
+        }
     }
 
     std::vector<std::string> Host::modules(const Luau::ModuleName &name) const {
@@ -327,7 +328,7 @@ namespace instar::luau {
         try {
             flags.require({configuration.flags.data(), configuration.flags.size()});
         } catch (const std::invalid_argument &error) {
-            throw std::invalid_argument(name + ": " + error.what());
+            throw std::invalid_argument("Invalid Luau flag settings for `" + name + "`. " + error.what());
         }
 
         Settings settings;
@@ -348,7 +349,7 @@ namespace instar::luau {
             break;
 
         default:
-            throw std::invalid_argument("invalid Luau checking mode");
+            throw std::invalid_argument("Invalid Luau checking mode.");
         }
 
         native.globals.reserve(configuration.globals.size());
@@ -357,7 +358,7 @@ namespace instar::luau {
             native.globals.emplace_back(std::string(global));
         }
 
-        if (configuration.environment.present) {
+        if (configuration.environment.has_value) {
             settings.environment = std::string(configuration.environment.value);
         }
 
@@ -384,7 +385,7 @@ namespace instar::luau {
                 }
 
                 if (location.script >= instances.size()) {
-                    throw std::invalid_argument("script index is outside its instance hierarchy");
+                    throw std::invalid_argument("Script index is outside its instance hierarchy.");
                 }
 
                 auto identity = instance_identity(std::string(location.hierarchy), location.script);
@@ -421,7 +422,7 @@ namespace instar::luau {
 
             mappings.emplace(
                 instance_identity(name, script),
-                Mapping{instance.module.present && instance.class_name == "ModuleScript"
+                Mapping{instance.module.has_value && instance.class_name == "ModuleScript"
                             ? std::optional<std::string>{std::string(instance.module.value)}
                             : std::nullopt,
                     name,

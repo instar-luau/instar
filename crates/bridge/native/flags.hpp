@@ -26,9 +26,6 @@ namespace instar::luau {
         std::size_t &users;
         std::map<std::string, std::variant<bool, int>> values;
     };
-
-    rust::Vec<bool>
-    selectors(rust::Slice<const Flag> settings, rust::Slice<const Flag> scoped, rust::Slice<const rust::Str> names);
 }
 
 #endif

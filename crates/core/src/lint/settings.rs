@@ -5,7 +5,7 @@ use regex::Regex;
 use serde::{Deserialize, de::DeserializeOwned};
 
 use crate::{
-    lint::{analysis, catalog::RULES, expression},
+    lint::catalog::RULES,
     settings::lint::{Configuration, Preset, Severity},
 };
 
@@ -14,8 +14,6 @@ use crate::{
 pub struct Prepared {
     pub(crate) rules: BTreeMap<String, Severity>,
     pub(crate) indent_width: NonZeroUsize,
-    pub(crate) syntax: bool,
-    pub(crate) analysis: bool,
     pub(crate) unused: Unused,
     pub(crate) ignored: Regex,
     pub(crate) immutable: Immutable,
@@ -37,31 +35,31 @@ impl Prepared {
             .map(|definition| {
                 (
                     definition.name.clone(),
-                    (definition.enabled, Severity::Warning),
+                    (definition.is_enabled, Severity::Warning),
                 )
             })
             .collect();
 
         for preset in &configuration.presets {
             for definition in RULES.iter() {
-                if let Some((enabled, _)) = rules.get_mut(&definition.name) {
-                    *enabled = match preset {
+                if let Some((is_enabled, _)) = rules.get_mut(&definition.name) {
+                    *is_enabled = match preset {
                         Preset::None => false,
                         Preset::All => true,
-                        Preset::Correctness => definition.enabled,
-                        Preset::Recommended => definition.enabled || definition.recommended,
+                        Preset::Correctness => definition.is_enabled,
+                        Preset::Recommended => definition.is_enabled || definition.is_recommended,
                     };
                 }
             }
         }
 
         for (name, settings) in &configuration.rules {
-            let (enabled, severity) = rules
+            let (is_enabled, severity) = rules
                 .get_mut(name)
-                .ok_or_else(|| invalid(format!("unknown lint rule `{name}`")))?;
+                .ok_or_else(|| invalid(format!("Lint rule `{name}` is not recognized.")))?;
 
-            if let Some(value) = settings.enabled {
-                *enabled = value;
+            if let Some(is_true) = settings.is_enabled {
+                *is_enabled = is_true;
             }
 
             if let Some(value) = settings.severity {
@@ -71,7 +69,7 @@ impl Prepared {
             if let Some(parameters) = &settings.settings {
                 if parameters.rule != *name {
                     return Err(invalid(format!(
-                        "settings identity does not match `{name}`"
+                        "Settings rule identifier does not match `{name}`."
                     )));
                 }
 
@@ -83,7 +81,9 @@ impl Prepared {
                         | "restricted_module_paths"
                 ) && !parameters.parameters.is_empty()
                 {
-                    return Err(invalid(format!("`{name}` does not accept parameters")));
+                    return Err(invalid(format!(
+                        "Lint rule `{name}` does not accept parameters."
+                    )));
                 }
             }
         }
@@ -117,24 +117,24 @@ impl Prepared {
                 || reason.trim().is_empty()
                 || reason.contains('\0')
             {
-                return Err(invalid("restricted names and reasons must be nonempty"));
+                return Err(invalid(
+                    "Restricted names and paths must be nonempty, have no surrounding whitespace, and contain no NUL characters. Reasons must contain non-whitespace text and no NUL characters.",
+                ));
             }
         }
 
-        if globals.names.keys().any(|name| !identifier(name)) {
-            return Err(invalid("invalid restricted global name"));
+        if globals.names.keys().any(|name| !is_identifier(name)) {
+            return Err(invalid(
+                "Restricted global name must start with an ASCII letter or underscore and contain only ASCII letters, digits, or underscores.",
+            ));
         }
 
         let rules: BTreeMap<_, _> = rules
             .into_iter()
-            .filter_map(|(name, (enabled, severity))| enabled.then_some((name, severity)))
+            .filter_map(|(name, (is_enabled, severity))| is_enabled.then_some((name, severity)))
             .collect();
 
         Ok(Self {
-            syntax: expression::RULES
-                .iter()
-                .any(|name| rules.contains_key(*name)),
-            analysis: analysis::RULES.iter().any(|name| rules.contains_key(*name)),
             rules,
             indent_width,
             unused,
@@ -153,16 +153,20 @@ impl Prepared {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct Unused {
-    pub(crate) parameters: bool,
-    pub(crate) loop_variables: bool,
+    #[serde(rename = "parameters")]
+    pub(crate) should_check_parameters: bool,
+
+    #[serde(rename = "loop_variables")]
+    pub(crate) should_check_loop_variables: bool,
+
     pub(crate) ignore_pattern: String,
 }
 
 impl Default for Unused {
     fn default() -> Self {
         Self {
-            parameters: false,
-            loop_variables: false,
+            should_check_parameters: false,
+            should_check_loop_variables: false,
             ignore_pattern: "^_".to_owned(),
         }
     }
@@ -171,7 +175,8 @@ impl Default for Unused {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct Immutable {
-    pub(crate) mutated_tables_stay_local: bool,
+    #[serde(rename = "mutated_tables_stay_local")]
+    pub(crate) should_keep_mutated_tables_local: bool,
 }
 
 #[derive(Default, Deserialize)]
@@ -221,7 +226,7 @@ fn invalid(message: impl Into<String>) -> Box<figment::Error> {
     Box::new(figment::Error::from(message.into()))
 }
 
-fn identifier(name: &str) -> bool {
+fn is_identifier(name: &str) -> bool {
     let mut bytes = name.bytes();
 
     bytes

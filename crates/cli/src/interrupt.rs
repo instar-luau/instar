@@ -12,7 +12,7 @@ static REQUESTED: AtomicBool = AtomicBool::new(false);
 
 pub(super) fn initialize() -> Result<()> {
     ctrlc::set_handler(|| REQUESTED.store(true, Ordering::Relaxed))
-        .wrap_err("cannot initialize interrupt handling")
+        .wrap_err("Could not initialize interrupt handling.")
 }
 
 pub(super) fn requested() -> bool {

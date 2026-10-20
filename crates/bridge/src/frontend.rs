@@ -2,11 +2,12 @@ use cxx::UniquePtr;
 
 use crate::{
     bridge::bindings::{
-        self, Completion, Diagnostic, Hint, Hover, Import, Occurrence, Signature, SourceLocation,
+        self, Diagnostic, HintSelector, Import, Occurrence, Position, SourceLocation,
     },
     cancellation::Cancellation,
     error::Error,
     host::Context,
+    semantic::{Completion, Hint, Hover, Signature},
 };
 
 /// Owns Luau's persistent analysis state while borrowing its host context.
@@ -26,6 +27,16 @@ impl<'host> Frontend<'host> {
         Ok(Self { native, context })
     }
 
+    /// Check a module and its dependencies, reusing unchanged native state.
+    ///
+    /// # Errors
+    /// Returns an operational host error or native analysis failure.
+    pub fn check(&mut self, module: &str) -> Result<Vec<Diagnostic>, Error> {
+        let result = self.native.pin_mut().check(module);
+
+        self.context.complete(result)
+    }
+
     /// Queue a module and its dependencies for the next check.
     ///
     /// # Errors
@@ -35,16 +46,6 @@ impl<'host> Frontend<'host> {
         self.context.complete(result)?;
 
         Ok(())
-    }
-
-    /// Check a module and its dependencies, reusing unchanged native state.
-    ///
-    /// # Errors
-    /// Returns an operational host error or native analysis failure.
-    pub fn check(&mut self, module: &str) -> Result<Vec<Diagnostic>, Error> {
-        let result = self.native.pin_mut().analyze(module);
-
-        self.context.complete(result)
     }
 
     /// Return the number of native type checks since construction or clearing.
@@ -93,7 +94,11 @@ impl<'host> Frontend<'host> {
     pub fn hover(&mut self, module: &str, line: u32, column: u32) -> Result<Vec<Hover>, Error> {
         let result = self.native.pin_mut().hover(module, line, column);
 
-        self.context.complete(result)
+        self.context
+            .complete(result)?
+            .into_iter()
+            .map(Hover::try_from)
+            .collect()
     }
 
     /// Complete incomplete editor input using Luau's native autocomplete engine.
@@ -108,7 +113,38 @@ impl<'host> Frontend<'host> {
     ) -> Result<Vec<Completion>, Error> {
         let result = self.native.pin_mut().completion(module, line, column);
 
-        self.context.complete(result)
+        self.context
+            .complete(result)?
+            .into_iter()
+            .map(Completion::try_from)
+            .collect()
+    }
+
+    /// Expand one completion by its stable context-and-label enumeration index.
+    ///
+    /// # Errors
+    /// Returns native checking, extraction, cancellation, or validation errors.
+    pub fn completion_detail(
+        &mut self,
+        module: &str,
+        line: u32,
+        column: u32,
+        index: usize,
+    ) -> Result<Option<Completion>, Error> {
+        let result = self
+            .native
+            .pin_mut()
+            .completion_detail(module, line, column, index);
+
+        let mut values = self.context.complete(result)?;
+
+        if values.len() > 1 {
+            return Err(Error::Native {
+                reason: "Invalid completion selection cardinality.".into(),
+            });
+        }
+
+        values.pop().map(Completion::try_from).transpose()
     }
 
     /// Return native overloads and argument metadata at a call position.
@@ -123,7 +159,11 @@ impl<'host> Frontend<'host> {
     ) -> Result<Vec<Signature>, Error> {
         let result = self.native.pin_mut().signatures(module, line, column);
 
-        self.context.complete(result)
+        self.context
+            .complete(result)?
+            .into_iter()
+            .map(Signature::try_from)
+            .collect()
     }
 
     /// Resolve value declarations, or inferred type declarations when `types` is true.
@@ -135,12 +175,12 @@ impl<'host> Frontend<'host> {
         module: &str,
         line: u32,
         column: u32,
-        types: bool,
+        resolve_types: bool,
     ) -> Result<Vec<SourceLocation>, Error> {
         let result = self
             .native
             .pin_mut()
-            .definitions(module, line, column, types);
+            .definitions(module, line, column, resolve_types);
 
         self.context.complete(result)
     }
@@ -175,14 +215,41 @@ impl<'host> Frontend<'host> {
         self.context.complete(result)
     }
 
-    /// Return inferred binding, argument-name, and return-type inlay hints.
+    /// Return hints in a native byte range, expanding only selected subjects.
     ///
     /// # Errors
-    /// Returns host, checking, or unavailable type-graph errors.
-    pub fn hints(&mut self, module: &str) -> Result<Vec<Hint>, Error> {
-        let result = self.native.pin_mut().hints(module);
+    /// Returns native checking, extraction, cancellation, or validation errors.
+    pub fn hints_range(
+        &mut self,
+        module: &str,
+        start: Position,
+        end: Position,
+        is_expanded: bool,
+    ) -> Result<Vec<Hint>, Error> {
+        let result = self
+            .native
+            .pin_mut()
+            .hints_range(module, start, end, is_expanded);
 
-        self.context.complete(result)
+        self.context
+            .complete(result)?
+            .into_iter()
+            .map(Hint::try_from)
+            .collect()
+    }
+
+    /// Resolve selected inlay subjects with a shared whole-request extraction budget.
+    ///
+    /// # Errors
+    /// Returns native checking, extraction, cancellation, or validation errors.
+    pub fn hint_subjects(&mut self, selectors: &[HintSelector]) -> Result<Vec<Hint>, Error> {
+        let result = self.native.pin_mut().hint_subjects(selectors);
+
+        self.context
+            .complete(result)?
+            .into_iter()
+            .map(Hint::try_from)
+            .collect()
     }
 
     /// Parse the source and resolve require arguments for every native identity.

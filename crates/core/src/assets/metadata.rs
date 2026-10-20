@@ -25,15 +25,19 @@ pub(crate) struct Documentation {
 pub(crate) struct Access {
     pub(crate) class: String,
     pub(crate) name: String,
-    pub(crate) read: bool,
-    pub(crate) write: bool,
+
+    #[serde(rename = "read")]
+    pub(crate) can_read: bool,
+
+    #[serde(rename = "write")]
+    pub(crate) can_write: bool,
 }
 
 pub(crate) fn digest(contents: &[u8]) -> String {
     let mut digest = String::with_capacity(64);
 
     for byte in Sha256::digest(contents) {
-        write!(digest, "{byte:02x}").expect("internal error: cannot write to a string");
+        write!(digest, "{byte:02x}").expect("Internal error: cannot write to a string.");
     }
 
     digest

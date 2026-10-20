@@ -8,8 +8,8 @@ use crate::format::{Error, directives::Directive};
 #[derive(Clone)]
 struct Protection<'regions> {
     regions: &'regions [Range<usize>],
-    emitted: Vec<bool>,
-    active: bool,
+    has_emitted: Vec<bool>,
+    is_active: bool,
 }
 
 impl Protection<'_> {
@@ -22,7 +22,7 @@ impl Protection<'_> {
                     region.end <= choice.range.start || choice.range.end <= region.start
                 })
             {
-                self.active = false;
+                self.is_active = false;
                 result.push(item);
                 continue;
             }
@@ -37,14 +37,14 @@ impl Protection<'_> {
                     if let Some(region) = region {
                         let range = &self.regions[region];
 
-                        if !self.emitted[region] {
+                        if !self.has_emitted[region] {
                             result.push(Document::Verbatim(range.clone()));
-                            self.emitted[region] = true;
+                            self.has_emitted[region] = true;
                         }
 
-                        self.active = index.get() + 1 < range.end;
+                        self.is_active = index.get() + 1 < range.end;
                     } else {
-                        self.active = false;
+                        self.is_active = false;
                         result.push(Document::Token(index));
                     }
                 }
@@ -73,7 +73,7 @@ impl Protection<'_> {
                 }
 
                 other => {
-                    if !self.active {
+                    if !self.is_active {
                         result.push(other);
                     }
                 }
@@ -110,17 +110,17 @@ pub(super) fn apply(
 
     let mut protection = Protection {
         regions: &regions,
-        emitted: vec![false; regions.len()],
-        active: false,
+        has_emitted: vec![false; regions.len()],
+        is_active: false,
     };
 
     let document = protection.apply(document);
 
-    for (directive, emitted) in directives.iter().zip(protection.emitted) {
-        if !emitted {
+    for (directive, has_emitted) in directives.iter().zip(protection.has_emitted) {
+        if !has_emitted {
             return Err(Error::internal(
                 directive.scope.clone(),
-                "cannot locate formatting-disabled source",
+                "Cannot locate formatting-disabled source.",
             ));
         }
     }

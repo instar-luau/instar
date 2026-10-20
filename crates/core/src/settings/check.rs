@@ -26,10 +26,10 @@ pub enum Mode {
     /// Strict type inference.
     Strict,
 
-    /// Nonstrict type inference.
+    /// Non-strict type inference.
     #[default]
-    Nonstrict,
+    NonStrict,
 
     /// Disable ordinary type diagnostics.
-    Nocheck,
+    NoCheck,
 }

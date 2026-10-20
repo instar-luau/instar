@@ -28,13 +28,7 @@ impl Session {
 
         let mut child = Command::new(EXECUTABLE)
             .args([
-                "--verbose",
-                "--color",
-                "never",
-                "check",
-                "--watch",
-                "--mode",
-                "strict",
+                "--debug", "--color", "never", "check", "--watch", "--mode", "strict",
             ])
             .arg("--root")
             .arg(root)
@@ -64,7 +58,7 @@ impl Session {
 
         let output = session.batch();
         assert!(output.contains("checks=Some(2)"), "{output}");
-        assert!(!output.contains("error["), "{output}");
+        assert!(!output.contains("error:"), "{output}");
 
         Ok(session)
     }
@@ -83,7 +77,7 @@ impl Session {
             output.push_str(&line);
             output.push('\n');
 
-            if line == "watching for changes" {
+            if line == "Watching for changes..." {
                 return output;
             }
         }
@@ -101,8 +95,8 @@ impl Session {
                 Ok(line) => {
                     output.push_str(&line.expect("read watcher output"));
                     output.push('\n');
-                    assert!(!output.contains("processing batch"), "{output}");
-                    assert!(!output.contains("creating native frontend"), "{output}");
+                    assert!(!output.contains("Processing batch"), "{output}");
+                    assert!(!output.contains("Creating native frontend"), "{output}");
                 }
 
                 Err(RecvTimeoutError::Timeout) => return,
@@ -129,22 +123,24 @@ impl Drop for Session {
 }
 
 fn checks(output: &str, expected: usize) {
-    assert!(!output.contains("creating native frontend"), "{output}");
+    assert!(!output.contains("Creating native frontend"), "{output}");
 
     assert!(
         output.contains(&format!("checks=Some({expected})")),
         "{output}"
     );
 
+    let noun = if expected == 1 { "file" } else { "files" };
+
     assert!(
-        output.contains(&format!("checked {expected} files in ")),
+        output.contains(&format!("Checked {expected} {noun} in ")),
         "{output}"
     );
 
     assert_eq!(
         output
             .lines()
-            .filter(|line| line.starts_with("checking `"))
+            .filter(|line| line.starts_with("Checking  "))
             .count(),
         expected,
         "{output}"
@@ -189,12 +185,13 @@ fn membership() -> Result<(), Box<dyn Error>> {
 
     let output = session.batch();
     checks(&output, 1);
-    assert!(output.contains("error[1000]"), "{output}");
+    assert!(output.lines().any(|line| line == "1000"), "{output}");
+    assert!(output.contains("error:"), "{output}");
 
     fs::remove_file(root.join("added.luau"))?;
     let output = session.batch();
     checks(&output, 0);
-    assert!(!output.contains("error["), "{output}");
+    assert!(!output.contains("error:"), "{output}");
 
     fs::write(
         root.join("source.luau"),
@@ -203,22 +200,25 @@ fn membership() -> Result<(), Box<dyn Error>> {
 
     let output = session.batch();
     checks(&output, 1);
-    assert!(output.contains("error[1012]"), "{output}");
+    assert!(output.lines().any(|line| line == "1012"), "{output}");
+    assert!(output.contains("error:"), "{output}");
 
     fs::write(root.join("dependency.luau"), "return 1\n")?;
     let output = session.batch();
     checks(&output, 2);
-    assert!(!output.contains("error["), "{output}");
+    assert!(!output.contains("error:"), "{output}");
 
     fs::write(root.join("dependency.luau"), "return \"wrong\"\n")?;
     let output = session.batch();
     checks(&output, 2);
-    assert!(output.contains("error[1000]"), "{output}");
+    assert!(output.lines().any(|line| line == "1000"), "{output}");
+    assert!(output.contains("error:"), "{output}");
 
     fs::rename(root.join("dependency.luau"), root.join("renamed.luau"))?;
     let output = session.batch();
     checks(&output, 2);
-    assert!(output.contains("error[1012]"), "{output}");
+    assert!(output.lines().any(|line| line == "1012"), "{output}");
+    assert!(output.contains("error:"), "{output}");
 
     Ok(())
 }
@@ -241,12 +241,13 @@ fn navigation() -> Result<(), Box<dyn Error>> {
 
     let output = session.batch();
     checks(&output, 1);
-    assert!(output.contains("error[1012]"), "{output}");
+    assert!(output.lines().any(|line| line == "1012"), "{output}");
+    assert!(output.contains("error:"), "{output}");
 
     fs::write(root.join("ignored/upper.luau"), "return 1\n")?;
     let output = session.batch();
     checks(&output, 2);
-    assert!(!output.contains("error["), "{output}");
+    assert!(!output.contains("error:"), "{output}");
 
     Ok(())
 }

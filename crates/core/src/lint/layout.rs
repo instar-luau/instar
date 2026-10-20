@@ -169,10 +169,10 @@ pub(super) fn check(context: &mut Context<'_, '_>, statement: NodeIndex) {
                 line = current;
 
                 if indentation(context, current) <= column {
-                    context.warn(
+                    context.emit(
                         node,
                         "MultiLineStatement",
-                        "statement spans multiple lines; indent its continuation",
+                        "Statement continuation is not indented beyond the statement's starting indentation.",
                     );
 
                     break;
@@ -196,9 +196,9 @@ fn indentation(context: &Context<'_, '_>, line: usize) -> usize {
 }
 
 pub(super) fn comments(context: &mut Context<'_, '_>) {
-    let mut leading = true;
-    let mut mode = false;
-    let mut native = false;
+    let mut is_leading = true;
+    let mut has_mode_directive = false;
+    let mut has_native_attribute = false;
 
     for token in &context.tree.tokens {
         if matches!(token.kind, TokenKind::Whitespace | TokenKind::EndOfFile) {
@@ -206,7 +206,7 @@ pub(super) fn comments(context: &mut Context<'_, '_>) {
         }
 
         if !matches!(token.kind, TokenKind::Comment | TokenKind::BlockComment) {
-            leading = false;
+            is_leading = false;
             continue;
         }
 
@@ -221,37 +221,39 @@ pub(super) fn comments(context: &mut Context<'_, '_>) {
         let directive = String::from_utf8_lossy(directive);
         let words: Vec<_> = directive.split_whitespace().collect();
 
-        let message = if leading {
+        let message = if is_leading {
             match words.as_slice() {
                 ["nolint", ..] | ["optimize", "0" | "1" | "2"] => None,
 
                 ["strict" | "nonstrict" | "nocheck"] => {
-                    if mode {
-                        Some("type checking mode was already specified")
+                    if has_mode_directive {
+                        Some("Type checking mode has already been specified.")
                     } else {
-                        mode = true;
+                        has_mode_directive = true;
 
                         None
                     }
                 }
 
                 ["strict" | "nonstrict" | "nocheck", ..] => {
-                    Some("type checking directive has extra symbols")
+                    Some("Type checking directive has unexpected trailing arguments.")
                 }
 
-                ["optimize", ..] => Some("optimize directive requires a level from 0 to 2"),
+                ["optimize", ..] => {
+                    Some("The `optimize` directive requires exactly one level: `0`, `1`, or `2`.")
+                }
 
                 ["native"] => {
-                    native = true;
+                    has_native_attribute = true;
 
                     None
                 }
 
-                ["native", ..] => Some("native directive has extra symbols"),
-                _ => Some("unknown comment directive"),
+                ["native", ..] => Some("The `native` directive has unexpected trailing arguments."),
+                _ => Some("Comment directive is not recognized."),
             }
         } else {
-            Some("comment directive appears after the first non-comment token")
+            Some("Comment directive appears after the first non-comment token.")
         };
 
         if let Some(message) = message
@@ -267,17 +269,17 @@ pub(super) fn comments(context: &mut Context<'_, '_>) {
         }
     }
 
-    if native && context.active(&["RedundantNativeAttribute"]) {
+    if has_native_attribute && context.is_active(&["RedundantNativeAttribute"]) {
         for index in 0..context.tree.nodes.len() {
             let node = NodeIndex::new(index);
 
             if let NodeKind::Attribute { name, .. } = context.tree.node(node).kind
                 && matches!(context.tree.text(name), b"native" | b"@native")
             {
-                context.warn(
+                context.emit(
                     node,
                     "RedundantNativeAttribute",
-                    "native attribute is redundant in a native module",
+                    "The `@native` attribute is redundant in a module with `--!native`.",
                 );
             }
         }

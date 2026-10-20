@@ -59,7 +59,7 @@ pub(super) fn normalize(values: &mut Dict) -> Result<(), Box<Error>> {
 
         if aliases.insert(canonical, value).is_some() {
             return Err(Box::new(
-                Error::from("duplicate case-insensitive alias")
+                Error::from("Duplicate case-insensitive alias.")
                     .with_path("resolve")
                     .with_path("aliases")
                     .with_path(&name),

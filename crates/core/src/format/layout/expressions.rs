@@ -47,17 +47,22 @@ impl Builder<'_, '_> {
         }
 
         let mut terms = terms.into_iter();
-        let (_, first) = terms.next().expect("binary expression");
+
+        let (_, first) = terms
+            .next()
+            .expect("Internal error: binary expression has no terms.");
 
         let mut content = self.node(first);
         let mut continuation = Vec::new();
         let mut previous = self.tree.node(first).tokens.end.get() - 1;
-        let mut comments = false;
+        let mut has_comments = false;
 
         for (operator, right) in terms {
-            let operator = operator.expect("binary operator");
+            let operator =
+                operator.expect("Internal error: binary expression term has no operator.");
+
             let start = self.tree.node(right).tokens.start.get();
-            comments |= self.comments(previous + 1..start);
+            has_comments |= self.has_comments(previous + 1..start);
             continuation.extend(self.breakpoint(previous, operator.get(), 1));
             continuation.push(Document::Token(operator));
             continuation.extend(self.gap(operator.get(), start));
@@ -71,7 +76,7 @@ impl Builder<'_, '_> {
         });
 
         vec![Document::Group {
-            layout: if comments {
+            layout: if has_comments {
                 Layout::Fit
             } else {
                 Layout::Arguments
@@ -87,7 +92,7 @@ impl Builder<'_, '_> {
         closing: TokenIndex,
         spaces: usize,
     ) -> Vec<Document> {
-        if self.enclosed(opening.get() + 1..closing.get(), expression) {
+        if self.is_enclosed(opening.get() + 1..closing.get(), expression) {
             return self.sequence(opening.get()..closing.get() + 1, &[expression]);
         }
 
@@ -114,7 +119,7 @@ impl Builder<'_, '_> {
 
         result
             .pop()
-            .expect("internal error: missing opening delimiter");
+            .expect("Internal error: missing opening delimiter.");
 
         result.extend(self.delimited(opening, expression, closing, 0));
 
@@ -132,16 +137,16 @@ impl Builder<'_, '_> {
             1,
         );
 
-        let condition = self.tree.token(prefix).kind == TokenKind::Keyword(Keyword::Until);
+        let is_condition = self.tree.token(prefix).kind == TokenKind::Keyword(Keyword::Until);
 
-        continuation.extend(if condition {
+        continuation.extend(if is_condition {
             self.condition(expression)
         } else {
             self.node(expression)
         });
 
         vec![Document::Group {
-            layout: if condition {
+            layout: if is_condition {
                 Layout::Fit
             } else {
                 Layout::Arguments
@@ -249,13 +254,13 @@ impl Builder<'_, '_> {
 
         let mut content = self.node(index);
         let mut continuation = Vec::new();
-        let mut invoked = false;
+        let mut is_invoked = false;
 
         for (offset, entry) in spine.iter().enumerate() {
             let (index, receiver) = *entry;
             let node = self.tree.node(index);
 
-            let (start, split) = match &node.kind {
+            let (start, should_split) = match &node.kind {
                 NodeKind::MethodCall { colon, .. } => (colon.get(), true),
 
                 NodeKind::Call { callee, arguments } => {
@@ -269,7 +274,8 @@ impl Builder<'_, '_> {
 
                     (
                         self.tree.node(*arguments).tokens.start.get(),
-                        invoked && !matches!(self.tree.node(callee).kind, NodeKind::Field { .. }),
+                        is_invoked
+                            && !matches!(self.tree.node(callee).kind, NodeKind::Field { .. }),
                     )
                 }
 
@@ -291,10 +297,10 @@ impl Builder<'_, '_> {
                     (self.tree.node(*arguments).tokens.start.get(), false)
                 }
 
-                _ => unreachable!("internal error: invalid call chain"),
+                _ => unreachable!("Internal error: invalid call chain."),
             };
 
-            let target = if split || !continuation.is_empty() {
+            let target = if should_split || !continuation.is_empty() {
                 &mut continuation
             } else {
                 &mut content
@@ -302,7 +308,7 @@ impl Builder<'_, '_> {
 
             let previous = self.tree.node(receiver).tokens.end.get() - 1;
 
-            target.extend(if split {
+            target.extend(if should_split {
                 self.breakpoint(previous, start, 0)
             } else {
                 self.gap(previous, start)
@@ -319,7 +325,7 @@ impl Builder<'_, '_> {
                 _ => self.sequence(start..node.tokens.end.get(), &self.tree.children(index)),
             });
 
-            invoked |= matches!(
+            is_invoked |= matches!(
                 node.kind,
                 NodeKind::Call { .. } | NodeKind::MethodCall { .. }
             );
@@ -435,7 +441,7 @@ impl Builder<'_, '_> {
         }]
     }
 
-    pub(super) fn enclosed(&self, interior: Range<usize>, index: NodeIndex) -> bool {
+    pub(super) fn is_enclosed(&self, interior: Range<usize>, index: NodeIndex) -> bool {
         let node = self.tree.node(index);
 
         matches!(
@@ -445,12 +451,12 @@ impl Builder<'_, '_> {
                 | NodeKind::Table { .. }
                 | NodeKind::TypeTable { .. }
                 | NodeKind::Function { name: None, .. }
-        ) && !self.comments(interior.start..node.tokens.start.get())
-            && !self.comments(node.tokens.end.get()..interior.end)
+        ) && !self.has_comments(interior.start..node.tokens.start.get())
+            && !self.has_comments(node.tokens.end.get()..interior.end)
     }
 
     fn breakpoint(&self, left: usize, right: usize, spaces: usize) -> Vec<Document> {
-        if self.comments(left + 1..right) {
+        if self.has_comments(left + 1..right) {
             self.gap(left, right)
         } else {
             vec![Document::Soft(spaces)]

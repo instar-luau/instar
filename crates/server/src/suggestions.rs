@@ -1,10 +1,11 @@
-use std::{collections::BTreeSet, ops::Range, path::Path};
+use std::{ops::Range, path::Path};
 
-use instar_bridge::{Completion, CompletionKind, Frontend, Parameter};
+use instar_bridge::{Completion, CompletionKind, Frontend};
 
 use instar_core::{
     analysis::{self, TokenKind},
     lint::Symbols,
+    presentation::{self, Surface},
     workspace::{Purpose, SymbolOutcome},
 };
 
@@ -15,17 +16,17 @@ use tower_lsp_server::{
     gen_lsp_types::{
         ActiveParameter, CompletionItem, CompletionItemKind, CompletionItemTag,
         CompletionItemTextEdit, CompletionList, CompletionParams, CompletionResponse, Contents,
-        Documentation, Hover, HoverParams, InsertReplaceEdit, InsertTextFormat, MarkupContent,
-        MarkupKind, ParameterInformation, ParameterInformationLabel, Position,
-        Range as ProtocolRange, SignatureHelp, SignatureHelpParams, SignatureInformation, TextEdit,
-        Uri,
+        Documentation, Hover, HoverParams, InsertReplaceEdit, InsertTextFormat,
+        ParameterInformation, ParameterInformationLabel, Position, Range as ProtocolRange,
+        SignatureHelp, SignatureHelpParams, SignatureInformation, TextEdit,
     },
     jsonrpc::{Error, Result},
 };
 
-use super::{
+use crate::{
     configuration::Require,
     document::Document,
+    output::documentation,
     project::{Project, failure},
 };
 
@@ -44,7 +45,7 @@ enum Resolve {
     },
 }
 
-pub(super) fn hover(
+pub(crate) fn hover(
     project: &mut Project,
     frontend: &mut Frontend<'_>,
     parameters: HoverParams,
@@ -53,24 +54,14 @@ pub(super) fn hover(
     let module = project.module(&position.text_document.uri)?;
     let document = project.snapshot(&module)?;
     let (line, column) = document.native(position.position, project.encoding)?;
-    let markdown = format(project, "/textDocument/hover/contentFormat");
+    let markdown = documentation::markdown(project, "/textDocument/hover/contentFormat");
     let mut sections = Vec::new();
     let mut range = None;
 
     for value in frontend.hover(&module, line, column).map_err(failure)? {
-        let declaration = if value.symbol.is_empty() {
-            value.type_name
-        } else {
-            format!("{}: {}", value.symbol, value.type_name)
-        };
+        let detail = presentation::hover(&value).map_err(failure)?;
 
-        let mut section = if markdown {
-            format!("```luau\n{declaration}\n```")
-        } else {
-            declaration
-        };
-
-        let documentation = documentation(
+        let documentation = documentation::documentation(
             project,
             &module,
             &value.documentation_symbol,
@@ -78,10 +69,7 @@ pub(super) fn hover(
             markdown,
         )?;
 
-        if !documentation.is_empty() {
-            section.push_str("\n\n");
-            section.push_str(&documentation);
-        }
+        let section = documentation::presentation(&detail, &documentation, markdown)?;
 
         if !sections.contains(&section) {
             sections.push(section);
@@ -93,12 +81,12 @@ pub(super) fn hover(
     }
 
     Ok((!sections.is_empty()).then(|| Hover {
-        contents: Contents::MarkupContent(markup(sections.join("\n\n---\n\n"), markdown)),
+        contents: Contents::MarkupContent(documentation::hover(&sections, markdown)),
         range,
     }))
 }
 
-pub(super) fn completion(
+pub(crate) fn completion(
     project: &mut Project,
     frontend: &mut Frontend<'_>,
     parameters: CompletionParams,
@@ -113,21 +101,12 @@ pub(super) fn completion(
         .map_err(failure)?;
 
     let mut items = Vec::new();
-    let mut seen = BTreeSet::new();
 
     for (index, candidate) in candidates.iter().enumerate() {
-        let identity = (
-            candidate.label.clone(),
-            candidate.type_name.clone(),
-            candidate.insert_text.clone(),
-            candidate.replacement.range.start.line,
-            candidate.replacement.range.start.column,
-            candidate.replacement.range.end.line,
-            candidate.replacement.range.end.column,
-            candidate.replace_dot,
-        );
-
-        if !seen.insert(identity) {
+        if candidates[..index]
+            .iter()
+            .any(|previous| same_completion(previous, candidate))
+        {
             continue;
         }
 
@@ -227,7 +206,7 @@ pub(super) fn completion(
     })))
 }
 
-pub(super) fn completion_resolve(
+pub(crate) fn completion_resolve(
     project: &mut Project,
     frontend: &mut Frontend<'_>,
     item: CompletionItem,
@@ -244,17 +223,22 @@ pub(super) fn completion_resolve(
             let (line, column) = document.native(position, project.encoding)?;
 
             let candidate = frontend
-                .completion(&module, line, column)
+                .completion_detail(&module, line, column, index)
                 .map_err(failure)?
-                .into_iter()
-                .nth(index)
                 .filter(|candidate| candidate.label == label)
                 .ok_or_else(Error::content_modified)?;
 
             let mut item = semantic(project, &document, position, &candidate)?
                 .ok_or_else(Error::content_modified)?;
 
-            item.detail = (!candidate.type_name.is_empty()).then_some(candidate.type_name.clone());
+            item.detail = candidate
+                .snapshot
+                .as_ref()
+                .map(|snapshot| {
+                    presentation::compact(snapshot, Surface::Completion).map_err(failure)
+                })
+                .transpose()?;
+
             item.documentation = completion_documentation(project, &module, &candidate)?;
 
             Ok(item)
@@ -281,7 +265,7 @@ pub(super) fn completion_resolve(
     }
 }
 
-pub(super) fn signature_help(
+pub(crate) fn signature_help(
     project: &mut Project,
     frontend: &mut Frontend<'_>,
     parameters: SignatureHelpParams,
@@ -291,7 +275,7 @@ pub(super) fn signature_help(
     let document = project.snapshot(&module)?;
     let (line, column) = document.native(position.position, project.encoding)?;
 
-    let markdown = format(
+    let markdown = documentation::markdown(
         project,
         "/textDocument/signatureHelp/signatureInformation/documentationFormat",
     );
@@ -300,97 +284,77 @@ pub(super) fn signature_help(
     let mut active_signature = None;
     let mut active_parameter = None;
 
+    let offsets = project.supports(
+        "/textDocument/signatureHelp/signatureInformation/parameterInformation/labelOffsetSupport",
+    );
+
     for signature in frontend
         .signatures(&module, line, column)
         .map_err(failure)?
     {
+        let rendered = presentation::signature(&signature).map_err(failure)?;
+
+        if rendered.parameters.len() != signature.parameters.len() {
+            return Err(failure(
+                "Signature parameter spans do not match the visible parameters.",
+            ));
+        }
+
         let active = signature
             .active_parameter
             .min(u32::try_from(signature.parameters.len().saturating_sub(1)).map_err(failure)?);
 
-        let metadata = metadata(project, &module, &signature.documentation_symbol)?;
+        let metadata = documentation::metadata(project, &module, &signature.documentation_symbol)?;
 
-        let text = render(
+        let documentation = documentation::render(
             project,
             &module,
             metadata.as_ref(),
             &signature.documentation,
             markdown,
-            &mut BTreeSet::new(),
         )?;
 
-        let mut search = 0;
+        let text = documentation::presentation(&rendered.detail, &documentation, markdown)?;
 
         let parameters = signature
             .parameters
             .iter()
-            .enumerate()
-            .map(|(index, parameter)| {
-                let label = parameter_label(project, &signature.label, parameter, &mut search)?;
-                let mut text = parameter.documentation.clone();
+            .zip(&rendered.parameters)
+            .map(|(parameter, span)| {
+                let label = parameter_label(&rendered.label, span.clone(), offsets)?;
 
-                if let Some(parameters) = metadata
-                    .as_ref()
-                    .and_then(|metadata| metadata.get("params"))
-                    .and_then(Value::as_array)
-                {
-                    let entry = parameters
-                        .iter()
-                        .find(|entry| {
-                            entry.get("name").and_then(Value::as_str)
-                                == Some(parameter.name.as_str())
-                        })
-                        .or_else(|| {
-                            parameters.get(
-                                index
-                                    + usize::from(
-                                        parameters
-                                            .first()
-                                            .and_then(|entry| entry.get("name"))
-                                            .and_then(Value::as_str)
-                                            == Some("self"),
-                                    ),
-                            )
-                        });
+                let entry = documentation::parameter(
+                    metadata.as_ref(),
+                    &parameter.name,
+                    parameter.source_index,
+                );
 
-                    if let Some(value) = entry.and_then(|entry| entry.get("documentation")) {
-                        text = render(
-                            project,
-                            &module,
-                            Some(value),
-                            &text,
-                            markdown,
-                            &mut BTreeSet::new(),
-                        )?;
-                    }
-                }
+                let text = documentation::render(
+                    project,
+                    &module,
+                    entry.and_then(|entry| entry.get("documentation")),
+                    &parameter.documentation,
+                    markdown,
+                )?;
 
                 Ok(ParameterInformation {
                     label,
-                    documentation: (!text.is_empty())
-                        .then(|| Documentation::MarkupContent(markup(text, markdown))),
+                    documentation: (!text.is_empty()).then(|| {
+                        Documentation::MarkupContent(documentation::markup(text, markdown))
+                    }),
                 })
             })
             .collect::<Result<Vec<_>>>()?;
 
         let value = SignatureInformation {
-            label: signature.label,
+            label: rendered.label,
             documentation: (!text.is_empty())
-                .then(|| Documentation::MarkupContent(markup(text, markdown))),
+                .then(|| Documentation::MarkupContent(documentation::markup(text, markdown))),
             parameters: Some(parameters),
             active_parameter: project
                 .supports("/textDocument/signatureHelp/signatureInformation/activeParameterSupport")
                 .then_some(ActiveParameter::Int(active)),
         };
-
-        if let Some(index) = signatures.iter().position(|existing| existing == &value) {
-            if signature.selected {
-                active_signature = Some(u32::try_from(index).map_err(failure)?);
-                active_parameter = Some(ActiveParameter::Int(active));
-            }
-
-            continue;
-        }
 
         if signature.selected || active_signature.is_none() {
             active_signature = Some(u32::try_from(signatures.len()).map_err(failure)?);
@@ -433,9 +397,9 @@ fn semantic(
 
     let mut additional = Vec::new();
 
-    if candidate.replace_dot {
+    if let Some(operation) = candidate.operation {
         additional.push(TextEdit {
-            range: document.native_range(candidate.operation, project.encoding)?,
+            range: document.native_range(operation, project.encoding)?,
             new_text: ":".to_owned(),
         });
     }
@@ -466,8 +430,17 @@ fn semantic(
                 .pointer("/textDocument/completion/completionItem/tagSupport")
                 .is_some())
         .then_some(vec![CompletionItemTag::Deprecated]),
-        detail: (!resolves(project, "detail") && !candidate.type_name.is_empty())
-            .then_some(candidate.type_name.clone()),
+        detail: if resolves(project, "detail") {
+            None
+        } else {
+            candidate
+                .snapshot
+                .as_ref()
+                .map(|snapshot| {
+                    presentation::compact(snapshot, Surface::Completion).map_err(failure)
+                })
+                .transpose()?
+        },
         insert_text_format: Some(if candidate.snippet && snippets {
             InsertTextFormat::Snippet
         } else {
@@ -509,7 +482,7 @@ fn imported(
             .accepts(project.workspace.directory(), Path::new(target))
         || project
             .workspace
-            .excluded(target, Purpose::Index)
+            .is_excluded(target, Purpose::Index)
             .map_err(failure)?
     {
         return Ok(None);
@@ -613,11 +586,9 @@ fn imported(
 }
 
 fn written(document: &Document, name: &str) -> bool {
-    document
-        .analysis
-        .tokens
-        .iter()
-        .any(|token| token.access.write() && document.text.get(token.range.clone()) == Some(name))
+    document.analysis.tokens.iter().any(|token| {
+        token.access.is_write() && document.text.get(token.range.clone()) == Some(name)
+    })
 }
 
 fn text_edit(
@@ -655,36 +626,17 @@ fn resolves(project: &Project, property: &str) -> bool {
         .is_some_and(|properties| properties.iter().any(|value| value == property))
 }
 
-fn format(project: &Project, pointer: &str) -> bool {
-    project
-        .capabilities
-        .pointer(pointer)
-        .and_then(Value::as_array)
-        .is_some_and(|formats| formats.iter().any(|format| format == "markdown"))
-}
-
-fn markup(value: String, markdown: bool) -> MarkupContent {
-    MarkupContent {
-        kind: if markdown {
-            MarkupKind::Markdown
-        } else {
-            MarkupKind::PlainText
-        },
-        value,
-    }
-}
-
 fn completion_documentation(
     project: &Project,
     module: &str,
     candidate: &Completion,
 ) -> Result<Option<Documentation>> {
-    let markdown = format(
+    let markdown = documentation::markdown(
         project,
         "/textDocument/completion/completionItem/documentationFormat",
     );
 
-    let text = documentation(
+    let text = documentation::documentation(
         project,
         module,
         &candidate.documentation_symbol,
@@ -692,157 +644,39 @@ fn completion_documentation(
         markdown,
     )?;
 
-    Ok((!text.is_empty()).then(|| Documentation::MarkupContent(markup(text, markdown))))
-}
-
-fn documentation(
-    project: &Project,
-    module: &str,
-    symbol: &str,
-    fallback: &str,
-    markdown: bool,
-) -> Result<String> {
-    let value = metadata(project, module, symbol)?;
-
-    render(
-        project,
-        module,
-        value.as_ref(),
-        fallback,
-        markdown,
-        &mut BTreeSet::new(),
-    )
-}
-
-fn metadata(project: &Project, module: &str, symbol: &str) -> Result<Option<Value>> {
-    if symbol.is_empty() {
-        return Ok(None);
-    }
-
-    project
-        .workspace
-        .documentation(module, symbol)
-        .map_err(failure)
-}
-
-fn render(
-    project: &Project,
-    module: &str,
-    value: Option<&Value>,
-    fallback: &str,
-    markdown: bool,
-    visited: &mut BTreeSet<String>,
-) -> Result<String> {
-    let Some(value) = value else {
-        return Ok(fallback.to_owned());
-    };
-
-    let text = value
-        .as_str()
-        .or_else(|| value.get("documentation").and_then(Value::as_str))
-        .unwrap_or(fallback);
-
-    if text.starts_with('@') && text.contains('/') && !text.contains(char::is_whitespace) {
-        if !visited.insert(text.to_owned()) {
-            return Ok(fallback.to_owned());
-        }
-
-        let referenced = metadata(project, module, text)?;
-
-        return render(
-            project,
-            module,
-            referenced.as_ref(),
-            fallback,
-            markdown,
-            visited,
-        );
-    }
-
-    let mut text = if markdown {
-        text.replace("<code>", "`")
-            .replace("</code>", "`")
-            .replace("<strong>", "**")
-            .replace("</strong>", "**")
-    } else {
-        text.replace("<code>", "")
-            .replace("</code>", "")
-            .replace("<strong>", "")
-            .replace("</strong>", "")
-    };
-
-    if let Some(sample) = value
-        .get("code_sample")
-        .and_then(Value::as_str)
-        .filter(|sample| !sample.is_empty())
-    {
-        text.push_str(if markdown { "\n\n```luau\n" } else { "\n\n" });
-
-        text.push_str(sample);
-
-        if markdown {
-            text.push_str("\n```");
-        }
-    }
-
-    if let Some(link) = value
-        .get("learn_more_link")
-        .and_then(Value::as_str)
-        .filter(|link| {
-            link.parse::<Uri>()
-                .is_ok_and(|uri| matches!(uri.scheme(), "http" | "https"))
-        })
-    {
-        text.push_str(if markdown {
-            "\n\n[Learn more]("
-        } else {
-            "\n\n"
-        });
-
-        text.push_str(link);
-
-        if markdown {
-            text.push(')');
-        }
-    }
-
-    Ok(text)
+    Ok((!text.is_empty())
+        .then(|| Documentation::MarkupContent(documentation::markup(text, markdown))))
 }
 
 fn parameter_label(
-    project: &Project,
     signature: &str,
-    parameter: &Parameter,
-    search: &mut usize,
+    span: Range<usize>,
+    offsets: bool,
 ) -> Result<ParameterInformationLabel> {
-    let named = if parameter.name.is_empty() || parameter.variadic {
-        parameter.type_name.clone()
-    } else {
-        format!("{}: {}", parameter.name, parameter.type_name)
-    };
+    let label = signature
+        .get(span.clone())
+        .ok_or_else(|| failure("Signature parameter span is outside the final label."))?;
 
-    let label = if signature[*search..].contains(&named) {
-        named
-    } else {
-        parameter.type_name.clone()
-    };
-
-    if project.supports(
-        "/textDocument/signatureHelp/signatureInformation/parameterInformation/labelOffsetSupport",
-    ) && let Some(start) = signature[*search..]
-        .find(&label)
-        .map(|index| *search + index)
-    {
-        let end = start + label.len();
-        *search = end;
-
+    if offsets {
         return Ok(ParameterInformationLabel::Tuple((
-            u32::try_from(signature[..start].encode_utf16().count()).map_err(failure)?,
-            u32::try_from(signature[..end].encode_utf16().count()).map_err(failure)?,
+            u32::try_from(signature[..span.start].encode_utf16().count()).map_err(failure)?,
+            u32::try_from(signature[..span.end].encode_utf16().count()).map_err(failure)?,
         )));
     }
 
-    Ok(ParameterInformationLabel::String(label))
+    Ok(ParameterInformationLabel::String(label.to_owned()))
+}
+
+fn same_completion(left: &Completion, right: &Completion) -> bool {
+    left.label == right.label
+        && left.insert_text == right.insert_text
+        && left.replacement.range == right.replacement.range
+        && left.operation == right.operation
+        && match (&left.snapshot, &right.snapshot) {
+            (Some(left), Some(right)) => left.equivalent(right),
+            (None, None) => true,
+            _ => false,
+        }
 }
 
 fn word(source: &str, offset: usize) -> Range<usize> {

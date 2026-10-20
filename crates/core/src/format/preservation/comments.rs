@@ -8,7 +8,7 @@ use vermis::{
     tree::{NodeIndex, NodeKind, TokenIndex, Tree},
 };
 
-use super::syntax::substantive;
+use super::syntax::is_substantive;
 
 use crate::{
     format::{Error, directives::Directives},
@@ -30,18 +30,18 @@ enum Location {
         node: usize,
         gap: usize,
         token: usize,
-        inline: bool,
+        is_inline: bool,
     },
 
     Adjacent {
         node: usize,
         gap: usize,
         token: usize,
-        inline: bool,
+        is_inline: bool,
     },
 
     Detached {
-        inline: bool,
+        is_inline: bool,
     },
 }
 
@@ -53,31 +53,31 @@ pub(super) struct Attachment {
 struct Comment {
     position: usize,
     adjacent: Option<usize>,
-    inline: bool,
-    global: bool,
+    is_inline: bool,
+    is_global: bool,
 }
 
 pub(super) fn attached(
     tree: &Tree<'_>,
     correspondence: Option<&[Option<NodeIndex>]>,
-    ordering: bool,
+    should_order: bool,
     directives: &Directives,
 ) -> Option<Vec<Attachment>> {
     let mut comments = Vec::new();
     let mut previous = None;
-    let mut leading = true;
+    let mut is_leading = true;
 
     for (position, token) in tree.tokens.iter().enumerate() {
         if matches!(token.kind, TokenKind::Comment | TokenKind::BlockComment) {
-            let inline = previous.is_some_and(|previous: usize| {
+            let is_inline = previous.is_some_and(|previous: usize| {
                 !tree.source[tree.tokens[previous].span.end..token.span.start].contains(&b'\n')
             });
 
             comments.push(Comment {
                 position,
-                adjacent: if inline { previous } else { None },
-                inline,
-                global: leading && token.bytes(tree.source).starts_with(b"--!"),
+                adjacent: if is_inline { previous } else { None },
+                is_inline,
+                is_global: is_leading && token.bytes(tree.source).starts_with(b"--!"),
             });
 
             if directives.marker(position).is_some() {
@@ -85,10 +85,10 @@ pub(super) fn attached(
             }
         } else {
             if !matches!(token.kind, TokenKind::Whitespace | TokenKind::EndOfFile) {
-                leading = false;
+                is_leading = false;
             }
 
-            if substantive(token.kind) {
+            if is_substantive(token.kind) {
                 previous = Some(position);
             }
         }
@@ -108,21 +108,21 @@ pub(super) fn attached(
         {
             let comment = remaining.next()?;
 
-            if !comment.inline {
+            if !comment.is_inline {
                 comment.adjacent = next;
             }
 
             if directives.marker(position).is_some() {
                 next = Some(position);
             }
-        } else if substantive(token.kind) {
+        } else if is_substantive(token.kind) {
             next = Some(position);
         }
     }
 
     let targets: BTreeSet<_> = comments
         .iter()
-        .filter(|comment| !comment.global)
+        .filter(|comment| !comment.is_global)
         .flat_map(|comment| {
             [Some(comment.position), comment.adjacent]
                 .into_iter()
@@ -138,12 +138,12 @@ pub(super) fn attached(
     for comment in comments {
         let marker = directives.marker(comment.position);
 
-        let location = if comment.global {
+        let location = if comment.is_global {
             Location::Global
         } else {
             let owner = *owners.get(&comment.position)?;
 
-            if marker.is_none() && interior(&tree.node(owner).kind) {
+            if marker.is_none() && has_interior(&tree.node(owner).kind) {
                 let children = children
                     .entry(owner.get())
                     .or_insert_with(|| tree.children(owner));
@@ -179,7 +179,7 @@ pub(super) fn attached(
                         .tokens
                         .get(start..=adjacent)?
                         .iter()
-                        .filter(|token| substantive(token.kind))
+                        .filter(|token| is_substantive(token.kind))
                         .count();
 
                     let node = identity(owner, correspondence)?;
@@ -194,19 +194,19 @@ pub(super) fn attached(
                         node,
                         gap,
                         token,
-                        inline: comment.inline,
+                        is_inline: comment.is_inline,
                     }
                 } else {
                     Location::Adjacent {
                         node,
                         gap,
                         token,
-                        inline: comment.inline,
+                        is_inline: comment.is_inline,
                     }
                 }
             } else {
                 Location::Detached {
-                    inline: comment.inline,
+                    is_inline: comment.is_inline,
                 }
             }
         };
@@ -217,7 +217,7 @@ pub(super) fn attached(
         });
     }
 
-    if ordering {
+    if should_order {
         result.sort_by_key(|attachment| attachment.location);
     }
 
@@ -273,7 +273,7 @@ pub(super) fn validate(
     if before.len() != after.len() {
         return Err(Error::internal(
             0..0,
-            "formatter changed comment attachment",
+            "Formatter changed comment attachment.",
         ));
     }
 
@@ -281,7 +281,7 @@ pub(super) fn validate(
         if before.location != after.location {
             return Err(Error::internal(
                 0..0,
-                "formatter changed comment attachment",
+                "Formatter changed comment attachment.",
             ));
         }
 
@@ -300,7 +300,7 @@ pub(super) fn validate(
         if expected.as_deref() != Some(proposed_bytes) {
             return Err(Error::internal(
                 original_token.span.start..original_token.span.end,
-                "formatter changed comment text",
+                "Formatter changed comment text.",
             ));
         }
     }
@@ -375,7 +375,7 @@ fn identity(node: NodeIndex, correspondence: Option<&[Option<NodeIndex>]>) -> Op
     }
 }
 
-fn interior(kind: &NodeKind) -> bool {
+fn has_interior(kind: &NodeKind) -> bool {
     !matches!(
         kind,
         NodeKind::Root { .. }

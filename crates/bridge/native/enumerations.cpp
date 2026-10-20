@@ -19,7 +19,7 @@ namespace instar::luau {
         void validate_name(const std::string &name) {
             if (name.empty() || (name.front() >= '0' && name.front() <= '9') || !Luau::isIdentifier(name) ||
                 Luau::Lexer::isReserved(name)) {
-                throw std::invalid_argument("invalid Roblox enumeration name `" + name + "`");
+                throw std::invalid_argument("Invalid Roblox enumeration name `" + name + "`.");
             }
         }
 
@@ -29,19 +29,19 @@ namespace instar::luau {
             for (const char *name : {"Enum", "EnumItem", "Enumerations"}) {
                 if (scope->lookupType(name)) {
                     throw std::invalid_argument(
-                        "Roblox enumeration type binding already exists: `" + std::string(name) + "`"
+                        "Roblox enumeration type binding `" + std::string(name) + "` already exists."
                     );
                 }
             }
 
             if (scope->linearSearchForBinding("Enum")) {
-                throw std::invalid_argument("Roblox enumeration global binding already exists: `Enum`");
+                throw std::invalid_argument("Roblox enumeration global binding `Enum` already exists.");
             }
 
             for (auto current = scope; current; current = current->parent) {
                 if (current->importedTypeBindings.find("Enum") != current->importedTypeBindings.end() ||
                     current->importedModules.find("Enum") != current->importedModules.end()) {
-                    throw std::invalid_argument("Roblox enumeration type namespace already exists: `Enum`");
+                    throw std::invalid_argument("Roblox enumeration type namespace `Enum` already exists.");
                 }
             }
 
@@ -52,11 +52,11 @@ namespace instar::luau {
                 validate_name(name);
 
                 if (!names.insert(name).second) {
-                    throw std::invalid_argument("duplicate Roblox enumeration `" + name + "`");
+                    throw std::invalid_argument("Duplicate Roblox enumeration `" + name + "`.");
                 }
 
                 if (name == "GetEnums" || scope->lookupType("Enum." + name)) {
-                    throw std::invalid_argument("conflicting Roblox enumeration `" + name + "`");
+                    throw std::invalid_argument("Conflicting Roblox enumeration `" + name + "`.");
                 }
 
                 std::unordered_set<std::string> items;
@@ -65,26 +65,29 @@ namespace instar::luau {
                     const std::string item(value);
 
                     if (item.empty() || item.find('\0') != std::string::npos) {
-                        throw std::invalid_argument("invalid Roblox enumeration item in `" + name + "`");
+                        throw std::invalid_argument(
+                            "Roblox enumeration `" + name +
+                            "` contains an empty item name or an item name with a null character."
+                        );
                     }
 
                     if (!items.insert(item).second) {
                         throw std::invalid_argument(
-                            std::string("duplicate Roblox enumeration item `")
+                            std::string("Duplicate Roblox enumeration item `")
                                 .append(name)
                                 .append(".")
                                 .append(item)
-                                .append("`")
+                                .append("`.")
                         );
                     }
 
                     if (item == "GetEnumItems" || item == "FromName" || item == "FromValue") {
                         throw std::invalid_argument(
-                            std::string("conflicting Roblox enumeration item `")
+                            std::string("Conflicting Roblox enumeration item `")
                                 .append(name)
                                 .append(".")
                                 .append(item)
-                                .append("`")
+                                .append("`.")
                         );
                     }
                 }

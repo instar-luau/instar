@@ -21,9 +21,9 @@ pub(crate) struct Local {
     pub(crate) shadow: Option<usize>,
     pub(crate) reads: Vec<NodeIndex>,
     pub(crate) type_reads: Vec<NodeIndex>,
-    pub(crate) assigned: bool,
-    pub(crate) initialized: bool,
-    pub(crate) mutated: bool,
+    pub(crate) is_assigned: bool,
+    pub(crate) is_initialized: bool,
+    pub(crate) is_mutated: bool,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq)]
@@ -38,9 +38,9 @@ pub(crate) struct Global {
     pub(crate) references: Vec<NodeIndex>,
     pub(crate) writes: Vec<NodeIndex>,
     pub(crate) functions: Vec<NodeIndex>,
-    pub(crate) read: bool,
-    pub(crate) read_before_write: bool,
-    pub(crate) module_assignment: bool,
+    pub(crate) is_read: bool,
+    pub(crate) is_read_before_write: bool,
+    pub(crate) has_module_assignment: bool,
     pub(crate) definition: Option<NodeIndex>,
 }
 
@@ -49,7 +49,7 @@ pub(crate) struct TypeBinding {
     pub(crate) declaration: NodeIndex,
     pub(crate) statement: NodeIndex,
     pub(crate) scope: usize,
-    pub(crate) used: bool,
+    pub(crate) is_used: bool,
 }
 
 pub(crate) struct Bindings {
@@ -58,12 +58,12 @@ pub(crate) struct Bindings {
     pub(crate) references: Vec<Option<usize>>,
     pub(crate) types: Vec<TypeBinding>,
     pub(crate) type_references: Vec<Option<usize>>,
-    pub(crate) type_names: Vec<bool>,
+    pub(crate) is_type_name: Vec<bool>,
     pub(crate) accesses: Vec<u8>,
-    pub(crate) reads: Vec<bool>,
+    pub(crate) is_read: Vec<bool>,
     pub(crate) parents: Vec<Option<NodeIndex>>,
     pub(crate) loops: Vec<Option<NodeIndex>>,
-    runtime: Vec<bool>,
+    is_runtime: Vec<bool>,
     writes: BTreeSet<String>,
     pub(crate) declared: BTreeSet<String>,
 }
@@ -80,12 +80,12 @@ impl Bindings {
                 references: vec![None; count],
                 types: Vec::new(),
                 type_references: vec![None; count],
-                type_names: vec![false; count],
+                is_type_name: vec![false; count],
                 accesses: vec![0; count],
-                reads: vec![false; count],
+                is_read: vec![false; count],
                 parents: vec![None; count],
                 loops: vec![None; count],
-                runtime: vec![false; count],
+                is_runtime: vec![false; count],
                 writes: BTreeSet::new(),
                 declared: BTreeSet::new(),
             },
@@ -96,8 +96,8 @@ impl Bindings {
             functions: Vec::new(),
             dominated: BTreeSet::new(),
             loop_body: None,
-            annotation: false,
-            runtime: true,
+            is_annotation: false,
+            is_runtime: true,
         };
 
         for index in 0..count {
@@ -111,6 +111,16 @@ impl Bindings {
         collector.visit(tree.root);
 
         collector.bindings
+    }
+
+    pub(crate) fn is_same(&self, tree: &Tree<'_>, left: NodeIndex, right: NodeIndex) -> bool {
+        let left = unwrap(tree, left);
+        let right = unwrap(tree, right);
+
+        matches!(tree.node(left).kind, NodeKind::Name { .. })
+            && matches!(tree.node(right).kind, NodeKind::Name { .. })
+            && self.references[left.get()] == self.references[right.get()]
+            && tree.text(left) == tree.text(right)
     }
 
     pub(crate) fn path(&self, tree: &Tree<'_>, node: NodeIndex) -> String {
@@ -133,8 +143,8 @@ impl Bindings {
         }
     }
 
-    pub(crate) fn global(&self, tree: &Tree<'_>, node: NodeIndex, expected: &str) -> bool {
-        self.runtime[node.get()]
+    pub(crate) fn is_global(&self, tree: &Tree<'_>, node: NodeIndex, expected: &str) -> bool {
+        self.is_runtime[node.get()]
             && !expected.is_empty()
             && self.path(tree, node) == expected
             && !self.writes.contains("_G")
@@ -155,7 +165,7 @@ impl Bindings {
 
             let binding = &self.locals[index];
 
-            if binding.assigned || !visited.insert(index) {
+            if binding.is_assigned || !visited.insert(index) {
                 break;
             }
 
@@ -167,7 +177,7 @@ impl Bindings {
         node
     }
 
-    pub(crate) fn exported(&self, tree: &Tree<'_>, statement: NodeIndex) -> bool {
+    pub(crate) fn is_exported(&self, tree: &Tree<'_>, statement: NodeIndex) -> bool {
         self.parents[statement.get()]
             .is_some_and(|parent| matches!(tree.node(parent).kind, NodeKind::Export { .. }))
     }
@@ -183,8 +193,8 @@ struct Collector<'tree, 'source> {
     functions: Vec<NodeIndex>,
     dominated: BTreeSet<String>,
     loop_body: Option<NodeIndex>,
-    annotation: bool,
-    runtime: bool,
+    is_annotation: bool,
+    is_runtime: bool,
 }
 
 impl Collector<'_, '_> {
@@ -205,18 +215,18 @@ impl Collector<'_, '_> {
         *self
             .scope_identifiers
             .last()
-            .expect("internal error: missing scope")
+            .expect("Internal error: scope is missing.")
     }
 
     fn declare_type(&mut self, name: NodeIndex, statement: NodeIndex) {
         let name_text = text(self.tree, name);
         let index = self.bindings.types.len();
         self.bindings.type_references[name.get()] = Some(index);
-        self.bindings.type_names[name.get()] = true;
+        self.bindings.is_type_name[name.get()] = true;
 
         self.type_scopes
             .last_mut()
-            .expect("internal error: missing type scope")
+            .expect("Internal error: type scope is missing.")
             .insert(name_text.clone(), index);
 
         self.bindings.types.push(TypeBinding {
@@ -224,12 +234,12 @@ impl Collector<'_, '_> {
             declaration: name,
             statement,
             scope: self.scope(),
-            used: false,
+            is_used: false,
         });
     }
 
-    fn type_reference(&mut self, name: NodeIndex) {
-        self.bindings.type_names[name.get()] = true;
+    fn reference_type(&mut self, name: NodeIndex) {
+        self.bindings.is_type_name[name.get()] = true;
         let name_text = text(self.tree, name);
 
         self.bindings.type_references[name.get()] = self
@@ -239,7 +249,7 @@ impl Collector<'_, '_> {
             .find_map(|scope| scope.get(&name_text).copied());
 
         if let Some(index) = self.bindings.type_references[name.get()] {
-            self.bindings.types[index].used = true;
+            self.bindings.types[index].is_used = true;
         }
     }
 
@@ -299,7 +309,7 @@ impl Collector<'_, '_> {
 
         self.scopes
             .last_mut()
-            .expect("internal error: missing lexical scope")
+            .expect("Internal error: lexical scope is missing.")
             .insert(name.clone(), index);
 
         self.bindings.locals.push(Local {
@@ -313,29 +323,29 @@ impl Collector<'_, '_> {
             shadow,
             reads: Vec::new(),
             type_reads: Vec::new(),
-            assigned: false,
-            initialized: value.is_some(),
-            mutated: false,
+            is_assigned: false,
+            is_initialized: value.is_some(),
+            is_mutated: false,
         });
     }
 
-    fn reference(&mut self, node: NodeIndex, write: bool, read: bool) {
+    fn reference(&mut self, node: NodeIndex, is_write: bool, is_read: bool) {
         let name = text(self.tree, node);
-        self.bindings.accesses[node.get()] |= u8::from(read) | (u8::from(write) << 1);
+        self.bindings.accesses[node.get()] |= u8::from(is_read) | (u8::from(is_write) << 1);
 
         if let Some(index) = self.lookup(&name) {
             self.bindings.references[node.get()] = Some(index);
             let binding = &mut self.bindings.locals[index];
-            binding.assigned |= write;
+            binding.is_assigned |= is_write;
 
-            if read {
-                if self.annotation {
+            if is_read {
+                if self.is_annotation {
                     binding.type_reads.push(node);
                 } else {
                     binding.reads.push(node);
                 }
             }
-        } else if read && self.functions.iter().any(|function| {
+        } else if is_read && self.functions.iter().any(|function| {
             matches!(self.tree.node(*function).kind, NodeKind::Function { prefix: Some(prefix), .. }
                     if self.tree.token(prefix).bytes(self.tree.source) == b"type")
         })
@@ -351,9 +361,9 @@ impl Collector<'_, '_> {
                     )
                 })
         {
-            self.type_reference(node);
-        } else if self.annotation {
-            self.bindings.globals.entry(name).or_default().read |= read;
+            self.reference_type(node);
+        } else if self.is_annotation {
+            self.bindings.globals.entry(name).or_default().is_read |= is_read;
         } else {
             let global = self.bindings.globals.entry(name.clone()).or_default();
 
@@ -371,19 +381,19 @@ impl Collector<'_, '_> {
             }
 
             global.references.push(node);
-            global.read |= read;
+            global.is_read |= is_read;
 
-            global.read_before_write |=
-                read && !self.functions.is_empty() && !self.dominated.contains(&name);
+            global.is_read_before_write |=
+                is_read && !self.functions.is_empty() && !self.dominated.contains(&name);
 
-            if write {
+            if is_write {
                 global.writes.push(node);
-                global.module_assignment |= self.functions.is_empty();
+                global.has_module_assignment |= self.functions.is_empty();
                 self.dominated.insert(name);
             }
         }
 
-        self.bindings.reads[node.get()] |= read && !self.annotation;
+        self.bindings.is_read[node.get()] |= is_read && !self.is_annotation;
     }
 
     fn mutate(&mut self, mut node: NodeIndex) {
@@ -400,7 +410,7 @@ impl Collector<'_, '_> {
                 break;
             }
 
-            self.bindings.locals[index].mutated = true;
+            self.bindings.locals[index].is_mutated = true;
 
             let Some(value) = self.bindings.locals[index].value else {
                 break;
@@ -411,7 +421,7 @@ impl Collector<'_, '_> {
     }
 
     fn write(&mut self, mut node: NodeIndex) {
-        if !self.runtime || self.annotation {
+        if !self.is_runtime || self.is_annotation {
             return;
         }
 
@@ -438,11 +448,11 @@ impl Collector<'_, '_> {
         }
     }
 
-    fn target(&mut self, node: NodeIndex, read: bool) {
+    fn target(&mut self, node: NodeIndex, is_read: bool) {
         self.write(node);
 
         match self.tree.node(node).kind {
-            NodeKind::Name { .. } => self.reference(node, true, read),
+            NodeKind::Name { .. } => self.reference(node, true, is_read),
 
             NodeKind::Field { receiver, .. } | NodeKind::Index { receiver, .. } => {
                 self.visit(node);
@@ -487,16 +497,16 @@ impl Collector<'_, '_> {
     }
 
     fn annotation(&mut self, node: NodeIndex) {
-        let previous = self.annotation;
-        self.annotation = true;
+        let was_annotation = self.is_annotation;
+        self.is_annotation = true;
         self.visit(node);
-        self.annotation = previous;
+        self.is_annotation = was_annotation;
     }
 
     fn visit(&mut self, node: NodeIndex) {
         let tree = self.tree;
         self.bindings.loops[node.get()] = self.loop_body;
-        self.bindings.runtime[node.get()] = self.runtime && !self.annotation;
+        self.bindings.is_runtime[node.get()] = self.is_runtime && !self.is_annotation;
 
         match &tree.node(node).kind {
             NodeKind::Name { .. } => self.reference(node, false, true),
@@ -517,10 +527,10 @@ impl Collector<'_, '_> {
                     self.visit(value.node);
                 }
 
-                let expanded = tree
+                let is_expanded = tree
                     .list(values)
                     .last()
-                    .is_some_and(|value| expands(tree, value.node));
+                    .is_some_and(|value| can_expand(tree, value.node));
 
                 for (index, binding) in tree.list(bindings).iter().enumerate() {
                     self.declare(
@@ -533,8 +543,8 @@ impl Collector<'_, '_> {
                     self.bindings
                         .locals
                         .last_mut()
-                        .expect("internal error: missing declared local")
-                        .initialized |= expanded;
+                        .expect("Internal error: declared local binding is missing.")
+                        .is_initialized |= is_expanded;
                 }
             }
 
@@ -564,12 +574,12 @@ impl Collector<'_, '_> {
                 body: Some(body),
                 ..
             } => {
-                let previous_runtime = self.runtime;
+                let was_runtime = self.is_runtime;
 
-                self.runtime &=
+                self.is_runtime &=
                     !prefix.is_some_and(|prefix| tree.token(prefix).bytes(tree.source) == b"type");
 
-                let local = self.bindings.exported(tree, node)
+                let is_local = self.bindings.is_exported(tree, node)
                     || prefix.is_some_and(|prefix| {
                         tree.token(prefix).kind == TokenKind::Keyword(Keyword::Local)
                             || tree.token(prefix).bytes(tree.source) == b"const"
@@ -599,10 +609,10 @@ impl Collector<'_, '_> {
                         Some((*name, true))
                     };
 
-                    if let Some((first, simple)) = first {
-                        if local {
+                    if let Some((first, is_simple)) = first {
+                        if is_local {
                             self.declare(first, node, Some(node), Category::Local);
-                        } else if simple {
+                        } else if is_simple {
                             self.target(first, false);
 
                             if self.bindings.references[first.get()].is_none() {
@@ -634,7 +644,7 @@ impl Collector<'_, '_> {
                     let scope = self
                         .scopes
                         .last_mut()
-                        .expect("internal error: missing function scope");
+                        .expect("Internal error: function scope is missing.");
 
                     scope.remove(&text(tree, method));
                     scope.insert("self".to_owned(), index);
@@ -664,7 +674,7 @@ impl Collector<'_, '_> {
                 self.loop_body = previous_loop;
                 self.functions.pop();
                 self.leave();
-                self.runtime = previous_runtime;
+                self.is_runtime = was_runtime;
             }
 
             NodeKind::NumericFor {
@@ -786,7 +796,7 @@ impl Collector<'_, '_> {
                 if let Some(namespace) = namespace {
                     self.annotation(*namespace);
                 } else {
-                    self.type_reference(*name);
+                    self.reference_type(*name);
                 }
 
                 if let Some(arguments) = arguments {
@@ -823,7 +833,7 @@ impl Collector<'_, '_> {
                 self.leave();
             }
 
-            NodeKind::GenericPack { name, .. } => self.type_reference(*name),
+            NodeKind::GenericPack { name, .. } => self.reference_type(*name),
 
             NodeKind::Binding { annotation, .. } => {
                 if let Some(annotation) = annotation {
@@ -861,12 +871,12 @@ impl Collector<'_, '_> {
                 members,
                 ..
             } => {
-                let external = with.is_some()
+                let is_external = with.is_some()
                     || self.bindings.parents[node.get()].is_some_and(|parent| {
                         matches!(tree.node(parent).kind, NodeKind::Declaration { .. })
                     });
 
-                if external {
+                if is_external {
                     self.bindings.declared.insert(text(tree, *name));
                 } else {
                     self.declare(*name, node, Some(node), Category::Local);
@@ -876,9 +886,9 @@ impl Collector<'_, '_> {
                 self.enter();
 
                 if let Some(extends) = extends {
-                    if external {
+                    if is_external {
                         if let NodeKind::Extends { superclass, .. } = tree.node(*extends).kind {
-                            self.type_reference(superclass);
+                            self.reference_type(superclass);
                         }
                     } else {
                         self.visit(*extends);
@@ -886,7 +896,7 @@ impl Collector<'_, '_> {
                 }
 
                 for member in tree.list(members) {
-                    if external {
+                    if is_external {
                         self.annotation(member.node);
                     } else {
                         self.visit(member.node);
@@ -904,7 +914,7 @@ impl Collector<'_, '_> {
                 body: None,
                 ..
             } => {
-                if !self.annotation
+                if !self.is_annotation
                     && let Some(name) = name
                 {
                     self.bindings.declared.insert(text(tree, *name));
@@ -944,7 +954,7 @@ pub(crate) fn text(tree: &Tree<'_>, node: NodeIndex) -> String {
     String::from_utf8_lossy(tree.text(node)).into_owned()
 }
 
-pub(crate) fn expands(tree: &Tree<'_>, node: NodeIndex) -> bool {
+pub(crate) fn can_expand(tree: &Tree<'_>, node: NodeIndex) -> bool {
     matches!(
         tree.node(node).kind,
         NodeKind::Call { .. } | NodeKind::MethodCall { .. } | NodeKind::Variadic { .. }

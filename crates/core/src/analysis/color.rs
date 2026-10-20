@@ -6,9 +6,19 @@ use vermis::{
 };
 
 use crate::{
-    analysis::{Color, Edit, analyze},
+    analysis::{Edit, analyze},
     syntax::{bindings::Bindings, expression::number, literal},
 };
+
+/// A statically recognized Roblox Color3 constructor.
+#[derive(Clone, Debug)]
+pub struct Color {
+    /// Complete constructor expression.
+    pub range: Range<usize>,
+
+    /// Red, green, blue, and alpha in the inclusive zero-to-one interval.
+    pub components: [f64; 4],
+}
 
 /// Returns validated Color3 constructor replacements for a recognized, comment-free expression.
 #[must_use]
@@ -73,7 +83,7 @@ pub(super) fn colors(tree: &Tree<'_>, bindings: &Bindings, prefix: usize) -> Vec
 
             let constructor = ["new", "fromRGB", "fromHSV", "fromHex"]
                 .into_iter()
-                .find(|name| bindings.global(tree, callee, &format!("Color3.{name}")))?;
+                .find(|name| bindings.is_global(tree, callee, &format!("Color3.{name}")))?;
 
             let NodeKind::Arguments {
                 values,

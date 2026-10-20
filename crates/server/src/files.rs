@@ -140,7 +140,7 @@ pub(super) fn renamed(state: &mut State, parameters: RenameFilesParams) -> Resul
 
     for root in roots.values() {
         if !unique.insert(root.clone()) {
-            return Err(Error::invalid_params("renamed workspace roots collide"));
+            return Err(Error::invalid_params("Renamed workspace roots collide."));
         }
     }
 
@@ -187,7 +187,7 @@ pub(super) fn renamed(state: &mut State, parameters: RenameFilesParams) -> Resul
                 .insert(module, document)
                 .is_some()
             {
-                return Err(Error::invalid_params("renamed open documents collide"));
+                return Err(Error::invalid_params("Renamed open documents collide."));
             }
         }
     }
@@ -199,7 +199,7 @@ pub(super) fn renamed(state: &mut State, parameters: RenameFilesParams) -> Resul
         let project = state
             .projects
             .get_mut(&root)
-            .expect("internal error: renamed project missing");
+            .expect("Internal error: renamed project is missing.");
 
         let destination = roots[&root].clone();
         let retained = destination == root;
@@ -302,7 +302,7 @@ pub(super) fn renamed(state: &mut State, parameters: RenameFilesParams) -> Resul
         let mut project = state
             .projects
             .remove(&root)
-            .expect("internal error: renamed project missing");
+            .expect("Internal error: renamed project is missing.");
 
         project.workspace = relocation.workspace;
 
@@ -440,7 +440,7 @@ pub(super) fn will_rename(
             })
         {
             return Err(failure(
-                "cannot safely update an unresolved import in a moved source",
+                "An unresolved import in the moved source cannot be updated safely.",
             ));
         }
 
@@ -457,14 +457,14 @@ pub(super) fn will_rename(
 
             if targets.len() != 1 {
                 return Err(failure(
-                    "cannot safely update an import with multiple runtime targets",
+                    "An import with multiple runtime targets cannot be updated safely.",
                 ));
             }
 
             let (target, identity) = targets
                 .into_iter()
                 .next()
-                .expect("internal error: import target missing");
+                .expect("Internal error: import target is missing.");
 
             let future_target = relocated(Path::new(&target), &mappings);
 
@@ -474,13 +474,13 @@ pub(super) fn will_rename(
                 .iter()
                 .filter(|import| start <= import.range.start && import.range.end <= end);
 
-            let style = styles
-                .next()
-                .ok_or_else(|| failure("cannot safely update an unsupported import expression"))?;
+            let style = styles.next().ok_or_else(|| {
+                failure("Unsupported import expression cannot be updated safely.")
+            })?;
 
             if styles.next().is_some() {
                 return Err(failure(
-                    "cannot safely update overlapping import expressions",
+                    "Overlapping import expressions cannot be updated safely.",
                 ));
             }
 
@@ -491,7 +491,7 @@ pub(super) fn will_rename(
                 && identity != target
             {
                 return Err(failure(
-                    "cannot safely update an instance-backed string import before its sourcemap is updated",
+                    "An instance-backed string import cannot be updated safely before its sourcemap is updated.",
                 ));
             }
 
@@ -511,15 +511,15 @@ pub(super) fn will_rename(
                 .map_err(failure)?
                 .ok_or_else(|| {
                     failure(if instance {
-                        "cannot safely update an instance import before its sourcemap is updated"
+                        "Cannot generate an unambiguous instance import for the renamed source."
                     } else {
-                        "cannot generate an unambiguous import for the renamed source"
+                        "Cannot generate an unambiguous import for the renamed source."
                     })
                 })?;
 
             if instance && !unshadowed(&document, &replacement) {
                 return Err(failure(
-                    "renamed instance import would use a shadowed or written global",
+                    "Renamed instance import would use a shadowed or written global.",
                 ));
             }
 
@@ -546,7 +546,7 @@ pub(super) fn will_rename(
             .windows(2)
             .any(|pair| pair[0].range.end > pair[1].range.start)
         {
-            return Err(Error::invalid_params("renamed import edits overlap"));
+            return Err(Error::invalid_params("Renamed import edits overlap."));
         }
 
         analysis::validate(&document.text).map_err(failure)?;
@@ -649,7 +649,7 @@ fn mappings(parameters: RenameFilesParams, before: bool) -> Result<Vec<(PathBuf,
 
         if new.starts_with(&old) {
             return Err(Error::invalid_params(
-                "a source cannot be moved inside itself",
+                "A source cannot be moved inside itself.",
             ));
         }
 
@@ -664,7 +664,7 @@ fn mappings(parameters: RenameFilesParams, before: bool) -> Result<Vec<(PathBuf,
             })
         {
             return Err(Error::invalid_params(
-                "file rename mappings overlap or collide",
+                "File rename mappings overlap or collide.",
             ));
         }
 
@@ -674,7 +674,7 @@ fn mappings(parameters: RenameFilesParams, before: bool) -> Result<Vec<(PathBuf,
             && identity(new)? != identity(old)?
         {
             return Err(Error::invalid_params(
-                "file rename destination already exists",
+                "File rename destination already exists.",
             ));
         }
     }
@@ -704,7 +704,7 @@ fn intersects(left: &Path, right: &Path) -> bool {
 fn path(uri: &Uri) -> Result<PathBuf> {
     if uri.query().is_some() || uri.fragment().is_some() {
         return Err(Error::invalid_params(
-            "file operation URIs cannot contain queries or fragments",
+            "File operation URIs cannot contain queries or fragments.",
         ));
     }
 
@@ -715,7 +715,9 @@ fn destination(path: &Path) -> Result<PathBuf> {
     let path = lexical(path)?;
 
     let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
-        return Err(Error::invalid_params("file rename destination has no name"));
+        return Err(Error::invalid_params(
+            "File rename destination has no name.",
+        ));
     };
 
     Ok(identity(parent)?.join(name))
@@ -729,7 +731,7 @@ pub(super) fn identity(path: &Path) -> Result<PathBuf> {
     while !ancestor.try_exists().map_err(failure)? {
         let (Some(parent), Some(name)) = (ancestor.parent(), ancestor.file_name()) else {
             return Err(Error::invalid_params(
-                "file operation path has no existing ancestor",
+                "File operation path has no existing ancestor.",
             ));
         };
 
@@ -749,7 +751,7 @@ pub(super) fn identity(path: &Path) -> Result<PathBuf> {
 fn lexical(path: &Path) -> Result<PathBuf> {
     if !path.is_absolute() || path.to_str().is_none_or(|path| path.contains('\0')) {
         return Err(Error::invalid_params(
-            "file operation paths must be absolute UTF-8 paths",
+            "File operation paths must be absolute UTF-8 paths without null characters.",
         ));
     }
 
@@ -769,7 +771,7 @@ fn lexical(path: &Path) -> Result<PathBuf> {
 
     let text = normalized
         .to_str()
-        .ok_or_else(|| Error::invalid_params("file operation path is not UTF-8"))?;
+        .ok_or_else(|| Error::invalid_params("File operation path is not UTF-8."))?;
 
     #[cfg(windows)]
     let text = if let Some(network) = text.strip_prefix(r"\\?\UNC\") {
@@ -793,6 +795,6 @@ fn unshadowed(document: &Document, expression: &str) -> bool {
             .iter()
             .any(|binding| binding.name == root)
         && !document.analysis.tokens.iter().any(|token| {
-            token.access.write() && document.text.get(token.range.clone()) == Some(root)
+            token.access.is_write() && document.text.get(token.range.clone()) == Some(root)
         })
 }

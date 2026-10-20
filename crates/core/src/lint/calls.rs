@@ -3,7 +3,7 @@ use vermis::tree::{NodeIndex, NodeKind, Tree};
 use crate::{
     lint::{
         context::Context,
-        expression::{comparison, string},
+        expression::{is_comparison, string},
     },
     syntax::expression::{number, unwrap},
 };
@@ -43,12 +43,12 @@ const ARITHMETIC: &[&str] = &[
     "math.exp",
 ];
 
-pub(super) fn analyze(context: &mut Context<'_, '_>, node: NodeIndex) {
+pub(super) fn check(context: &mut Context<'_, '_>, node: NodeIndex) {
     let tree = context.tree;
 
     match &tree.node(node).kind {
         NodeKind::Call { callee, arguments }
-            if context.active(&[
+            if context.is_active(&[
                 "type_check_inside_call",
                 "restricted_module_paths",
                 "non_const_require",
@@ -63,7 +63,7 @@ pub(super) fn analyze(context: &mut Context<'_, '_>, node: NodeIndex) {
 
         NodeKind::MethodCall {
             receiver, method, ..
-        } if context.active(&["roblox_prefer_get_players"])
+        } if context.is_active(&["roblox_prefer_get_players"])
             && tree.text(*method) == b"GetChildren" =>
         {
             let receiver = context.bindings().value(tree, *receiver);
@@ -75,43 +75,43 @@ pub(super) fn analyze(context: &mut Context<'_, '_>, node: NodeIndex) {
                 ..
             } = tree.node(receiver).kind
                 && tree.text(method) == b"GetService"
-                && context.bindings().global(tree, receiver, "game")
+                && context.bindings().is_global(tree, receiver, "game")
                 && let [argument] = arguments_list(tree, arguments).as_slice()
                 && string(tree, *argument).as_deref() == Some(b"Players")
             {
-                context.warn(
+                context.emit(
                     node,
                     "roblox_prefer_get_players",
-                    "use Players:GetPlayers() to select players",
+                    "This call uses `GetChildren` on the `Players` service; use `Players:GetPlayers()` to select players.",
                 );
             }
         }
 
         NodeKind::CallStatement { call }
-            if context.active(&["ignored_pcall_result", "must_use"]) =>
+            if context.is_active(&["ignored_pcall_result", "must_use"]) =>
         {
             if let NodeKind::Call { callee, .. } = tree.node(unwrap(tree, *call)).kind {
                 let path = context.bindings().path(tree, callee);
 
-                if context.active(&["ignored_pcall_result"])
-                    && (context.bindings().global(tree, callee, "pcall")
-                        || context.bindings().global(tree, callee, "xpcall"))
+                if context.is_active(&["ignored_pcall_result"])
+                    && (context.bindings().is_global(tree, callee, "pcall")
+                        || context.bindings().is_global(tree, callee, "xpcall"))
                 {
-                    context.warn(
+                    context.emit(
                         *call,
                         "ignored_pcall_result",
-                        "protected-call result is discarded",
+                        "Protected-call result is discarded.",
                     );
                 }
 
-                if context.active(&["must_use"])
+                if context.is_active(&["must_use"])
                     && RESULTS.contains(&path.as_str())
-                    && context.bindings().global(tree, callee, &path)
+                    && context.bindings().is_global(tree, callee, &path)
                 {
-                    context.warn(
+                    context.emit(
                         *call,
                         "must_use",
-                        "result of a result-producing function is discarded",
+                        &format!("The result of `{path}` is discarded."),
                     );
                 }
             }
@@ -126,21 +126,21 @@ fn call(context: &mut Context<'_, '_>, node: NodeIndex, callee: NodeIndex, argum
     let arguments = arguments_list(tree, arguments);
     let path = context.bindings().path(tree, callee);
 
-    if context.active(&["type_check_inside_call"])
-        && (context.bindings().global(tree, callee, "type")
-            || context.bindings().global(tree, callee, "typeof"))
+    if context.is_active(&["type_check_inside_call"])
+        && (context.bindings().is_global(tree, callee, "type")
+            || context.bindings().is_global(tree, callee, "typeof"))
         && let [argument] = arguments.as_slice()
-        && matches!(tree.node(unwrap(tree, *argument)).kind, NodeKind::Binary { operator, .. } if comparison(tree.token(operator).kind))
+        && matches!(tree.node(unwrap(tree, *argument)).kind, NodeKind::Binary { operator, .. } if is_comparison(tree.token(operator).kind))
     {
-        context.warn(
+        context.emit(
             node,
             "type_check_inside_call",
-            "comparison belongs outside the type check",
+            "A comparison is passed to `type` or `typeof`; check whether the comparison belongs outside the call.",
         );
     }
 
-    if context.active(&["restricted_module_paths", "non_const_require"])
-        && context.bindings().global(tree, callee, "require")
+    if context.is_active(&["restricted_module_paths", "non_const_require"])
+        && context.bindings().is_global(tree, callee, "require")
     {
         if let [argument] = arguments.as_slice() {
             let value = context.bindings().value(tree, *argument);
@@ -149,29 +149,29 @@ fn call(context: &mut Context<'_, '_>, node: NodeIndex, callee: NodeIndex, argum
                 if let Ok(path) = String::from_utf8(literal)
                     && let Some(reason) = context.settings.imports.get(&path)
                 {
-                    context.warn(
+                    context.emit(
                         *argument,
                         "restricted_module_paths",
-                        &format!("module path `{path}` is restricted: {reason}"),
+                        &format!("Module path `{path}` is restricted.\n{reason}"),
                     );
                 }
-            } else if context.active(&["non_const_require"]) && !instance(context, value) {
-                context.warn(
+            } else if context.is_active(&["non_const_require"]) && !is_instance(context, value) {
+                context.emit(
                     node,
                     "non_const_require",
-                    "require argument is not statically known",
+                    "The `require` argument is not statically known.",
                 );
             }
         } else {
-            context.warn(
+            context.emit(
                 node,
                 "non_const_require",
-                "require argument is not statically known",
+                "This `require` call does not have exactly one argument.",
             );
         }
     }
 
-    if context.active(&[
+    if context.is_active(&[
         "roblox_incorrect_color3_new_bounds",
         "roblox_suspicious_udim2_new",
         "roblox_manual_fromscale_or_fromoffset",
@@ -179,25 +179,26 @@ fn call(context: &mut Context<'_, '_>, node: NodeIndex, callee: NodeIndex, argum
     {
         let root = context.bindings().path(tree, receiver);
 
-        if context.symbols.globals.contains(&root) && context.bindings().global(tree, callee, &path)
+        if context.symbols.globals.contains(&root)
+            && context.bindings().is_global(tree, callee, &path)
         {
-            if context.active(&["roblox_incorrect_color3_new_bounds"])
+            if context.is_active(&["roblox_incorrect_color3_new_bounds"])
                 && path == "Color3.new"
                 && arguments.iter().any(|argument| {
                     number(tree, *argument).is_some_and(|value| !(0.0..=1.0).contains(&value))
                 })
             {
-                context.warn(
+                context.emit(
                     node,
                     "roblox_incorrect_color3_new_bounds",
-                    "Color3.new channels use a 0-1 scale",
+                    "A `Color3.new` argument is outside the range from 0 to 1.",
                 );
             } else if path == "UDim2.new" {
                 if arguments.len() == 2 {
-                    context.warn(
+                    context.emit(
                         node,
                         "roblox_suspicious_udim2_new",
-                        "UDim2.new needs scale and offset components for both axes",
+                        "This `UDim2.new` call has two arguments; check the constructor overload.",
                     );
                 } else if let [
                     horizontal_scale,
@@ -205,26 +206,26 @@ fn call(context: &mut Context<'_, '_>, node: NodeIndex, callee: NodeIndex, argum
                     vertical_scale,
                     vertical_offset,
                 ] = arguments.as_slice()
-                    && context.active(&["roblox_manual_fromscale_or_fromoffset"])
+                    && context.is_active(&["roblox_manual_fromscale_or_fromoffset"])
                     && ((number(tree, *horizontal_offset) == Some(0.0)
                         && number(tree, *vertical_offset) == Some(0.0))
                         || (number(tree, *horizontal_scale) == Some(0.0)
                             && number(tree, *vertical_scale) == Some(0.0)))
                 {
-                    context.warn(
+                    context.emit(
                         node,
                         "roblox_manual_fromscale_or_fromoffset",
-                        "use UDim2.fromScale or UDim2.fromOffset for zero components",
+                        "This `UDim2.new` call has zero scale or offset components; consider `UDim2.fromScale` or `UDim2.fromOffset`.",
                     );
                 }
             }
         }
     }
 
-    if context.active(&["loop_invariant_call"])
+    if context.is_active(&["loop_invariant_call"])
         && let Some(body) = context.bindings().loops[node.get()]
         && ARITHMETIC.contains(&path.as_str())
-        && context.bindings().global(tree, callee, &path)
+        && context.bindings().is_global(tree, callee, &path)
         && let [argument] = arguments.as_slice()
         && number(tree, context.bindings().value(tree, *argument)).is_some_and(f64::is_finite)
         && context.bindings().references[unwrap(tree, *argument).get()].is_none_or(|index| {
@@ -234,23 +235,23 @@ fn call(context: &mut Context<'_, '_>, node: NodeIndex, callee: NodeIndex, argum
                 < tree.node(body).span.start
         })
     {
-        context.warn(
+        context.emit(
             node,
             "loop_invariant_call",
-            "deterministic numeric call has loop-invariant arguments",
+            "This numeric call has a loop-invariant argument.",
         );
     }
 }
 
-fn instance(context: &Context<'_, '_>, node: NodeIndex) -> bool {
+fn is_instance(context: &Context<'_, '_>, node: NodeIndex) -> bool {
     let tree = context.tree;
 
     match tree.node(unwrap(tree, node)).kind {
         NodeKind::Name { .. } => ["script", "game", "workspace"]
             .iter()
-            .any(|expected| context.bindings().global(tree, node, expected)),
+            .any(|expected| context.bindings().is_global(tree, node, expected)),
 
-        NodeKind::Field { receiver, .. } => instance(context, receiver),
+        NodeKind::Field { receiver, .. } => is_instance(context, receiver),
 
         NodeKind::MethodCall {
             receiver,
@@ -264,7 +265,7 @@ fn instance(context: &Context<'_, '_>, node: NodeIndex) -> bool {
             ) && arguments_list(tree, arguments)
                 .first()
                 .is_some_and(|argument| string(tree, *argument).is_some())
-                && instance(context, receiver)
+                && is_instance(context, receiver)
         }
 
         _ => false,

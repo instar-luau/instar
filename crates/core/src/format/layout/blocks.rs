@@ -17,8 +17,8 @@ use crate::{
 
 struct Statement {
     content: Vec<Document>,
-    blank: bool,
-    inline: bool,
+    has_blank_line: bool,
+    is_inline: bool,
     require: Option<Require>,
 }
 
@@ -213,13 +213,13 @@ impl Builder<'_, '_> {
         &self,
         entries: &[ListEntry],
         range: Range<usize>,
-        root: bool,
+        is_root: bool,
     ) -> Vec<Document> {
         let mut result = Vec::new();
         let mut position = range.start;
-        let mut inline = false;
+        let mut is_inline = false;
 
-        if root {
+        if is_root {
             while position < range.end {
                 let token = self.tree.tokens[position];
 
@@ -263,13 +263,14 @@ impl Builder<'_, '_> {
             {
                 units.push(Statement {
                     content: self.trivia(position..boundary, true),
-                    blank: position > range.start && self.blank(position, node.tokens.start.get()),
-                    inline,
+                    has_blank_line: position > range.start
+                        && self.has_blank_line(position, node.tokens.start.get()),
+                    is_inline,
                     require: None,
                 });
 
                 position = boundary;
-                inline = false;
+                is_inline = false;
             }
 
             let mut content = self.trivia(position..node.tokens.start.get(), true);
@@ -281,19 +282,21 @@ impl Builder<'_, '_> {
             }
 
             content.extend(self.trivia(finish..tail, false));
-            let blank = position > range.start && self.blank(position, node.tokens.start.get());
+
+            let has_blank_line =
+                position > range.start && self.has_blank_line(position, node.tokens.start.get());
 
             units.push(Statement {
                 content,
-                blank,
-                inline,
+                has_blank_line,
+                is_inline,
                 require: self
                     .imports
                     .and_then(|imports| imports.require(self.tree, entry.node, self.directives)),
             });
 
             position = tail;
-            inline = self.directives.marker(tail).is_some();
+            is_inline = self.directives.marker(tail).is_some();
         }
 
         self.order(&mut units);
@@ -303,8 +306,8 @@ impl Builder<'_, '_> {
             offset,
             Statement {
                 content,
-                blank,
-                inline,
+                has_blank_line,
+                is_inline,
                 require,
             },
         ) in units.into_iter().enumerate()
@@ -312,16 +315,16 @@ impl Builder<'_, '_> {
             let path = require.map(|require| require.path);
 
             if offset > 0 {
-                let grouped = self.configuration.require.order == Order::Grouped
+                let is_grouped = self.configuration.require.order == Order::Grouped
                     && self.configuration.require.blank_lines == BlankLines::BetweenGroups
                     && previous_path.as_deref().zip(path.as_deref()).is_some_and(
                         |(left, right)| self.prepared.group(left) != self.prepared.group(right),
                     );
 
-                result.push(if inline {
+                result.push(if is_inline {
                     Document::Space
                 } else {
-                    Document::Line(if blank || grouped { 2 } else { 1 })
+                    Document::Line(if has_blank_line || is_grouped { 2 } else { 1 })
                 });
             }
 
@@ -329,8 +332,8 @@ impl Builder<'_, '_> {
             previous_path = path;
         }
 
-        if self.comments(position..range.end) {
-            result.push(if inline {
+        if self.has_comments(position..range.end) {
+            result.push(if is_inline {
                 Document::Space
             } else {
                 Document::Line(1)
@@ -483,13 +486,13 @@ impl Builder<'_, '_> {
                 let left = &left
                     .require
                     .as_ref()
-                    .expect("internal error: missing require in import run")
+                    .expect("Internal error: missing `require` in import run.")
                     .path;
 
                 let right = &right
                     .require
                     .as_ref()
-                    .expect("internal error: missing require in import run")
+                    .expect("Internal error: missing `require` in import run.")
                     .path;
 
                 imports::compare(self.prepared, left, right)

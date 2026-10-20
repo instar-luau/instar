@@ -18,11 +18,11 @@ pub(crate) fn parse(source: &str) -> Result<Tree<'_>, Error> {
 
     syntax::parse(&source.as_bytes()[prefix..], |range, message| Error {
         range: range.start + prefix..range.end + prefix,
-        message: message.unwrap_or("incomplete syntax").to_owned(),
+        message: message.unwrap_or("Syntax is incomplete.").to_owned(),
     })
 }
 
-pub(super) fn truth(tree: &Tree<'_>, node: NodeIndex) -> Option<bool> {
+pub(super) fn is_truthy(tree: &Tree<'_>, node: NodeIndex) -> Option<bool> {
     match &tree.node(unwrap(tree, node)).kind {
         NodeKind::Nil { .. } => Some(false),
 
@@ -38,7 +38,7 @@ pub(super) fn truth(tree: &Tree<'_>, node: NodeIndex) -> Option<bool> {
         NodeKind::Unary { operator, operand }
             if tree.token(*operator).kind == TokenKind::Keyword(Keyword::Not) =>
         {
-            truth(tree, *operand).map(|value| !value)
+            is_truthy(tree, *operand).map(|is_true| !is_true)
         }
 
         NodeKind::Binary {
@@ -94,7 +94,7 @@ pub(super) fn single(tree: &Tree<'_>, node: NodeIndex) -> Option<NodeIndex> {
     Some(statement.node)
 }
 
-pub(super) fn same(tree: &Tree<'_>, left: NodeIndex, right: NodeIndex) -> bool {
+pub(super) fn is_same(tree: &Tree<'_>, left: NodeIndex, right: NodeIndex) -> bool {
     let tokens = |node: NodeIndex| {
         let range = &tree.node(node).tokens;
 

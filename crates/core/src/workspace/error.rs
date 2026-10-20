@@ -4,7 +4,7 @@ use std::{io, path::PathBuf, sync::Arc};
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// A filesystem operation failed.
-    #[error("cannot access `{}`", path.display())]
+    #[error("Could not access `{}`.", path.display())]
     Filesystem {
         /// The path involved in the operation.
         path: PathBuf,
@@ -13,15 +13,15 @@ pub enum Error {
     },
 
     /// A workspace operation was cancelled.
-    #[error("workspace operation cancelled")]
+    #[error("Workspace operation cancelled.")]
     Cancelled,
 
     /// A workspace asynchronous runtime could not start.
-    #[error("cannot start workspace runtime")]
+    #[error("Could not start the workspace runtime.")]
     Runtime(#[source] io::Error),
 
     /// An asset could not be downloaded.
-    #[error("cannot download `{url}`")]
+    #[error("Could not download `{url}`.")]
     Download {
         /// The asset URL.
         url: String,
@@ -30,7 +30,7 @@ pub enum Error {
     },
 
     /// A sourcemap generator could not run successfully.
-    #[error("cannot generate sourcemap with `{executable}`")]
+    #[error("Could not generate a sourcemap with `{executable}`.")]
     Generate {
         /// The generator executable.
         executable: String,
@@ -39,7 +39,7 @@ pub enum Error {
     },
 
     /// A generator returned an invalid sourcemap.
-    #[error("invalid sourcemap from `{executable}`")]
+    #[error("Invalid sourcemap from `{executable}`.")]
     GeneratedData {
         /// The generator executable.
         executable: String,
@@ -52,23 +52,23 @@ pub enum Error {
     Generation(Arc<Self>),
 
     /// A directory traversal failed.
-    #[error("cannot traverse workspace")]
+    #[error("Could not traverse the workspace.")]
     Traversal(#[source] ignore::Error),
 
     /// A selection pattern could not be compiled.
-    #[error("invalid selection pattern")]
+    #[error("Invalid selection pattern.")]
     Pattern(#[source] globset::Error),
 
     /// Configuration could not be loaded or deserialized.
-    #[error("invalid configuration")]
+    #[error("Invalid configuration.")]
     Configuration(#[source] Box<figment::Error>),
 
     /// Native environment settings could not be validated.
-    #[error("cannot prepare analysis")]
+    #[error("Could not prepare analysis.")]
     Analysis(#[source] instar_bridge::Error),
 
     /// Environment metadata or documentation could not be decoded.
-    #[error("cannot decode `{}`", path.display())]
+    #[error("Could not decode `{}` as JSON.", path.display())]
     Data {
         /// The input file.
         path: PathBuf,
@@ -77,7 +77,7 @@ pub enum Error {
     },
 
     /// A path cannot identify a workspace input.
-    #[error("cannot use `{}`: {reason}", path.display())]
+    #[error("Cannot use `{}`. {reason}", path.display())]
     Path {
         /// The rejected path.
         path: PathBuf,

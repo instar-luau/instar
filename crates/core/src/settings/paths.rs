@@ -75,7 +75,7 @@ pub(super) fn resolve(
             .first()
             .is_some_and(|executable| executable.trim().is_empty())
         {
-            return Err(command.field("0").error("expected a nonempty executable"));
+            return Err(command.field("0").error("Expected a nonempty executable."));
         }
 
         for (name, arguments) in [("command", &generator.command), ("watch", &generator.watch)] {
@@ -84,7 +84,7 @@ pub(super) fn resolve(
                     return Err(source
                         .field(name)
                         .field(&index.to_string())
-                        .error("command arguments must not contain NUL"));
+                        .error("Command arguments must not contain NUL characters."));
                 }
             }
         }

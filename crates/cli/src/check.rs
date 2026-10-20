@@ -1,34 +1,28 @@
 use std::{
     collections::{BTreeMap, btree_map::Entry},
-    sync::Arc,
+    iter,
     time::Instant,
 };
 
-use codespan_reporting::{
-    diagnostic::{Diagnostic, Label},
-    files::{Files as _, SimpleFile},
-};
-
-use eyre::{Result, WrapErr as _, eyre};
+use eyre::{Result, eyre};
 use instar_bridge::{Context, Frontend, Progress};
 use instar_core::workspace::{Purpose, Workspace};
 
 use super::{
-    arguments::{Arguments, Operation},
+    arguments::Operation,
+    batch::{Batch, Finding, Label, Severity, Source},
     execution::{self, Outcome, Project, Response},
     interrupt,
-    report::{Batch, Source},
     watch::Watcher,
 };
 
 pub(super) fn session(
-    arguments: &Arguments,
     operation: &Operation,
     project: &Project,
     watcher: Option<&mut Watcher>,
     started: Instant,
 ) -> Result<Outcome> {
-    tracing::debug!("creating native frontend");
+    tracing::debug!("Creating native frontend");
     let workspace = &project.workspace;
 
     let update = |stage: Progress<'_>| {
@@ -45,7 +39,6 @@ pub(super) fn session(
     let mut frontend = Frontend::new(&context, false)?;
 
     execution::session(
-        arguments,
         operation,
         project,
         watcher,
@@ -77,7 +70,7 @@ pub(super) fn session(
                 process(workspace, module, &mut frontend, &mut files)
             })?);
 
-            tracing::debug!(checks = ?frontend.checks().checked_sub(checks), "completed native checks");
+            tracing::debug!(checks = ?frontend.checks().checked_sub(checks), "Completed native checks");
 
             Ok(Response::Completed(batch))
         },
@@ -88,20 +81,23 @@ fn process(
     workspace: &Workspace,
     module: &str,
     frontend: &mut Frontend<'_>,
-    files: &mut BTreeMap<String, SimpleFile<String, Arc<str>>>,
+    files: &mut BTreeMap<String, (Source, Vec<usize>)>,
 ) -> Result<Batch> {
     let mut batch = Batch::default();
 
     for diagnostic in frontend.check(module)? {
         if !diagnostic.module.is_empty()
-            && workspace.excluded(&diagnostic.module, Purpose::Check)?
+            && workspace.is_excluded(&diagnostic.module, Purpose::Check)?
         {
             continue;
         }
 
-        let mut finding = Diagnostic::error()
-            .with_code(diagnostic.code.to_string())
-            .with_message(diagnostic.message);
+        let mut finding = Finding::new(
+            Severity::Error,
+            diagnostic.code.to_string(),
+            diagnostic.message,
+            Vec::new(),
+        );
 
         if !diagnostic.module.is_empty() {
             let file = match files.entry(diagnostic.module.clone()) {
@@ -109,31 +105,32 @@ fn process(
 
                 Entry::Vacant(entry) => {
                     let source = workspace.snapshot(&diagnostic.module).ok_or_else(|| {
-                        eyre!("cannot read diagnostic source `{}`", diagnostic.module)
+                        eyre!("Could not read diagnostic source `{}`.", diagnostic.module)
                     })?;
 
-                    entry.insert(SimpleFile::new(diagnostic.module.clone(), source))
+                    let lines = iter::once(0)
+                        .chain(source.match_indices('\n').map(|(offset, _)| offset + 1))
+                        .collect();
+
+                    entry.insert((
+                        Source {
+                            module: diagnostic.module.clone(),
+                            text: source,
+                        },
+                        lines,
+                    ))
                 }
             };
 
-            let start = file
-                .line_range((), diagnostic.start_line as usize)
-                .wrap_err("internal error: cannot locate diagnostic start")?
-                .start
-                + diagnostic.start_column as usize;
+            let start = file.1.get(diagnostic.start_line as usize).ok_or_else(|| {
+                eyre!("Internal error: could not locate the start of the diagnostic.")
+            })? + diagnostic.start_column as usize;
 
-            let end = file
-                .line_range((), diagnostic.end_line as usize)
-                .wrap_err("internal error: cannot locate diagnostic end")?
-                .start
-                + diagnostic.end_column as usize;
+            let end = file.1.get(diagnostic.end_line as usize).ok_or_else(|| {
+                eyre!("Internal error: could not locate the end of the diagnostic.")
+            })? + diagnostic.end_column as usize;
 
-            let source = Source {
-                module: diagnostic.module,
-                text: Arc::clone(file.source()),
-            };
-
-            finding.labels.push(Label::primary(source, start..end));
+            finding.labels.push(Label::new(file.0.clone(), start..end));
         }
 
         batch.findings.push(finding);

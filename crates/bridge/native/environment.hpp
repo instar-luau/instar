@@ -10,12 +10,15 @@
 namespace instar::luau {
     struct Diagnostic;
     struct Environment;
+    struct DeclarationFlags;
 
     struct DeclarationFailure : std::exception {
         explicit DeclarationFailure(const rust::Vec<Diagnostic> &diagnostics) noexcept;
 
         const rust::Vec<Diagnostic> &diagnostics;
     };
+
+    rust::String declarations(const DeclarationFlags &configuration);
 
     rust::Vec<Diagnostic> prepare(Luau::Frontend &frontend, const std::string &name, const Environment &environment);
 }

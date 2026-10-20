@@ -197,7 +197,7 @@ pub(super) fn document_highlight_source(
             .map(|occurrence| {
                 Ok(DocumentHighlight {
                     range: document.range(occurrence.range.clone(), project.encoding)?,
-                    kind: Some(if occurrence.write {
+                    kind: Some(if occurrence.access.is_write() {
                         DocumentHighlightKind::Write
                     } else {
                         DocumentHighlightKind::Read

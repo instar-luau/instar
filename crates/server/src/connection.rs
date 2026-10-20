@@ -11,7 +11,6 @@ use std::{
 };
 
 use instar_bridge::{Cancellation, Frontend, Progress};
-use serde_json::json;
 
 use tokio::{
     runtime::Handle,
@@ -21,14 +20,13 @@ use tokio::{
 
 use tower_lsp_server::{
     Client,
-    gen_lsp_types::{
-        ProgressNotification, ProgressParams, ProgressToken, Range as ProtocolRange, TextEdit, Uri,
-    },
+    gen_lsp_types::{ProgressToken, Range as ProtocolRange, TextEdit, Uri},
     jsonrpc::{Error, Result},
 };
 
 use super::{
     editing, files, native,
+    output::progress,
     project::{Feedback, Project, Snapshot, failure},
     workspace::{Documents, History, State},
 };
@@ -161,7 +159,7 @@ impl Connection {
                 let project = state
                     .projects
                     .get_mut(&root)
-                    .expect("internal error: formatting project missing");
+                    .expect("Internal error: formatting project is missing.");
 
                 project
                     .workspace
@@ -316,7 +314,7 @@ impl Connection {
         if let Some(operation) = self
             .current
             .lock()
-            .expect("internal error: active operation poisoned")
+            .expect("Internal error: active operation mutex is poisoned.")
             .upgrade()
         {
             operation.cancel();
@@ -328,7 +326,7 @@ impl Connection {
             &mut *self
                 .threads
                 .lock()
-                .expect("internal error: worker threads poisoned"),
+                .expect("Internal error: worker threads mutex is poisoned."),
         );
 
         let mut failure = None;
@@ -339,9 +337,9 @@ impl Connection {
                     .downcast_ref::<&str>()
                     .copied()
                     .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
-                    .unwrap_or("unknown panic payload");
+                    .unwrap_or("Unknown panic payload.");
 
-                failure = Some(eyre::eyre!("worker thread panicked: {message}"));
+                failure = Some(eyre::eyre!("Worker thread panicked. {message}"));
             }
         }
 
@@ -352,7 +350,7 @@ impl Connection {
 impl Drop for Connection {
     fn drop(&mut self) {
         if let Err(error) = self.stop() {
-            tracing::error!(%error, "cannot stop analysis worker");
+            tracing::error!(%error, "Could not stop the analysis worker.");
         }
     }
 }
@@ -382,7 +380,7 @@ impl Operation {
         if let Some(native) = &*self
             .native
             .lock()
-            .expect("internal error: cancellation handle poisoned")
+            .expect("Internal error: cancellation handle mutex is poisoned.")
         {
             native.cancel();
         }
@@ -392,7 +390,7 @@ impl Operation {
         let mut native = self
             .native
             .lock()
-            .expect("internal error: cancellation handle poisoned");
+            .expect("Internal error: cancellation handle mutex is poisoned.");
 
         cancellation.reset();
         *native = Some(cancellation.clone());
@@ -405,7 +403,7 @@ impl Operation {
     pub(super) fn detach(&self) {
         self.native
             .lock()
-            .expect("internal error: cancellation handle poisoned")
+            .expect("Internal error: cancellation handle mutex is poisoned.")
             .take();
     }
 
@@ -415,17 +413,7 @@ impl Operation {
         }
 
         if let Some((client, token, handle)) = &self.progress {
-            let message = match stage {
-                Progress::Started(module) | Progress::Finished(module) => module.to_owned(),
-                Progress::Advanced { completed, total } => format!("{completed}/{total} modules"),
-            };
-
-            handle.block_on(
-                client.send_notification::<ProgressNotification>(ProgressParams {
-                    token: token.clone(),
-                    value: json!({"kind":"report","cancellable":true,"message":message}),
-                }),
-            );
+            progress::report(client, token, handle, stage);
         }
 
         true
@@ -577,7 +565,7 @@ fn run(receiver: &Receiver<Message>, worker: &Sender<Work>) {
                         let project = state
                             .projects
                             .get_mut(&root)
-                            .expect("internal error: source project missing");
+                            .expect("Internal error: source project is missing.");
 
                         if let Some(operation) = operation {
                             project
@@ -657,13 +645,13 @@ fn run(receiver: &Receiver<Message>, worker: &Sender<Work>) {
                             let paths = &state.events[request.ticket.events..];
 
                             if let Err(error) = files::invalidate(project, paths, &dependencies) {
-                                tracing::error!(%error, "cannot invalidate changed native dependencies");
+                                tracing::error!(%error, "Could not invalidate changed native dependencies.");
 
                                 match project.changed() {
                                     Ok(()) => project.invalidation = project.generation,
 
                                     Err(error) => {
-                                        tracing::error!(%error, "cannot invalidate changed native dependencies");
+                                        tracing::error!(%error, "Could not invalidate changed native dependencies.");
                                     }
                                 }
                             }
@@ -685,7 +673,7 @@ fn run(receiver: &Receiver<Message>, worker: &Sender<Work>) {
         }
 
         if let Err(error) = state.propagate(&previous) {
-            tracing::error!(%error, "cannot advance borrowed document generation");
+            tracing::error!(%error, "Could not advance the borrowed document generation.");
 
             for request in pending.values() {
                 request.operation.cancel();
@@ -728,7 +716,7 @@ fn run(receiver: &Receiver<Message>, worker: &Sender<Work>) {
 
             if let Err(error) = worker.send(work) {
                 pending.remove(&identifier);
-                ((error.0.action)(Err(failure("native worker stopped"))).1)(Ok(()));
+                ((error.0.action)(Err(failure("Native worker stopped."))).1)(Ok(()));
             } else {
                 active = Some(identifier);
             }

@@ -1,26 +1,35 @@
-use std::{collections::BTreeMap, num::NonZeroUsize, path::PathBuf};
+use std::{collections::BTreeMap, env, num::NonZeroUsize, path::PathBuf};
 
-use clap::{ColorChoice, Parser, Subcommand};
+use clap::{ColorChoice, CommandFactory as _, FromArgMatches as _, Parser, Subcommand};
 use instar_core::{assets::Target, lint};
 
-use super::association::Association;
+use super::{association::Association, output};
 
 #[derive(Parser)]
 #[command(
     name = "instar",
     version,
-    about = "check, format, lint, and serve Luau projects"
+    about = "Check, format, lint, and serve Luau projects",
+    styles = output::styles()
 )]
 pub(super) struct Arguments {
     #[arg(
         long,
         global = true,
-        help = "show selected files and timing",
+        help = "Show project details and file activity",
         conflicts_with = "quiet"
     )]
     pub(super) verbose: bool,
 
-    #[arg(long, global = true, help = "suppress progress and success output")]
+    #[arg(
+        long,
+        global = true,
+        help = "Show verbose output and internal debug logs",
+        conflicts_with = "quiet"
+    )]
+    pub(super) debug: bool,
+
+    #[arg(long, global = true, help = "Hide progress and summaries")]
     pub(super) quiet: bool,
 
     #[arg(
@@ -28,7 +37,7 @@ pub(super) struct Arguments {
         global = true,
         value_enum,
         value_name = "WHEN",
-        help = "control diagnostic colors"
+        help = "Control terminal colors: auto, always, never"
     )]
     pub(super) color: Option<ColorChoice>,
 
@@ -36,7 +45,7 @@ pub(super) struct Arguments {
         long,
         global = true,
         value_name = "PATH",
-        help = "use this module path for stdin"
+        help = "Use this module path for stdin"
     )]
     pub(super) stdin_filepath: Option<PathBuf>,
 
@@ -44,27 +53,64 @@ pub(super) struct Arguments {
     pub(super) command: Command,
 }
 
+impl Arguments {
+    pub(super) fn parse() -> Self {
+        let arguments: Vec<_> = env::args_os().collect();
+        let mut color = ColorChoice::Auto;
+        let mut values = arguments.iter().skip(1);
+
+        while let Some(value) = values.next() {
+            if value == "--" {
+                break;
+            }
+
+            let value = if value == "--color" {
+                values.next().and_then(|value| value.to_str())
+            } else {
+                value
+                    .to_str()
+                    .and_then(|value| value.strip_prefix("--color="))
+            };
+
+            if let Some(value) = value {
+                color = match value {
+                    "always" => ColorChoice::Always,
+                    "never" => ColorChoice::Never,
+                    _ => ColorChoice::Auto,
+                };
+            }
+        }
+
+        let matches = Self::command()
+            .color(color)
+            .try_get_matches_from(arguments)
+            .unwrap_or_else(|error| error.exit());
+
+        Self::from_arg_matches(&matches).unwrap_or_else(|error| error.exit())
+    }
+}
+
 #[derive(Subcommand)]
 pub(super) enum Command {
     #[command(flatten)]
     Files(Box<Operation>),
 
-    #[command(about = "generate local schema, Luau, and Roblox files")]
+    #[command(about = "Generate local schema, Luau, and Roblox files")]
     Generate(Generate),
 
-    #[command(about = "serve the language server protocol over stdin and stdout")]
+    #[command(about = "Serve the Language Server Protocol over stdin and stdout")]
     Server,
 }
 
 #[derive(Subcommand)]
 pub(super) enum Operation {
-    #[command(about = "check files, directories, patterns, or stdin (-)")]
+    #[command(about = "Check files, directories, patterns, or stdin (-)")]
     Check(Check),
 
-    #[command(about = "format files, directories, patterns, or stdin (-)")]
+    #[command(about = "Format files, directories, patterns, or stdin (-)")]
     Format(Format),
 
-    #[command(about = "lint files, directories, patterns, or stdin (-)")]
+    #[command(about = "Lint files, directories, patterns, or stdin (-)")]
     Lint(Lint),
 }
 
@@ -72,21 +118,21 @@ pub(super) enum Operation {
 pub(super) struct Generate {
     #[arg(
         value_name = "TARGET",
-        help = "schema, luau, or roblox; defaults to all"
+        help = "Select schema, luau, or roblox files. Defaults to all targets"
     )]
     pub(super) targets: Vec<Target>,
 
     #[arg(
         long,
         value_name = "DIRECTORY",
-        help = "write selected files to this directory"
+        help = "Write generated files to this directory"
     )]
     pub(super) output: PathBuf,
 
     #[arg(
         long,
         value_name = "PATH",
-        help = "resolve output and TOML tool configuration relative to this project directory"
+        help = "Resolve output and TOML tool configuration from this project directory"
     )]
     pub(super) root: Option<PathBuf>,
 
@@ -94,14 +140,14 @@ pub(super) struct Generate {
         long,
         value_enum,
         value_name = "TOOL",
-        help = "associate the generated schema in the project's TOML tool configuration"
+        help = "Associate the generated schema with the project's TOML tool configuration"
     )]
     pub(super) associate: Option<Association>,
 
     #[arg(
         long,
         value_name = "COMMIT",
-        help = "generate upstream files from this 40-character tracker commit"
+        help = "Generate upstream files from this 40-character tracker commit"
     )]
     pub(super) revision: Option<String>,
 }
@@ -165,18 +211,18 @@ impl Operation {
 pub(super) struct Options {
     #[arg(
         value_name = "INPUT",
-        help = "files, directories, patterns, or -; defaults to ."
+        help = "Select files, directories, patterns, or - for stdin. Defaults to ."
     )]
     pub(super) inputs: Vec<PathBuf>,
 
-    #[arg(long, help = "run again after filesystem changes")]
+    #[arg(long, help = "Run again when files change")]
     pub(super) watch: bool,
 
     #[arg(
         long,
         value_name = "MILLISECONDS",
         default_value_t = 75,
-        help = "wait for filesystem quiet before running; 0 disables the delay",
+        help = "Wait for filesystem changes to settle before running. Use 0 for no delay",
         requires = "watch"
     )]
     pub(super) debounce: u64,
@@ -184,27 +230,27 @@ pub(super) struct Options {
     #[arg(
         long,
         value_name = "PATH",
-        help = "resolve inputs relative to this project directory"
+        help = "Resolve inputs from this project directory"
     )]
     pub(super) root: Option<PathBuf>,
 
     #[arg(
         long,
         value_name = "PATH",
-        help = "use an explicit configuration file; repeat to layer files"
+        help = "Use a configuration file. Repeat to layer files"
     )]
     pub(super) configuration: Vec<PathBuf>,
 
-    #[arg(long, value_name = "PATTERN", num_args = 1.., help = "override inclusion patterns")]
+    #[arg(long, value_name = "PATTERN", num_args = 1.., help = "Override inclusion patterns")]
     pub(super) include: Vec<String>,
 
-    #[arg(long, value_name = "PATTERN", num_args = 1.., help = "override exclusion patterns")]
+    #[arg(long, value_name = "PATTERN", num_args = 1.., help = "Override exclusion patterns")]
     pub(super) exclude: Vec<String>,
 
     #[arg(
         long,
         value_name = "FIELD=JSON",
-        help = "override a configuration field; may be repeated"
+        help = "Override a configuration field with JSON. Repeat for multiple fields"
     )]
     pub(super) set: Vec<String>,
 }
@@ -214,7 +260,7 @@ pub(super) struct Check {
     #[command(flatten)]
     pub(super) options: Options,
 
-    #[arg(long, value_name = "MODE", value_parser = ["strict", "nonstrict", "nocheck"], help = "override the default checking mode")]
+    #[arg(long, value_name = "MODE", value_parser = ["strict", "nonstrict", "nocheck"], help = "Override the default checking mode")]
     pub(super) mode: Option<String>,
 }
 
@@ -226,18 +272,21 @@ pub(super) struct Format {
     #[arg(
         long,
         value_name = "COUNT",
-        help = "worker limit; defaults to available parallelism"
+        help = "Limit worker count. Defaults to available parallelism"
     )]
     pub(super) jobs: Option<NonZeroUsize>,
 
     #[arg(
         long,
         conflicts_with = "preview",
-        help = "report unformatted files without writing"
+        help = "Report files that need formatting without writing changes"
     )]
     pub(super) check: bool,
 
-    #[arg(long, help = "print a unified diff without writing")]
+    #[arg(
+        long,
+        help = "Show formatting changes as a unified diff without writing"
+    )]
     pub(super) preview: bool,
 }
 
@@ -249,20 +298,20 @@ pub(super) struct Lint {
     #[arg(
         long,
         value_name = "COUNT",
-        help = "worker limit; defaults to available parallelism"
+        help = "Limit worker count. Defaults to available parallelism"
     )]
     pub(super) jobs: Option<NonZeroUsize>,
 
-    #[arg(long, value_name = "RULE", num_args = 1.., help = "select only these lint rules")]
+    #[arg(long, value_name = "RULE", num_args = 1.., help = "Run only the selected lint rules")]
     pub(super) rule: Vec<String>,
 
-    #[arg(long = "fix", help = "apply safe corrections")]
+    #[arg(long = "fix", help = "Apply safe fixes")]
     pub(super) corrections: bool,
 
     #[arg(
         long,
         requires = "corrections",
-        help = "print safe corrections as a unified diff without writing"
+        help = "Show safe fixes as a unified diff without writing"
     )]
     pub(super) preview: bool,
 }

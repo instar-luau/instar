@@ -2,6 +2,7 @@
 
 mod arguments;
 mod association;
+mod batch;
 mod check;
 mod command;
 mod execution;
@@ -9,13 +10,8 @@ mod format;
 mod generate;
 mod interrupt;
 mod lint;
-mod progress;
-mod report;
+mod output;
 mod watch;
 mod workers;
 
-use std::process::ExitCode;
-
-fn main() -> ExitCode {
-    command::run()
-}
+use self::command::main;

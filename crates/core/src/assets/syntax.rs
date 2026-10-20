@@ -2,16 +2,15 @@ use std::{collections::BTreeSet, str::from_utf8};
 
 use vermis::{
     emitter::{Emitter, LineEnding},
-    lexer::Lexer,
     token::{Keyword, Symbol, TokenKind},
     tree::{NodeIndex, NodeKind, TokenIndex, Tree},
 };
 
-use crate::syntax;
+use crate::syntax::{self, is_identifier};
 
 use super::{
     Error,
-    mapping::{invalid, primitive},
+    mapping::{invalid, is_primitive},
 };
 
 #[derive(Default)]
@@ -52,8 +51,8 @@ impl Output {
     }
 
     pub(super) fn name(&mut self, name: &str) -> Result<(), Error> {
-        if !identifier(name) {
-            return Err(invalid(format!("invalid declaration identifier `{name}`")));
+        if !is_identifier(name) {
+            return Err(invalid(format!("Invalid declaration identifier `{name}`.")));
         }
 
         self.source(name);
@@ -62,7 +61,7 @@ impl Output {
     }
 
     pub(super) fn property(&mut self, name: &str) -> Result<(), Error> {
-        if identifier(name) {
+        if is_identifier(name) {
             self.source(name);
         } else {
             self.symbol(Symbol::LeftBracket);
@@ -81,11 +80,11 @@ impl Output {
         self.atoms.extend(output.atoms);
     }
 
-    pub(super) fn finish(&self, cancelled: fn() -> bool) -> Result<String, Error> {
+    pub(super) fn finish(&self, is_cancelled: fn() -> bool) -> Result<String, Error> {
         let mut emitter = Emitter::new(LineEnding::LineFeed);
 
         for atom in &self.atoms {
-            if cancelled() {
+            if is_cancelled() {
                 return Err(Error::Cancelled);
             }
 
@@ -98,7 +97,7 @@ impl Output {
                     let tree = vermis::parse(source.as_bytes());
 
                     for (index, token) in tree.tokens.iter().enumerate() {
-                        if cancelled() {
+                        if is_cancelled() {
                             return Err(Error::Cancelled);
                         }
 
@@ -113,7 +112,7 @@ impl Output {
         }
 
         String::from_utf8(emitter.finish().into_owned())
-            .map_err(|error| invalid(format!("invalid emitted UTF-8: {error}")))
+            .map_err(|error| invalid(format!("Emitted declarations are not valid UTF-8. {error}")))
     }
 }
 
@@ -123,30 +122,23 @@ impl Block {
     }
 }
 
-pub(super) fn identifier(name: &str) -> bool {
-    let mut tokens = Lexer::new(name.as_bytes());
-
-    matches!(tokens.next(), Some(token) if token.kind == TokenKind::Name && token.span.start == 0 && token.span.end == name.len())
-        && matches!(tokens.next(), Some(token) if token.kind == TokenKind::EndOfFile)
-}
-
 pub(super) fn parse(source: &str) -> Result<Tree<'_>, Error> {
     syntax::parse(source.as_bytes(), |range, message| match message {
         Some(message) => invalid(format!(
-            "invalid declaration at byte {}: {message}",
+            "Invalid declaration at byte {}. {message}",
             range.start
         )),
 
-        None => invalid("incomplete declaration syntax"),
+        None => invalid("Incomplete declaration syntax."),
     })
 }
 
-pub(super) fn blocks(source: &str, cancelled: fn() -> bool) -> Result<Vec<Block>, Error> {
+pub(super) fn blocks(source: &str, is_cancelled: fn() -> bool) -> Result<Vec<Block>, Error> {
     let tree = parse(source)?;
     let mut result = Vec::new();
 
     for statement in statements(&tree)? {
-        if cancelled() {
+        if is_cancelled() {
             return Err(Error::Cancelled);
         }
 
@@ -163,7 +155,7 @@ pub(super) fn blocks(source: &str, cancelled: fn() -> bool) -> Result<Vec<Block>
             } => (*name, false, *generics, None),
 
             NodeKind::Binding { name, .. } => (*name, false, None, None),
-            _ => return Err(invalid("unsupported top-level declaration")),
+            _ => return Err(invalid("Unsupported top-level declaration.")),
         };
 
         let name = text(&tree, name)?.to_owned();
@@ -180,7 +172,7 @@ pub(super) fn blocks(source: &str, cancelled: fn() -> bool) -> Result<Vec<Block>
                 {
                     let default = text(&tree, default)?;
 
-                    if identifier(default) && !primitive(default) {
+                    if is_identifier(default) && !is_primitive(default) {
                         dependencies.push(default.to_owned());
                     }
                 }
@@ -206,13 +198,13 @@ pub(super) fn blocks(source: &str, cancelled: fn() -> bool) -> Result<Vec<Block>
 
 pub(super) fn replacements(
     source: &str,
-    cancelled: fn() -> bool,
+    is_cancelled: fn() -> bool,
 ) -> Result<Vec<(String, Vec<Replacement>)>, Error> {
     let tree = parse(source)?;
     let mut result = Vec::new();
 
     for statement in statements(&tree)? {
-        if cancelled() {
+        if is_cancelled() {
             return Err(Error::Cancelled);
         }
 
@@ -223,7 +215,7 @@ pub(super) fn replacements(
                 ..
             }
         ) {
-            return Err(invalid("invalid member declaration"));
+            return Err(invalid("Invalid member declaration."));
         }
 
         let declaration = declaration(&tree, statement);
@@ -235,7 +227,7 @@ pub(super) fn replacements(
             ..
         } = &tree.node(declaration).kind
         else {
-            return Err(invalid("invalid member declaration"));
+            return Err(invalid("Invalid member declaration."));
         };
 
         let mut signatures = Vec::new();
@@ -247,13 +239,13 @@ pub(super) fn replacements(
                 } => name,
 
                 NodeKind::TypeField { key, .. } => key,
-                _ => return Err(invalid("invalid replacement member")),
+                _ => return Err(invalid("Invalid replacement member.")),
             };
 
             let name = text(&tree, name)?.to_owned();
 
-            if !identifier(&name) {
-                return Err(invalid("invalid replacement member name"));
+            if !is_identifier(&name) {
+                return Err(invalid("Invalid replacement member name."));
             }
 
             signatures.push(Replacement {
@@ -268,8 +260,8 @@ pub(super) fn replacements(
     Ok(result)
 }
 
-pub(super) fn ordered(source: &str, cancelled: fn() -> bool) -> Result<String, Error> {
-    let mut pending = blocks(source, cancelled)?;
+pub(super) fn ordered(source: &str, is_cancelled: fn() -> bool) -> Result<String, Error> {
+    let mut pending = blocks(source, is_cancelled)?;
     let mut emitted = BTreeSet::new();
     let mut output = Output::default();
 
@@ -278,7 +270,7 @@ pub(super) fn ordered(source: &str, cancelled: fn() -> bool) -> Result<String, E
         let mut remaining = Vec::new();
 
         for block in pending {
-            if cancelled() {
+            if is_cancelled() {
                 return Err(Error::Cancelled);
             }
 
@@ -301,10 +293,10 @@ pub(super) fn ordered(source: &str, cancelled: fn() -> bool) -> Result<String, E
 
         if remaining.len() == count {
             return Err(invalid(format!(
-                "unresolved class inheritance: {}",
+                "Unresolved declaration dependencies: {}.",
                 remaining
                     .iter()
-                    .map(|block| block.name.as_str())
+                    .map(|block| format!("`{}`", block.name))
                     .collect::<Vec<_>>()
                     .join(", ")
             )));
@@ -313,7 +305,7 @@ pub(super) fn ordered(source: &str, cancelled: fn() -> bool) -> Result<String, E
         pending = remaining;
     }
 
-    output.finish(cancelled)
+    output.finish(is_cancelled)
 }
 
 pub(super) fn injected(
@@ -322,13 +314,13 @@ pub(super) fn injected(
     globals: &[String],
     exports: &[String],
     declarations: &[Block],
-    cancelled: fn() -> bool,
+    is_cancelled: fn() -> bool,
 ) -> Result<String, Error> {
     let mut sections = String::new();
     let mut remaining = source;
 
     while let Some((_, section)) = remaining.split_once("-- SECTION BEGIN: ") {
-        if cancelled() {
+        if is_cancelled() {
             return Err(Error::Cancelled);
         }
 
@@ -351,7 +343,7 @@ pub(super) fn injected(
 
     let mut output = Output::default();
 
-    for block in blocks(&sections, cancelled)? {
+    for block in blocks(&sections, is_cancelled)? {
         if declarations
             .iter()
             .any(|declaration| declaration.key() == block.key())
@@ -369,16 +361,16 @@ pub(super) fn injected(
         output.newline();
     }
 
-    output.finish(cancelled)
+    output.finish(is_cancelled)
 }
 
 fn statements(tree: &Tree<'_>) -> Result<Vec<NodeIndex>, Error> {
     let NodeKind::Root { block, .. } = tree.node(tree.root).kind else {
-        return Err(invalid("missing declaration root"));
+        return Err(invalid("Missing declaration root."));
     };
 
     let NodeKind::Block { statements } = &tree.node(block).kind else {
-        return Err(invalid("missing declaration block"));
+        return Err(invalid("Missing declaration block."));
     };
 
     Ok(tree
@@ -400,7 +392,7 @@ fn declaration(tree: &Tree<'_>, mut index: NodeIndex) -> NodeIndex {
 
 fn text<'source>(tree: &Tree<'source>, index: NodeIndex) -> Result<&'source str, Error> {
     from_utf8(tree.text(index))
-        .map_err(|error| invalid(format!("invalid declaration UTF-8: {error}")))
+        .map_err(|error| invalid(format!("Declaration text is not valid UTF-8. {error}")))
 }
 
 fn quoted(value: &str) -> Result<String, Error> {

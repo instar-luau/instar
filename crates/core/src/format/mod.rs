@@ -1,5 +1,7 @@
 //! Validated, lossless Luau source formatting.
 
+pub(crate) mod fragment;
+
 mod directives;
 mod engine;
 mod error;

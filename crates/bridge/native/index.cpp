@@ -95,9 +95,9 @@ namespace instar::luau {
             }
 
             std::optional<Luau::Location>
-            find(const std::string &name, Luau::Location location, bool exported = false) const {
+            find(const std::string &name, Luau::Location location, bool require_exported = false) const {
                 for (const auto &declaration : declarations) {
-                    if (declaration.name == name && (!exported || declaration.exported) &&
+                    if (declaration.name == name && (!require_exported || declaration.is_exported) &&
                         (location == declaration.statement || location == declaration.identifier)) {
                         return declaration.identifier;
                     }
@@ -111,15 +111,15 @@ namespace instar::luau {
                 std::string name;
                 Luau::Location statement;
                 Luau::Location identifier;
-                bool exported;
+                bool is_exported;
             };
 
             std::vector<TypeDeclaration> declarations;
         };
 
         std::optional<Declaration> type_declaration(
-            Luau::Frontend &frontend, const std::string &identity, const std::string &name,
-            std::optional<Luau::Location> location, bool exported = false
+            Luau::Frontend &frontend, const std::string &identity, std::optional<Luau::Location> location,
+            const std::string &name, bool require_exported = false
         ) {
             const auto *source = frontend.getSourceModule(identity);
 
@@ -129,7 +129,7 @@ namespace instar::luau {
 
             Types finder;
             source->root->visit(&finder);
-            const auto identifier = finder.find(name, *location, exported);
+            const auto identifier = finder.find(name, *location, require_exported);
 
             return identifier ? std::optional<Declaration>{{identity, *identifier}} : std::nullopt;
         }
@@ -153,8 +153,8 @@ namespace instar::luau {
                                 return type_declaration(
                                     frontend,
                                     imported->second,
-                                    reference->name.value,
                                     binding->second.definitionLocation,
+                                    reference->name.value,
                                     true
                                 );
                             }
@@ -179,8 +179,8 @@ namespace instar::luau {
                         return type_declaration(
                             frontend,
                             module.name,
-                            reference->name.value,
-                            binding->second.definitionLocation
+                            binding->second.definitionLocation,
+                            reference->name.value
                         );
                     }
 
@@ -190,8 +190,8 @@ namespace instar::luau {
                         return type_declaration(
                             frontend,
                             module.name,
-                            reference->name.value,
-                            exported->second.definitionLocation
+                            exported->second.definitionLocation,
+                            reference->name.value
                         );
                     }
 
@@ -204,8 +204,10 @@ namespace instar::luau {
 
         class Indexer final : public Luau::AstVisitor {
         public:
-            Indexer(Luau::Frontend &frontend, const Luau::Module &module, const Luau::SourceModule &source)
-                : frontend(frontend), module(module) {
+            Indexer(
+                Index &result, Luau::Frontend &frontend, const Luau::Module &module, const Luau::SourceModule &source
+            )
+                : result(result), frontend(frontend), module(module) {
                 source.root->visit(&types);
             }
 
@@ -284,13 +286,14 @@ namespace instar::luau {
                         return true;
                     }
 
-                    const bool owned = std::any_of(module.scopes.begin(), module.scopes.end(), [&](const auto &entry) {
-                        return entry.second.get() == binding->second;
-                    });
+                    const bool is_owned =
+                        std::any_of(module.scopes.begin(), module.scopes.end(), [&](const auto &entry) {
+                            return entry.second.get() == binding->second;
+                        });
 
                     auto target = definition(binding->first->typeId);
 
-                    if (owned && binding->first->location.begin != binding->first->location.end) {
+                    if (is_owned && binding->first->location.begin != binding->first->location.end) {
                         target = Declaration{module.name, binding->first->location};
                     } else if (target && !binding->first->location.encloses(target->location)) {
                         target.reset();
@@ -343,7 +346,7 @@ namespace instar::luau {
                         std::string(key->value.data, key->value.size),
                         key_location(key),
                         role(node),
-                        editable(key)
+                        is_editable(key)
                     );
                 }
 
@@ -362,7 +365,7 @@ namespace instar::luau {
                                     std::string(key->value.data, key->value.size),
                                     key_location(key),
                                     OccurrenceRole::Declaration,
-                                    editable(key)
+                                    is_editable(key)
                                 );
                             }
                         }
@@ -475,7 +478,7 @@ namespace instar::luau {
                 return true;
             }
 
-            Index result;
+            Index &result;
 
         private:
             void generic(const std::string &name, const Luau::Location &location) {
@@ -524,7 +527,7 @@ namespace instar::luau {
                 return std::nullopt;
             }
 
-            void declare(Luau::AstLocal *local, bool exported = false) {
+            void declare(Luau::AstLocal *local, bool is_exported = false) {
                 result.names.insert(local->name.value);
 
                 if (local->location.begin != local->location.end) {
@@ -535,7 +538,7 @@ namespace instar::luau {
                             false,
                             BindingKind::Local,
                             local->name.value,
-                            !exported}
+                            !is_exported}
                     );
                 }
             }
@@ -558,16 +561,16 @@ namespace instar::luau {
 
             void add_property(
                 Luau::AstExpr *expression, const std::string &name, const Luau::Location &location, OccurrenceRole role,
-                bool editable = true
+                bool is_editable = true
             ) {
                 if (const auto *type = module.astTypes.find(expression)) {
-                    add_property(*type, name, location, role, editable);
+                    add_property(*type, name, location, role, is_editable);
                 }
             }
 
             void add_property(
                 Luau::TypeId type, const std::string &name, const Luau::Location &location, OccurrenceRole role,
-                bool editable = true
+                bool is_editable = true
             ) {
                 result.properties.insert(name);
 
@@ -582,13 +585,19 @@ namespace instar::luau {
                                 : role;
 
                         result.entries.push_back(
-                            {location, {found->identity, *target}, access, false, BindingKind::Property, name, editable}
+                            {location,
+                                {found->identity, *target},
+                                access,
+                                false,
+                                BindingKind::Property,
+                                name,
+                                is_editable}
                         );
                     }
                 }
             }
 
-            static bool editable(const Luau::AstExprConstantString *key) {
+            static bool is_editable(const Luau::AstExprConstantString *key) {
                 return key->quoteStyle != Luau::AstExprConstantString::QuoteStyle::QuotedRaw &&
                        key->location.begin.line == key->location.end.line;
             }
@@ -596,7 +605,7 @@ namespace instar::luau {
             static Luau::Location key_location(const Luau::AstExprConstantString *key) {
                 auto location = key->location;
 
-                if (editable(key) && key->isQuoted()) {
+                if (is_editable(key) && key->isQuoted()) {
                     ++location.begin.column;
                     --location.end.column;
                 }
@@ -621,7 +630,7 @@ namespace instar::luau {
         };
     }
 
-    bool same(const Declaration &left, const Declaration &right) {
+    bool is_same_declaration(const Declaration &left, const Declaration &right) {
         return left.identity == right.identity && left.location == right.location;
     }
 
@@ -698,10 +707,12 @@ namespace instar::luau {
         return std::nullopt;
     }
 
-    Index index(Luau::Frontend &frontend, const Luau::Module &module, const Luau::SourceModule &source) {
-        Indexer visitor(frontend, module, source);
+    Index::Index(Luau::Frontend &frontend, const Luau::Module &module, const Luau::SourceModule &source) {
+        Indexer visitor(*this, frontend, module, source);
         source.root->visit(&visitor);
+    }
 
-        return std::move(visitor.result);
+    Index index(Luau::Frontend &frontend, const Luau::Module &module, const Luau::SourceModule &source) {
+        return Index{frontend, module, source};
     }
 }

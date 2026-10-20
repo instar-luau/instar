@@ -7,10 +7,8 @@ use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
 use vermis::token::Symbol;
 
-use super::{
-    Error,
-    syntax::{self, Output},
-};
+use super::{Error, syntax::Output};
+use crate::syntax::is_identifier;
 
 pub(super) const HIERARCHY: [&str; 5] = [
     "None",
@@ -147,7 +145,7 @@ pub(super) enum Signature {
 pub(super) struct Argument {
     pub(super) name: String,
     pub(super) value: String,
-    pub(super) default: bool,
+    pub(super) has_default: bool,
 }
 
 enum Security {
@@ -156,8 +154,8 @@ enum Security {
     Property {
         read: Option<String>,
         write: Option<String>,
-        read_only: bool,
-        write_only: bool,
+        is_read_only: bool,
+        is_write_only: bool,
     },
 
     Denied,
@@ -204,7 +202,7 @@ impl Type {
             .declared
             .as_ref()
             .or(self.name.as_ref())
-            .ok_or_else(|| invalid("missing type name"))?;
+            .ok_or_else(|| invalid("Missing type name."))?;
 
         if let Some(name) = name.strip_suffix('?') {
             let value = Self {
@@ -256,9 +254,8 @@ impl Type {
 
         let value = value.strip_suffix('?').unwrap_or(&value);
 
-        if (syntax::identifier(value)
-            || value.strip_prefix("Enum.").is_some_and(syntax::identifier))
-            && !primitive(value)
+        if (is_identifier(value) || value.strip_prefix("Enum.").is_some_and(is_identifier))
+            && !is_primitive(value)
         {
             result.insert(value.to_owned());
         }
@@ -270,7 +267,7 @@ impl Type {
         if self.generic.is_some()
             && (self.union.is_some() || self.tuple.is_some() || self.variadic.is_some())
         {
-            return Err(invalid("conflicting generic and structural type shapes"));
+            return Err(invalid("Generic and structural type shapes conflict."));
         }
 
         Ok(())
@@ -278,8 +275,8 @@ impl Type {
 }
 
 impl Member {
-    pub(super) fn access(&self, labels: &[&str]) -> Result<bool, Error> {
-        let allowed = match self.security()? {
+    pub(super) fn can_access(&self, labels: &[&str]) -> Result<bool, Error> {
+        let is_allowed = match self.security()? {
             Security::Label(label) => labels.contains(&label.as_str()),
 
             Security::Property { read, write, .. } => {
@@ -292,31 +289,32 @@ impl Member {
             Security::Denied => false,
         };
 
-        Ok(allowed)
+        Ok(is_allowed)
     }
 
     pub(super) fn permissions(&self, labels: &[&str]) -> Result<(bool, bool), Error> {
         let Security::Property {
             read,
             write,
-            read_only,
-            write_only,
+            is_read_only,
+            is_write_only,
         } = self.security()?
         else {
             return Err(invalid(format!(
-                "invalid property security for `{}`",
+                "Invalid property security for `{}`.",
                 self.name
             )));
         };
 
-        let read = read.as_deref().is_some_and(|label| labels.contains(&label)) && !*write_only;
+        let can_read =
+            read.as_deref().is_some_and(|label| labels.contains(&label)) && !*is_write_only;
 
-        let write = write
+        let can_write = write
             .as_deref()
             .is_some_and(|label| labels.contains(&label))
-            && !*read_only;
+            && !*is_read_only;
 
-        Ok((read, write))
+        Ok((can_read, can_write))
     }
 
     pub(super) fn signature(
@@ -332,7 +330,7 @@ impl Member {
                 value: self
                     .value_type
                     .as_ref()
-                    .ok_or_else(|| invalid("missing property value type"))?
+                    .ok_or_else(|| invalid("Missing property value type."))?
                     .resolve(mappings)?,
             },
 
@@ -344,7 +342,7 @@ impl Member {
                         Ok(Argument {
                             name: parameter.name.clone(),
                             value: parameter.value.resolve(mappings)?,
-                            default: parameter.fields.contains_key("Default"),
+                            has_default: parameter.fields.contains_key("Default"),
                         })
                     })
                     .collect::<Result<_, Error>>()?;
@@ -376,7 +374,7 @@ impl Member {
                     .collect::<Result<_, _>>()?,
             },
 
-            kind => return Err(invalid(format!("unsupported member kind `{kind}`"))),
+            kind => return Err(invalid(format!("Unsupported member kind `{kind}`."))),
         };
 
         Ok(self.signature.get_or_init(|| signature))
@@ -385,7 +383,7 @@ impl Member {
     fn parameters(&self) -> Result<&[Parameter], Error> {
         self.parameters
             .as_deref()
-            .ok_or_else(|| invalid(format!("missing parameters for `{}`", self.name)))
+            .ok_or_else(|| invalid(format!("Missing parameters for `{}`.", self.name)))
     }
 
     pub(super) fn returns(&self, input: &str) -> Result<&[Type], Error> {
@@ -416,7 +414,7 @@ impl Member {
             return Ok(security);
         }
 
-        let security = if tagged(self.tags.as_deref(), "NotScriptable") {
+        let security = if has_tag(self.tags.as_deref(), "NotScriptable") {
             Security::Denied
         } else {
             match &self.security {
@@ -424,7 +422,7 @@ impl Member {
                     let read = security
                         .get("Read")
                         .ok_or_else(|| {
-                            invalid(format!("missing Read security for `{}`", self.name))
+                            invalid(format!("Missing `Read` security for `{}`.", self.name))
                         })?
                         .as_str()
                         .map(str::to_owned);
@@ -432,7 +430,7 @@ impl Member {
                     let write = security
                         .get("Write")
                         .ok_or_else(|| {
-                            invalid(format!("missing Write security for `{}`", self.name))
+                            invalid(format!("Missing `Write` security for `{}`.", self.name))
                         })?
                         .as_str()
                         .map(str::to_owned);
@@ -440,16 +438,16 @@ impl Member {
                     Security::Property {
                         read,
                         write,
-                        read_only: tagged(self.tags.as_deref(), "ReadOnly"),
-                        write_only: tagged(self.tags.as_deref(), "WriteOnly"),
+                        is_read_only: has_tag(self.tags.as_deref(), "ReadOnly"),
+                        is_write_only: has_tag(self.tags.as_deref(), "WriteOnly"),
                     }
                 }
 
                 None => Security::Property {
                     read: Some("None".to_owned()),
                     write: Some("None".to_owned()),
-                    read_only: tagged(self.tags.as_deref(), "ReadOnly"),
-                    write_only: tagged(self.tags.as_deref(), "WriteOnly"),
+                    is_read_only: has_tag(self.tags.as_deref(), "ReadOnly"),
+                    is_write_only: has_tag(self.tags.as_deref(), "WriteOnly"),
                 },
 
                 Some(Value::String(label)) => Security::Label(label.clone()),
@@ -481,7 +479,7 @@ pub(super) fn invalid(reason: impl Into<String>) -> Error {
     }
 }
 
-pub(super) fn primitive(name: &str) -> bool {
+pub(super) fn is_primitive(name: &str) -> bool {
     matches!(
         name,
         "string"
@@ -497,7 +495,7 @@ pub(super) fn primitive(name: &str) -> bool {
     )
 }
 
-pub(super) fn tagged(tags: Option<&[Value]>, name: &str) -> bool {
+pub(super) fn has_tag(tags: Option<&[Value]>, name: &str) -> bool {
     tags.into_iter()
         .flatten()
         .any(|tag| tag.as_str() == Some(name))
@@ -506,12 +504,12 @@ pub(super) fn tagged(tags: Option<&[Value]>, name: &str) -> bool {
 pub(super) fn corrected(
     values: Vec<Value>,
     patches: &[Value],
-    cancelled: fn() -> bool,
+    is_cancelled: fn() -> bool,
 ) -> Result<Vec<Class>, Error> {
     let mut result = Vec::with_capacity(values.len());
 
     for mut class in values {
-        if cancelled() {
+        if is_cancelled() {
             return Err(Error::Cancelled);
         }
 
@@ -521,7 +519,7 @@ pub(super) fn corrected(
 
         if let Some(members) = class.get_mut("Members").and_then(Value::as_array_mut) {
             for member in members {
-                if cancelled() {
+                if is_cancelled() {
                     return Err(Error::Cancelled);
                 }
 
@@ -554,7 +552,7 @@ pub(super) fn corrected(
 fn repair(member: &mut Value, correction: &Value) -> Result<(), Error> {
     let member = member
         .as_object_mut()
-        .ok_or_else(|| invalid("invalid API member"))?;
+        .ok_or_else(|| invalid("API member must be an object."))?;
 
     for field in ["ValueType", "ReturnType"] {
         if let Some(patch) = correction.get(field).filter(|value| !value.is_null()) {
@@ -578,7 +576,7 @@ fn repair(member: &mut Value, correction: &Value) -> Result<(), Error> {
         let parameters = member
             .get_mut("Parameters")
             .and_then(Value::as_array_mut)
-            .ok_or_else(|| invalid("missing corrected parameters"))?;
+            .ok_or_else(|| invalid("Corrected member must have a `Parameters` array."))?;
 
         for parameter in parameters {
             if let Some(patch) = patches
@@ -587,7 +585,7 @@ fn repair(member: &mut Value, correction: &Value) -> Result<(), Error> {
             {
                 let mut fields = patch
                     .as_object()
-                    .ok_or_else(|| invalid("invalid parameter correction"))?
+                    .ok_or_else(|| invalid("Parameter correction must be an object."))?
                     .clone();
 
                 let value = fields.remove("Type");
@@ -596,7 +594,7 @@ fn repair(member: &mut Value, correction: &Value) -> Result<(), Error> {
                 if let Some(value) = value.filter(|value| !value.is_null()) {
                     let original = parameter
                         .get_mut("Type")
-                        .ok_or_else(|| invalid("missing corrected parameter type"))?;
+                        .ok_or_else(|| invalid("Corrected parameter is missing `Type`."))?;
 
                     merge(original, &value)?;
                 }
@@ -614,11 +612,11 @@ fn merge(value: &mut Value, patch: &Value) -> Result<(), Error> {
 
     let value = value
         .as_object_mut()
-        .ok_or_else(|| invalid("invalid corrected type"))?;
+        .ok_or_else(|| invalid("Corrected type must be an object."))?;
 
     let patch = patch
         .as_object()
-        .ok_or_else(|| invalid("invalid type correction"))?;
+        .ok_or_else(|| invalid("Type correction must be an object."))?;
 
     value.extend(patch.clone());
 

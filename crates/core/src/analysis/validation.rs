@@ -10,7 +10,7 @@ pub fn validate(source: &str) -> Result<(), Error> {
 
     syntax::parse(&source.as_bytes()[prefix..], |range, message| Error {
         range: range.start + prefix..range.end + prefix,
-        message: message.unwrap_or("incomplete syntax").to_owned(),
+        message: message.unwrap_or("Syntax is incomplete.").to_owned(),
     })
     .map(|_| ())
 }

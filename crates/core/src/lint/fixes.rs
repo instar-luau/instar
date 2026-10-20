@@ -29,22 +29,26 @@ pub fn apply(source: &str, findings: &[Finding]) -> Result<String, Error> {
             if source.get(edit.range.clone()) != Some(edit.expected.as_str()) {
                 return Err(Error {
                     range: edit.range.clone(),
-                    message: "correction does not match the source snapshot".to_owned(),
+                    message: "Correction does not match the source snapshot.".to_owned(),
                 });
             }
         }
 
-        if edits.windows(2).any(|pair| overlap(pair[0], pair[1])) {
+        if edits
+            .windows(2)
+            .any(|pair| is_overlapping(pair[0], pair[1]))
+        {
             return Err(Error {
                 range: finding.range.clone(),
-                message: "correction contains overlapping edits".to_owned(),
+                message: "Correction contains overlapping edits.".to_owned(),
             });
         }
 
-        if edits
-            .iter()
-            .any(|edit| accepted.iter().any(|previous| overlap(edit, previous)))
-        {
+        if edits.iter().any(|edit| {
+            accepted
+                .iter()
+                .any(|previous| is_overlapping(edit, previous))
+        }) {
             continue;
         }
 
@@ -60,13 +64,13 @@ pub fn apply(source: &str, findings: &[Finding]) -> Result<String, Error> {
 
     syntax::parse(&corrected).map_err(|error| Error {
         range: error.range,
-        message: format!("correction produced invalid syntax: {}", error.message),
+        message: format!("Correction produced invalid syntax.\n{}", error.message),
     })?;
 
     Ok(corrected)
 }
 
-fn overlap(left: &Edit, right: &Edit) -> bool {
+fn is_overlapping(left: &Edit, right: &Edit) -> bool {
     left.range.start <= right.range.end
         && right.range.start <= left.range.end
         && (left.range.start < right.range.end && right.range.start < left.range.end

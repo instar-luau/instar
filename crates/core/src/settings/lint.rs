@@ -48,7 +48,8 @@ pub enum Preset {
 #[serde(default, deny_unknown_fields)]
 pub struct Rule {
     /// Enablement override.
-    pub enabled: Option<bool>,
+    #[serde(rename = "enabled")]
+    pub is_enabled: Option<bool>,
 
     /// Diagnostic severity override.
     pub severity: Option<Severity>,

@@ -26,25 +26,28 @@ use tower_lsp_server::{
         DocumentLinkParams, DocumentRangeFormattingParams, DocumentSymbolParams,
         DocumentSymbolResponse, ExecuteCommandParams, FoldingRange, FoldingRangeParams, Hover,
         HoverParams, InitializeParams, InitializeResult, InitializedParams, InlayHint,
-        InlayHintParams, Location, MessageActionItem, MessageType, PrepareRenameResult,
-        ProgressToken, Range, ReferenceParams, Registration, RenameFilesParams, RenameParams,
-        SelectionRange, SelectionRangeParams, SemanticTokens, SemanticTokensDeltaParams,
-        SemanticTokensDeltaResponse, SemanticTokensParams, SemanticTokensRangeParams,
-        ShowDocumentParams, SignatureHelp, SignatureHelpParams, TextDocumentPositionParams,
-        TextEdit, TypeDefinitionParams, TypeDefinitionResponse, Unregistration, Uri,
-        WorkDoneProgressCancelParams, WorkspaceEdit, WorkspaceSymbolParams,
-        WorkspaceSymbolResponse,
+        InlayHintParams, Location, PrepareRenameResult, ProgressToken, Range, ReferenceParams,
+        Registration, RenameFilesParams, RenameParams, SelectionRange, SelectionRangeParams,
+        SemanticTokens, SemanticTokensDeltaParams, SemanticTokensDeltaResponse,
+        SemanticTokensParams, SemanticTokensRangeParams, ShowDocumentParams, SignatureHelp,
+        SignatureHelpParams, TextDocumentPositionParams, TextEdit, TypeDefinitionParams,
+        TypeDefinitionResponse, Unregistration, Uri, WorkDoneProgressCancelParams, WorkspaceEdit,
+        WorkspaceSymbolParams, WorkspaceSymbolResponse,
     },
-    jsonrpc::{Error, ErrorCode, Result},
+    jsonrpc::{Error, Result},
 };
 
 use super::{
+    analysis,
     configuration::Configuration,
     connection::{Connection, Operation},
-    diagnostics,
     document::{self, Encoding},
-    editing, files, navigation, presentation,
-    progress::{Progress, Registry},
+    editing, files, navigation,
+    output::{
+        messages,
+        progress::{Progress, Registry},
+    },
+    presentation,
     project::{Project, failure, resolved_uri},
     suggestions, synchronization,
 };
@@ -114,7 +117,7 @@ impl Service {
         if let Some(operation) = self
             .progress
             .lock()
-            .expect("internal error: progress registry poisoned")
+            .expect("Internal error: progress registry mutex is poisoned.")
             .get(&parameters.token)
             .and_then(Weak::upgrade)
         {
@@ -125,7 +128,7 @@ impl Service {
     fn supports(&self, pointer: &str) -> bool {
         self.capabilities
             .lock()
-            .expect("internal error: client capabilities poisoned")
+            .expect("Internal error: client capabilities mutex is poisoned.")
             .pointer(pointer)
             .and_then(Value::as_bool)
             == Some(true)
@@ -289,7 +292,7 @@ impl Service {
         .await;
 
         if let Err(error) = result {
-            self.report(error).await;
+            messages::report(&self.client, error).await;
         }
     }
 
@@ -310,7 +313,7 @@ impl Service {
         let publications = self
             .perform(token, |operation| {
                 self.connection.query(uri, operation, |project, frontend| {
-                    diagnostics::collect(project, frontend)
+                    analysis::collect(project, frontend)
                 })
             })
             .await?;
@@ -333,7 +336,7 @@ impl Service {
 
         for root in roots {
             if let Err(error) = self.publish(root, progress).await {
-                self.report(error).await;
+                messages::report(&self.client, error).await;
             }
         }
 
@@ -354,29 +357,10 @@ impl Service {
                 };
 
                 if let Err(error) = response {
-                    self.client
-                        .log_message(MessageType::Warning, error.to_string())
-                        .await;
+                    messages::warning(&self.client, &error).await;
                 }
             }
         }
-    }
-
-    async fn report(&self, error: Error) {
-        if matches!(
-            error.code,
-            ErrorCode::RequestCancelled | ErrorCode::ContentModified
-        ) {
-            return;
-        }
-
-        self.client
-            .log_message(MessageType::Error, error.to_string())
-            .await;
-
-        self.client
-            .show_message(MessageType::Error, error.message.into_owned())
-            .await;
     }
 
     async fn configuration(&self, settings: Option<Value>) -> Result<bool> {
@@ -416,7 +400,7 @@ impl Service {
 
             if values.len() != expected {
                 return Err(Error::invalid_params(
-                    "client returned an incorrect number of configurations",
+                    "Client returned an incorrect number of configurations.",
                 ));
             }
 
@@ -444,7 +428,7 @@ impl Service {
             .control(move |state| {
                 let mut revision = revision
                     .lock()
-                    .expect("internal error: configuration revision poisoned");
+                    .expect("Internal error: configuration revision mutex is poisoned.");
 
                 if sequence < *revision {
                     return Ok(false);
@@ -615,7 +599,7 @@ impl LanguageServer for Service {
                     .iter()
                     .map(|folder| {
                         serde_json::from_value(folder.get("uri").cloned().ok_or_else(|| {
-                            Error::invalid_params("workspace folder URI is missing")
+                            Error::invalid_params("Workspace folder URI is missing.")
                         })?)
                         .map_err(failure)
                     })
@@ -629,7 +613,8 @@ impl LanguageServer for Service {
         *self
             .capabilities
             .lock()
-            .expect("internal error: client capabilities poisoned") = Arc::clone(&capabilities);
+            .expect("Internal error: client capabilities mutex is poisoned.") =
+            Arc::clone(&capabilities);
 
         let client = Arc::clone(&capabilities);
 
@@ -681,9 +666,7 @@ impl LanguageServer for Service {
 
     async fn initialized(&self, _: InitializedParams) {
         let result = async {
-            self.client
-                .log_message(MessageType::Info, "Instar initialized")
-                .await;
+            messages::initialized(&self.client).await;
 
             if self.supports("/workspace/workspaceFolders")
                 && let Some(folders) = self.client.workspace_folders().await?
@@ -707,7 +690,7 @@ impl LanguageServer for Service {
         .await;
 
         if let Err(error) = result {
-            self.report(error).await;
+            messages::report(&self.client, error).await;
         }
     }
 
@@ -724,9 +707,7 @@ impl LanguageServer for Service {
             .await?;
 
         if let Err(error) = registrations.unregister(&self.client).await {
-            self.client
-                .log_message(MessageType::Warning, error.to_string())
-                .await;
+            messages::warning(&self.client, &error).await;
         }
 
         self.shutdown.store(true, Ordering::Relaxed);
@@ -1170,7 +1151,7 @@ impl LanguageServer for Service {
         .await;
 
         if let Err(error) = result {
-            self.report(error).await;
+            messages::report(&self.client, error).await;
         }
     }
 
@@ -1204,7 +1185,7 @@ impl LanguageServer for Service {
         .await;
 
         if let Err(error) = result {
-            self.report(error).await;
+            messages::report(&self.client, error).await;
         }
     }
 
@@ -1221,7 +1202,7 @@ impl LanguageServer for Service {
         .await;
 
         if let Err(error) = result {
-            self.report(error).await;
+            messages::report(&self.client, error).await;
         }
     }
 
@@ -1238,7 +1219,7 @@ impl LanguageServer for Service {
         .await;
 
         if let Err(error) = result {
-            self.report(error).await;
+            messages::report(&self.client, error).await;
         }
     }
 
@@ -1258,7 +1239,7 @@ impl LanguageServer for Service {
         .await;
 
         if let Err(error) = result {
-            self.report(error).await;
+            messages::report(&self.client, error).await;
         }
     }
 
@@ -1278,7 +1259,7 @@ impl LanguageServer for Service {
         .await;
 
         if let Err(error) = result {
-            self.report(error).await;
+            messages::report(&self.client, error).await;
         }
     }
 
@@ -1321,33 +1302,19 @@ impl LanguageServer for Service {
         if parameters.command == "instar.openConfiguration" {
             if !self.supports("/window/showDocument/support") {
                 return Err(Error::invalid_params(
-                    "client does not support opening documents",
+                    "Client does not support opening documents.",
                 ));
             }
 
             let roots = self.connection.control(|state| state.roots()).await?;
 
-            let actions = roots
-                .iter()
-                .map(|root| MessageActionItem {
-                    title: root.to_string(),
-                    ..MessageActionItem::default()
-                })
-                .collect();
-
-            if let Some(action) = self
-                .client
-                .show_message_request(
-                    MessageType::Info,
-                    "Open a workspace's instar.toml",
-                    Some(actions),
-                )
-                .await?
-            {
+            if let Some(action) = messages::configuration(&self.client, &roots).await? {
                 let root = roots
                     .into_iter()
                     .find(|root| root.as_str() == action.title)
-                    .ok_or_else(|| Error::invalid_params("client selected an unknown workspace"))?;
+                    .ok_or_else(|| {
+                        Error::invalid_params("Client selected an unknown workspace.")
+                    })?;
 
                 let uri = document::uri(&document::path(&root)?.join("instar.toml"))?;
 
@@ -1365,19 +1332,19 @@ impl LanguageServer for Service {
         let kind = match parameters.command.as_str() {
             "instar.fixAll" => "source.fixAll.instar",
             "instar.organizeImports" => "source.organizeImports",
-            _ => return Err(Error::invalid_params("unknown Instar command")),
+            _ => return Err(Error::invalid_params("Unknown Instar command.")),
         };
 
         if !self.supports("/workspace/applyEdit") {
             return Err(Error::invalid_params(
-                "client does not support workspace edits",
+                "Client does not support workspace edits.",
             ));
         }
 
         let arguments = parameters.arguments.unwrap_or_default();
 
         let [argument] = arguments.as_slice() else {
-            return Err(Error::invalid_params("command expects one document URI"));
+            return Err(Error::invalid_params("Command expects one document URI."));
         };
 
         let uri: Uri = serde_json::from_value(argument.clone())
@@ -1404,7 +1371,7 @@ impl LanguageServer for Service {
             return Err(failure(
                 result
                     .failure_reason
-                    .unwrap_or_else(|| "client declined workspace edit".to_owned()),
+                    .unwrap_or_else(|| "Client declined workspace edit.".to_owned()),
             ));
         }
 

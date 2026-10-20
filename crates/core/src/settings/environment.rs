@@ -12,7 +12,8 @@ use super::schema;
 #[serde(default, deny_unknown_fields)]
 pub struct Configuration {
     /// Explicit Roblox selection, or automatic selection when omitted.
-    pub roblox: Option<bool>,
+    #[serde(rename = "roblox")]
+    pub is_roblox: Option<bool>,
 
     /// Roblox capability security profile.
     pub security: Security,

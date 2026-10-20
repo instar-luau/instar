@@ -55,9 +55,9 @@ pub fn run(cancelled: fn() -> bool) -> Result<u8> {
     let runtime = Builder::new_current_thread()
         .enable_all()
         .build()
-        .wrap_err("cannot create server runtime")?;
+        .wrap_err("Could not create the server runtime.")?;
 
-    let connection = Arc::new(Connection::new().wrap_err("cannot start analysis worker")?);
+    let connection = Arc::new(Connection::new().wrap_err("Could not start the analysis worker.")?);
     let shutdown = Arc::new(AtomicBool::new(false));
 
     runtime.block_on(async {
@@ -93,7 +93,7 @@ pub fn run(cancelled: fn() -> bool) -> Result<u8> {
 
     let stopped = connection.stop();
     runtime.shutdown_background();
-    stopped.wrap_err("cannot stop analysis worker")?;
+    stopped.wrap_err("Could not stop the analysis worker.")?;
 
     Ok(u8::from(!shutdown.load(Ordering::Relaxed) && !cancelled()))
 }

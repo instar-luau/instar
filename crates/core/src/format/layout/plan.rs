@@ -21,14 +21,14 @@ use crate::{
 pub(crate) struct Plan {
     pub(super) document: Vec<Document>,
     pub(super) quotes: Vec<Option<Vec<u8>>>,
-    pub(super) final_newline: bool,
+    pub(super) should_emit_final_newline: bool,
 }
 
 pub(crate) struct Builder<'tree, 'source> {
     pub(super) tree: &'tree Tree<'source>,
     pub(super) configuration: &'tree Configuration,
     pub(super) spacing: Vec<Option<usize>>,
-    pub(super) inline_attributes: Vec<bool>,
+    pub(super) has_inline_attributes: Vec<bool>,
     pub(super) imports: Option<&'tree Imports>,
     pub(super) directives: &'tree Directives,
     pub(super) prepared: &'tree Prepared,
@@ -60,7 +60,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
             })
             .collect();
 
-        let mut inline_attributes = vec![false; tree.nodes.len()];
+        let mut has_inline_attributes = vec![false; tree.nodes.len()];
 
         for node in &tree.nodes {
             match &node.kind {
@@ -72,7 +72,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
                 | NodeKind::TypeFunction {
                     attributes: Some(attributes),
                     ..
-                } => inline_attributes[attributes.get()] = true,
+                } => has_inline_attributes[attributes.get()] = true,
 
                 _ => {}
             }
@@ -82,7 +82,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
             tree,
             configuration,
             spacing: vec![None; tree.tokens.len()],
-            inline_attributes,
+            has_inline_attributes,
             imports,
             directives,
             prepared,
@@ -93,7 +93,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         Ok(Plan {
             document: protection::apply(tree, builder.node(tree.root), &regions)?,
             quotes,
-            final_newline: configuration.final_newline
+            should_emit_final_newline: configuration.should_emit_final_newline
                 && !regions
                     .iter()
                     .any(|directive| directive.kind == Kind::Remainder),
@@ -338,7 +338,7 @@ impl Builder<'_, '_> {
             }
 
             NodeKind::Attributes { attributes } => {
-                if self.inline_attributes[index.get()] {
+                if self.has_inline_attributes[index.get()] {
                     return self.sequence(start..node.tokens.end.get(), &self.tree.children(index));
                 }
 

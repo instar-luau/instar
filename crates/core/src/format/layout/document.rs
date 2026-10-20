@@ -21,7 +21,7 @@ pub(super) enum Nesting {
 #[derive(Clone)]
 pub(super) struct Choice {
     pub(super) range: Range<usize>,
-    pub(super) prefix: bool,
+    pub(super) has_prefix: bool,
     pub(super) probe: Rc<[Document]>,
     pub(super) inline: Rc<[Document]>,
     pub(super) expanded: Rc<[Document]>,

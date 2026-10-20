@@ -1,6 +1,5 @@
 use std::{collections::BTreeMap, sync::Arc, time::Instant};
 
-use codespan_reporting::diagnostic::{Diagnostic, Label};
 use eyre::{Result, eyre};
 
 use instar_core::{
@@ -10,9 +9,9 @@ use instar_core::{
 };
 
 use super::{
-    arguments::{Arguments, Operation},
+    arguments::Operation,
+    batch::{Batch, Finding, Label, Output, Severity as FindingSeverity, Source},
     execution::{Outcome, Project},
-    report::{Batch, Output, Source},
     watch::Watcher,
     workers,
 };
@@ -20,7 +19,6 @@ use super::{
 type Environments = BTreeMap<String, Result<SymbolOutcome, Arc<Error>>>;
 
 pub(super) fn session(
-    arguments: &Arguments,
     operation: &Operation,
     project: &Project,
     watcher: Option<&mut Watcher>,
@@ -30,7 +28,6 @@ pub(super) fn session(
     let corrections = matches!(operation, Operation::Lint(lint) if lint.corrections);
 
     workers::session(
-        arguments,
         operation,
         project,
         watcher,
@@ -74,7 +71,7 @@ fn process(
         module: module.to_owned(),
         text: workspace
             .source(module)?
-            .ok_or_else(|| eyre!("cannot read source `{module}`"))?,
+            .ok_or_else(|| eyre!("Could not read source `{module}`."))?,
     };
 
     let configuration = workspace.linting(module)?;
@@ -82,7 +79,7 @@ fn process(
 
     let symbols = match environments
         .get(module)
-        .ok_or_else(|| eyre!("cannot load lint environment for `{module}`"))?
+        .ok_or_else(|| eyre!("Could not load the lint environment for `{module}`."))?
     {
         Ok(SymbolOutcome::Ready(symbols)) => symbols,
 
@@ -90,23 +87,23 @@ fn process(
             let module = match &invalid.origin {
                 Origin::File(path) => path
                     .to_str()
-                    .ok_or_else(|| eyre!("declaration path must be UTF-8"))?,
+                    .ok_or_else(|| eyre!("The declaration path must be valid UTF-8."))?,
 
                 Origin::Builtins => "<builtins>",
             };
 
-            batch.findings.push(
-                Diagnostic::error()
-                    .with_code("syntax")
-                    .with_message(invalid.error.message.clone())
-                    .with_labels(vec![Label::primary(
-                        Source {
-                            module: module.to_owned(),
-                            text: Arc::clone(&invalid.text),
-                        },
-                        invalid.error.range.clone(),
-                    )]),
-            );
+            batch.findings.push(Finding::new(
+                FindingSeverity::Error,
+                "syntax",
+                invalid.error.message.clone(),
+                vec![Label::new(
+                    Source {
+                        module: module.to_owned(),
+                        text: Arc::clone(&invalid.text),
+                    },
+                    invalid.error.range.clone(),
+                )],
+            ));
 
             return Ok(batch);
         }
@@ -123,12 +120,12 @@ fn process(
                 lint::Failure::Directive(error) => ("lint", error),
             };
 
-            batch.findings.push(
-                Diagnostic::error()
-                    .with_code(code)
-                    .with_message(error.message)
-                    .with_labels(vec![Label::primary(source, error.range)]),
-            );
+            batch.findings.push(Finding::new(
+                FindingSeverity::Error,
+                code,
+                error.message,
+                vec![Label::new(source, error.range)],
+            ));
         }
     }
 
@@ -155,23 +152,25 @@ fn complete(
         completed
             .findings
             .extend(findings.into_iter().map(|finding| {
-                let diagnostic = match finding.severity {
-                    Severity::Error => Diagnostic::error(),
-                    Severity::Warning => Diagnostic::warning(),
-                    Severity::Information => Diagnostic::note(),
-                    Severity::Hint => Diagnostic::help(),
+                let severity = match finding.severity {
+                    Severity::Error => FindingSeverity::Error,
+                    Severity::Warning => FindingSeverity::Warning,
+                    Severity::Information => FindingSeverity::Information,
+                    Severity::Hint => FindingSeverity::Hint,
                 };
 
-                diagnostic
-                    .with_code(finding.rule)
-                    .with_message(finding.message)
-                    .with_labels(vec![Label::primary(
+                Finding::new(
+                    severity,
+                    finding.rule,
+                    finding.message,
+                    vec![Label::new(
                         Source {
                             module: source.module.clone(),
                             text: Arc::clone(&source.text),
                         },
                         finding.range,
-                    )])
+                    )],
+                )
             }));
 
         batch.append(completed);

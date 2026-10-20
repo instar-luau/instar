@@ -7,15 +7,8 @@ use std::{
 };
 
 use figment::Figment;
-use instar_bridge::Context;
-use serde_json::Value;
 
-use super::{
-    Error, Generators, SymbolOutcome, assets, discovery,
-    environment::{self, Registry},
-    host, instances, paths,
-    selection::{self, Access, Purpose, Selection},
-};
+use super::{Error, Generators, discovery, environment::Registry, instances, paths};
 
 use crate::{
     format, lint,
@@ -36,7 +29,7 @@ pub struct Workspace {
     pub(super) snapshots: RefCell<BTreeMap<String, Option<Arc<str>>>>,
     pub(super) observed_paths: RefCell<BTreeSet<PathBuf>>,
     pub(super) environments: RefCell<Registry>,
-    pub(super) cancelled: RefCell<Rc<dyn Fn() -> bool>>,
+    pub(super) is_cancelled: RefCell<Rc<dyn Fn() -> bool>>,
     pub(super) generation: Option<Generators>,
 }
 
@@ -63,7 +56,7 @@ impl Workspace {
             snapshots: RefCell::new(BTreeMap::new()),
             observed_paths: RefCell::new(BTreeSet::new()),
             environments: RefCell::new(Registry::default()),
-            cancelled: RefCell::new(Rc::new(|| false)),
+            is_cancelled: RefCell::new(Rc::new(|| false)),
             generation: None,
         };
 
@@ -74,15 +67,15 @@ impl Workspace {
 
     /// Use the supplied callback to cancel background workspace operations.
     #[must_use]
-    pub fn with_cancellation(self, cancelled: impl Fn() -> bool + 'static) -> Self {
-        self.set_cancellation(cancelled);
+    pub fn with_cancellation(self, is_cancelled: impl Fn() -> bool + 'static) -> Self {
+        self.set_cancellation(is_cancelled);
 
         self
     }
 
     /// Replace the callback captured by subsequent synchronous workspace operations.
-    pub fn set_cancellation(&self, cancelled: impl Fn() -> bool + 'static) {
-        *self.cancelled.borrow_mut() = Rc::new(cancelled);
+    pub fn set_cancellation(&self, is_cancelled: impl Fn() -> bool + 'static) {
+        *self.is_cancelled.borrow_mut() = Rc::new(is_cancelled);
     }
 
     /// Share persistent sourcemap producers with this workspace.
@@ -167,7 +160,7 @@ impl Workspace {
     ///
     /// # Errors
     /// Returns inaccessible paths or an unavailable module identity.
-    pub fn requires_reload(&self, module: &str) -> Result<bool, Error> {
+    pub fn should_reload(&self, module: &str) -> Result<bool, Error> {
         let module = paths::canonical(Path::new(module))?;
 
         for path in self.reload_dependencies() {
@@ -195,46 +188,17 @@ impl Workspace {
         let path = paths::identity(&self.root.join(path))?;
         let module = paths::text(&path)?;
 
-        if !paths::source(&path)
+        if !paths::is_source(&path)
             || !(self.sources.borrow().contains_key(&module)
                 || paths::metadata(&path)?.is_some_and(|metadata| metadata.is_file()))
         {
             return Err(Error::Path {
                 path,
-                reason: "expected a .luau or .lua source file",
+                reason: "Expected a `.luau` or `.lua` source file.",
             });
         }
 
         Ok(module)
-    }
-
-    /// Map sorted, unique modules to their first canonical input; an empty list traverses the root.
-    ///
-    /// Explicit check, format, and lint files are selected directly. Index selection
-    /// applies inclusion/exclusion settings to every input and includes source overlays.
-    /// Directories and glob patterns apply purpose-specific settings, falling back to shared settings.
-    /// Traversal does not follow symlinks. Glob inputs use their fixed directory prefix.
-    ///
-    /// # Errors
-    /// Returns malformed patterns, inaccessible inputs, and unsupported explicit files.
-    pub fn select(
-        &self,
-        inputs: &[PathBuf],
-        purpose: Purpose,
-        access: Access,
-    ) -> Result<BTreeMap<String, PathBuf>, Error> {
-        selection::select(self, inputs, purpose, access)
-    }
-
-    /// Return whether the command's effective exclusions suppress this module.
-    ///
-    /// # Errors
-    /// Returns inaccessible configuration or invalid selection rules.
-    pub fn excluded(&self, module: &str, purpose: Purpose) -> Result<bool, Error> {
-        let path = Path::new(module);
-        let scope = self.scope(path)?;
-
-        Ok(Selection::new(&scope.configuration, purpose).excluded(path))
     }
 
     /// Return the effective formatting configuration for a module.
@@ -253,77 +217,6 @@ impl Workspace {
         Ok(Arc::clone(&self.scope(Path::new(module))?.lint))
     }
 
-    /// Return whether Roblox instance support is enabled for a module.
-    ///
-    /// # Errors
-    /// Returns inaccessible configuration or sourcemap discovery paths.
-    pub fn roblox(&self, module: &str) -> Result<bool, Error> {
-        let module = Path::new(module);
-        let scope = self.scope(module)?;
-
-        instances::enabled(self, &scope, module)
-    }
-
-    /// Return declared value and type names for a module's lint environment.
-    ///
-    /// # Errors
-    /// Returns invalid flags or inaccessible environment inputs.
-    pub fn symbols(&self, module: &str) -> Result<SymbolOutcome, Error> {
-        let scope = self.scope(Path::new(module))?;
-        let cached = scope.builtins.borrow().as_ref().map(Arc::clone);
-
-        let builtins = if let Some(builtins) = cached {
-            builtins
-        } else {
-            let builtins: Arc<str> = Context::new(self)
-                .builtins(host::flags(&scope.configuration))
-                .map_err(Error::Analysis)?
-                .into();
-
-            *scope.builtins.borrow_mut() = Some(Arc::clone(&builtins));
-
-            builtins
-        };
-
-        let name = environment::identity(self, &scope, Path::new(module))?;
-
-        Ok(self.environments.borrow_mut().symbols(
-            name.as_deref(),
-            &scope.configuration.environment.globals,
-            &builtins,
-        ))
-    }
-
-    /// Look up a configured documentation symbol in the module's environment.
-    ///
-    /// # Errors
-    /// Returns unavailable, malformed, or inconsistent environment inputs.
-    pub fn documentation(&self, module: &str, symbol: &str) -> Result<Option<Value>, Error> {
-        let scope = self.scope(Path::new(module))?;
-        let mut registry = self.environments.borrow_mut();
-
-        if let Some(documentation) = registry
-            .documents(&scope.configuration.environment.groups)?
-            .iter()
-            .rev()
-            .find_map(|documentation| documentation.get(symbol).cloned())
-        {
-            return Ok(Some(documentation));
-        }
-
-        let namespace = if symbol.starts_with("@luau/") {
-            assets::Namespace::Luau
-        } else if symbol.starts_with("@roblox/")
-            && instances::enabled(self, &scope, Path::new(module))?
-        {
-            assets::Namespace::Roblox
-        } else {
-            return Ok(None);
-        };
-
-        Ok(registry.document(self, namespace)?.get(symbol).cloned())
-    }
-
     pub(super) fn scope(&self, module: &Path) -> Result<Rc<Scope>, Error> {
         discovery::directory(self, module.parent().unwrap_or(&self.root))
     }
@@ -339,7 +232,7 @@ pub(super) struct Scope {
     pub(super) format: Arc<format::Prepared>,
     pub(super) lint: Arc<lint::Prepared>,
     pub(super) environments: RefCell<BTreeMap<bool, Option<String>>>,
-    builtins: RefCell<Option<Arc<str>>>,
+    pub(super) builtins: RefCell<Option<Arc<str>>>,
 }
 
 impl Scope {

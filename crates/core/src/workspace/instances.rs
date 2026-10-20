@@ -10,6 +10,19 @@ use serde::Deserialize;
 use super::{Error, Workspace, model::Scope, paths};
 use crate::settings::resolution::Generator;
 
+impl Workspace {
+    /// Return whether Roblox instance support is enabled for a module.
+    ///
+    /// # Errors
+    /// Returns inaccessible configuration or sourcemap discovery paths.
+    pub fn is_roblox(&self, module: &str) -> Result<bool, Error> {
+        let module = Path::new(module);
+        let scope = self.scope(module)?;
+
+        is_enabled(self, &scope, module)
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Registry {
     automatic: BTreeMap<PathBuf, Option<PathBuf>>,
@@ -152,7 +165,7 @@ impl Map {
         for path in node.file_paths {
             let path = base.join(path);
 
-            if paths::source(&path) {
+            if paths::is_source(&path) {
                 let path = if paths::metadata(&path)?.is_some() {
                     paths::canonical(&path)?
                 } else if path.parent().is_some_and(Path::is_dir) {
@@ -205,9 +218,13 @@ pub(super) fn validate(source: &str) -> Result<(), serde_json::Error> {
     Ok(())
 }
 
-pub(super) fn enabled(workspace: &Workspace, scope: &Scope, module: &Path) -> Result<bool, Error> {
-    if let Some(enabled) = scope.configuration.environment.roblox {
-        return Ok(enabled);
+pub(super) fn is_enabled(
+    workspace: &Workspace,
+    scope: &Scope,
+    module: &Path,
+) -> Result<bool, Error> {
+    if let Some(is_enabled) = scope.configuration.environment.is_roblox {
+        return Ok(is_enabled);
     }
 
     Ok(generator(scope).is_some() || !inputs(workspace, scope, module)?.is_empty())
@@ -218,7 +235,7 @@ pub(super) fn configuration(
     scope: &Scope,
     module: &Path,
 ) -> Result<Vec<Location>, Error> {
-    if !enabled(workspace, scope, module)? {
+    if !is_enabled(workspace, scope, module)? {
         return Ok(Vec::new());
     }
 

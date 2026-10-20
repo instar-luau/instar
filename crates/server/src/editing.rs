@@ -12,15 +12,15 @@ use instar_core::{
 
 use tower_lsp_server::{
     gen_lsp_types::{
-        Code, CodeAction, CodeActionKind, CodeActionParams, CodeActionResponse, Diagnostic,
-        DocumentChange, PrepareRenamePlaceholder, PrepareRenameResult, RenameParams,
-        TextDocumentPositionParams, TextEdit, WorkspaceEdit,
+        Code, CodeActionParams, CodeActionResponse, DocumentChange, PrepareRenamePlaceholder,
+        PrepareRenameResult, RenameParams, TextDocumentPositionParams, TextEdit, WorkspaceEdit,
     },
     jsonrpc::{Error, Result},
 };
 
 use super::{
     document::{Document, Encoding},
+    output::actions,
     project::{Project, failure},
 };
 
@@ -85,12 +85,7 @@ pub(super) fn code_action(
                 .collect();
 
             if let Ok(edit) = fix(project, &module, &document, &selected) {
-                actions.push(offer(
-                    format!("Fix: {}", finding.message),
-                    "quickfix",
-                    edit,
-                    diagnostics,
-                ));
+                actions.push(actions::quickfix(&finding.message, edit, diagnostics));
             }
         }
     }
@@ -126,12 +121,7 @@ pub(super) fn code_action(
         if let Ok(edit) = fix(project, &module, &document, &selected)
             && changed(&edit)
         {
-            actions.push(offer(
-                "Fix all Instar findings".to_owned(),
-                "source.fixAll.instar",
-                edit,
-                Vec::new(),
-            ));
+            actions.push(actions::fix_all(edit));
         }
     }
 
@@ -139,12 +129,7 @@ pub(super) fn code_action(
         && let Ok(edit) = organize(project, &module)
         && changed(&edit)
     {
-        actions.push(offer(
-            "Organize imports".to_owned(),
-            "source.organizeImports",
-            edit,
-            Vec::new(),
-        ));
+        actions.push(actions::organize(edit));
     }
 
     Ok(Some(actions))
@@ -161,9 +146,7 @@ pub(super) fn action(project: &mut Project, module: &str, kind: &str) -> Result<
 
         "source.organizeImports" => organize(project, module),
 
-        _ => Err(Error::invalid_params(
-            "cannot execute an unknown source action",
-        )),
+        _ => Err(Error::invalid_params("Unknown source action.")),
     }
 }
 
@@ -177,7 +160,7 @@ pub(super) fn prepare_rename_source(
 
     if let Some(target) = document.analysis.prepare_rename(offset)
         && !document.analysis.bindings.iter().any(|binding| {
-            binding.exported
+            binding.is_exported
                 && binding
                     .occurrences
                     .iter()
@@ -254,7 +237,7 @@ pub(super) fn rename_source(
             .map_err(failure)?;
 
         if !document.analysis.bindings.iter().any(|binding| {
-            binding.exported
+            binding.is_exported
                 && binding
                     .occurrences
                     .iter()
@@ -341,21 +324,6 @@ pub(super) fn format(
             new_text: replacement,
         }]
     }))
-}
-
-fn offer(
-    title: String,
-    kind: &str,
-    edit: WorkspaceEdit,
-    diagnostics: Vec<Diagnostic>,
-) -> CodeActionResponse {
-    CodeActionResponse::CodeAction(CodeAction {
-        title,
-        kind: Some(CodeActionKind::from(kind.to_owned())),
-        diagnostics: (!diagnostics.is_empty()).then_some(diagnostics),
-        edit: Some(edit),
-        ..CodeAction::default()
-    })
 }
 
 fn organize(project: &mut Project, module: &str) -> Result<WorkspaceEdit> {

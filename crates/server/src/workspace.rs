@@ -178,7 +178,7 @@ impl State {
             if let Some(indexed) = previous {
                 self.projects
                     .get_mut(&root)
-                    .expect("internal error: added project missing")
+                    .expect("Internal error: added project is missing.")
                     .indexed = indexed;
             } else {
                 self.projects.remove(&root);
@@ -215,7 +215,7 @@ impl State {
             let project = self
                 .projects
                 .get_mut(&root)
-                .expect("internal error: removed project missing");
+                .expect("Internal error: removed project is missing.");
 
             project.indexed = indexed;
             project.published = published;
@@ -274,7 +274,7 @@ impl State {
                         .get(module)
                         .is_some_and(|document| document.version.is_some())
                 {
-                    return Err(Error::invalid_params("open document owners collide"));
+                    return Err(Error::invalid_params("Open document owners collide."));
                 }
 
                 transfers.push((
@@ -330,27 +330,27 @@ impl State {
             let project = self
                 .projects
                 .get_mut(&root)
-                .expect("internal error: document owner missing");
+                .expect("Internal error: document owner is missing.");
 
             project.workspace.remove_source(&module);
             project.documents.remove(&module);
 
             self.projects
                 .get_mut(&destination)
-                .expect("internal error: document destination missing")
+                .expect("Internal error: document destination is missing.")
                 .adopt(module, document);
         }
 
         for (root, destination, module) in publications {
             self.projects
                 .get_mut(&root)
-                .expect("internal error: diagnostic owner missing")
+                .expect("Internal error: diagnostic owner is missing.")
                 .published
                 .remove(&module);
 
             self.projects
                 .get_mut(&destination)
-                .expect("internal error: diagnostic destination missing")
+                .expect("Internal error: diagnostic destination is missing.")
                 .published
                 .insert(module);
         }
@@ -398,7 +398,7 @@ impl State {
                 if document.version.is_some()
                     && borrowed.insert(module.clone(), document.clone()).is_some()
                 {
-                    return Err(Error::invalid_params("open document owners collide"));
+                    return Err(Error::invalid_params("Open document owners collide."));
                 }
             }
         }
@@ -411,7 +411,7 @@ impl State {
                 .get(module)
                 .is_some_and(|document| document.version.is_some())
         }) {
-            return Err(Error::invalid_params("open document owners collide"));
+            return Err(Error::invalid_params("Open document owners collide."));
         }
 
         let changed = project.borrowed.len() != borrowed.len()
@@ -471,7 +471,7 @@ impl State {
         let project = self
             .projects
             .get_mut(root)
-            .expect("internal error: synchronized project missing");
+            .expect("Internal error: synchronized project is missing.");
 
         for module in project.borrowed.keys() {
             if !borrowed.contains_key(module)
@@ -506,7 +506,7 @@ impl State {
             path
         } else {
             path.parent()
-                .ok_or_else(|| Error::invalid_params("document has no parent directory"))?
+                .ok_or_else(|| Error::invalid_params("Document has no parent directory."))?
                 .to_owned()
         };
 

@@ -57,15 +57,46 @@ impl<'configuration> Selection<'configuration> {
         }
     }
 
-    fn matches(&self, path: &Path) -> bool {
+    fn is_match(&self, path: &Path) -> bool {
         self.include
-            .is_none_or(|include| include.matches(path, true))
-            && !self.excluded(path)
+            .is_none_or(|include| include.is_match(path, true))
+            && !self.is_excluded(path)
     }
 
-    pub(super) fn excluded(&self, path: &Path) -> bool {
+    pub(super) fn is_excluded(&self, path: &Path) -> bool {
         self.exclude
-            .is_some_and(|exclude| exclude.matches(path, false))
+            .is_some_and(|exclude| exclude.is_match(path, false))
+    }
+}
+
+impl Workspace {
+    /// Map sorted, unique modules to their first canonical input; an empty list traverses the root.
+    ///
+    /// Explicit check, format, and lint files are selected directly. Index selection
+    /// applies inclusion/exclusion settings to every input and includes source overlays.
+    /// Directories and glob patterns apply purpose-specific settings, falling back to shared settings.
+    /// Traversal does not follow symlinks. Glob inputs use their fixed directory prefix.
+    ///
+    /// # Errors
+    /// Returns malformed patterns, inaccessible inputs, and unsupported explicit files.
+    pub fn select(
+        &self,
+        inputs: &[PathBuf],
+        purpose: Purpose,
+        access: Access,
+    ) -> Result<BTreeMap<String, PathBuf>, Error> {
+        select(self, inputs, purpose, access)
+    }
+
+    /// Return whether the command's effective exclusions suppress this module.
+    ///
+    /// # Errors
+    /// Returns inaccessible configuration or invalid selection rules.
+    pub fn is_excluded(&self, module: &str, purpose: Purpose) -> Result<bool, Error> {
+        let path = Path::new(module);
+        let scope = self.scope(path)?;
+
+        Ok(Selection::new(&scope.configuration, purpose).is_excluded(path))
     }
 }
 
@@ -76,16 +107,16 @@ pub(super) fn select(
     access: Access,
 ) -> Result<BTreeMap<String, PathBuf>, Error> {
     let mut selected = BTreeMap::new();
-    let cancellation = Rc::clone(&workspace.cancelled.borrow());
-    let cancelled = cancellation.as_ref();
-    process::interrupted(cancelled)?;
+    let cancellation = Rc::clone(&workspace.is_cancelled.borrow());
+    let is_cancelled = cancellation.as_ref();
+    process::interrupted(is_cancelled)?;
 
     if inputs.is_empty() {
         walk(workspace, &workspace.root, None, purpose, &mut selected)?;
     }
 
     for input in inputs {
-        process::interrupted(cancelled)?;
+        process::interrupted(is_cancelled)?;
         let path = workspace.root.join(input);
         let input = paths::text(input)?;
 
@@ -116,7 +147,7 @@ pub(super) fn select(
                 {
                     return Err(Error::Path {
                         path,
-                        reason: "refusing to write a symbolic link",
+                        reason: "Cannot write to a symbolic link.",
                     });
                 }
 
@@ -125,7 +156,7 @@ pub(super) fn select(
 
                 if !matches!(purpose, Purpose::Index)
                     || Selection::new(&workspace.scope(&input)?.configuration, purpose)
-                        .matches(&input)
+                        .is_match(&input)
                 {
                     selected.entry(module).or_insert(input);
                 }
@@ -139,7 +170,7 @@ pub(super) fn select(
                         let input = PathBuf::from(&module);
 
                         if Selection::new(&workspace.scope(&input)?.configuration, purpose)
-                            .matches(&input)
+                            .is_match(&input)
                         {
                             selected.entry(module).or_insert(input);
                         }
@@ -150,7 +181,7 @@ pub(super) fn select(
 
                 return Err(Error::Path {
                     path,
-                    reason: "input does not exist",
+                    reason: "Input does not exist.",
                 });
             }
 
@@ -190,18 +221,18 @@ fn walk(
     purpose: Purpose,
     selected: &mut BTreeMap<String, PathBuf>,
 ) -> Result<(), Error> {
-    let cancellation = Rc::clone(&workspace.cancelled.borrow());
-    let cancelled = cancellation.as_ref();
+    let cancellation = Rc::clone(&workspace.is_cancelled.borrow());
+    let is_cancelled = cancellation.as_ref();
 
     for entry in WalkBuilder::new(root).standard_filters(false).build() {
-        process::interrupted(cancelled)?;
+        process::interrupted(is_cancelled)?;
         let entry = entry.map_err(Error::Traversal)?;
         let path = entry.path();
 
         if entry.file_type().is_some_and(|kind| kind.is_file())
-            && paths::source(path)
+            && paths::is_source(path)
             && pattern.is_none_or(|pattern| pattern.is_match(path))
-            && Selection::new(&workspace.scope(path)?.configuration, purpose).matches(path)
+            && Selection::new(&workspace.scope(path)?.configuration, purpose).is_match(path)
         {
             selected
                 .entry(workspace.module(path)?)
@@ -211,12 +242,12 @@ fn walk(
 
     if matches!(purpose, Purpose::Index) {
         for module in workspace.sources.borrow().keys() {
-            process::interrupted(cancelled)?;
+            process::interrupted(is_cancelled)?;
             let path = Path::new(module);
 
             if path.starts_with(root)
                 && pattern.is_none_or(|pattern| pattern.is_match(path))
-                && Selection::new(&workspace.scope(path)?.configuration, purpose).matches(path)
+                && Selection::new(&workspace.scope(path)?.configuration, purpose).is_match(path)
             {
                 selected
                     .entry(module.clone())

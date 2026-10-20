@@ -3,7 +3,7 @@
         rule: "MultiLineStatement",
         severity: Warning,
         range: 13..19,
-        message: "statement spans multiple lines; indent its continuation",
+        message: "Statement continuation is not indented beyond the statement's starting indentation.",
         edits: [],
     },
 ]

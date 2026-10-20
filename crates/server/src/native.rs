@@ -85,7 +85,7 @@ pub(super) fn run(
 
             *current
                 .lock()
-                .expect("internal error: active operation poisoned") =
+                .expect("Internal error: active operation mutex is poisoned.") =
                 Arc::downgrade(&work.operation);
 
             let context = Context::new(workspace.as_ref()).with_progress(&update);
@@ -101,7 +101,7 @@ pub(super) fn run(
             loop {
                 *current
                     .lock()
-                    .expect("internal error: active operation poisoned") =
+                    .expect("Internal error: active operation mutex is poisoned.") =
                     Arc::downgrade(&next.operation);
 
                 *operation.borrow_mut() = Arc::clone(&next.operation);
@@ -150,7 +150,7 @@ pub(super) fn run(
 
                 *current
                     .lock()
-                    .expect("internal error: active operation poisoned") = Weak::new();
+                    .expect("Internal error: active operation mutex is poisoned.") = Weak::new();
 
                 if sender
                     .send(Message::Complete(Completion {

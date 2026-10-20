@@ -137,7 +137,7 @@ fn patterns(values: &[String]) -> Result<Vec<GlobMatcher>> {
         .map(|value| {
             if value.is_empty() || value.contains('\0') {
                 return Err(Error::invalid_params(
-                    "import patterns must be nonempty and contain no null characters",
+                    "Import patterns must be nonempty and contain no null characters.",
                 ));
             }
 

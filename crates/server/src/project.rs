@@ -111,7 +111,9 @@ impl Project {
             .workspace
             .source(module)
             .map_err(failure)?
-            .ok_or_else(|| Error::invalid_params(format!("cannot read source `{module}`")))?;
+            .ok_or_else(|| {
+                Error::invalid_params(format!("Source is unavailable for `{module}`."))
+            })?;
 
         let revision = self.advance()?;
         let document = Document::new(document::uri(Path::new(module))?, source, None, revision);
@@ -199,7 +201,7 @@ impl Project {
         data: Option<Value>,
     ) -> Result<(String, ValueType)> {
         let resolve: Resolve = serde_json::from_value(
-            data.ok_or_else(|| Error::invalid_params("resolve data is missing"))?,
+            data.ok_or_else(|| Error::invalid_params("Resolve data is missing."))?,
         )
         .map_err(|error| Error::invalid_params(error.to_string()))?;
 
@@ -242,7 +244,7 @@ impl Project {
                 pair[0].range.end > pair[1].range.start
                     || pair[0].range.is_empty() && pair[0].range.start == pair[1].range.start
             }) {
-                return Err(Error::invalid_params("workspace edits overlap"));
+                return Err(Error::invalid_params("Workspace edits overlap."));
             }
 
             let edits: Vec<_> = edits
@@ -306,7 +308,7 @@ impl Project {
 
     pub(super) fn reload(&mut self) -> Result<()> {
         Rc::get_mut(&mut self.workspace)
-            .ok_or_else(|| failure("cannot reload a borrowed workspace"))?
+            .ok_or_else(|| failure("Cannot reload a borrowed workspace."))?
             .reload()
             .map_err(failure)?;
 
@@ -508,7 +510,7 @@ pub(super) fn failure(error: impl Display) -> Error {
 pub(super) fn resolved_uri(data: Option<&Value>) -> Result<Uri> {
     let resolve: Resolve = serde_json::from_value(
         data.cloned()
-            .ok_or_else(|| Error::invalid_params("resolve data is missing"))?,
+            .ok_or_else(|| Error::invalid_params("Resolve data is missing."))?,
     )
     .map_err(|error| Error::invalid_params(error.to_string()))?;
 

@@ -14,6 +14,7 @@ use vermis::{
 
 use super::{
     Error,
+    generation::interrupted,
     mapping::{
         self, Argument, Class, Corrections, Dump, Enumeration, HIERARCHY, Member, Signature, Type,
         Types, invalid,
@@ -25,6 +26,7 @@ use super::{
 use crate::{
     format::{self, Prepared},
     settings::format::Configuration,
+    syntax::is_identifier,
 };
 
 struct Context<'context> {
@@ -32,7 +34,7 @@ struct Context<'context> {
     corrections: &'context Corrections,
     replacements: &'context BTreeMap<String, Vec<Replacement>>,
     labels: &'context [&'context str],
-    cancelled: fn() -> bool,
+    is_cancelled: fn() -> bool,
 }
 
 pub(super) fn render(
@@ -40,12 +42,12 @@ pub(super) fn render(
     source: &str,
     documentation: Value,
     builtins: &str,
-    cancelled: fn() -> bool,
+    is_cancelled: fn() -> bool,
 ) -> Result<BTreeMap<PathBuf, String>, Error> {
-    check(cancelled)?;
+    interrupted(is_cancelled)?;
 
     if !documentation.is_object() {
-        return Err(invalid("invalid documentation object"));
+        return Err(invalid("Documentation must be an object."));
     }
 
     let dump: Dump = mapping::decode(dump, "API dump")?;
@@ -54,17 +56,17 @@ pub(super) fn render(
         mapping::parse(include_str!("../../assets/corrections.json"), "corrections")?;
 
     let types: Types = mapping::parse(include_str!("../../assets/types.json"), "types")?;
-    let classes = mapping::corrected(dump.classes, &corrections.classes, cancelled)?;
-    let datatypes = mapping::corrected(types.data_types, &corrections.classes, cancelled)?;
-    let constructors = mapping::corrected(types.constructors, &corrections.classes, cancelled)?;
+    let classes = mapping::corrected(dump.classes, &corrections.classes, is_cancelled)?;
+    let data_types = mapping::corrected(types.data_types, &corrections.classes, is_cancelled)?;
+    let constructors = mapping::corrected(types.constructors, &corrections.classes, is_cancelled)?;
     let declarations = include_str!("../../assets/declarations.d.luau");
 
     let replacements =
-        syntax::replacements(include_str!("../../assets/members.d.luau"), cancelled)?
+        syntax::replacements(include_str!("../../assets/members.d.luau"), is_cancelled)?
             .into_iter()
             .collect();
 
-    let declared = syntax::blocks(declarations, cancelled)?;
+    let declared = syntax::blocks(declarations, is_cancelled)?;
 
     let injections = syntax::injected(
         source,
@@ -72,25 +74,25 @@ pub(super) fn render(
         &corrections.exclusions.globals,
         &corrections.exports,
         &declared,
-        cancelled,
+        is_cancelled,
     )?;
 
     validate(
-        [&classes, &datatypes, &constructors],
+        [&classes, &data_types, &constructors],
         &dump.enumerations,
         [declarations, &injections],
         &corrections,
-        cancelled,
+        is_cancelled,
     )?;
 
     let configuration = Prepared::new(&Configuration::default())
-        .map_err(|error| invalid(format!("invalid default formatting settings: {error}")))?;
+        .map_err(|error| invalid(format!("Invalid default formatting settings. {error}")))?;
 
     let mut definitions = BTreeMap::new();
     let mut properties = BTreeMap::new();
 
     for (name, level) in [("none", 0), ("local", 1), ("plugin", 2), ("roblox", 4)] {
-        check(cancelled)?;
+        interrupted(is_cancelled)?;
         let labels = &HIERARCHY[..=level];
 
         let context = Context {
@@ -98,15 +100,15 @@ pub(super) fn render(
             corrections: &corrections,
             replacements: &replacements,
             labels,
-            cancelled,
+            is_cancelled,
         };
 
         let mut output = Output::default();
         output.source(declarations);
         output.newline();
 
-        for class in &datatypes {
-            check(cancelled)?;
+        for class in &data_types {
+            interrupted(is_cancelled)?;
             output.append(declaration(class, &context)?);
         }
 
@@ -114,39 +116,39 @@ pub(super) fn render(
         output.newline();
 
         for class in &classes {
-            check(cancelled)?;
+            interrupted(is_cancelled)?;
             output.append(declaration(class, &context)?);
         }
 
         for class in &constructors {
-            check(cancelled)?;
+            interrupted(is_cancelled)?;
             output.append(constructor(class, &context)?);
         }
 
-        let ordered = syntax::ordered(&output.finish(cancelled)?, cancelled)?;
+        let ordered = syntax::ordered(&output.finish(is_cancelled)?, is_cancelled)?;
         let formatted = format::format(&ordered, &configuration)?;
-        check(cancelled)?;
+        interrupted(is_cancelled)?;
         definitions.insert(name.to_owned(), formatted);
 
         let mut entries = Vec::new();
 
         for class in &classes {
-            check(cancelled)?;
+            interrupted(is_cancelled)?;
 
             for member in &class.members {
-                check(cancelled)?;
+                interrupted(is_cancelled)?;
 
                 if member.kind == "Property"
-                    && !syntax::identifier(&member.name)
-                    && member.access(labels)?
+                    && !is_identifier(&member.name)
+                    && member.can_access(labels)?
                 {
-                    let (read, write) = member.permissions(labels)?;
+                    let (can_read, can_write) = member.permissions(labels)?;
 
                     entries.push(Access {
                         class: class.name.clone(),
                         name: member.name.clone(),
-                        read,
-                        write,
+                        can_read,
+                        can_write,
                     });
                 }
             }
@@ -155,7 +157,7 @@ pub(super) fn render(
         properties.insert(name.to_owned(), entries);
     }
 
-    let luau_roots: BTreeSet<_> = syntax::blocks(builtins, cancelled)?
+    let luau_roots: BTreeSet<_> = syntax::blocks(builtins, is_cancelled)?
         .into_iter()
         .map(|block| block.name)
         .collect();
@@ -163,30 +165,30 @@ pub(super) fn render(
     let mut roblox_roots = BTreeSet::from(["Enum".to_owned()]);
 
     for definition in definitions.values() {
-        for block in syntax::blocks(definition, cancelled)? {
+        for block in syntax::blocks(definition, is_cancelled)? {
             if !block.is_type {
                 roblox_roots.insert(block.name);
             }
         }
     }
 
-    let canonical = canonical(documentation, &luau_roots, &roblox_roots, cancelled)?;
+    let canonical = canonical(documentation, &luau_roots, &roblox_roots, is_cancelled)?;
 
     let canonical = canonical
         .as_object()
-        .ok_or_else(|| invalid("invalid documentation object"))?;
+        .ok_or_else(|| invalid("Documentation must be an object."))?;
 
     if canonical
         .keys()
         .any(|key| !key.starts_with("@luau/") && !key.starts_with("@roblox/"))
     {
-        return Err(invalid("unrecognized documentation namespace"));
+        return Err(invalid("Unrecognized documentation namespace."));
     }
 
     let mut documents = BTreeMap::new();
 
     for namespace in ["luau", "roblox"] {
-        check(cancelled)?;
+        interrupted(is_cancelled)?;
         let prefix = format!("@{namespace}/");
 
         let symbols: Map<_, _> = canonical
@@ -200,23 +202,23 @@ pub(super) fn render(
 
     let luau_documentation = documents
         .remove("luau")
-        .ok_or_else(|| invalid("missing Luau documentation"))?;
+        .ok_or_else(|| invalid("Missing Luau documentation."))?;
 
     let roblox_documentation = documents
         .remove("roblox")
-        .ok_or_else(|| invalid("missing Roblox documentation"))?;
+        .ok_or_else(|| invalid("Missing Roblox documentation."))?;
 
     let metadata = Metadata {
         services: classes
             .iter()
-            .filter(|class| mapping::tagged(class.tags.as_deref(), "Service"))
+            .filter(|class| mapping::has_tag(class.tags.as_deref(), "Service"))
             .map(|class| class.name.clone())
             .collect(),
         creatable_instances: classes
             .iter()
             .filter(|class| {
-                !mapping::tagged(class.tags.as_deref(), "NotCreatable")
-                    && !mapping::tagged(class.tags.as_deref(), "Service")
+                !mapping::has_tag(class.tags.as_deref(), "NotCreatable")
+                    && !mapping::has_tag(class.tags.as_deref(), "Service")
             })
             .map(|class| class.name.clone())
             .collect(),
@@ -269,7 +271,7 @@ pub(super) fn render(
         serialize(&luau_metadata, "Luau metadata")?,
     );
 
-    check(cancelled)?;
+    interrupted(is_cancelled)?;
 
     Ok(result)
 }
@@ -296,9 +298,9 @@ fn declaration(class: &Class, context: &Context<'_>) -> Result<Output, Error> {
         .map_or(&[][..], Vec::as_slice);
 
     for (index, member) in class.members.iter().enumerate() {
-        check(context.cancelled)?;
+        interrupted(context.is_cancelled)?;
 
-        if !member.access(context.labels)? {
+        if !member.can_access(context.labels)? {
             continue;
         }
 
@@ -314,13 +316,13 @@ fn declaration(class: &Class, context: &Context<'_>) -> Result<Output, Error> {
                     .iter()
                     .filter(|replacement| replacement.name == member.name)
                 {
-                    if permission(&mut output, Some(member), context.labels)? {
+                    if emit_permission(&mut output, Some(member), context.labels)? {
                         output.source(&replacement.source);
                         output.newline();
                     }
                 }
             }
-        } else if permission(&mut output, Some(member), context.labels)? {
+        } else if emit_permission(&mut output, Some(member), context.labels)? {
             output.append(signature(
                 &member.name,
                 member.signature(&context.corrections.types)?,
@@ -333,7 +335,7 @@ fn declaration(class: &Class, context: &Context<'_>) -> Result<Output, Error> {
     let mut appended = BTreeSet::new();
 
     for replacement in replacements {
-        check(context.cancelled)?;
+        interrupted(context.is_cancelled)?;
 
         if class
             .members
@@ -347,7 +349,7 @@ fn declaration(class: &Class, context: &Context<'_>) -> Result<Output, Error> {
         let original = inherited(class, &replacement.name, context.classes)?;
 
         if let Some(member) = original
-            && !member.access(context.labels)?
+            && !member.can_access(context.labels)?
         {
             continue;
         }
@@ -356,7 +358,7 @@ fn declaration(class: &Class, context: &Context<'_>) -> Result<Output, Error> {
             .iter()
             .filter(|entry| entry.name == replacement.name)
         {
-            if permission(&mut output, original, context.labels)? {
+            if emit_permission(&mut output, original, context.labels)? {
                 output.source(&replacement.source);
                 output.newline();
             }
@@ -370,7 +372,7 @@ fn declaration(class: &Class, context: &Context<'_>) -> Result<Output, Error> {
     Ok(output)
 }
 
-fn permission(
+fn emit_permission(
     output: &mut Output,
     member: Option<&Member>,
     labels: &[&str],
@@ -379,23 +381,24 @@ fn permission(
         return Ok(true);
     };
 
-    let (read, write) = member.permissions(labels)?;
+    let (can_read, can_write) = member.permissions(labels)?;
 
-    let allowed = if (read || write) && !syntax::identifier(&member.name) || (read && write) {
-        true
-    } else if read {
-        output.source("read");
+    let is_allowed =
+        if (can_read || can_write) && !is_identifier(&member.name) || (can_read && can_write) {
+            true
+        } else if can_read {
+            output.source("read");
 
-        true
-    } else if write {
-        output.source("write");
+            true
+        } else if can_write {
+            output.source("write");
 
-        true
-    } else {
-        false
-    };
+            true
+        } else {
+            false
+        };
 
-    Ok(allowed)
+    Ok(is_allowed)
 }
 
 fn signature(name: &str, signature: &Signature) -> Result<Output, Error> {
@@ -453,19 +456,19 @@ fn signature(name: &str, signature: &Signature) -> Result<Output, Error> {
     Ok(output)
 }
 
-fn parameters(output: &mut Output, values: &[Argument], callback: bool) {
+fn parameters(output: &mut Output, values: &[Argument], is_callback: bool) {
     for (index, parameter) in values.iter().enumerate() {
         if index > 0 {
             output.symbol(Symbol::Comma);
         }
 
         let value = parameter.value.as_str();
-        let variadic = value.starts_with("...") || parameter.name == "...";
+        let is_variadic = value.starts_with("...") || parameter.name == "...";
 
-        if variadic && index + 1 == values.len() {
+        if is_variadic && index + 1 == values.len() {
             output.symbol(Symbol::Ellipsis);
 
-            if !callback {
+            if !is_callback {
                 output.symbol(Symbol::Colon);
             }
 
@@ -473,7 +476,7 @@ fn parameters(output: &mut Output, values: &[Argument], callback: bool) {
             continue;
         }
 
-        if syntax::identifier(&parameter.name) && parameter.name != "self" {
+        if is_identifier(&parameter.name) && parameter.name != "self" {
             output.source(&parameter.name);
         } else {
             output.source(format!("argument{index}"));
@@ -481,11 +484,11 @@ fn parameters(output: &mut Output, values: &[Argument], callback: bool) {
 
         output.symbol(Symbol::Colon);
 
-        let value = if variadic { "any" } else { value };
+        let value = if is_variadic { "any" } else { value };
 
         output.source(value);
 
-        if parameter.default && !value.ends_with('?') {
+        if parameter.has_default && !value.ends_with('?') {
             output.symbol(Symbol::QuestionMark);
         }
     }
@@ -528,7 +531,7 @@ fn constructor(class: &Class, context: &Context<'_>) -> Result<Output, Error> {
     let mut fields = 0;
 
     for member in &class.members {
-        check(context.cancelled)?;
+        interrupted(context.is_cancelled)?;
 
         if member.kind == "Property" {
             if fields > 0 {
@@ -548,7 +551,7 @@ fn constructor(class: &Class, context: &Context<'_>) -> Result<Output, Error> {
     let mut emitted = BTreeSet::new();
 
     for member in &class.members {
-        check(context.cancelled)?;
+        interrupted(context.is_cancelled)?;
 
         if member.kind != "Function" || !emitted.insert(&member.name) {
             continue;
@@ -569,7 +572,7 @@ fn constructor(class: &Class, context: &Context<'_>) -> Result<Output, Error> {
             .filter(|value| value.kind == "Function" && value.name == member.name)
             .enumerate()
         {
-            check(context.cancelled)?;
+            interrupted(context.is_cancelled)?;
 
             if index > 0 {
                 output.symbol(Symbol::Ampersand);
@@ -583,7 +586,7 @@ fn constructor(class: &Class, context: &Context<'_>) -> Result<Output, Error> {
                 returns: result,
             } = overload.signature(&context.corrections.types)?
             else {
-                return Err(invalid("invalid constructor function signature"));
+                return Err(invalid("Invalid constructor function signature."));
             };
 
             parameters(&mut output, values, true);
@@ -620,7 +623,7 @@ fn inherited<'classes>(
 
         if !visited.insert(&current.name) {
             return Err(invalid(format!(
-                "unresolved class inheritance: {}",
+                "Cyclic class inheritance at `{}`.",
                 current.name
             )));
         }
@@ -659,7 +662,7 @@ fn validate(
     enumerations: &[Enumeration],
     declarations: [&str; 2],
     corrections: &Corrections,
-    cancelled: fn() -> bool,
+    is_cancelled: fn() -> bool,
 ) -> Result<(), Error> {
     let mut defined: BTreeSet<_> = classes[..2]
         .iter()
@@ -670,31 +673,34 @@ fn validate(
     defined.extend(["Enum", "EnumItem", "Enumerations"].map(str::to_owned));
 
     for enumeration in enumerations {
-        check(cancelled)?;
+        interrupted(is_cancelled)?;
 
-        if !syntax::identifier(&enumeration.name) || enumeration.name == "GetEnums" {
-            return Err(invalid(format!("invalid enum name `{}`", enumeration.name)));
+        if !is_identifier(&enumeration.name) || enumeration.name == "GetEnums" {
+            return Err(invalid(format!(
+                "Invalid enum name `{}`.",
+                enumeration.name
+            )));
         }
 
         if !defined.insert(format!("Enum.{}", enumeration.name)) {
-            return Err(invalid(format!("duplicate enum `{}`", enumeration.name)));
+            return Err(invalid(format!("Duplicate enum `{}`.", enumeration.name)));
         }
 
         let mut items = BTreeSet::from(["GetEnumItems", "FromName", "FromValue"]);
 
         for item in &enumeration.items {
-            check(cancelled)?;
+            interrupted(is_cancelled)?;
 
             if item.name.is_empty() || item.name.contains('\0') {
                 return Err(invalid(format!(
-                    "invalid enum item in `{}`",
+                    "Invalid enum item name in `{}`.",
                     enumeration.name
                 )));
             }
 
             if !items.insert(&item.name) {
                 return Err(invalid(format!(
-                    "duplicate enum member `{}.{}`",
+                    "Duplicate enum member `{}.{}`.",
                     enumeration.name, item.name
                 )));
             }
@@ -705,11 +711,11 @@ fn validate(
         let tree = syntax::parse(source)?;
 
         for node in &tree.nodes {
-            check(cancelled)?;
+            interrupted(is_cancelled)?;
 
             if let NodeKind::TypeAlias { name, .. } | NodeKind::Class { name, .. } = node.kind {
                 let name = from_utf8(tree.text(name))
-                    .map_err(|error| invalid(format!("invalid type name: {error}")))?;
+                    .map_err(|error| invalid(format!("Type name is not valid UTF-8. {error}")))?;
 
                 defined.insert(name.to_owned());
             }
@@ -719,12 +725,12 @@ fn validate(
     let mut references = BTreeSet::new();
 
     for class in classes.into_iter().flatten() {
-        check(cancelled)?;
+        interrupted(is_cancelled)?;
 
         for member in &class.members {
-            check(cancelled)?;
+            interrupted(is_cancelled)?;
 
-            if !member.access(&HIERARCHY)? {
+            if !member.can_access(&HIERARCHY)? {
                 continue;
             }
 
@@ -767,8 +773,12 @@ fn validate(
 
     if !missing.is_empty() {
         return Err(invalid(format!(
-            "unresolved API types: {}",
-            missing.join(", ")
+            "Unresolved API types: {}.",
+            missing
+                .iter()
+                .map(|name| format!("`{name}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
         )));
     }
 
@@ -779,9 +789,9 @@ fn canonical(
     value: Value,
     luau: &BTreeSet<String>,
     roblox: &BTreeSet<String>,
-    cancelled: fn() -> bool,
+    is_cancelled: fn() -> bool,
 ) -> Result<Value, Error> {
-    check(cancelled)?;
+    interrupted(is_cancelled)?;
 
     match value {
         Value::Object(values) => {
@@ -789,14 +799,14 @@ fn canonical(
             let mut result = Map::new();
 
             for (key, value) in values {
-                check(cancelled)?;
+                interrupted(is_cancelled)?;
                 let replacement = canonical_symbol(&key, luau, roblox);
 
                 if replacement != key && keys.contains(&replacement) {
                     continue;
                 }
 
-                result.insert(replacement, canonical(value, luau, roblox, cancelled)?);
+                result.insert(replacement, canonical(value, luau, roblox, is_cancelled)?);
             }
 
             Ok(Value::Object(result))
@@ -805,7 +815,7 @@ fn canonical(
         Value::Array(values) => {
             let values: Result<Vec<_>, _> = values
                 .into_iter()
-                .map(|value| canonical(value, luau, roblox, cancelled))
+                .map(|value| canonical(value, luau, roblox, is_cancelled))
                 .collect();
 
             Ok(Value::Array(values?))
@@ -821,7 +831,7 @@ fn canonical_symbol(value: &str, luau: &BTreeSet<String>, roblox: &BTreeSet<Stri
         let boundary = symbol.find(['.', '/']).unwrap_or(symbol.len());
         let (root, suffix) = symbol.split_at(boundary);
 
-        if syntax::identifier(root) && luau.contains(root) && !roblox.contains(root) {
+        if is_identifier(root) && luau.contains(root) && !roblox.contains(root) {
             return format!("@luau/global/{root}{suffix}");
         }
     }
@@ -834,12 +844,4 @@ fn serialize(value: &impl Serialize, input: &str) -> Result<String, Error> {
         input: input.to_owned(),
         source,
     })
-}
-
-fn check(cancelled: fn() -> bool) -> Result<(), Error> {
-    if cancelled() {
-        Err(Error::Cancelled)
-    } else {
-        Ok(())
-    }
 }

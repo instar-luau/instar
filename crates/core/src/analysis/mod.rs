@@ -8,13 +8,15 @@ mod source;
 mod validation;
 
 pub use self::{
-    color::color_presentations,
+    color::{Color, color_presentations},
     error::Error,
     model::{
-        Access, Analysis, Binding, BindingKind, Color, Edit, Fold, FoldKind, Import,
-        ImportExpression, Link, Occurrence, RenameError, RenameTarget, Symbol, SymbolKind, Token,
-        TokenKind,
+        Access, Analysis, Binding, BindingKind, Edit, Fold, FoldKind, Import, ImportExpression,
+        Link, Occurrence, Symbol, SymbolKind, Token, TokenKind,
     },
+    rename::{RenameError, RenameTarget},
     source::analyze,
     validation::validate,
 };
+
+pub use crate::syntax::is_identifier;

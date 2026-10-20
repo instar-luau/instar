@@ -10,15 +10,15 @@ use std::{
     time::Instant,
 };
 
-use eyre::{Result, WrapErr as _, bail};
+use eyre::{Report, Result, WrapErr as _, bail};
 
 use instar_core::workspace::{Access, Generators, Purpose, Workspace};
 
 use super::{
     arguments::{Arguments, Operation, Options},
+    batch::Batch,
     check, format, interrupt, lint,
-    progress::Progress,
-    report::{self, Batch},
+    output::{self, Progress},
     watch::{Change, Watcher},
 };
 
@@ -52,14 +52,14 @@ pub(super) fn run(arguments: &Arguments, operation: &Operation) -> Result<u8> {
         .root
         .clone()
         .map_or_else(env::current_dir, Ok)
-        .wrap_err("cannot resolve working directory")?;
+        .wrap_err("Could not resolve the working directory.")?;
 
     let root = root
         .canonicalize()
-        .wrap_err_with(|| format!("cannot resolve root `{}`", root.display()))?;
+        .wrap_err_with(|| format!("Could not resolve project root `{}`.", root.display()))?;
 
     if !root.is_dir() {
-        bail!("project root `{}` must be a directory", root.display());
+        bail!("Project root `{}` must be a directory.", root.display());
     }
 
     let stdin_count = options
@@ -69,15 +69,27 @@ pub(super) fn run(arguments: &Arguments, operation: &Operation) -> Result<u8> {
         .count();
 
     if stdin_count > 1 {
-        bail!("stdin (-) may only be selected once");
+        return Err(output::Validation::new(
+            "Stdin (-) can be selected only once.",
+            "Remove the repeated - input.",
+        )
+        .into());
     }
 
     if stdin_count == 0 && arguments.stdin_filepath.is_some() {
-        bail!("--stdin-filepath requires stdin (-) as an input");
+        return Err(output::Validation::new(
+            "--stdin-filepath requires stdin input.",
+            "Add - to the input list.",
+        )
+        .into());
     }
 
     if options.watch && stdin_count != 0 {
-        bail!("--watch cannot be used with stdin (-)");
+        return Err(output::Validation::new(
+            "Watch mode cannot read from stdin.",
+            "Select files or directories, or remove --watch.",
+        )
+        .into());
     }
 
     let overrides = operation.overrides()?;
@@ -96,7 +108,7 @@ pub(super) fn run(arguments: &Arguments, operation: &Operation) -> Result<u8> {
 
     let mut watcher = options
         .watch
-        .then(|| Watcher::new(&root, options, arguments.quiet))
+        .then(|| Watcher::new(&root, options))
         .transpose()?;
 
     let result = (|| {
@@ -104,7 +116,6 @@ pub(super) fn run(arguments: &Arguments, operation: &Operation) -> Result<u8> {
             interrupt::check()?;
 
             let result = prepare(
-                arguments,
                 operation,
                 &root,
                 &overrides,
@@ -113,16 +124,14 @@ pub(super) fn run(arguments: &Arguments, operation: &Operation) -> Result<u8> {
             )
             .and_then(|project| match operation {
                 Operation::Check(_) => {
-                    check::session(arguments, operation, &project, watcher.as_mut(), started)
+                    check::session(operation, &project, watcher.as_mut(), started)
                 }
 
                 Operation::Format(_) => {
-                    format::session(arguments, operation, &project, watcher.as_mut(), started)
+                    format::session(operation, &project, watcher.as_mut(), started)
                 }
 
-                Operation::Lint(_) => {
-                    lint::session(arguments, operation, &project, watcher.as_mut(), started)
-                }
+                Operation::Lint(_) => lint::session(operation, &project, watcher.as_mut(), started),
             });
 
             interrupt::check()?;
@@ -136,9 +145,9 @@ pub(super) fn run(arguments: &Arguments, operation: &Operation) -> Result<u8> {
                         return Err(error);
                     };
 
-                    report::failure(&error);
+                    output::failure(&error);
                     watcher.reset()?;
-                    watcher.ready();
+                    output::watching();
                     watcher.wait(true)?;
                     started = Instant::now();
                 }
@@ -147,14 +156,25 @@ pub(super) fn run(arguments: &Arguments, operation: &Operation) -> Result<u8> {
     })();
 
     if let Some(watcher) = watcher {
-        watcher.generators.shutdown()?;
+        shutdown(&watcher.generators)?;
     }
 
     result
 }
 
+pub(super) fn shutdown(generators: &Generators) -> Result<()> {
+    generators.shutdown().map_err(|error| {
+        let error = Report::new(error);
+
+        if interrupt::requested() {
+            output::failure(&error);
+        }
+
+        error
+    })
+}
+
 pub(super) fn session(
-    arguments: &Arguments,
     operation: &Operation,
     project: &Project,
     mut watcher: Option<&mut Watcher>,
@@ -175,7 +195,7 @@ pub(super) fn session(
     }
 
     loop {
-        tracing::debug!("processing batch");
+        tracing::debug!("Processing batch");
 
         let progress = &project.progress;
         progress.reset(selected.len());
@@ -206,18 +226,18 @@ pub(super) fn session(
             watcher.observe(mem::take(&mut batch.dependencies), false)?;
         }
 
-        let result = batch.report(operation, project, &selected);
+        let result = batch.publish(operation, project);
         progress.clear();
         let summary = result?;
 
-        summary.report(arguments, operation, progress.files(), started);
+        output::summary(&summary, operation, progress.files(), started);
         let status = summary.status(operation);
 
         let Some(watcher) = &mut watcher else {
             return Ok(Outcome::Completed(status));
         };
 
-        watcher.ready();
+        output::watching();
 
         loop {
             let (paths, structural, changed) = match watcher.changed(&project.workspace)? {
@@ -282,7 +302,7 @@ pub(super) fn session(
                 break;
             }
 
-            tracing::debug!("ignoring filesystem changes outside active inputs");
+            tracing::debug!("Ignoring filesystem changes outside active inputs");
         }
     }
 }
@@ -295,16 +315,19 @@ fn input() -> Result<String> {
             .spawn(move || {
                 drop(sender.send(io::read_to_string(io::stdin().lock())));
             })
-            .wrap_err("cannot start stdin reader")?,
+            .wrap_err("Could not start the stdin reader.")?,
     );
 
     loop {
         interrupt::check()?;
 
         match receiver.recv_timeout(interrupt::INTERVAL) {
-            Ok(result) => return result.wrap_err("cannot read stdin"),
+            Ok(result) => return result.wrap_err("Could not read stdin."),
             Err(RecvTimeoutError::Timeout) => {}
-            Err(error) => return Err(error).wrap_err("cannot receive stdin"),
+
+            Err(error) => {
+                return Err(error).wrap_err("Could not receive input from the stdin reader.");
+            }
         }
     }
 }
@@ -326,7 +349,6 @@ pub(super) fn open(
 }
 
 fn prepare(
-    arguments: &Arguments,
     operation: &Operation,
     root: &Path,
     overrides: &[String],
@@ -336,7 +358,7 @@ fn prepare(
     let options = operation.options();
     let (mut workspace, stdin_module) = open(root, options, overrides, stdin)?;
     let selected = select(operation, &workspace, stdin_module.as_deref())?;
-    let progress = Progress::new(arguments, operation, workspace.directory())?;
+    let progress = Progress::new(operation, workspace.directory())?;
 
     let generation = if matches!(operation, Operation::Format(_)) {
         None

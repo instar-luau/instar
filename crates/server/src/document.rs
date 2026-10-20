@@ -47,7 +47,7 @@ impl Document {
     pub(super) fn position(&self, offset: usize, encoding: Encoding) -> Result<Position> {
         if !self.text.is_char_boundary(offset) {
             return Err(Error::invalid_params(
-                "source offset is outside the document or splits a character",
+                "Source offset is outside the document or splits a character.",
             ));
         }
 
@@ -72,7 +72,7 @@ impl Document {
 
     pub(super) fn range(&self, range: Range<usize>, encoding: Encoding) -> Result<ProtocolRange> {
         if range.start > range.end {
-            return Err(Error::invalid_params("source range is reversed"));
+            return Err(Error::invalid_params("Source range is reversed."));
         }
 
         Ok(ProtocolRange {
@@ -198,7 +198,7 @@ fn offset(source: &str, lines: &[usize], position: Position, encoding: Encoding)
 
     let start = *lines
         .get(line)
-        .ok_or_else(|| Error::invalid_params("source line is outside the document"))?;
+        .ok_or_else(|| Error::invalid_params("Source line is outside the document."))?;
 
     let end = lines.get(line + 1).copied().unwrap_or(source.len());
     let text = source[start..end].trim_end_matches(['\r', '\n']);
@@ -216,14 +216,14 @@ fn offset(source: &str, lines: &[usize], position: Position, encoding: Encoding)
         units += encoding.width(character);
 
         if units > expected {
-            return Err(Error::invalid_params("source position splits a character"));
+            return Err(Error::invalid_params("Source position splits a character."));
         }
     }
 
     if units == expected {
         Ok(start + text.len())
     } else {
-        Err(Error::invalid_params("source column is outside the line"))
+        Err(Error::invalid_params("Source column is outside the line."))
     }
 }
 
@@ -237,7 +237,7 @@ fn bytes(
     let end = offset(text, lines, range.end, encoding)?;
 
     if start > end {
-        return Err(Error::invalid_params("source range is reversed"));
+        return Err(Error::invalid_params("Source range is reversed."));
     }
 
     Ok(start..end)
@@ -245,10 +245,10 @@ fn bytes(
 
 pub(super) fn path(uri: &Uri) -> Result<PathBuf> {
     uri.to_file_path()
-        .map_err(|()| Error::invalid_params("document URI must identify a local file"))
+        .map_err(|()| Error::invalid_params("Document URI must identify a local file."))
 }
 
 pub(super) fn uri(path: &Path) -> Result<Uri> {
     Uri::from_file_path(path)
-        .map_err(|()| Error::invalid_params("source path cannot be represented as a file URI"))
+        .map_err(|()| Error::invalid_params("Source path cannot be represented as a file URI."))
 }

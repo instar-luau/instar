@@ -25,6 +25,38 @@ use crate::{
     settings::environment::{Group, Security},
 };
 
+impl Workspace {
+    /// Look up a configured documentation symbol in the module's environment.
+    ///
+    /// # Errors
+    /// Returns unavailable, malformed, or inconsistent environment inputs.
+    pub fn documentation(&self, module: &str, symbol: &str) -> Result<Option<Value>, Error> {
+        let scope = self.scope(Path::new(module))?;
+        let mut registry = self.environments.borrow_mut();
+
+        if let Some(documentation) = registry
+            .documents(&scope.configuration.environment.groups)?
+            .iter()
+            .rev()
+            .find_map(|documentation| documentation.get(symbol).cloned())
+        {
+            return Ok(Some(documentation));
+        }
+
+        let namespace = if symbol.starts_with("@luau/") {
+            assets::Namespace::Luau
+        } else if symbol.starts_with("@roblox/")
+            && instances::is_enabled(self, &scope, Path::new(module))?
+        {
+            assets::Namespace::Roblox
+        } else {
+            return Ok(None);
+        };
+
+        Ok(registry.document(self, namespace)?.get(symbol).cloned())
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Registry {
     assets: BTreeMap<assets::Namespace, PathBuf>,
@@ -211,18 +243,18 @@ impl Documentation {
     fn new(path: &Path, source: String, namespace: &str) -> Result<Self, Error> {
         let mut decoder = serde_json::Deserializer::from_str(&source);
 
-        let valid = decoder
+        let is_valid = decoder
             .deserialize_map(Namespace(&format!("{namespace}/")))
-            .and_then(|valid| decoder.end().map(|()| valid))
+            .and_then(|is_valid| decoder.end().map(|()| is_valid))
             .map_err(|source| Error::Data {
                 path: path.to_owned(),
                 source,
             })?;
 
-        if !valid {
+        if !is_valid {
             return Err(invalid(
                 path,
-                "documentation symbol is outside its declared namespace",
+                "Documentation symbol is outside its declared namespace.",
             ));
         }
 
@@ -236,7 +268,7 @@ impl Documentation {
         self.index
             .get_or_init(|| {
                 serde_json::from_str(&self.source)
-                    .expect("internal error: invalid validated documentation")
+                    .expect("Internal error: previously validated documentation is invalid.")
             })
             .get(symbol)
     }
@@ -296,14 +328,14 @@ impl<'source> Visitor<'source> for Namespace<'_> {
     }
 
     fn visit_map<Map: MapAccess<'source>>(self, mut map: Map) -> Result<bool, Map::Error> {
-        let mut valid = true;
+        let mut is_valid = true;
 
-        while let Some(validated) = map.next_key_seed(Namespace(self.0))? {
-            valid &= validated;
+        while let Some(is_validated) = map.next_key_seed(Namespace(self.0))? {
+            is_valid &= is_validated;
             map.next_value_seed(Namespace(""))?;
         }
 
-        Ok(valid)
+        Ok(is_valid)
     }
 }
 
@@ -317,8 +349,13 @@ struct Capabilities {
 #[serde(deny_unknown_fields)]
 struct Capability {
     name: String,
-    service: bool,
-    creatable: bool,
+
+    #[serde(rename = "service")]
+    is_service: bool,
+
+    #[serde(rename = "creatable")]
+    is_creatable: bool,
+
     properties: Vec<Permission>,
 }
 
@@ -326,8 +363,12 @@ struct Capability {
 #[serde(deny_unknown_fields)]
 struct Permission {
     name: String,
-    read: bool,
-    write: bool,
+
+    #[serde(rename = "read")]
+    can_read: bool,
+
+    #[serde(rename = "write")]
+    can_write: bool,
 }
 
 pub(super) fn identity(
@@ -337,9 +378,9 @@ pub(super) fn identity(
 ) -> Result<Option<String>, Error> {
     let settings = &scope.configuration;
 
-    let roblox = instances::enabled(workspace, scope, module)?;
+    let is_roblox = instances::is_enabled(workspace, scope, module)?;
 
-    if let Some(identity) = scope.environments.borrow().get(&roblox) {
+    if let Some(identity) = scope.environments.borrow().get(&is_roblox) {
         return Ok(identity.clone());
     }
 
@@ -359,10 +400,10 @@ pub(super) fn identity(
         .collect::<Result<Vec<_>, Error>>()?;
 
     let identity =
-        if !roblox && definitions.is_empty() && settings.environment.capabilities.is_none() {
+        if !is_roblox && definitions.is_empty() && settings.environment.capabilities.is_none() {
             None
         } else {
-            let assets = if roblox {
+            let assets = if is_roblox {
                 let directory = registry.directory(workspace, assets::Namespace::Roblox)?;
 
                 Some((directory, settings.environment.security))
@@ -387,7 +428,7 @@ pub(super) fn identity(
     scope
         .environments
         .borrow_mut()
-        .insert(roblox, identity.clone());
+        .insert(is_roblox, identity.clone());
 
     Ok(identity)
 }
@@ -408,15 +449,15 @@ fn prepare(inputs: &Inputs) -> Result<Environment, Error> {
                 .into_iter()
                 .map(|class| Class {
                     name: class.name,
-                    service: class.service,
-                    creatable: class.creatable,
+                    service: class.is_service,
+                    creatable: class.is_creatable,
                     properties: class
                         .properties
                         .into_iter()
                         .map(|property| Property {
                             name: property.name,
-                            read: property.read,
-                            write: property.write,
+                            read: property.can_read,
+                            write: property.can_write,
                         })
                         .collect(),
                 })
@@ -438,9 +479,9 @@ fn prepare(inputs: &Inputs) -> Result<Environment, Error> {
 pub(super) fn validate(
     directory: &Path,
     namespace: assets::Namespace,
-    cancelled: &dyn Fn() -> bool,
+    is_cancelled: &dyn Fn() -> bool,
 ) -> Result<(), Error> {
-    super::process::interrupted(cancelled)?;
+    super::process::interrupted(is_cancelled)?;
     documentation(directory, namespace)?;
 
     if namespace == assets::Namespace::Luau {
@@ -453,7 +494,7 @@ pub(super) fn validate(
         Security::Plugin,
         Security::Roblox,
     ] {
-        if cancelled() {
+        if is_cancelled() {
             return Err(Error::Cancelled);
         }
 
@@ -477,7 +518,7 @@ fn assets(directory: &Path, security: Security, prepared: &mut Environment) -> R
     let digest = metadata
         .profiles
         .get(profile)
-        .ok_or_else(|| invalid(&metadata_path, "missing security profile"))?;
+        .ok_or_else(|| invalid(&metadata_path, "Missing security profile."))?;
 
     let declarations = directory.join(format!("{profile}.d.luau"));
 
@@ -491,7 +532,7 @@ fn assets(directory: &Path, security: Security, prepared: &mut Environment) -> R
 
     let mut classes = BTreeMap::<String, Class>::new();
 
-    for (names, service) in [
+    for (names, is_service) in [
         (&metadata.services, true),
         (&metadata.creatable_instances, false),
     ] {
@@ -503,24 +544,24 @@ fn assets(directory: &Path, security: Security, prepared: &mut Environment) -> R
                 properties: Vec::new(),
             });
 
-            let permission = if service {
+            let is_allowed = if is_service {
                 &mut class.service
             } else {
                 &mut class.creatable
             };
 
-            if *permission {
-                return Err(invalid(&metadata_path, "duplicate class capability"));
+            if *is_allowed {
+                return Err(invalid(&metadata_path, "Duplicate class capability."));
             }
 
-            *permission = true;
+            *is_allowed = true;
         }
     }
 
     let properties = metadata
         .properties
         .get(profile)
-        .ok_or_else(|| invalid(&metadata_path, "missing property profile"))?;
+        .ok_or_else(|| invalid(&metadata_path, "Missing property profile."))?;
 
     for property in properties {
         let class = classes
@@ -537,13 +578,13 @@ fn assets(directory: &Path, security: Security, prepared: &mut Environment) -> R
             .iter()
             .any(|previous| previous.name == property.name)
         {
-            return Err(invalid(&metadata_path, "duplicate property capability"));
+            return Err(invalid(&metadata_path, "Duplicate property capability."));
         }
 
         class.properties.push(Property {
             name: property.name.clone(),
-            read: property.read,
-            write: property.write,
+            read: property.can_read,
+            write: property.can_write,
         });
     }
 
@@ -584,7 +625,7 @@ fn verified(path: &Path, expected: &str) -> Result<String, Error> {
     let actual = digest(source.as_bytes());
 
     if actual != expected {
-        return Err(invalid(path, "asset contents do not match their metadata"));
+        return Err(invalid(path, "Asset contents do not match their metadata."));
     }
 
     Ok(source)

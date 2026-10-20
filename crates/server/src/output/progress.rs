@@ -3,6 +3,7 @@ use std::{
     sync::{Arc, Mutex, Weak},
 };
 
+use instar_bridge::Progress as NativeProgress;
 use serde_json::json;
 use tokio::runtime::Handle;
 
@@ -11,11 +12,11 @@ use tower_lsp_server::{
     gen_lsp_types::{ProgressNotification, ProgressParams, ProgressToken},
 };
 
-use super::connection::Operation;
+use crate::connection::Operation;
 
-pub(super) type Registry = Arc<Mutex<HashMap<ProgressToken, Weak<Operation>>>>;
+pub(crate) type Registry = Arc<Mutex<HashMap<ProgressToken, Weak<Operation>>>>;
 
-pub(super) struct Progress {
+pub(crate) struct Progress {
     client: Client,
     token: Option<ProgressToken>,
     registry: Registry,
@@ -23,7 +24,7 @@ pub(super) struct Progress {
 }
 
 impl Progress {
-    pub(super) fn new(
+    pub(crate) fn new(
         client: Client,
         token: Option<ProgressToken>,
         operation: &Arc<Operation>,
@@ -32,7 +33,7 @@ impl Progress {
         if let Some(token) = &token {
             registry
                 .lock()
-                .expect("internal error: progress registry poisoned")
+                .expect("Internal error: progress registry mutex is poisoned.")
                 .insert(token.clone(), Arc::downgrade(operation));
         }
 
@@ -44,18 +45,18 @@ impl Progress {
         }
     }
 
-    pub(super) async fn begin(&self) {
+    pub(crate) async fn begin(&self) {
         if let Some(token) = &self.token {
             self.client
                 .send_notification::<ProgressNotification>(ProgressParams {
                     token: token.clone(),
-                    value: json!({"kind":"begin","title":"Analyzing","cancellable":true}),
+                    value: json!({"kind":"begin","title":"Processing request","cancellable":true}),
                 })
                 .await;
         }
     }
 
-    pub(super) async fn finish(mut self) {
+    pub(crate) async fn finish(mut self) {
         if let Some(token) = self.take() {
             self.client
                 .send_notification::<ProgressNotification>(ProgressParams {
@@ -71,7 +72,7 @@ impl Progress {
 
         self.registry
             .lock()
-            .expect("internal error: progress registry poisoned")
+            .expect("Internal error: progress registry mutex is poisoned.")
             .remove(&token);
 
         Some(token)
@@ -93,4 +94,28 @@ impl Drop for Progress {
             }));
         }
     }
+}
+
+pub(crate) fn report(
+    client: &Client,
+    token: &ProgressToken,
+    handle: &Handle,
+    stage: NativeProgress<'_>,
+) {
+    let message = match stage {
+        NativeProgress::Started(module) | NativeProgress::Finished(module) => module.to_owned(),
+
+        NativeProgress::Advanced { completed, total } => {
+            let unit = if total == 1 { "module" } else { "modules" };
+
+            format!("{completed} of {total} {unit}")
+        }
+    };
+
+    handle.block_on(
+        client.send_notification::<ProgressNotification>(ProgressParams {
+            token: token.clone(),
+            value: json!({"kind":"report","cancellable":true,"message":message}),
+        }),
+    );
 }

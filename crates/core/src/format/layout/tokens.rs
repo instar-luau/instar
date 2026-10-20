@@ -82,13 +82,13 @@ impl Builder<'_, '_> {
         }
     }
 
-    pub(super) fn comments(&self, range: Range<usize>) -> bool {
+    pub(super) fn has_comments(&self, range: Range<usize>) -> bool {
         self.tree.tokens[range]
             .iter()
             .any(|token| matches!(token.kind, TokenKind::Comment | TokenKind::BlockComment))
     }
 
-    pub(super) fn blank(&self, start: usize, end: usize) -> bool {
+    pub(super) fn has_blank_line(&self, start: usize, end: usize) -> bool {
         let begin = start
             .checked_sub(1)
             .map_or(0, |position| self.tree.tokens[position].span.end);
@@ -136,14 +136,14 @@ impl Builder<'_, '_> {
             } else if self.tree.tokens[right].kind != TokenKind::Symbol(Symbol::Comma) {
                 result.push(Document::Space);
             }
-        } else if self.space(left, right) {
+        } else if self.should_space(left, right) {
             result.push(Document::Space);
         }
 
         result
     }
 
-    pub(super) fn trivia(&self, range: Range<usize>, leading: bool) -> Vec<Document> {
+    pub(super) fn trivia(&self, range: Range<usize>, is_leading: bool) -> Vec<Document> {
         let mut result = Vec::new();
         let mut previous = None;
         let end = range.end;
@@ -164,7 +164,7 @@ impl Builder<'_, '_> {
                 } else {
                     Document::Space
                 });
-            } else if !leading {
+            } else if !is_leading {
                 result.push(Document::Space);
             }
 
@@ -172,7 +172,7 @@ impl Builder<'_, '_> {
             previous = Some(position);
         }
 
-        if leading && let Some(previous) = previous {
+        if is_leading && let Some(previous) = previous {
             result.push(Document::Line(
                 self.lines(
                     self.tree.tokens[previous].span.end,
@@ -216,7 +216,7 @@ impl Builder<'_, '_> {
             }
 
             let end = if matches!(node.kind, NodeKind::Attributes { .. })
-                && !self.inline_attributes[child.get()]
+                && !self.has_inline_attributes[child.get()]
             {
                 let tail = self.inline_end(end, range.end);
                 result.extend(self.trivia(end..tail, false));
@@ -286,7 +286,7 @@ impl Builder<'_, '_> {
             - 1
     }
 
-    fn space(&self, left: usize, right: usize) -> bool {
+    fn should_space(&self, left: usize, right: usize) -> bool {
         if let Some(spaces) = self.spacing[right] {
             return spaces > 0;
         }

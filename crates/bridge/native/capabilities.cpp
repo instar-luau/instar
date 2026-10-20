@@ -41,8 +41,8 @@ namespace instar::luau {
 
         struct Description {
             Luau::TypeId type;
-            bool service;
-            bool creatable;
+            bool is_service;
+            bool is_creatable;
         };
 
         struct Metadata {
@@ -63,8 +63,8 @@ namespace instar::luau {
         class_type(const Metadata &metadata, const std::string &name, MagicKind kind = MagicKind::IsA) {
             const auto found = metadata.classes.find(name);
 
-            if (found == metadata.classes.end() || (kind == MagicKind::Constructor && !found->second.creatable) ||
-                (kind == MagicKind::Service && !found->second.service)) {
+            if (found == metadata.classes.end() || (kind == MagicKind::Constructor && !found->second.is_creatable) ||
+                (kind == MagicKind::Service && !found->second.is_service)) {
                 return std::nullopt;
             }
 
@@ -74,16 +74,16 @@ namespace instar::luau {
         std::string invalid_message(MagicKind kind, std::string_view name) {
             switch (kind) {
             case MagicKind::Constructor:
-                return "`Instance.new` does not support class `" + std::string(name) + "`";
+                return "`Instance.new` does not support class `" + std::string(name) + "`.";
 
             case MagicKind::Service:
-                return "`GetService` does not support service `" + std::string(name) + "`";
+                return "`GetService` does not support service `" + std::string(name) + "`.";
 
             case MagicKind::IsA:
-                return "`IsA` does not support class `" + std::string(name) + "`";
+                return "`IsA` does not support class `" + std::string(name) + "`.";
 
             default:
-                return "instance lookup does not support class `" + std::string(name) + "`";
+                return "Instance lookup does not support class `" + std::string(name) + "`.";
             }
         }
 
@@ -112,7 +112,7 @@ namespace instar::luau {
                 Luau::TypeChecker &, const Luau::ScopePtr &, const Luau::AstExprCall &,
                 Luau::WithPredicate<Luau::TypePackId>
             ) override {
-                throw std::logic_error("old solver is not supported");
+                throw std::logic_error("Old solver is not supported.");
             }
 
             bool infer(const Luau::MagicFunctionCallContext &context) override {
@@ -384,7 +384,7 @@ namespace instar::luau {
 
         void register_magic(
             Luau::GlobalTypes &globals, const std::shared_ptr<const Metadata> &metadata, MagicKind kind,
-            const char *type, const char *property, bool global
+            const char *type, const char *property, bool is_global
         ) {
             const auto magic = std::make_shared<MagicFunction>(kind, metadata);
 
@@ -394,7 +394,7 @@ namespace instar::luau {
                               : kind == MagicKind::AncestorName ? "instar.ancestor"
                                                                 : "instar.class";
 
-            if (global) {
+            if (is_global) {
                 attach_global(globals, type, magic, property, tag);
             } else {
                 attach_extern(globals, type, magic, property, tag);
@@ -409,11 +409,11 @@ namespace instar::luau {
             const std::string name(definition.name);
 
             if (name.empty()) {
-                throw std::invalid_argument("empty Roblox class name");
+                throw std::invalid_argument("Roblox class name is empty.");
             }
 
             if (!names.insert(name).second) {
-                throw std::invalid_argument("duplicate Roblox class flags for `" + name + "`");
+                throw std::invalid_argument("Duplicate Roblox class flags for `" + name + "`.");
             }
 
             std::unordered_set<std::string> properties;
@@ -421,7 +421,7 @@ namespace instar::luau {
             for (const Property &property : definition.properties) {
                 if (!properties.insert(std::string(property.name)).second) {
                     throw std::invalid_argument(
-                        "duplicate property capability `" + name + "." + std::string(property.name) + "`"
+                        "Duplicate property capability `" + name + "." + std::string(property.name) + "`."
                     );
                 }
             }
@@ -438,7 +438,9 @@ namespace instar::luau {
         const auto *base_type = base ? Luau::get<Luau::ExternType>(Luau::follow(base->type)) : nullptr;
 
         if (!base_type) {
-            throw std::invalid_argument("Roblox class magic requires `Object` or `Instance` declarations");
+            throw std::invalid_argument(
+                "Roblox class inference requires an external type declaration for `Object` or `Instance`."
+            );
         }
 
         for (const auto &[name, type_function] : globals.globalScope->exportedTypeBindings) {
@@ -455,11 +457,11 @@ namespace instar::luau {
             const auto type = metadata->classes.find(name);
 
             if (type == metadata->classes.end()) {
-                throw std::invalid_argument("Roblox class `" + name + "` has no declaration");
+                throw std::invalid_argument("No supported declaration was found for Roblox class `" + name + "`.");
             }
 
-            type->second.service = classes[index].service;
-            type->second.creatable = classes[index].creatable;
+            type->second.is_service = classes[index].is_service;
+            type->second.is_creatable = classes[index].is_creatable;
             auto *declaration = Luau::getMutable<Luau::ExternType>(type->second.type);
 
             for (const Property &access : classes[index].properties) {
@@ -467,25 +469,25 @@ namespace instar::luau {
 
                 if (property == declaration->props.end()) {
                     throw std::invalid_argument(
-                        "Roblox property `" + name + "." + std::string(access.name) + "` has no declaration"
+                        "No property declaration was found for `" + name + "." + std::string(access.name) + "`."
                     );
                 }
 
-                if (!access.read && !access.write) {
+                if (!access.can_read && !access.can_write) {
                     declaration->tags.emplace_back("instar.property." + std::string(access.name));
                     declaration->props.erase(property);
-                } else if (!access.read) {
+                } else if (!access.can_read) {
                     property->second.readTy.reset();
-                } else if (!access.write) {
+                } else if (!access.can_write) {
                     property->second.writeTy.reset();
                 }
             }
 
-            if (classes[index].service) {
+            if (classes[index].is_service) {
                 declaration->tags.emplace_back("instar.service");
             }
 
-            if (classes[index].creatable) {
+            if (classes[index].is_creatable) {
                 declaration->tags.emplace_back("instar.creatable");
             }
         }

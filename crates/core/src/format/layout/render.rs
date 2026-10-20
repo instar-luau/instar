@@ -38,10 +38,10 @@ struct Renderer<'tree, 'source> {
     indentation: usize,
     column: usize,
     lines: usize,
-    space: bool,
-    emitted: bool,
+    has_pending_space: bool,
+    has_emitted: bool,
     measurement: Option<Layout>,
-    exceeded: bool,
+    has_exceeded_width: bool,
 }
 
 impl Renderer<'_, '_> {
@@ -51,11 +51,11 @@ impl Renderer<'_, '_> {
         mode: Option<Layout>,
         continuation: Option<&Continuation<'_>>,
     ) {
-        let flat = mode.is_some();
-        let continued = self.lines == 0 && self.emitted;
+        let is_flat = mode.is_some();
+        let is_continued = self.lines == 0 && self.has_emitted;
 
         for (offset, item) in document.iter().enumerate() {
-            if self.exceeded {
+            if self.has_exceeded_width {
                 return;
             }
 
@@ -77,34 +77,34 @@ impl Renderer<'_, '_> {
                     }
 
                     self.column += 1;
-                    self.emitted = true;
+                    self.has_emitted = true;
 
-                    self.exceeded |=
+                    self.has_exceeded_width |=
                         self.measurement.is_some() && self.column > self.configuration.width.get();
                 }
 
-                Document::Space => self.space = true,
+                Document::Space => self.has_pending_space = true,
 
                 Document::Line(lines) => {
                     self.lines = self.lines.max(*lines);
-                    self.space = false;
-                    self.exceeded |= matches!(self.measurement, Some(Layout::Fit));
+                    self.has_pending_space = false;
+                    self.has_exceeded_width |= matches!(self.measurement, Some(Layout::Fit));
                 }
 
                 Document::Soft(spaces) => {
-                    if flat {
-                        self.space |= *spaces > 0;
+                    if is_flat {
+                        self.has_pending_space |= *spaces > 0;
                     } else {
                         self.lines = self.lines.max(1);
-                        self.space = false;
+                        self.has_pending_space = false;
                     }
                 }
 
                 Document::Indent { nesting, content } => {
                     let increment = usize::from(match nesting {
                         Nesting::Always => true,
-                        Nesting::Broken => !flat,
-                        Nesting::Continuation => !flat && continued,
+                        Nesting::Broken => !is_flat,
+                        Nesting::Continuation => !is_flat && is_continued,
                     });
 
                     let mode = if matches!(nesting, Nesting::Always) {
@@ -120,10 +120,10 @@ impl Renderer<'_, '_> {
                 }
 
                 Document::Group { layout, content } => {
-                    let column = if self.lines > 0 || !self.emitted {
+                    let column = if self.lines > 0 || !self.has_emitted {
                         self.indentation * self.configuration.indent_width.get()
                     } else {
-                        self.column + usize::from(self.space)
+                        self.column + usize::from(self.has_pending_space)
                     };
 
                     let selected = if matches!(layout, Layout::Vertical) {
@@ -133,18 +133,18 @@ impl Renderer<'_, '_> {
                     {
                         Some(Layout::Arguments)
                     } else if matches!(mode, Some(Layout::Fit))
-                        || self.fits(content, column, Layout::Fit, Some(&next))
+                        || self.can_fit(content, column, Layout::Fit, Some(&next))
                     {
                         Some(Layout::Fit)
                     } else if matches!(layout, Layout::Arguments)
-                        && self.fits(content, column, Layout::Arguments, Some(&next))
+                        && self.can_fit(content, column, Layout::Arguments, Some(&next))
                     {
                         Some(Layout::Arguments)
                     } else {
                         None
                     };
 
-                    self.exceeded |= selected.is_none()
+                    self.has_exceeded_width |= selected.is_none()
                         && (matches!(self.measurement, Some(Layout::Fit))
                             || (matches!(self.measurement, Some(Layout::Arguments))
                                 && matches!(mode, Some(Layout::Arguments))
@@ -154,20 +154,20 @@ impl Renderer<'_, '_> {
                 }
 
                 Document::Choice(choice) => {
-                    let column = if self.lines > 0 || !self.emitted {
+                    let column = if self.lines > 0 || !self.has_emitted {
                         self.indentation * self.configuration.indent_width.get()
                     } else {
-                        self.column + usize::from(self.space)
+                        self.column + usize::from(self.has_pending_space)
                     };
 
-                    let layout = if choice.prefix {
+                    let layout = if choice.has_prefix {
                         Layout::Prefix
                     } else {
                         Layout::Fit
                     };
 
                     let selected = if matches!(mode, Some(Layout::Fit))
-                        || self.fits(&choice.probe, column, layout, None)
+                        || self.can_fit(&choice.probe, column, layout, None)
                     {
                         &choice.inline
                     } else {
@@ -180,7 +180,7 @@ impl Renderer<'_, '_> {
         }
     }
 
-    fn fits(
+    fn can_fit(
         &self,
         document: &[Document],
         column: usize,
@@ -196,14 +196,14 @@ impl Renderer<'_, '_> {
             indentation: self.indentation,
             column,
             lines: self.lines,
-            space: false,
-            emitted: self.emitted,
+            has_pending_space: false,
+            has_emitted: self.has_emitted,
             measurement: Some(layout),
-            exceeded: false,
+            has_exceeded_width: false,
         };
 
         if matches!(layout, Layout::Prefix) {
-            probe.suffix(document, Some(Layout::Fit));
+            probe.measure_suffix(document, Some(Layout::Fit));
         } else {
             probe.render(document, Some(layout), continuation);
         }
@@ -211,19 +211,19 @@ impl Renderer<'_, '_> {
         probe.measurement = None;
 
         while let Some(next) = continuation {
-            if !probe.suffix(next.document, next.mode) {
+            if !probe.measure_suffix(next.document, next.mode) {
                 break;
             }
 
             continuation = next.next;
         }
 
-        !probe.exceeded
+        !probe.has_exceeded_width
     }
 
-    fn suffix(&mut self, document: &[Document], mode: Option<Layout>) -> bool {
+    fn measure_suffix(&mut self, document: &[Document], mode: Option<Layout>) -> bool {
         for item in document {
-            if self.exceeded || self.lines > 0 {
+            if self.has_exceeded_width || self.lines > 0 {
                 return false;
             }
 
@@ -272,11 +272,11 @@ impl Renderer<'_, '_> {
                 Document::Symbol(_) => {
                     self.separate();
                     self.column += 1;
-                    self.emitted = true;
-                    self.exceeded |= self.column > self.configuration.width.get();
+                    self.has_emitted = true;
+                    self.has_exceeded_width |= self.column > self.configuration.width.get();
                 }
 
-                Document::Space => self.space = true,
+                Document::Space => self.has_pending_space = true,
                 Document::Line(_) | Document::Choice(_) => return false,
 
                 Document::Soft(spaces) => {
@@ -284,7 +284,7 @@ impl Renderer<'_, '_> {
                         return false;
                     }
 
-                    self.space |= *spaces > 0;
+                    self.has_pending_space |= *spaces > 0;
                 }
 
                 Document::Indent { nesting, content } => {
@@ -294,20 +294,20 @@ impl Renderer<'_, '_> {
                         mode
                     };
 
-                    if !self.suffix(content, mode) {
+                    if !self.measure_suffix(content, mode) {
                         return false;
                     }
                 }
 
                 Document::Group { content, .. } => {
-                    if !self.suffix(content, None) {
+                    if !self.measure_suffix(content, None) {
                         return false;
                     }
                 }
             }
         }
 
-        !self.exceeded && self.lines == 0
+        !self.has_exceeded_width && self.lines == 0
     }
 
     fn leading(&mut self, bytes: &[u8]) {
@@ -325,15 +325,15 @@ impl Renderer<'_, '_> {
         );
 
         self.column = column;
-        self.exceeded |= maximum > self.configuration.width.get();
-        self.emitted = true;
+        self.has_exceeded_width |= maximum > self.configuration.width.get();
+        self.has_emitted = true;
         self.lines = usize::from(end < bytes.len());
     }
 
     fn token(&mut self, index: TokenIndex) {
         if self.measurement.is_none()
             && self.emitter.is_none()
-            && (self.lines > 0 || !self.emitted)
+            && (self.lines > 0 || !self.has_emitted)
             && self.tree.token(index).kind == TokenKind::BlockComment
         {
             self.placements.push((
@@ -356,29 +356,29 @@ impl Renderer<'_, '_> {
 
         let bytes = tree.token(token).bytes(tree.source);
 
-        let comment = matches!(
+        let is_comment = matches!(
             tree.token(token).kind,
             TokenKind::Comment | TokenKind::BlockComment
         );
 
         let (column, maximum) = columns(bytes, self.column, self.configuration.indent_width.get());
 
-        if !comment {
+        if !is_comment {
             self.column = column;
         } else if bytes.contains(&b'\n') {
             self.column = 0;
         }
 
-        self.exceeded |= self.measurement.is_some()
-            && ((!comment && maximum > self.configuration.width.get())
+        self.has_exceeded_width |= self.measurement.is_some()
+            && ((!is_comment && maximum > self.configuration.width.get())
                 || (matches!(self.measurement, Some(Layout::Fit)) && bytes.contains(&b'\n')));
 
-        self.emitted = true;
+        self.has_emitted = true;
 
         if tree.token(token).kind == TokenKind::Comment {
             self.lines = self.lines.max(1);
-            self.space = false;
-            self.exceeded |= matches!(self.measurement, Some(Layout::Fit));
+            self.has_pending_space = false;
+            self.has_exceeded_width |= matches!(self.measurement, Some(Layout::Fit));
         }
     }
 
@@ -392,7 +392,7 @@ impl Renderer<'_, '_> {
 
         let prefix = &self.tree.source[beginning..start];
 
-        if (self.lines > 0 || !self.emitted)
+        if (self.lines > 0 || !self.has_emitted)
             && prefix.iter().all(|byte| matches!(byte, b' ' | b'\t'))
         {
             let indentation = self.indentation;
@@ -426,17 +426,17 @@ impl Renderer<'_, '_> {
         let (column, maximum) = columns(bytes, self.column, self.configuration.indent_width.get());
         self.column = column;
 
-        self.exceeded |= self.measurement.is_some()
+        self.has_exceeded_width |= self.measurement.is_some()
             && (maximum > self.configuration.width.get()
                 || matches!(self.measurement, Some(Layout::Fit)) && bytes.contains(&b'\n'));
 
-        self.emitted = true;
+        self.has_emitted = true;
     }
 
     fn separate(&mut self) {
-        if self.lines > 0 || !self.emitted {
+        if self.lines > 0 || !self.has_emitted {
             if let Some(emitter) = &mut self.emitter {
-                if self.emitted {
+                if self.has_emitted {
                     for _ in 0..self.lines {
                         emitter.newline();
                     }
@@ -452,7 +452,7 @@ impl Renderer<'_, '_> {
             }
 
             self.column = self.indentation * self.configuration.indent_width.get();
-        } else if self.space {
+        } else if self.has_pending_space {
             if let Some(emitter) = &mut self.emitter {
                 emitter.spaces(1);
             }
@@ -461,7 +461,7 @@ impl Renderer<'_, '_> {
         }
 
         self.lines = 0;
-        self.space = false;
+        self.has_pending_space = false;
     }
 }
 
@@ -503,10 +503,10 @@ pub(crate) fn emit(
                 indentation: 0,
                 column: 0,
                 lines: 0,
-                space: false,
-                emitted: false,
+                has_pending_space: false,
+                has_emitted: false,
                 measurement: None,
-                exceeded: false,
+                has_exceeded_width: false,
             };
 
             renderer.render(&plan.document, None, None);
@@ -532,25 +532,25 @@ pub(crate) fn emit(
         indentation: 0,
         column: 0,
         lines: 0,
-        space: false,
-        emitted: false,
+        has_pending_space: false,
+        has_emitted: false,
         measurement: None,
-        exceeded: false,
+        has_exceeded_width: false,
     };
 
     renderer.render(&plan.document, None, None);
 
-    if renderer.emitted && plan.final_newline {
+    if renderer.has_emitted && plan.should_emit_final_newline {
         renderer
             .emitter
             .as_mut()
-            .expect("internal error: missing output renderer")
+            .expect("Internal error: missing output renderer.")
             .newline();
     }
 
     Ok(renderer
         .emitter
-        .expect("internal error: missing output renderer")
+        .expect("Internal error: missing output renderer.")
         .finish()
         .into_owned())
 }
@@ -580,7 +580,7 @@ fn replacements(sources: &[Option<Vec<u8>>]) -> Result<Vec<Option<Box<Replacemen
                                 && token.span.end == source.len()
                         })
                         .ok_or_else(|| {
-                            Error::internal(0..0, "formatted replacement has no complete token")
+                            Error::internal(0..0, "Formatted replacement has no complete token.")
                         })?;
 
                     Ok(Box::new(Replacement {

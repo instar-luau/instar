@@ -18,7 +18,7 @@ pub(super) struct Context<'tree, 'source> {
 }
 
 impl<'tree> Context<'tree, '_> {
-    pub(super) fn active(&self, rules: &[&str]) -> bool {
+    pub(super) fn is_active(&self, rules: &[&str]) -> bool {
         rules
             .iter()
             .any(|rule| self.settings.enabled(rule).is_some())
@@ -40,7 +40,13 @@ impl<'tree> Context<'tree, '_> {
         })
     }
 
-    pub(super) fn emit(&mut self, node: NodeIndex, rule: &str, message: &str, edits: Vec<Edit>) {
+    pub(super) fn emit_with_edits(
+        &mut self,
+        node: NodeIndex,
+        rule: &str,
+        message: &str,
+        edits: Vec<Edit>,
+    ) {
         if let Some(severity) = self.settings.enabled(rule) {
             let span = self.tree.node(node).span;
 
@@ -54,7 +60,7 @@ impl<'tree> Context<'tree, '_> {
         }
     }
 
-    pub(super) fn warn(&mut self, node: NodeIndex, rule: &str, message: &str) {
-        self.emit(node, rule, message, Vec::new());
+    pub(super) fn emit(&mut self, node: NodeIndex, rule: &str, message: &str) {
+        self.emit_with_edits(node, rule, message, Vec::new());
     }
 }

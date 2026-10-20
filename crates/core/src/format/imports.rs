@@ -15,31 +15,31 @@ use crate::{
 pub(crate) struct Require {
     pub(crate) path: String,
     pub(crate) binding: NodeIndex,
-    boundary: bool,
+    is_boundary: bool,
 }
 
 pub(crate) struct Imports {
     bindings: Bindings,
-    instances: bool,
+    has_instances: bool,
 }
 
 impl Imports {
     pub(crate) fn new(tree: &Tree<'_>) -> Self {
         Self {
             bindings: Bindings::new(tree),
-            instances: false,
+            has_instances: false,
         }
     }
 
     pub(crate) fn instances(tree: &Tree<'_>) -> Self {
         Self {
             bindings: Bindings::new(tree),
-            instances: true,
+            has_instances: true,
         }
     }
 
     pub(crate) fn proposed(&self, tree: &Tree<'_>) -> Self {
-        if self.instances {
+        if self.has_instances {
             Self::instances(tree)
         } else {
             Self::new(tree)
@@ -52,7 +52,7 @@ impl Imports {
         index: NodeIndex,
         directives: &Directives,
     ) -> Option<Require> {
-        if directives.blocks(tree, index) {
+        if directives.is_blocked(tree, index) {
             return None;
         }
 
@@ -80,7 +80,7 @@ impl Imports {
         };
 
         if tree.text(*name) == b"require"
-            || self.instances && matches!(tree.text(*name), b"script" | b"game" | b"workspace")
+            || self.has_instances && matches!(tree.text(*name), b"script" | b"game" | b"workspace")
         {
             return None;
         }
@@ -89,7 +89,7 @@ impl Imports {
             return None;
         };
 
-        if !self.bindings.global(tree, *callee, "require") {
+        if !self.bindings.is_global(tree, *callee, "require") {
             return None;
         }
 
@@ -106,12 +106,12 @@ impl Imports {
         Some(Require {
             path,
             binding: *name,
-            boundary: directives.boundary(tree, index).is_some(),
+            is_boundary: directives.boundary(tree, index).is_some(),
         })
     }
 
     fn instance(&self, tree: &Tree<'_>, node: NodeIndex) -> Option<String> {
-        if !self.instances {
+        if !self.has_instances {
             return None;
         }
 
@@ -125,7 +125,7 @@ impl Imports {
                 };
 
                 self.bindings
-                    .global(tree, node, name)
+                    .is_global(tree, node, name)
                     .then(|| name.to_owned())
             }
 
@@ -189,7 +189,7 @@ pub(crate) fn runs<'require>(
 
         let mut end = start + 1;
 
-        while end < requires.len() && requires[end].is_some_and(|require| !require.boundary) {
+        while end < requires.len() && requires[end].is_some_and(|require| !require.is_boundary) {
             end += 1;
         }
 

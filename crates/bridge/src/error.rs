@@ -17,7 +17,7 @@ pub enum Error {
 
 /// An operational host failure with its module and callback context.
 #[derive(Debug, thiserror::Error)]
-#[error("cannot {operation} for module `{module}`")]
+#[error("Could not {operation} for module `{module}`.")]
 pub struct HostError {
     /// The host module identifier involved in the failure.
     pub module: String,
