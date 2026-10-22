@@ -114,12 +114,12 @@ pub(super) fn suppress(
             .split(|character: char| character.is_whitespace() || character == ',')
             .filter(|name| !name.is_empty())
         {
-            let definition = RULES
+            let (name, _) = RULES
                 .iter()
-                .find(|rule| rule.name == name)
+                .find(|(rule, _)| *rule == name)
                 .ok_or_else(|| invalid(&format!("Lint rule `{name}` is not recognized.")))?;
 
-            rules.push(definition.name.as_str());
+            rules.push(*name);
         }
 
         let directive = Directive { range, rules };

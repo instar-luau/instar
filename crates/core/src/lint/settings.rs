@@ -32,22 +32,22 @@ impl Prepared {
     ) -> Result<Self, Box<figment::Error>> {
         let mut rules: BTreeMap<_, _> = RULES
             .iter()
-            .map(|definition| {
+            .map(|(name, preset)| {
                 (
-                    definition.name.clone(),
-                    (definition.is_enabled, Severity::Warning),
+                    (*name).to_owned(),
+                    (*preset == Preset::Correctness, Severity::Warning),
                 )
             })
             .collect();
 
         for preset in &configuration.presets {
-            for definition in RULES.iter() {
-                if let Some((is_enabled, _)) = rules.get_mut(&definition.name) {
+            for (name, minimum) in RULES {
+                if let Some((is_enabled, _)) = rules.get_mut(*name) {
                     *is_enabled = match preset {
                         Preset::None => false,
                         Preset::All => true,
-                        Preset::Correctness => definition.is_enabled,
-                        Preset::Recommended => definition.is_enabled || definition.is_recommended,
+                        Preset::Correctness => *minimum == Preset::Correctness,
+                        Preset::Recommended => *minimum != Preset::All,
                     };
                 }
             }
