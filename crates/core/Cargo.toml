@@ -31,5 +31,16 @@ tracing.workspace = true
 unicode-width.workspace = true
 vermis.workspace = true
 
+[dev-dependencies]
+datatest-stable.workspace = true
+
+[[test]]
+name = "format"
+harness = false
+
+[[test]]
+name = "lint"
+harness = false
+
 [lints]
 workspace = true
