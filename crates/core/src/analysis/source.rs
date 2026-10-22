@@ -275,6 +275,7 @@ pub fn analyze(source: &str) -> Analysis {
     }
 
     result.tokens = tokens.into_values().collect();
+    result.imports.sort_by_key(|import| import.range.start);
     comments(&tree, prefix, &mut result.folds);
     import_folds(&tree, &result.imports, prefix, &mut result.folds);
 
@@ -286,7 +287,6 @@ pub fn analyze(source: &str) -> Analysis {
         .folds
         .dedup_by(|left, right| left.range == right.range);
 
-    result.imports.sort_by_key(|import| import.range.start);
     result.links.sort_by_key(|link| link.range.start);
 
     result
@@ -658,9 +658,15 @@ fn import_folds(tree: &Tree<'_>, imports: &[Import], prefix: usize, folds: &mut 
             let is_imported = matches!(
                 tree.node(statement.node).kind,
                 NodeKind::Local { .. } | NodeKind::Constant { .. }
-            ) && imports.iter().any(|import| {
-                span.start + prefix <= import.range.start && span.end + prefix >= import.range.end
-            });
+            ) && {
+                let first =
+                    imports.partition_point(|import| import.range.start < span.start + prefix);
+
+                imports[first..]
+                    .iter()
+                    .take_while(|import| import.range.start <= span.end + prefix)
+                    .any(|import| import.range.end <= span.end + prefix)
+            };
 
             if is_imported
                 && let Some(previous) = &mut group
