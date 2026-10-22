@@ -53,7 +53,10 @@ fn formatted(source: &str, configuration: &Prepared) -> Result<String, Error> {
     let imports =
         (configuration.settings().require.order != Order::Preserve).then(|| Imports::new(&tree));
 
-    render(&tree, configuration, imports.as_ref(), &directives)
+    let output = render(&tree, configuration, imports.as_ref(), &directives)?;
+    validate(&tree, &output, configuration, imports.as_ref(), &directives)?;
+
+    Ok(output)
 }
 
 pub(crate) fn render(
@@ -69,18 +72,16 @@ pub(crate) fn render(
         Error::internal(0..0, format!("Formatter produced invalid UTF-8. {error}"))
     })?;
 
-    validate(tree, &output, configuration, imports, directives)?;
-
     Ok(output)
 }
 
-pub(crate) fn validate(
+pub(crate) fn validate<'source>(
     tree: &Tree<'_>,
-    output: &str,
+    output: &'source str,
     configuration: &Prepared,
     imports: Option<&Imports>,
     directives: &Directives,
-) -> Result<(), Error> {
+) -> Result<Tree<'source>, Error> {
     let proposed = parse(output.as_bytes()).map_err(|error| {
         Error::internal(0..0, format!("Formatter produced invalid syntax. {error}"))
     })?;
@@ -101,5 +102,5 @@ pub(crate) fn validate(
         &proposed_directives,
     )?;
 
-    Ok(())
+    Ok(proposed)
 }

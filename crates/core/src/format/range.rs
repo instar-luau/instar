@@ -64,7 +64,7 @@ fn selected(
     }
 
     let output = engine::render(&tree, configuration, None, &directives)?;
-    let proposed = engine::parse(output.as_bytes())?;
+    let proposed = engine::validate(&tree, &output, configuration, None, &directives)?;
     let mut selection = None;
 
     select(
