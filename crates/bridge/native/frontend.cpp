@@ -4,7 +4,6 @@
 #include "Luau/Parser.h"
 #include "Luau/RequireTracer.h"
 #include "Luau/TypeCheckLimits.h"
-#include "cancellation.hpp"
 #include "diagnostic.hpp"
 #include "environment.hpp"
 #include "hover.hpp"
@@ -439,8 +438,8 @@ namespace instar::luau {
         }
     }
 
-    std::uint64_t Frontend::cancellation() const {
-        return retain(options.cancellationToken);
+    std::shared_ptr<Luau::FrontendCancellationToken> Frontend::cancellation() const {
+        return options.cancellationToken;
     }
 
     void Frontend::initialize() {

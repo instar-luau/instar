@@ -3,14 +3,11 @@
 
 #include "Luau/Cancellation.h"
 
-#include <cstdint>
 #include <memory>
 
 namespace instar::luau {
-    std::uint64_t retain(const std::shared_ptr<Luau::FrontendCancellationToken> &token);
-    void cancel(std::uint64_t identifier);
-    void reset(std::uint64_t identifier);
-    void release(std::uint64_t identifier);
+    void cancel(const std::shared_ptr<Luau::FrontendCancellationToken> &token);
+    void reset(const std::shared_ptr<Luau::FrontendCancellationToken> &token);
 }
 
 #endif

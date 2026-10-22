@@ -58,7 +58,7 @@ namespace instar::luau {
         rust::Vec<NativeHint> hints_range(rust::Str module, Position start, Position end, bool is_expanded);
         rust::Vec<NativeHint> hint_subjects(rust::Slice<const HintSelector> selectors);
         rust::Vec<Import> imports(rust::Str module);
-        std::uint64_t cancellation() const;
+        std::shared_ptr<Luau::FrontendCancellationToken> cancellation() const;
 
     private:
         void initialize();

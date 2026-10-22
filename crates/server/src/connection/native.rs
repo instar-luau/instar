@@ -99,7 +99,7 @@ pub(super) fn run(
             let cancellation = frontend
                 .as_ref()
                 .map_err(failure)
-                .and_then(|frontend| frontend.cancellation().map_err(failure));
+                .map(Frontend::cancellation);
 
             let mut next = work;
 

@@ -263,12 +263,8 @@ impl<'host> Frontend<'host> {
     }
 
     /// Obtain a thread-safe cancellation handle without sharing the frontend.
-    ///
-    /// # Errors
-    /// Returns native handle allocation failures.
-    pub fn cancellation(&self) -> Result<Cancellation, Error> {
-        let identifier = self.context.complete(self.native.cancellation())?;
-
-        Ok(Cancellation::new(identifier))
+    #[must_use]
+    pub fn cancellation(&self) -> Cancellation {
+        Cancellation::new(self.native.cancellation())
     }
 }

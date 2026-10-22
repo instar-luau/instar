@@ -551,6 +551,9 @@ pub(crate) mod bindings {
         include!("native/cancellation.hpp");
         type Frontend<'host>;
 
+        #[namespace = "Luau"]
+        type FrontendCancellationToken;
+
         fn create<'host>(
             host: &'host Context<'host>,
             retain_types: bool,
@@ -630,13 +633,12 @@ pub(crate) mod bindings {
         ) -> Result<Vec<NativeHint>>;
 
         fn imports(self: Pin<&mut Frontend<'_>>, module: &str) -> Result<Vec<Import>>;
-        fn cancellation(self: &Frontend<'_>) -> Result<u64>;
+        fn cancellation(self: &Frontend<'_>) -> SharedPtr<FrontendCancellationToken>;
 
         fn declarations(configuration: &DeclarationFlags<'_>) -> Result<String>;
 
-        fn cancel(identifier: u64);
-        fn reset(identifier: u64);
-        fn release(identifier: u64);
+        fn cancel(token: &SharedPtr<FrontendCancellationToken>);
+        fn reset(token: &SharedPtr<FrontendCancellationToken>);
     }
 }
 
@@ -649,6 +651,9 @@ use crate::{
     host::Context,
     instances::Instance,
 };
+
+unsafe impl Send for bindings::FrontendCancellationToken {}
+unsafe impl Sync for bindings::FrontendCancellationToken {}
 
 impl From<Configuration> for bindings::Configuration {
     fn from(configuration: Configuration) -> Self {

@@ -7,7 +7,7 @@ pub mod types;
     unreachable_pub,
     clippy::absolute_paths,
     clippy::inline_modules,
-    reason = "CXX generates public FFI items, unsafe code, absolute paths, and an inline module"
+    reason = "CXX generates FFI items; Luau's cancellation token shares only an atomic boolean across threads"
 )]
 mod bridge;
 
