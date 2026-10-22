@@ -11,11 +11,10 @@ use instar_bridge::{Language, Mode};
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
-use super::{
-    Error, Generators, assets::Assets, discovery, environment::Registry, instances, paths,
-};
+use super::{Error, Generators, discovery, environment::Registry, instances, paths};
 
 use crate::{
+    assets::Cache,
     format, lint,
     settings::{Configuration, check, defaults, resolve},
 };
@@ -33,7 +32,7 @@ pub struct Workspace {
     pub(super) sources: RefCell<BTreeMap<String, Arc<str>>>,
     pub(super) snapshots: RefCell<BTreeMap<String, Option<Arc<str>>>>,
     pub(super) observed_paths: RefCell<BTreeSet<PathBuf>>,
-    pub(super) assets: Assets,
+    pub(super) assets: Cache,
     pub(super) environments: RefCell<Registry>,
     pub(super) cancellation: RefCell<CancellationToken>,
     pub(super) generation: Option<Generators>,
@@ -61,7 +60,7 @@ impl Workspace {
             sources: RefCell::new(BTreeMap::new()),
             snapshots: RefCell::new(BTreeMap::new()),
             observed_paths: RefCell::new(BTreeSet::new()),
-            assets: Assets::default(),
+            assets: Cache::default(),
             environments: RefCell::new(Registry::default()),
             cancellation: RefCell::new(CancellationToken::new()),
             generation: None,

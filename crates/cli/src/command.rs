@@ -2,7 +2,7 @@ use std::process::ExitCode;
 
 use super::{
     arguments::{Arguments, Command},
-    execution, generate, interrupt, output,
+    assets, execution, interrupt, output,
 };
 
 pub(super) fn main() -> ExitCode {
@@ -12,7 +12,7 @@ pub(super) fn main() -> ExitCode {
         interrupt::initialize()?;
 
         let result = match &arguments.command {
-            Command::Generate(options) => generate::run(options),
+            Command::Assets(options) => assets::run(options),
             Command::Files(operation) => execution::run(operation),
             Command::Server => instar_server::run(&interrupt::CANCELLATION),
         };

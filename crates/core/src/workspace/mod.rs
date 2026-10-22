@@ -1,6 +1,5 @@
 //! Workspace discovery and project services.
 
-mod assets;
 mod discovery;
 mod environment;
 mod error;

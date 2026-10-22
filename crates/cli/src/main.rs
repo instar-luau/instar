@@ -1,12 +1,12 @@
 //! Instar's command-line interface.
 
 mod arguments;
+mod assets;
 mod batch;
 mod check;
 mod command;
 mod execution;
 mod format;
-mod generate;
 mod interrupt;
 mod lint;
 mod output;

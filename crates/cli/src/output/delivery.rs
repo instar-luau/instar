@@ -164,7 +164,7 @@ fn neutralize(text: &str) -> String {
     output
 }
 
-pub(crate) fn generation(phase: &str, target: Option<&str>) -> Result<()> {
+pub(crate) fn phase(phase: &str, target: Option<&str>) -> Result<()> {
     let bar = progress();
 
     bar.set_style(

@@ -1,17 +1,24 @@
-use std::{
-    path::{self, Path},
-    time::Instant,
-};
+use std::{env, path, time::Instant};
 
 use eyre::{Result, WrapErr as _, bail};
+
 use instar_core::assets::{self, Target};
 
 use super::association;
 
-use crate::{arguments::Generate, interrupt, output};
+use crate::{arguments::Assets, interrupt, output};
 
-pub(crate) fn run(options: &Generate) -> Result<u8> {
+pub(crate) fn run(options: &Assets) -> Result<u8> {
     let started = Instant::now();
+
+    if options.should_refresh {
+        output::phase("Refreshing cached assets", None)?;
+        let files = assets::refresh(&interrupt::CANCELLATION)?;
+        interrupt::check()?;
+        output::refreshed(&files, started);
+
+        return Ok(0);
+    }
 
     if options.associate.is_some()
         && !options.targets.is_empty()
@@ -24,9 +31,14 @@ pub(crate) fn run(options: &Generate) -> Result<u8> {
         .into());
     }
 
-    let root = options.root.as_deref().unwrap_or_else(|| Path::new("."));
+    let root = options
+        .root
+        .clone()
+        .map_or_else(env::current_dir, Ok)
+        .wrap_err("Could not resolve the working directory.")?;
 
-    let root = path::absolute(root)
+    let root = root
+        .canonicalize()
         .wrap_err_with(|| format!("Could not resolve project root `{}`.", root.display()))?;
 
     if !root.is_dir() {
@@ -35,15 +47,16 @@ pub(crate) fn run(options: &Generate) -> Result<u8> {
 
     output::root(&root);
 
-    let output = path::absolute(root.join(&options.output)).wrap_err_with(|| {
-        format!(
-            "Could not resolve output directory `{}`.",
-            options.output.display()
-        )
-    })?;
+    let output = options
+        .output
+        .as_deref()
+        .expect("Internal error: asset generation has no output directory.");
+
+    let output = path::absolute(root.join(output))
+        .wrap_err_with(|| format!("Could not resolve output directory `{}`.", output.display()))?;
 
     interrupt::check()?;
-    output::generation("Preparing generation", None)?;
+    output::phase("Preparing generation", None)?;
 
     let association = options
         .associate
@@ -61,12 +74,12 @@ pub(crate) fn run(options: &Generate) -> Result<u8> {
         None
     };
 
-    output::generation("Generating", target)?;
+    output::phase("Generating", target)?;
 
     let generated = assets::generate(&output, &options.targets, &interrupt::CANCELLATION)?;
 
     interrupt::check()?;
-    output::generation("Finalizing generation", None)?;
+    output::phase("Finalizing generation", None)?;
 
     if let Some(configuration) = &association {
         configuration.apply()?;

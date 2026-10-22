@@ -12,7 +12,7 @@ use reqwest::Client;
 use tokio::{runtime::Builder, sync::oneshot};
 use tokio_util::sync::CancellationToken;
 
-use super::{Error, Workspace, process};
+use super::Error;
 
 const ADDRESS: &str = "https://instar-luau.github.io/instar";
 
@@ -20,7 +20,7 @@ static SHARED: Mutex<Weak<Shared>> = Mutex::new(Weak::new());
 
 type Files = Mutex<BTreeMap<(Namespace, &'static str), Cached>>;
 
-pub(super) struct Assets(Arc<Shared>);
+pub(crate) struct Cache(Arc<Shared>);
 
 struct Shared {
     files: Arc<Files>,
@@ -32,7 +32,7 @@ struct Cached {
     checked: SystemTime,
 }
 
-impl Default for Assets {
+impl Default for Cache {
     fn default() -> Self {
         let mut shared = SHARED
             .lock()
@@ -53,8 +53,22 @@ impl Default for Assets {
     }
 }
 
+impl Cache {
+    pub(crate) fn load(
+        &self,
+        namespace: Namespace,
+        filename: &'static str,
+        cancellation: &CancellationToken,
+    ) -> Result<(PathBuf, Arc<str>), Error> {
+        let path = directory()?.join(namespace.name()).join(filename);
+        let source = acquire(&path, (namespace, filename), &self.0, cancellation)?;
+
+        Ok((path, source))
+    }
+}
+
 #[derive(Copy, Clone, Eq, Ord, PartialEq, PartialOrd)]
-pub(super) enum Namespace {
+pub(crate) enum Namespace {
     Luau,
     Roblox,
 }
@@ -85,30 +99,62 @@ impl Drop for Refresh {
     }
 }
 
-pub(super) fn load(
-    workspace: &Workspace,
-    namespace: Namespace,
-    filename: &'static str,
-) -> Result<(PathBuf, Arc<str>), Error> {
-    let cancellation = workspace.cancellation.borrow().clone();
+/// Download fresh published environment assets into the disk cache.
+///
+/// # Errors
+/// Returns cache path, runtime, download, filesystem, or cancellation failures.
+pub fn refresh(cancellation: &CancellationToken) -> Result<Vec<PathBuf>, Error> {
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
 
-    let path = dirs::cache_dir()
-        .ok_or_else(|| Error::Path {
-            path: workspace.root.clone(),
-            reason: "The operating system cache directory is unavailable.",
-        })?
-        .join("instar")
-        .join(namespace.name())
-        .join(filename);
+    let directory = directory()?;
 
-    let source = acquire(
-        &path,
-        (namespace, filename),
-        &workspace.assets.0,
-        &cancellation,
-    )?;
+    let runtime = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(Error::Runtime)?;
 
-    Ok((path, source))
+    runtime.block_on(async {
+        let files = Mutex::new(BTreeMap::new());
+        let mut refreshed = Vec::new();
+
+        for key in [
+            (Namespace::Luau, "documentation.json"),
+            (Namespace::Roblox, "documentation.json"),
+            (Namespace::Roblox, "none.d.luau"),
+            (Namespace::Roblox, "local.d.luau"),
+            (Namespace::Roblox, "plugin.d.luau"),
+            (Namespace::Roblox, "roblox.d.luau"),
+            (Namespace::Roblox, "metadata.json"),
+        ] {
+            let path = directory.join(key.0.name()).join(key.1);
+
+            tokio::select! {
+                biased;
+                () = cancellation.cancelled() => return Err(Error::Cancelled),
+                result = download(&files, &path, key) => { result?; },
+            }
+
+            refreshed.push(path);
+        }
+
+        Ok(refreshed)
+    })
+}
+
+fn directory() -> Result<PathBuf, Error> {
+    dirs::cache_dir()
+        .map(|path| path.join("instar"))
+        .ok_or_else(|| {
+            filesystem(
+                Path::new("instar"),
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "The operating system cache directory is unavailable.",
+                ),
+            )
+        })
 }
 
 fn acquire(
@@ -117,7 +163,9 @@ fn acquire(
     shared: &Shared,
     cancellation: &CancellationToken,
 ) -> Result<Arc<str>, Error> {
-    process::interrupted(&|| cancellation.is_cancelled())?;
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
 
     let mut files = shared
         .files
@@ -176,7 +224,7 @@ fn acquire(
         tokio::select! {
             biased;
             () = cancellation.cancelled() => Err(Error::Cancelled),
-            result = refresh(&shared.files, path, key) => result,
+            result = download(&shared.files, path, key) => result,
         }
     })
 }
@@ -196,7 +244,7 @@ fn update(path: PathBuf, key: (Namespace, &'static str), files: Arc<Files>) -> i
                         tokio::select! {
                             biased;
                             _ = cancelled => Ok(()),
-                            result = refresh(&files, &path, key) => result.map(|_| ()),
+                            result = download(&files, &path, key) => result.map(|_| ()),
                         }
                     })
                 });
@@ -212,7 +260,7 @@ fn update(path: PathBuf, key: (Namespace, &'static str), files: Arc<Files>) -> i
     })
 }
 
-async fn refresh(
+async fn download(
     files: &Files,
     path: &Path,
     key: (Namespace, &'static str),
@@ -229,7 +277,7 @@ async fn refresh(
     let url = format!("{ADDRESS}/{}/{}", key.0.name(), key.1);
 
     let failure = |source| Error::Download {
-        url: url.clone(),
+        address: url.clone(),
         source,
     };
 

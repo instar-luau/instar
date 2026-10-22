@@ -2,7 +2,7 @@ use std::{io, path::PathBuf};
 
 use crate::format;
 
-/// An asset input, generation, or publication failure.
+/// An asset input, generation, cache, or publication failure.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// A local output could not be accessed.
@@ -15,7 +15,7 @@ pub enum Error {
     },
 
     /// The asynchronous runtime could not start.
-    #[error("Could not start the asset generation runtime.")]
+    #[error("Could not start the asset runtime.")]
     Runtime(#[source] io::Error),
 
     /// An upstream input could not be downloaded.
@@ -51,7 +51,7 @@ pub enum Error {
     #[error(transparent)]
     Format(#[from] format::Error),
 
-    /// Generation was cancelled before publication.
-    #[error("Asset generation cancelled.")]
+    /// An asset operation was cancelled.
+    #[error("Asset operation cancelled.")]
     Cancelled,
 }

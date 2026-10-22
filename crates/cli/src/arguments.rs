@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, env, num::NonZeroUsize, path::PathBuf};
 use clap::{ColorChoice, CommandFactory as _, FromArgMatches as _, Parser, Subcommand};
 use instar_core::{assets::Target, lint};
 
-use super::{generate::Association, output};
+use super::{assets::Association, output};
 
 #[derive(Parser)]
 #[command(
@@ -94,8 +94,8 @@ pub(super) enum Command {
     #[command(flatten)]
     Files(Box<Operation>),
 
-    #[command(about = "Generate local schema, Luau, and Roblox files")]
-    Generate(Generate),
+    #[command(about = "Generate assets or refresh the downloaded asset cache")]
+    Assets(Assets),
 
     #[command(about = "Serve the Language Server Protocol over stdin and stdout")]
     Server,
@@ -169,9 +169,27 @@ impl Operation {
 }
 
 #[derive(clap::Args)]
-pub(super) struct Generate {
+#[command(group(clap::ArgGroup::new("action").required(true).args(["generate", "refresh"])))]
+pub(super) struct Assets {
+    #[arg(
+        id = "generate",
+        long = "generate",
+        requires = "output",
+        help = "Generate local schema, Luau, and Roblox files"
+    )]
+    pub(super) should_generate: bool,
+
+    #[arg(
+        id = "refresh",
+        long = "refresh",
+        conflicts_with_all = ["targets", "output", "root", "associate"],
+        help = "Download fresh assets into the disk cache"
+    )]
+    pub(super) should_refresh: bool,
+
     #[arg(
         value_name = "TARGET",
+        requires = "generate",
         help = "Select schema or environments. Defaults to all targets"
     )]
     pub(super) targets: Vec<Target>,
@@ -179,13 +197,15 @@ pub(super) struct Generate {
     #[arg(
         long,
         value_name = "DIRECTORY",
+        requires = "generate",
         help = "Write generated files to this directory"
     )]
-    pub(super) output: PathBuf,
+    pub(super) output: Option<PathBuf>,
 
     #[arg(
         long,
         value_name = "PATH",
+        requires = "generate",
         help = "Resolve output and TOML tool configuration from this project directory"
     )]
     pub(super) root: Option<PathBuf>,
@@ -194,6 +214,7 @@ pub(super) struct Generate {
         long,
         value_enum,
         value_name = "TOOL",
+        requires = "generate",
         help = "Associate the generated schema with the project's TOML tool configuration"
     )]
     pub(super) associate: Option<Association>,

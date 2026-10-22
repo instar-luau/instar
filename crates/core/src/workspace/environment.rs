@@ -12,11 +12,11 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::{
-    Error, InvalidSource, Origin, SymbolOutcome, Workspace, assets, instances, model::Scope, paths,
+    Error, InvalidSource, Origin, SymbolOutcome, Workspace, instances, model::Scope, paths,
 };
 
 use crate::{
-    assets::{Capability, Metadata},
+    assets::{self, Capability, Metadata},
     lint::Symbols,
     settings::environment::{Group, Security},
 };
@@ -194,7 +194,11 @@ impl Registry {
         workspace: &Workspace,
         namespace: assets::Namespace,
     ) -> Result<&Documentation, Error> {
-        let (path, source) = assets::load(workspace, namespace, "documentation.json")?;
+        let (path, source) = workspace.assets.load(
+            namespace,
+            "documentation.json",
+            &workspace.cancellation.borrow(),
+        )?;
 
         if self
             .bundled_documentation
@@ -367,8 +371,16 @@ pub(super) fn identity(
 
                 Some(Profile {
                     name,
-                    metadata: assets::load(workspace, assets::Namespace::Roblox, "metadata.json")?,
-                    declarations: assets::load(workspace, assets::Namespace::Roblox, filename)?,
+                    metadata: workspace.assets.load(
+                        assets::Namespace::Roblox,
+                        "metadata.json",
+                        &workspace.cancellation.borrow(),
+                    )?,
+                    declarations: workspace.assets.load(
+                        assets::Namespace::Roblox,
+                        filename,
+                        &workspace.cancellation.borrow(),
+                    )?,
                 })
             } else {
                 None

@@ -1,5 +1,7 @@
 use std::{io, path::PathBuf, sync::Arc};
 
+use crate::assets;
+
 /// A workspace filesystem, path, or selection failure.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -20,14 +22,9 @@ pub enum Error {
     #[error("Could not start the workspace runtime.")]
     Runtime(#[source] io::Error),
 
-    /// An asset could not be downloaded.
-    #[error("Could not download `{url}`.")]
-    Download {
-        /// The asset URL.
-        url: String,
-        /// The client, network, or HTTP failure.
-        source: reqwest::Error,
-    },
+    /// An asset operation failed.
+    #[error(transparent)]
+    Assets(assets::Error),
 
     /// A sourcemap generator could not run successfully.
     #[error("Could not generate a sourcemap with `{executable}`.{details}")]
@@ -95,4 +92,15 @@ pub enum Error {
         /// The reason the path cannot be used.
         reason: &'static str,
     },
+}
+
+impl From<assets::Error> for Error {
+    fn from(error: assets::Error) -> Self {
+        match error {
+            assets::Error::Cancelled => Self::Cancelled,
+            assets::Error::Filesystem { path, source } => Self::Filesystem { path, source },
+            assets::Error::Runtime(source) => Self::Runtime(source),
+            error => Self::Assets(error),
+        }
+    }
 }

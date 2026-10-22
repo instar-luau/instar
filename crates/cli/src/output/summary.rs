@@ -1,4 +1,8 @@
-use std::{path::Path, sync::atomic::Ordering, time::Instant};
+use std::{
+    path::{Path, PathBuf},
+    sync::atomic::Ordering,
+    time::Instant,
+};
 
 use instar_core::assets::Generated;
 
@@ -171,6 +175,26 @@ pub(crate) fn generated(
     ));
 }
 
+pub(crate) fn refreshed(files: &[PathBuf], started: Instant) {
+    delivery::progress().finish_and_clear();
+
+    if delivery::mode() == Mode::Quiet {
+        return;
+    }
+
+    for path in files {
+        delivery::file("Refreshed", path, "Refreshed".len() + 2);
+    }
+
+    delivery::message(format_args!(
+        "{} {} cached {} in {:.2}s",
+        console::style("Refreshed").for_stderr().green().bold(),
+        files.len(),
+        delivery::plural(files.len(), "asset", "assets"),
+        started.elapsed().as_secs_f64(),
+    ));
+}
+
 pub(crate) fn interrupted(arguments: &Arguments) {
     delivery::progress().finish_and_clear();
 
@@ -185,7 +209,8 @@ pub(crate) fn interrupted(arguments: &Arguments) {
         "Stopped watching."
     } else {
         match &arguments.command {
-            Command::Generate(_) => "Generation interrupted.",
+            Command::Assets(options) if options.should_generate => "Generation interrupted.",
+            Command::Assets(_) => "Asset refresh interrupted.",
             Command::Server => "Server interrupted.",
 
             Command::Files(operation) => match operation.as_ref() {

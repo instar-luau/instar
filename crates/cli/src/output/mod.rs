@@ -6,9 +6,9 @@ mod publication;
 mod summary;
 
 pub(crate) use self::{
-    delivery::{generation, generator, initialize, root, styles, watching, workers},
+    delivery::{generator, initialize, phase, root, styles, watching, workers},
     diagnostics::{Validation, failure, findings},
     progress::Progress,
     publication::publish,
-    summary::{generated, interrupted, summary, unformatted},
+    summary::{generated, interrupted, refreshed, summary, unformatted},
 };
