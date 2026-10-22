@@ -377,6 +377,18 @@ namespace instar::luau::query {
 
                 for (std::size_t index = 0; index < node->vars.size; ++index) {
                     const auto *value = index < node->values.size ? node->values.data[index] : nullptr;
+                    const auto *initializer = value;
+
+                    while (const auto *group = initializer ? initializer->as<Luau::AstExprGroup>() : nullptr) {
+                        initializer = group->expr;
+                    }
+
+                    const auto *call = initializer ? initializer->as<Luau::AstExprCall>() : nullptr;
+                    const auto *global = call ? call->func->as<Luau::AstExprGlobal>() : nullptr;
+
+                    if (global && global->name == "require") {
+                        continue;
+                    }
 
                     const bool is_obvious =
                         value &&
