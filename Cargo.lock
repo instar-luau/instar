@@ -1098,7 +1098,7 @@ dependencies = [
 
 [[package]]
 name = "instar-bridge"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cmake",
  "cxx",
@@ -1108,7 +1108,7 @@ dependencies = [
 
 [[package]]
 name = "instar-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "console",
@@ -1133,7 +1133,7 @@ dependencies = [
 
 [[package]]
 name = "instar-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "datatest-stable",
  "dirs",
@@ -1164,7 +1164,7 @@ dependencies = [
 
 [[package]]
 name = "instar-server"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "eyre",
  "globset",
