@@ -169,6 +169,8 @@ namespace instar::luau {
                     base->definitionLocation}
             );
 
+            Luau::asMutable(type)->documentationSymbol = Luau::follow(declared->type)->documentationSymbol;
+
             auto *external = Luau::getMutable<Luau::ExternType>(type);
 
             if (const auto *parent = Luau::lookupExternTypeProp(base, "Parent"); parent && parent->readTy) {
@@ -289,6 +291,19 @@ namespace instar::luau {
         const auto result = lookup_instance(found->second, query, name);
 
         return result ? std::optional<std::string>{metadata(*result)->identity} : std::nullopt;
+    }
+
+    std::vector<std::string> Instances::children(const std::string &context) const {
+        const auto found = identities.find(context);
+        std::vector<std::string> names;
+
+        if (found != identities.end()) {
+            for (const auto child : metadata(found->second)->children) {
+                names.push_back(metadata(child)->name);
+            }
+        }
+
+        return names;
     }
 
     std::optional<Luau::TypeId> Instances::select(InstanceQuery query, std::optional<size_t> script) const {

@@ -7,6 +7,10 @@ pub enum Error {
     #[error(transparent)]
     Host(HostError),
 
+    /// An incompatible frontend temporarily owns the process-wide native flags.
+    #[error("Different Luau flag settings are already in use by another frontend.")]
+    FlagsBusy,
+
     /// A failure raised by native Luau analysis.
     #[error("{reason}")]
     Native {
@@ -41,8 +45,14 @@ pub enum Operation {
     /// Find a child navigation context.
     Child,
 
+    /// List child navigation contexts.
+    Children,
+
     /// Resolve an alias.
     Alias,
+
+    /// List aliases in a module's scope.
+    Aliases,
 
     /// Resolve type-checking configuration.
     Configuration,
@@ -63,7 +73,9 @@ impl fmt::Display for Operation {
             Self::Source => "read source",
             Self::Parent => "resolve parent",
             Self::Child => "resolve child",
+            Self::Children => "list children",
             Self::Alias => "resolve alias",
+            Self::Aliases => "list aliases",
             Self::Configuration => "resolve configuration",
             Self::Environment => "load environment",
             Self::Flags => "resolve flags",

@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
-    fs,
+    fs, mem,
     path::{Path, PathBuf},
     rc::Rc,
     sync::{
@@ -14,11 +14,13 @@ use instar_bridge::Frontend;
 use instar_core::{
     analysis::Edit as SourceEdit,
     lint,
-    workspace::{Access, Purpose, SymbolOutcome, Workspace},
+    settings::resolution::Generator,
+    workspace::{Access, Generators, Purpose, Sourcemap, SymbolOutcome, Workspace},
 };
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 
 use tower_lsp_server::{
     gen_lsp_types::{
@@ -31,7 +33,7 @@ use tower_lsp_server::{
 use super::{
     configuration::Configuration,
     document::{self, Document, Encoding},
-    error::failure,
+    error::{failure, reason},
 };
 
 static GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -41,8 +43,11 @@ type Tokens = VecDeque<(String, Vec<SemanticToken>)>;
 
 pub(super) struct Project {
     pub(super) workspace: Rc<Workspace>,
+    pub(super) generators: Generators,
     pub(super) documents: BTreeMap<String, Document>,
     pub(super) borrowed: BTreeMap<String, Document>,
+    pub(super) modules: Option<Vec<String>>,
+    pub(super) imports: BTreeMap<(String, String, bool), Option<String>>,
     pub(super) configuration: Configuration,
     pub(super) capabilities: Arc<Value>,
     pub(super) encoding: Encoding,
@@ -64,14 +69,21 @@ impl Project {
         configuration: Configuration,
         capabilities: Arc<Value>,
         encoding: Encoding,
+        generators: Generators,
     ) -> Result<Self> {
-        let workspace = Workspace::new(root, &[], &[]).map_err(failure)?;
+        let workspace = Workspace::new(root, &[], &[])
+            .map_err(failure)?
+            .with_generators(generators.clone());
+
         let generation = generation()?;
 
         Ok(Self {
             workspace: Rc::new(workspace),
+            generators,
             documents: BTreeMap::new(),
             borrowed: BTreeMap::new(),
+            modules: None,
+            imports: BTreeMap::new(),
             configuration,
             capabilities,
             encoding,
@@ -116,7 +128,7 @@ impl Project {
             })?;
 
         let revision = self.advance()?;
-        let document = Document::new(document::uri(Path::new(module))?, source, None, revision);
+        let document = Document::new(document::uri(Path::new(module))?, source, None, revision)?;
         self.documents.insert(module.to_owned(), document.clone());
 
         Ok(document)
@@ -164,7 +176,11 @@ impl Project {
             .collect())
     }
 
-    pub(super) fn findings(&self, module: &str, source: &str) -> Result<Vec<lint::Finding>> {
+    pub(super) fn findings(
+        &self,
+        module: &str,
+        document: &Document,
+    ) -> Result<Arc<[lint::Finding]>> {
         let settings = self.workspace.linting(module).map_err(failure)?;
         let symbols = self.workspace.symbols(module).map_err(failure)?;
 
@@ -173,7 +189,7 @@ impl Project {
             SymbolOutcome::Invalid(invalid) => return Err(failure(invalid.error)),
         };
 
-        lint::lint(source, &settings, &symbols).map_err(failure)
+        document.findings(settings, symbols).map_err(failure)
     }
 
     pub(super) fn has_capability(&self, pointer: &str) -> bool {
@@ -190,7 +206,7 @@ impl Project {
         serde_json::to_value(Resolve {
             module: module.to_owned(),
             revision: document.revision,
-            generation: self.generation,
+            invalidation: self.invalidation,
             value: serde_json::to_value(value).map_err(failure)?,
         })
         .map_err(failure)
@@ -199,27 +215,27 @@ impl Project {
     pub(super) fn resolve<ValueType: DeserializeOwned>(
         &self,
         data: Option<Value>,
-    ) -> Result<(String, ValueType)> {
+    ) -> Result<Option<(String, ValueType)>> {
         let resolve: Resolve = serde_json::from_value(
             data.ok_or_else(|| Error::invalid_params("Resolve data is missing."))?,
         )
         .map_err(|error| Error::invalid_params(error.to_string()))?;
 
+        let value = serde_json::from_value(resolve.value)
+            .map_err(|error| Error::invalid_params(error.to_string()))?;
+
         let document = self
             .documents
             .get(&resolve.module)
-            .or_else(|| self.borrowed.get(&resolve.module))
-            .ok_or_else(Error::content_modified)?;
+            .or_else(|| self.borrowed.get(&resolve.module));
 
-        if resolve.generation != self.generation || resolve.revision != document.revision {
-            return Err(Error::content_modified());
+        if resolve.invalidation != self.invalidation
+            || document.is_none_or(|document| resolve.revision != document.revision)
+        {
+            return Ok(None);
         }
 
-        Ok((
-            resolve.module,
-            serde_json::from_value(resolve.value)
-                .map_err(|error| Error::invalid_params(error.to_string()))?,
-        ))
+        Ok(Some((resolve.module, value)))
     }
 
     pub(super) fn edits(
@@ -307,21 +323,46 @@ impl Project {
     }
 
     pub(super) fn reload(&mut self) -> Result<()> {
-        Rc::get_mut(&mut self.workspace)
-            .ok_or_else(|| failure("Cannot reload a borrowed workspace."))?
-            .reload()
-            .map_err(failure)?;
+        let workspace = Rc::get_mut(&mut self.workspace)
+            .ok_or_else(|| reason("Cannot reload a borrowed workspace."))?;
+
+        workspace.reload().map_err(failure)?;
+
+        let previous = mem::replace(
+            &mut self.generators,
+            Generators::new(&CancellationToken::new(), |executable, message| {
+                tracing::info!(executable, message, "Sourcemap generator");
+            }),
+        );
+
+        workspace.set_generators(self.generators.clone());
 
         self.documents
             .retain(|_, document| document.version.is_some());
 
         self.tokens.clear();
+        self.modules = None;
+        self.imports.clear();
 
         self.changed()?;
         self.invalidation = self.generation;
         self.observed.clear();
         self.native_dependencies.clear();
         self.native_reload_dependencies.clear();
+
+        previous.shutdown().map_err(failure)
+    }
+
+    pub(super) fn advance_generators(&mut self) -> Result<()> {
+        let workspace = Rc::get_mut(&mut self.workspace)
+            .ok_or_else(|| reason("Cannot refresh a borrowed workspace."))?;
+
+        if self.generators.advance().map_err(failure)? {
+            workspace.set_generated(self.generators.snapshots());
+            self.tokens.clear();
+            self.changed()?;
+            self.invalidation = self.generation;
+        }
 
         Ok(())
     }
@@ -343,6 +384,8 @@ impl Project {
     pub(super) fn capture(&self) -> Snapshot {
         Snapshot {
             root: self.workspace.directory().to_owned(),
+            generators: self.generators.clone(),
+            generated: self.generators.snapshots(),
             documents: self
                 .documents
                 .iter()
@@ -429,6 +472,8 @@ impl Project {
         self.nested = snapshot.nested;
 
         if should_refresh {
+            self.modules = None;
+            self.imports.clear();
             frontend.refresh().map_err(failure)?;
         }
 
@@ -471,6 +516,8 @@ impl Project {
 
 pub(super) struct Snapshot {
     pub(super) root: PathBuf,
+    pub(super) generators: Generators,
+    pub(super) generated: BTreeMap<Generator, Arc<Sourcemap>>,
     pub(super) documents: BTreeMap<String, Document>,
     pub(super) borrowed: BTreeMap<String, Document>,
     pub(super) configuration: Configuration,
@@ -495,7 +542,7 @@ pub(super) struct Feedback {
 struct Resolve {
     module: String,
     revision: u64,
-    generation: u64,
+    invalidation: u64,
     value: Value,
 }
 

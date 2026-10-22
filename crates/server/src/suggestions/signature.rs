@@ -1,7 +1,6 @@
 use std::ops::Range;
 
 use instar_bridge::Frontend;
-use instar_core::presentation;
 
 use tower_lsp_server::{
     gen_lsp_types::{
@@ -11,7 +10,11 @@ use tower_lsp_server::{
     jsonrpc::Result,
 };
 
-use crate::{error::failure, output::documentation, project::Project};
+use crate::{
+    error::{failure, reason},
+    output::documentation,
+    project::Project,
+};
 
 pub(crate) fn signature_help(
     project: &mut Project,
@@ -40,51 +43,54 @@ pub(crate) fn signature_help(
         .signatures(&module, line, column)
         .map_err(failure)?
     {
-        let rendered = presentation::signature(&signature).map_err(failure)?;
-
-        if rendered.parameters.len() != signature.parameters.len() {
-            return Err(failure(
-                "Signature parameter spans do not match the visible parameters.",
-            ));
-        }
-
         let active = signature
             .active_parameter
             .min(u32::try_from(signature.parameters.len().saturating_sub(1)).map_err(failure)?);
 
-        let metadata = documentation::metadata(project, &module, &signature.documentation_symbol)?;
+        let metadata = documentation::overload(
+            project,
+            &module,
+            &signature.documentation_symbol,
+            &signature.documentation_signature,
+        )?;
 
         let documentation = documentation::render(
             project,
             &module,
-            metadata.as_ref(),
-            &signature.documentation,
+            metadata.as_deref(),
+            signature
+                .parameters
+                .first()
+                .is_some_and(|parameter| parameter.source_index > 0),
             should_use_markdown,
         )?;
 
-        let text =
-            documentation::presentation(&rendered.detail, &documentation, should_use_markdown)?;
+        let detail = if signature.expanded == signature.label {
+            ""
+        } else {
+            &signature.expanded
+        };
+
+        let text = documentation::presentation(detail, &documentation, should_use_markdown)?;
 
         let parameters = signature
             .parameters
             .iter()
-            .zip(&rendered.parameters)
-            .map(|(parameter, span)| {
-                let label = parameter_label(&rendered.label, span.clone(), should_use_offsets)?;
+            .map(|parameter| {
+                let label = parameter_label(
+                    &signature.label,
+                    parameter.range.clone(),
+                    should_use_offsets,
+                )?;
 
                 let entry = documentation::parameter(
-                    metadata.as_ref(),
+                    metadata.as_deref(),
                     &parameter.name,
                     parameter.source_index,
                 );
 
-                let text = documentation::render(
-                    project,
-                    &module,
-                    entry.and_then(|entry| entry.get("documentation")),
-                    &parameter.documentation,
-                    should_use_markdown,
-                )?;
+                let text =
+                    documentation::render(project, &module, entry, false, should_use_markdown)?;
 
                 Ok(ParameterInformation {
                     label,
@@ -99,7 +105,7 @@ pub(crate) fn signature_help(
             .collect::<Result<Vec<_>>>()?;
 
         let value = SignatureInformation {
-            label: rendered.label,
+            label: signature.label,
             documentation: (!text.is_empty()).then(|| {
                 Documentation::MarkupContent(documentation::markup(text, should_use_markdown))
             }),
@@ -133,7 +139,7 @@ fn parameter_label(
 ) -> Result<ParameterInformationLabel> {
     let label = signature
         .get(span.clone())
-        .ok_or_else(|| failure("Signature parameter span is outside the final label."))?;
+        .ok_or_else(|| reason("Signature parameter span is outside the final label."))?;
 
     if should_use_offsets {
         return Ok(ParameterInformationLabel::Tuple((

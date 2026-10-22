@@ -29,7 +29,7 @@ struct Request {
 struct Worker<'modules> {
     modules: &'modules [String],
     requests: Receiver<Request>,
-    responses: Sender<Result<Response>>,
+    responses: Sender<Result<Batch>>,
 }
 
 impl Worker<'_> {
@@ -37,17 +37,9 @@ impl Worker<'_> {
         self,
         workspace: &Workspace,
         mut execute: impl FnMut(&[String], &Progress) -> Result<Batch>,
-    ) -> Result<()> {
+    ) {
         for request in self.requests {
             for module in &request.dirty {
-                if workspace.should_reload(module)? {
-                    self.responses
-                        .send(Ok(Response::Reload { should_reset: true }))
-                        .wrap_err("Could not send the worker response.")?;
-
-                    return Ok(());
-                }
-
                 workspace.invalidate(module);
             }
 
@@ -55,21 +47,19 @@ impl Worker<'_> {
                 batch.dependencies = workspace.dependencies();
                 batch.reload_dependencies = workspace.reload_dependencies();
 
-                Response::Completed(batch)
+                batch
             });
 
             if self.responses.send(result).is_err() {
                 break;
             }
         }
-
-        Ok(())
     }
 }
 
 struct Connection {
     requests: Sender<Request>,
-    responses: Receiver<Result<Response>>,
+    responses: Receiver<Result<Batch>>,
 }
 
 struct Pool {
@@ -77,7 +67,7 @@ struct Pool {
 }
 
 impl Pool {
-    fn execute(&self, dirty: &BTreeSet<String>, progress: &Progress) -> Result<Response> {
+    fn execute(&self, dirty: &BTreeSet<String>, progress: &Progress) -> Result<Batch> {
         for connection in &self.connections {
             connection
                 .requests
@@ -89,7 +79,6 @@ impl Pool {
         }
 
         let mut batch = Batch::default();
-        let mut should_reset_generators = None;
         let mut failure = None;
 
         for connection in &self.connections {
@@ -98,11 +87,7 @@ impl Pool {
                 .recv()
                 .wrap_err("Could not receive the worker response.")?
             {
-                Ok(Response::Completed(completed)) => batch.append(completed),
-
-                Ok(Response::Reload { should_reset }) => {
-                    *should_reset_generators.get_or_insert(false) |= should_reset;
-                }
+                Ok(completed) => batch.append(completed),
 
                 Err(error) => {
                     failure.get_or_insert(error);
@@ -110,12 +95,10 @@ impl Pool {
             }
         }
 
-        if let Some(should_reset) = should_reset_generators {
-            Ok(Response::Reload { should_reset })
-        } else if let Some(error) = failure {
+        if let Some(error) = failure {
             Err(error)
         } else {
-            Ok(Response::Completed(batch))
+            Ok(batch)
         }
     }
 }
@@ -163,7 +146,9 @@ pub(crate) fn session(
 
         worker.run(&workspace, |modules, progress| {
             execute(&workspace, modules, progress)
-        })
+        });
+
+        Ok(())
     };
 
     thread::scope(|scope| {
@@ -217,12 +202,10 @@ pub(crate) fn session(
                     started,
                     |selected, dirty, _, progress| {
                         if selected != &project.selected {
-                            return Ok(Response::Reload {
-                                should_reset: false,
-                            });
+                            return Ok(Response::Reload);
                         }
 
-                        pool.execute(dirty, progress)
+                        pool.execute(dirty, progress).map(Response::Completed)
                     },
                 )
             }

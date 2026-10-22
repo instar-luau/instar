@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     io::ErrorKind,
+    mem,
     path::{Path, PathBuf},
     rc::Rc,
     slice,
@@ -12,8 +13,10 @@ use instar_bridge::Frontend;
 
 use instar_core::{
     analysis::{self, Edit, ImportExpression},
-    workspace::Workspace,
+    workspace::{Generators, Workspace, is_configuration},
 };
+
+use tokio_util::sync::CancellationToken;
 
 use tower_lsp_server::{
     gen_lsp_types::{DeleteFilesParams, RenameFilesParams, Uri, WorkspaceEdit},
@@ -22,7 +25,7 @@ use tower_lsp_server::{
 
 use super::{
     document::{self, Document},
-    error::failure,
+    error::{failure, reason},
     paths::{destination, identity, is_intersecting, lexical},
     project::Project,
     workspace::State,
@@ -31,6 +34,7 @@ use super::{
 struct Relocation {
     root: PathBuf,
     workspace: Rc<Workspace>,
+    generators: Generators,
     documents: BTreeMap<String, Document>,
     is_retained: bool,
 }
@@ -74,15 +78,15 @@ pub(super) fn invalidate(
     paths: &[PathBuf],
     dependencies: &BTreeSet<PathBuf>,
 ) -> Result<()> {
-    let should_reload = paths.iter().any(|path| {
-        path.file_name().is_some_and(|name| name == "instar.toml")
-            && path.starts_with(project.workspace.directory())
-    }) || dependencies
+    let should_reload = paths
         .iter()
-        .map(|path| identity(path))
-        .collect::<Result<Vec<_>>>()?
-        .iter()
-        .any(|dependency| paths.iter().any(|path| is_intersecting(dependency, path)));
+        .any(|path| is_configuration(path) && path.starts_with(project.workspace.directory()))
+        || dependencies
+            .iter()
+            .map(|path| identity(path))
+            .collect::<Result<Vec<_>>>()?
+            .iter()
+            .any(|dependency| paths.iter().any(|path| is_intersecting(dependency, path)));
 
     if should_reload {
         project.reload()?;
@@ -206,16 +210,23 @@ pub(super) fn renamed(state: &mut State, parameters: RenameFilesParams) -> Resul
         let destination = roots[&root].clone();
         let is_retained = destination == root;
 
-        let workspace = if is_retained {
+        let (workspace, generators) = if is_retained {
             project.reload()?;
 
-            Rc::clone(&project.workspace)
+            (Rc::clone(&project.workspace), project.generators.clone())
         } else {
-            let workspace = Workspace::new(&destination, &[], &[]).map_err(failure)?;
+            let generators = Generators::new(&CancellationToken::new(), |executable, message| {
+                tracing::info!(executable, message, "Sourcemap generator");
+            });
+
+            let workspace = Workspace::new(&destination, &[], &[])
+                .map_err(failure)?
+                .with_generators(generators.clone());
+
             project.changed()?;
             project.invalidation = project.generation;
 
-            Rc::new(workspace)
+            (Rc::new(workspace), generators)
         };
 
         let documents = documents.remove(&root).unwrap_or_default();
@@ -241,6 +252,7 @@ pub(super) fn renamed(state: &mut State, parameters: RenameFilesParams) -> Resul
             Relocation {
                 root: destination,
                 workspace,
+                generators,
                 documents,
                 is_retained,
             },
@@ -299,6 +311,7 @@ pub(super) fn renamed(state: &mut State, parameters: RenameFilesParams) -> Resul
     }
 
     let mut replacements = Vec::new();
+    let mut retired = Vec::new();
 
     for (root, relocation) in relocations {
         let mut project = state
@@ -307,8 +320,10 @@ pub(super) fn renamed(state: &mut State, parameters: RenameFilesParams) -> Resul
             .expect("Internal error: renamed project is missing.");
 
         project.workspace = relocation.workspace;
+        let previous = mem::replace(&mut project.generators, relocation.generators);
 
         if !relocation.is_retained {
+            retired.push(previous);
             project.borrowed.clear();
         }
 
@@ -334,7 +349,13 @@ pub(super) fn renamed(state: &mut State, parameters: RenameFilesParams) -> Resul
     }
 
     state.projects.extend(replacements);
-    state.reconcile()?;
+    let mut outcome = state.reconcile();
+
+    for generators in retired {
+        outcome = outcome.and(generators.shutdown().map_err(failure));
+    }
+
+    outcome?;
 
     Ok(cleared.into_iter().collect())
 }
@@ -404,13 +425,13 @@ pub(super) fn will_rename(
         }
 
         if is_moved
-            && document.analysis.imports.iter().any(|import| {
+            && document.analysis().imports.iter().any(|import| {
                 !imports
                     .keys()
                     .any(|(start, end)| *start <= import.range.start && import.range.end <= *end)
             })
         {
-            return Err(failure(
+            return Err(reason(
                 "An unresolved import in the moved source cannot be updated safely.",
             ));
         }
@@ -427,7 +448,7 @@ pub(super) fn will_rename(
             }
 
             if targets.len() != 1 {
-                return Err(failure(
+                return Err(reason(
                     "An import with multiple runtime targets cannot be updated safely.",
                 ));
             }
@@ -440,17 +461,17 @@ pub(super) fn will_rename(
             let future_target = relocated(Path::new(&target), &mappings);
 
             let mut styles = document
-                .analysis
+                .analysis()
                 .imports
                 .iter()
                 .filter(|import| start <= import.range.start && import.range.end <= end);
 
-            let style = styles.next().ok_or_else(|| {
-                failure("Unsupported import expression cannot be updated safely.")
-            })?;
+            let style = styles
+                .next()
+                .ok_or_else(|| reason("Unsupported import expression cannot be updated safely."))?;
 
             if styles.next().is_some() {
-                return Err(failure(
+                return Err(reason(
                     "Overlapping import expressions cannot be updated safely.",
                 ));
             }
@@ -461,7 +482,7 @@ pub(super) fn will_rename(
                 if path.split('/').next().is_some_and(|alias| alias.eq_ignore_ascii_case("@game")))
                 && identity != target
             {
-                return Err(failure(
+                return Err(reason(
                     "An instance-backed string import cannot be updated safely before its sourcemap is updated.",
                 ));
             }
@@ -481,7 +502,7 @@ pub(super) fn will_rename(
                 .import(&future_module, &future_target, is_instance)
                 .map_err(failure)?
                 .ok_or_else(|| {
-                    failure(if is_instance {
+                    reason(if is_instance {
                         "Cannot generate an unambiguous instance import for the renamed source."
                     } else {
                         "Cannot generate an unambiguous import for the renamed source."
@@ -489,7 +510,7 @@ pub(super) fn will_rename(
                 })?;
 
             if is_instance && !is_unshadowed(&document, &replacement) {
-                return Err(failure(
+                return Err(reason(
                     "Renamed instance import would use a shadowed or written global.",
                 ));
             }
@@ -544,7 +565,7 @@ fn is_affected(project: &Project, paths: &[PathBuf]) -> Result<bool> {
             && (path
                 .extension()
                 .is_some_and(|extension| extension == "luau" || extension == "lua")
-                || path.file_name().is_some_and(|name| name == "instar.toml")
+                || is_configuration(path)
                 || path.is_dir()
                 || project.workspace.directory().starts_with(path))
     }) {
@@ -683,11 +704,11 @@ fn is_unshadowed(document: &Document, expression: &str) -> bool {
 
     matches!(root, "script" | "game" | "workspace")
         && !document
-            .analysis
+            .analysis()
             .bindings
             .iter()
             .any(|binding| binding.name == root)
-        && !document.analysis.tokens.iter().any(|token| {
+        && !document.analysis().tokens.iter().any(|token| {
             token.access.is_write() && document.text.get(token.range.clone()) == Some(root)
         })
 }

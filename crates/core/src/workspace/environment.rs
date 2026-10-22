@@ -1,17 +1,13 @@
 use std::{
-    cell::OnceCell,
     collections::{BTreeMap, BTreeSet, btree_map::Entry},
-    fmt,
+    io,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
-use instar_bridge::{Class, Definition, Environment, Property};
+use instar_bridge::{Class, Definition, Environment};
 
-use serde::{
-    Deserialize, Deserializer,
-    de::{DeserializeSeed, MapAccess, SeqAccess, Visitor},
-};
+use serde::Deserialize;
 
 use serde_json::Value;
 
@@ -20,7 +16,7 @@ use super::{
 };
 
 use crate::{
-    assets::{Documentation as DocumentationMetadata, Metadata, digest},
+    assets::{Capability, Metadata},
     lint::Symbols,
     settings::environment::{Group, Security},
 };
@@ -30,7 +26,7 @@ impl Workspace {
     ///
     /// # Errors
     /// Returns unavailable, malformed, or inconsistent environment inputs.
-    pub fn documentation(&self, module: &str, symbol: &str) -> Result<Option<Value>, Error> {
+    pub fn documentation(&self, module: &str, symbol: &str) -> Result<Option<Arc<Value>>, Error> {
         let scope = self.scope(Path::new(module))?;
         let mut registry = self.environments.borrow_mut();
 
@@ -55,67 +51,82 @@ impl Workspace {
 
         Ok(registry.document(self, namespace)?.get(symbol).cloned())
     }
+
+    /// Return service class names available in the module's Roblox environment.
+    ///
+    /// # Errors
+    /// Returns unavailable or invalid configuration and environment inputs.
+    pub fn services(&self, module: &str) -> Result<Vec<String>, Error> {
+        let module = Path::new(module);
+        let scope = self.scope(module)?;
+
+        if !instances::is_enabled(self, &scope, module)? {
+            return Ok(Vec::new());
+        }
+
+        let name = identity(self, &scope, module)?;
+        let registry = self.environments.borrow();
+
+        Ok(name
+            .as_deref()
+            .and_then(|name| registry.get(name))
+            .and_then(|environment| environment.classes.as_deref())
+            .into_iter()
+            .flatten()
+            .filter(|class| class.service)
+            .map(|class| class.name.clone())
+            .collect())
+    }
 }
 
 #[derive(Default)]
 pub(super) struct Registry {
-    assets: BTreeMap<assets::Namespace, PathBuf>,
-    refreshes: Vec<assets::Refresh>,
-    builtin_documentation: BTreeMap<assets::Namespace, Documentation>,
+    bundled_documentation: BTreeMap<assets::Namespace, (Arc<str>, Documentation)>,
     inputs: BTreeMap<Inputs, usize>,
-    prepared: Vec<Environment>,
-    documentation: BTreeMap<Vec<(String, PathBuf)>, Vec<Documentation>>,
-    symbols: BTreeMap<(Option<String>, Vec<String>), Arc<Symbols>>,
+    prepared: Vec<Prepared>,
+    documentation: BTreeMap<Vec<PathBuf>, Vec<Documentation>>,
+}
+
+#[derive(Clone, Default)]
+struct Prepared {
+    environment: Environment,
+    symbols: Arc<Symbols>,
+    bundled: usize,
 }
 
 impl Registry {
     pub(super) fn dependencies(&self, dependencies: &mut BTreeSet<PathBuf>) {
-        for directory in self.assets.values() {
-            dependencies.insert(directory.clone());
-            dependencies.insert(directory.join("metadata.json"));
-            dependencies.insert(directory.join("documentation.json"));
-
-            if let Some(parent) = directory.parent() {
-                dependencies.insert(parent.join("current"));
-            }
-        }
-
         for inputs in self.inputs.keys() {
             dependencies.extend(inputs.capabilities.iter().cloned());
             dependencies.extend(inputs.definitions.iter().map(|(_, path)| path.clone()));
+
+            if let Some(profile) = &inputs.roblox {
+                dependencies.insert(profile.metadata.0.clone());
+            }
         }
 
-        dependencies.extend(
-            self.documentation
-                .keys()
-                .flatten()
-                .map(|(_, path)| path.clone()),
-        );
+        dependencies.extend(self.documentation.keys().flatten().cloned());
 
         dependencies.extend(
             self.prepared
                 .iter()
-                .flat_map(|prepared| &prepared.definitions)
+                .flat_map(|prepared| &prepared.environment.definitions)
                 .map(|definition| PathBuf::from(&definition.name)),
         );
     }
 
     pub(super) fn get(&self, name: &str) -> Option<&Environment> {
-        self.prepared.get(name.parse::<usize>().ok()?)
+        self.prepared
+            .get(name.parse::<usize>().ok()?)
+            .map(|prepared| &prepared.environment)
     }
 
     pub(super) fn symbols(
-        &mut self,
+        &self,
         name: Option<&str>,
         globals: &[String],
         builtins: &str,
     ) -> SymbolOutcome {
-        let key = (name.map(str::to_owned), globals.to_owned());
-
-        if let Some(symbols) = self.symbols.get(&key) {
-            return SymbolOutcome::Ready(Arc::clone(symbols));
-        }
-
         let mut symbols = Symbols::default();
 
         if let Err(error) = symbols.declare(builtins) {
@@ -126,20 +137,26 @@ impl Registry {
             });
         }
 
-        if let Some(prepared) = name.and_then(|name| self.get(name)) {
-            if prepared.enumerations.is_some() {
-                symbols.globals.insert("Enum".to_owned());
+        if let Some(prepared) = name
+            .and_then(|name| name.parse::<usize>().ok())
+            .and_then(|index| self.prepared.get(index))
+        {
+            symbols
+                .globals
+                .extend(prepared.symbols.globals.iter().cloned());
 
-                symbols
-                    .types
-                    .extend(["Enum", "EnumItem", "Enumerations"].map(str::to_owned));
-            }
+            symbols.types.extend(prepared.symbols.types.iter().cloned());
 
-            for definition in &prepared.definitions {
+            for definition in prepared
+                .environment
+                .definitions
+                .iter()
+                .skip(prepared.bundled)
+            {
                 if let Err(error) = symbols.declare(&definition.source) {
                     return SymbolOutcome::Invalid(InvalidSource {
                         origin: Origin::File(PathBuf::from(&definition.name)),
-                        text: Arc::from(definition.source.as_str()),
+                        text: Arc::clone(&definition.source),
                         error,
                     });
                 }
@@ -147,21 +164,14 @@ impl Registry {
         }
 
         symbols.globals.extend(globals.iter().cloned());
-        let symbols = Arc::new(symbols);
-        self.symbols.insert(key, Arc::clone(&symbols));
 
-        SymbolOutcome::Ready(symbols)
+        SymbolOutcome::Ready(Arc::new(symbols))
     }
 
     pub(super) fn documents(&mut self, groups: &[Group]) -> Result<&[Documentation], Error> {
         let paths = groups
             .iter()
-            .flat_map(|group| {
-                group
-                    .documentation
-                    .iter()
-                    .map(|path| (group.namespace.clone(), path.clone()))
-            })
+            .flat_map(|group| group.documentation.iter().cloned())
             .collect();
 
         match self.documentation.entry(paths) {
@@ -170,8 +180,8 @@ impl Registry {
             Entry::Vacant(entry) => {
                 let mut documents = Vec::new();
 
-                for (namespace, path) in entry.key() {
-                    documents.push(Documentation::new(path, paths::read(path)?, namespace)?);
+                for path in entry.key() {
+                    documents.push(Documentation::new(path, &paths::read(path)?)?);
                 }
 
                 Ok(entry.insert(documents))
@@ -184,37 +194,38 @@ impl Registry {
         workspace: &Workspace,
         namespace: assets::Namespace,
     ) -> Result<&Documentation, Error> {
-        let directory = self.directory(workspace, namespace)?;
+        let (path, source) = assets::load(workspace, namespace, "documentation.json")?;
 
-        match self.builtin_documentation.entry(namespace) {
-            Entry::Occupied(entry) => Ok(entry.into_mut()),
-            Entry::Vacant(entry) => Ok(entry.insert(documentation(&directory, namespace)?)),
+        if self
+            .bundled_documentation
+            .get(&namespace)
+            .is_none_or(|(cached, _)| !Arc::ptr_eq(cached, &source))
+        {
+            let document = Documentation::new(&path, &source)?;
+
+            self.bundled_documentation
+                .insert(namespace, (source, document));
         }
+
+        Ok(&self.bundled_documentation[&namespace].1)
     }
 
-    fn directory(
+    fn identity(
         &mut self,
-        workspace: &Workspace,
-        namespace: assets::Namespace,
-    ) -> Result<PathBuf, Error> {
-        match self.assets.entry(namespace) {
-            Entry::Occupied(entry) => Ok(entry.get().clone()),
-
-            Entry::Vacant(entry) => {
-                let directory = assets::directory(workspace, namespace, &mut self.refreshes)?;
-                let directory = paths::canonical(&directory)?;
-
-                Ok(entry.insert(directory).clone())
-            }
-        }
-    }
-
-    fn identity(&mut self, inputs: Inputs) -> Result<String, Error> {
+        inputs: Inputs,
+        is_cancelled: &dyn Fn() -> bool,
+    ) -> Result<String, Error> {
         let index = match self.inputs.entry(inputs) {
             Entry::Occupied(entry) => *entry.get(),
 
             Entry::Vacant(entry) => {
-                let prepared = prepare(entry.key())?;
+                let prepared = if let Some(profile) = &entry.key().roblox {
+                    profile.prepare(is_cancelled)?
+                } else {
+                    Prepared::default()
+                };
+
+                let prepared = prepare(entry.key(), prepared)?;
                 let index = self.prepared.len();
                 self.prepared.push(prepared);
                 entry.insert(index);
@@ -229,113 +240,87 @@ impl Registry {
 
 #[derive(Eq, Ord, PartialEq, PartialOrd)]
 struct Inputs {
-    roblox: Option<(PathBuf, Security)>,
+    roblox: Option<Profile>,
     capabilities: Option<PathBuf>,
     definitions: Vec<(String, PathBuf)>,
 }
 
+#[derive(Eq, Ord, PartialEq, PartialOrd)]
+struct Profile {
+    name: &'static str,
+    metadata: (PathBuf, Arc<str>),
+    declarations: (PathBuf, Arc<str>),
+}
+
+impl Profile {
+    fn prepare(&self, is_cancelled: &dyn Fn() -> bool) -> Result<Prepared, Error> {
+        super::process::interrupted(is_cancelled)?;
+
+        let metadata_path = &self.metadata.0;
+        let mut metadata: Metadata = parse(metadata_path, &self.metadata.1)?;
+
+        let profile = metadata
+            .profiles
+            .remove(self.name)
+            .ok_or_else(|| invalid(metadata_path, "Missing security profile."))?;
+
+        let declarations = &self.declarations.0;
+
+        let definition = Definition {
+            name: paths::text(declarations)?,
+            namespace: "@roblox".to_owned(),
+            source: Arc::clone(&self.declarations.1),
+        };
+
+        let mut symbols = Symbols::default();
+
+        symbols
+            .declare(&definition.source)
+            .map_err(|source| Error::Filesystem {
+                path: declarations.clone(),
+                source: io::Error::new(io::ErrorKind::InvalidData, source),
+            })?;
+
+        symbols.globals.insert("Enum".to_owned());
+
+        symbols
+            .types
+            .extend(["Enum", "EnumItem", "Enumerations"].map(str::to_owned));
+
+        let prepared = Prepared {
+            environment: Environment {
+                definitions: vec![definition],
+                enumerations: Some(metadata.enumerations),
+                classes: Some(
+                    profile
+                        .classes
+                        .into_iter()
+                        .map(Class::from)
+                        .collect::<Vec<_>>()
+                        .into(),
+                ),
+            },
+            symbols: symbols.into(),
+            bundled: 1,
+        };
+
+        Ok(prepared)
+    }
+}
+
 pub(super) struct Documentation {
-    source: String,
-    index: OnceCell<BTreeMap<String, Value>>,
+    index: BTreeMap<String, Arc<Value>>,
 }
 
 impl Documentation {
-    fn new(path: &Path, source: String, namespace: &str) -> Result<Self, Error> {
-        let mut decoder = serde_json::Deserializer::from_str(&source);
+    fn new(path: &Path, source: &str) -> Result<Self, Error> {
+        let index: BTreeMap<String, Arc<Value>> = parse(path, source)?;
 
-        let is_valid = decoder
-            .deserialize_map(Namespace(&format!("{namespace}/")))
-            .and_then(|is_valid| decoder.end().map(|()| is_valid))
-            .map_err(|source| Error::Data {
-                path: path.to_owned(),
-                source,
-            })?;
-
-        if !is_valid {
-            return Err(invalid(
-                path,
-                "Documentation symbol is outside its declared namespace.",
-            ));
-        }
-
-        Ok(Self {
-            source,
-            index: OnceCell::new(),
-        })
+        Ok(Self { index })
     }
 
-    pub(super) fn get(&self, symbol: &str) -> Option<&Value> {
-        self.index
-            .get_or_init(|| {
-                serde_json::from_str(&self.source)
-                    .expect("Internal error: previously validated documentation is invalid.")
-            })
-            .get(symbol)
-    }
-}
-
-struct Namespace<'source>(&'source str);
-
-impl<'source> DeserializeSeed<'source> for Namespace<'_> {
-    type Value = bool;
-
-    fn deserialize<Decoder: Deserializer<'source>>(
-        self,
-        decoder: Decoder,
-    ) -> Result<bool, Decoder::Error> {
-        decoder.deserialize_any(self)
-    }
-}
-
-impl<'source> Visitor<'source> for Namespace<'_> {
-    type Value = bool;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a map")
-    }
-
-    fn visit_bool<Failure>(self, _: bool) -> Result<bool, Failure> {
-        Ok(true)
-    }
-
-    fn visit_i64<Failure>(self, _: i64) -> Result<bool, Failure> {
-        Ok(true)
-    }
-
-    fn visit_u64<Failure>(self, _: u64) -> Result<bool, Failure> {
-        Ok(true)
-    }
-
-    fn visit_f64<Failure>(self, _: f64) -> Result<bool, Failure> {
-        Ok(true)
-    }
-
-    fn visit_str<Failure>(self, value: &str) -> Result<bool, Failure> {
-        Ok(value.starts_with(self.0))
-    }
-
-    fn visit_unit<Failure>(self) -> Result<bool, Failure> {
-        Ok(true)
-    }
-
-    fn visit_seq<Sequence: SeqAccess<'source>>(
-        self,
-        mut sequence: Sequence,
-    ) -> Result<bool, Sequence::Error> {
-        while sequence.next_element_seed(Namespace(""))?.is_some() {}
-
-        Ok(true)
-    }
-
-    fn visit_map<Map: MapAccess<'source>>(self, mut map: Map) -> Result<bool, Map::Error> {
-        let mut is_valid = true;
-
-        while let Some(is_validated) = map.next_key_seed(Namespace(self.0))? {
-            is_valid &= is_validated;
-            map.next_value_seed(Namespace(""))?;
-        }
-
-        Ok(is_valid)
+    pub(super) fn get(&self, symbol: &str) -> Option<&Arc<Value>> {
+        self.index.get(symbol)
     }
 }
 
@@ -343,32 +328,6 @@ impl<'source> Visitor<'source> for Namespace<'_> {
 #[serde(deny_unknown_fields)]
 struct Capabilities {
     classes: Vec<Capability>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Capability {
-    name: String,
-
-    #[serde(rename = "service")]
-    is_service: bool,
-
-    #[serde(rename = "creatable")]
-    is_creatable: bool,
-
-    properties: Vec<Permission>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Permission {
-    name: String,
-
-    #[serde(rename = "read")]
-    can_read: bool,
-
-    #[serde(rename = "write")]
-    can_write: bool,
 }
 
 pub(super) fn identity(
@@ -380,12 +339,7 @@ pub(super) fn identity(
 
     let is_roblox = instances::is_enabled(workspace, scope, module)?;
 
-    if let Some(identity) = scope.environments.borrow().get(&is_roblox) {
-        return Ok(identity.clone());
-    }
-
     let mut registry = workspace.environments.borrow_mut();
-    registry.documents(&settings.environment.groups)?;
 
     let definitions: Vec<_> = settings
         .environment
@@ -404,231 +358,65 @@ pub(super) fn identity(
             None
         } else {
             let assets = if is_roblox {
-                let directory = registry.directory(workspace, assets::Namespace::Roblox)?;
+                let (name, filename) = match settings.environment.security {
+                    Security::None => ("none", "none.d.luau"),
+                    Security::Local => ("local", "local.d.luau"),
+                    Security::Plugin => ("plugin", "plugin.d.luau"),
+                    Security::Roblox => ("roblox", "roblox.d.luau"),
+                };
 
-                Some((directory, settings.environment.security))
+                Some(Profile {
+                    name,
+                    metadata: assets::load(workspace, assets::Namespace::Roblox, "metadata.json")?,
+                    declarations: assets::load(workspace, assets::Namespace::Roblox, filename)?,
+                })
             } else {
                 None
             };
 
             Some(
-                registry.identity(Inputs {
-                    roblox: assets,
-                    capabilities: settings
-                        .environment
-                        .capabilities
-                        .as_deref()
-                        .map(paths::canonical)
-                        .transpose()?,
-                    definitions,
-                })?,
+                registry.identity(
+                    Inputs {
+                        roblox: assets,
+                        capabilities: settings
+                            .environment
+                            .capabilities
+                            .as_deref()
+                            .map(paths::canonical)
+                            .transpose()?,
+                        definitions,
+                    },
+                    &|| workspace.cancellation.borrow().is_cancelled(),
+                )?,
             )
         };
-
-    scope
-        .environments
-        .borrow_mut()
-        .insert(is_roblox, identity.clone());
 
     Ok(identity)
 }
 
-fn prepare(inputs: &Inputs) -> Result<Environment, Error> {
-    let mut prepared = Environment::default();
-
-    if let Some((directory, security)) = &inputs.roblox {
-        assets(directory, *security, &mut prepared)?;
-    }
-
+fn prepare(inputs: &Inputs, mut prepared: Prepared) -> Result<Prepared, Error> {
     if let Some(path) = &inputs.capabilities {
         let capabilities: Capabilities = parse(path, &paths::read(path)?)?;
 
-        prepared.classes = Some(
+        prepared.environment.classes = Some(
             capabilities
                 .classes
                 .into_iter()
-                .map(|class| Class {
-                    name: class.name,
-                    service: class.is_service,
-                    creatable: class.is_creatable,
-                    properties: class
-                        .properties
-                        .into_iter()
-                        .map(|property| Property {
-                            name: property.name,
-                            read: property.can_read,
-                            write: property.can_write,
-                        })
-                        .collect(),
-                })
-                .collect(),
+                .map(Class::from)
+                .collect::<Vec<_>>()
+                .into(),
         );
     }
 
     for (namespace, path) in &inputs.definitions {
-        prepared.definitions.push(Definition {
+        prepared.environment.definitions.push(Definition {
             name: paths::text(path)?,
             namespace: namespace.clone(),
-            source: paths::read(path)?,
+            source: paths::read(path)?.into(),
         });
     }
 
     Ok(prepared)
-}
-
-pub(super) fn validate(
-    directory: &Path,
-    namespace: assets::Namespace,
-    is_cancelled: &dyn Fn() -> bool,
-) -> Result<(), Error> {
-    super::process::interrupted(is_cancelled)?;
-    documentation(directory, namespace)?;
-
-    if namespace == assets::Namespace::Luau {
-        return Ok(());
-    }
-
-    for security in [
-        Security::None,
-        Security::Local,
-        Security::Plugin,
-        Security::Roblox,
-    ] {
-        if is_cancelled() {
-            return Err(Error::Cancelled);
-        }
-
-        assets(directory, security, &mut Environment::default())?;
-    }
-
-    Ok(())
-}
-
-fn assets(directory: &Path, security: Security, prepared: &mut Environment) -> Result<(), Error> {
-    let metadata_path = directory.join("metadata.json");
-    let metadata: Metadata = parse(&metadata_path, &paths::read(&metadata_path)?)?;
-
-    let profile = match security {
-        Security::None => "none",
-        Security::Local => "local",
-        Security::Plugin => "plugin",
-        Security::Roblox => "roblox",
-    };
-
-    let digest = metadata
-        .profiles
-        .get(profile)
-        .ok_or_else(|| invalid(&metadata_path, "Missing security profile."))?;
-
-    let declarations = directory.join(format!("{profile}.d.luau"));
-
-    prepared.definitions.push(Definition {
-        name: paths::text(&declarations)?,
-        namespace: "@roblox".to_owned(),
-        source: verified(&declarations, digest)?,
-    });
-
-    prepared.enumerations = Some(metadata.enumerations);
-
-    let mut classes = BTreeMap::<String, Class>::new();
-
-    for (names, is_service) in [
-        (&metadata.services, true),
-        (&metadata.creatable_instances, false),
-    ] {
-        for name in names {
-            let class = classes.entry(name.clone()).or_insert_with(|| Class {
-                name: name.clone(),
-                service: false,
-                creatable: false,
-                properties: Vec::new(),
-            });
-
-            let is_allowed = if is_service {
-                &mut class.service
-            } else {
-                &mut class.creatable
-            };
-
-            if *is_allowed {
-                return Err(invalid(&metadata_path, "Duplicate class capability."));
-            }
-
-            *is_allowed = true;
-        }
-    }
-
-    let properties = metadata
-        .properties
-        .get(profile)
-        .ok_or_else(|| invalid(&metadata_path, "Missing property profile."))?;
-
-    for property in properties {
-        let class = classes
-            .entry(property.class.clone())
-            .or_insert_with(|| Class {
-                name: property.class.clone(),
-                service: false,
-                creatable: false,
-                properties: Vec::new(),
-            });
-
-        if class
-            .properties
-            .iter()
-            .any(|previous| previous.name == property.name)
-        {
-            return Err(invalid(&metadata_path, "Duplicate property capability."));
-        }
-
-        class.properties.push(Property {
-            name: property.name.clone(),
-            read: property.can_read,
-            write: property.can_write,
-        });
-    }
-
-    prepared.classes = Some(classes.into_values().collect());
-
-    Ok(())
-}
-
-fn documentation(directory: &Path, namespace: assets::Namespace) -> Result<Documentation, Error> {
-    let metadata_path = directory.join("metadata.json");
-    let source = paths::read(&metadata_path)?;
-
-    let digest = match namespace {
-        assets::Namespace::Luau => {
-            let metadata: DocumentationMetadata = parse(&metadata_path, &source)?;
-
-            metadata.documentation
-        }
-
-        assets::Namespace::Roblox => {
-            let metadata: Metadata = parse(&metadata_path, &source)?;
-
-            metadata.documentation
-        }
-    };
-
-    let path = directory.join("documentation.json");
-
-    Documentation::new(
-        &path,
-        verified(&path, &digest)?,
-        &format!("@{}", namespace.name()),
-    )
-}
-
-fn verified(path: &Path, expected: &str) -> Result<String, Error> {
-    let source = paths::read(path)?;
-    let actual = digest(source.as_bytes());
-
-    if actual != expected {
-        return Err(invalid(path, "Asset contents do not match their metadata."));
-    }
-
-    Ok(source)
 }
 
 fn parse<'source, Output: Deserialize<'source>>(

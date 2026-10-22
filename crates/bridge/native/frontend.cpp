@@ -91,7 +91,9 @@ namespace instar::luau {
                 }
 
                 for (const Luau::TypeError &error : result->errors) {
-                    diagnostics.push_back(diagnose(error, host));
+                    if (host.getConfig(error.moduleName, {}).typeErrors || Luau::get<Luau::SyntaxError>(error)) {
+                        diagnostics.push_back(diagnose(error, host));
+                    }
                 }
             }
 
@@ -518,6 +520,7 @@ namespace instar::luau {
         rust::Vec<NativeCompletion> result;
         PresentationBudget budget{options.cancellationToken};
         std::size_t candidate_index = 0;
+        std::vector<CompletionType> types;
 
         auto names = prepare(module);
         std::sort(names.begin(), names.end());
@@ -532,6 +535,7 @@ namespace instar::luau {
                      {*checked, source, text},
                      {line, column},
                      budget,
+                     types,
                      candidate_index,
                      selected
                  )) {

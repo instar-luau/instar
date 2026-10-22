@@ -8,15 +8,16 @@ use std::{
     },
 };
 
+use tokio_util::sync::CancellationToken;
 use tower_lsp_server::jsonrpc::Error;
 
 use super::{
-    message::{Message, Work},
-    operation::Operation,
+    message::{Message, Target, Work},
+    operation::{Consistency, Operation},
 };
 
 use crate::{
-    error::failure,
+    error::reason,
     files,
     project::Feedback,
     workspace::{Documents, State},
@@ -47,6 +48,17 @@ impl Ticket {
         state.projects.get(&self.root).is_some_and(|project| {
             project.generation == self.generation && project.invalidation == self.invalidation
         }) && self.documents == state.documents()
+    }
+
+    fn accepts(&self, state: &State, consistency: Consistency) -> bool {
+        match consistency {
+            Consistency::Snapshot => state
+                .projects
+                .get(&self.root)
+                .is_some_and(|project| project.invalidation == self.invalidation),
+
+            Consistency::Current => self.is_valid(state),
+        }
     }
 
     fn has_current_observations(&self, state: &State, feedback: &Feedback) -> bool {
@@ -129,13 +141,13 @@ pub(super) fn run(receiver: &Receiver<Message>, worker: &Sender<Work>) {
                         if let Some(operation) = operation {
                             project
                                 .workspace
-                                .set_cancellation(move || operation.is_cancelled());
+                                .set_cancellation(operation.cancellation.clone());
                         } else {
-                            project.workspace.set_cancellation(|| false);
+                            project.workspace.set_cancellation(CancellationToken::new());
                         }
 
                         execute(Ok(project));
-                        project.workspace.set_cancellation(|| false);
+                        project.workspace.set_cancellation(CancellationToken::new());
                     }
 
                     Err(error) => execute(Err(error)),
@@ -143,15 +155,25 @@ pub(super) fn run(receiver: &Receiver<Message>, worker: &Sender<Work>) {
             }
 
             Message::Query {
-                uri,
+                target,
                 operation,
                 action,
             } => {
-                let snapshot = state.select(&uri).and_then(|root| {
-                    state.synchronize(&root)?;
+                let snapshot = match target {
+                    Target::Uri(uri) => state.select(&uri).and_then(|root| {
+                        state.synchronize(&root)?;
 
-                    Ok(state.projects[&root].capture())
-                });
+                        Ok(state.projects[&root].capture())
+                    }),
+
+                    Target::Snapshot(snapshot) => {
+                        if state.projects.contains_key(&snapshot.root) {
+                            Ok(*snapshot)
+                        } else {
+                            Err(Error::content_modified())
+                        }
+                    }
+                };
 
                 match snapshot {
                     Ok(snapshot) => {
@@ -162,7 +184,12 @@ pub(super) fn run(receiver: &Receiver<Message>, worker: &Sender<Work>) {
                         };
 
                         identifier = next;
-                        let ticket = Ticket::capture(&state, snapshot.root.clone());
+
+                        let ticket = Ticket {
+                            generation: snapshot.generation,
+                            invalidation: snapshot.invalidation,
+                            ..Ticket::capture(&state, snapshot.root.clone())
+                        };
 
                         let work = Work {
                             identifier,
@@ -191,7 +218,11 @@ pub(super) fn run(receiver: &Receiver<Message>, worker: &Sender<Work>) {
                     continue;
                 };
 
-                let mut is_valid = request.ticket.is_valid(&state);
+                let is_current = request.ticket.is_valid(&state);
+
+                let mut is_valid = request
+                    .ticket
+                    .accepts(&state, request.operation.consistency);
 
                 if let Some(mut feedback) = completion.feedback {
                     let has_current_observations =
@@ -224,7 +255,8 @@ pub(super) fn run(receiver: &Receiver<Message>, worker: &Sender<Work>) {
 
                         project.accept(
                             feedback,
-                            is_valid
+                            is_current
+                                && is_valid
                                 && completion.is_successful
                                 && !request.operation.is_cancelled(),
                         );
@@ -248,7 +280,10 @@ pub(super) fn run(receiver: &Receiver<Message>, worker: &Sender<Work>) {
         }
 
         for request in pending.values() {
-            if !request.ticket.is_valid(&state) {
+            if !request
+                .ticket
+                .accepts(&state, request.operation.consistency)
+            {
                 request.operation.cancel();
             }
         }
@@ -259,7 +294,10 @@ pub(super) fn run(receiver: &Receiver<Message>, worker: &Sender<Work>) {
             };
 
             let request = &pending[&work.identifier];
-            let is_valid = request.ticket.is_valid(&state);
+
+            let is_valid = request
+                .ticket
+                .accepts(&state, request.operation.consistency);
 
             if !is_valid || request.operation.is_cancelled() {
                 pending.remove(&work.identifier);
@@ -283,7 +321,7 @@ pub(super) fn run(receiver: &Receiver<Message>, worker: &Sender<Work>) {
 
             if let Err(error) = worker.send(work) {
                 pending.remove(&identifier);
-                let (_, deliver) = (error.0.action)(Err(failure("Native worker stopped.")));
+                let (_, deliver) = (error.0.action)(Err(reason("Native worker stopped.")));
                 deliver(Ok(()));
             } else {
                 active = Some(identifier);

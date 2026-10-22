@@ -48,27 +48,24 @@ impl Workspace {
     /// Returns invalid flags or inaccessible environment inputs.
     pub fn symbols(&self, module: &str) -> Result<SymbolOutcome, Error> {
         let scope = self.scope(Path::new(module))?;
-        let cached = scope.builtins.borrow().as_ref().map(Arc::clone);
-
-        let builtins = if let Some(builtins) = cached {
-            builtins
-        } else {
-            let builtins: Arc<str> = Context::new(self)
-                .builtins(host::flags(&scope.configuration))
-                .map_err(Error::Analysis)?
-                .into();
-
-            *scope.builtins.borrow_mut() = Some(Arc::clone(&builtins));
-
-            builtins
-        };
-
         let name = environment::identity(self, &scope, Path::new(module))?;
 
-        Ok(self.environments.borrow_mut().symbols(
+        if let Some(symbols) = scope.symbols.borrow().get(&name) {
+            return Ok(symbols.clone());
+        }
+
+        let builtins = Context::new(self)
+            .builtins(host::flags(&scope.configuration))
+            .map_err(Error::Analysis)?;
+
+        let symbols = self.environments.borrow().symbols(
             name.as_deref(),
             &scope.configuration.environment.globals,
             &builtins,
-        ))
+        );
+
+        scope.symbols.borrow_mut().insert(name, symbols.clone());
+
+        Ok(symbols)
     }
 }

@@ -180,7 +180,7 @@ impl Operation {
 pub(super) struct Generate {
     #[arg(
         value_name = "TARGET",
-        help = "Select schema, luau, or roblox files. Defaults to all targets"
+        help = "Select schema or environments. Defaults to all targets"
     )]
     pub(super) targets: Vec<Target>,
 
@@ -205,13 +205,6 @@ pub(super) struct Generate {
         help = "Associate the generated schema with the project's TOML tool configuration"
     )]
     pub(super) associate: Option<Association>,
-
-    #[arg(
-        long,
-        value_name = "COMMIT",
-        help = "Generate upstream files from this 40-character tracker commit"
-    )]
-    pub(super) revision: Option<String>,
 }
 
 #[derive(clap::Args)]

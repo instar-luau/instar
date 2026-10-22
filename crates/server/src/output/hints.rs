@@ -1,22 +1,15 @@
 use instar_bridge::{Hint, HintKind};
-use instar_core::presentation::{self, Surface};
 
 use tower_lsp_server::{
     gen_lsp_types::{InlayHint, InlayHintKind, Label, Position, Tooltip},
     jsonrpc::{Error, Result},
 };
 
-use crate::{error::failure, output::documentation, project::Project};
+use crate::{output::documentation, project::Project};
 
 pub(crate) fn annotation(position: Position, hint: &Hint) -> Result<InlayHint> {
     let label = match hint.kind {
-        HintKind::Type => {
-            presentation::compact(&hint.snapshot, Surface::TypeHint).map_err(failure)?
-        }
-
-        HintKind::Return => {
-            presentation::compact(&hint.snapshot, Surface::ReturnHint).map_err(failure)?
-        }
+        HintKind::Type | HintKind::Return => format!(": {}", hint.presentation.compact),
 
         HintKind::Parameter => format!("{}:", hint.name),
 
@@ -50,27 +43,32 @@ pub(crate) fn tooltip(project: &Project, module: &str, information: &[Hint]) -> 
         documentation::should_use_markdown(project, "/textDocument/hover/contentFormat");
 
     for information in information {
-        let sections =
-            presentation::detail(&information.snapshot, &information.name).map_err(failure)?;
-
-        let metadata = documentation::metadata(project, module, &information.documentation_symbol)?;
-
-        let value = if let Some(index) = information.parameter_index {
-            documentation::parameter(metadata.as_ref(), &information.name, index)
-                .and_then(|entry| entry.get("documentation"))
+        let code = if information.name.is_empty() {
+            information.presentation.expanded.clone()
         } else {
-            metadata.as_ref()
+            format!(
+                "{}: {}",
+                information.name, information.presentation.expanded
+            )
         };
 
-        let documentation = documentation::render(
+        let metadata = documentation::overload(
             project,
             module,
-            value,
-            &information.documentation,
-            should_use_markdown,
+            &information.documentation_symbol,
+            &information.documentation_signature,
         )?;
 
-        let detail = documentation::presentation(&sections, &documentation, should_use_markdown)?;
+        let value = if let Some(index) = information.parameter_index {
+            documentation::parameter(metadata.as_deref(), &information.name, index)
+        } else {
+            metadata.as_deref()
+        };
+
+        let documentation =
+            documentation::render(project, module, value, false, should_use_markdown)?;
+
+        let detail = documentation::presentation(&code, &documentation, should_use_markdown)?;
 
         if !details.contains(&detail) {
             details.push(detail);

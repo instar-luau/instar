@@ -5,11 +5,11 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     task::{Context, Poll},
-    time::Duration,
 };
 
 use eyre::{Result, WrapErr as _};
-use tokio::{io, runtime::Builder, time};
+use tokio::{io, runtime::Builder};
+use tokio_util::sync::CancellationToken;
 
 use tower_lsp_server::{
     ExitedError, LspService, Server,
@@ -51,7 +51,7 @@ impl RequestService<Request> for Transport {
 ///
 /// # Errors
 /// Returns runtime initialization or analysis worker shutdown failures.
-pub fn run(is_cancelled: fn() -> bool) -> Result<u8> {
+pub fn run(cancellation: &CancellationToken) -> Result<u8> {
     let runtime = Builder::new_current_thread()
         .enable_all()
         .build()
@@ -80,14 +80,9 @@ pub fn run(is_cancelled: fn() -> bool) -> Result<u8> {
             .concurrency_level(usize::MAX)
             .serve(Transport(service));
 
-        tokio::pin!(serving);
-        let mut interval = time::interval(Duration::from_millis(100));
-
-        loop {
-            tokio::select! {
-                () = &mut serving => break,
-                _ = interval.tick() => if is_cancelled() { break; },
-            }
+        tokio::select! {
+            () = serving => {},
+            () = cancellation.cancelled() => {},
         }
     });
 
@@ -96,6 +91,6 @@ pub fn run(is_cancelled: fn() -> bool) -> Result<u8> {
     stopped.wrap_err("Could not stop the analysis worker.")?;
 
     Ok(u8::from(
-        !has_shutdown.load(Ordering::Relaxed) && !is_cancelled(),
+        !has_shutdown.load(Ordering::Relaxed) && !cancellation.is_cancelled(),
     ))
 }

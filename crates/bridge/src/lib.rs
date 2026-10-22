@@ -1,7 +1,5 @@
 //! Persistent native Luau analysis over host-provided sources and configuration.
 
-pub mod types;
-
 #[expect(
     unsafe_code,
     unreachable_pub,
@@ -19,12 +17,13 @@ mod flags;
 mod frontend;
 mod host;
 mod instances;
+mod language;
 mod semantic;
 
 pub use self::{
     bridge::bindings::{
-        CompletionKind, Diagnostic, HintKind, HintSelector, HoverKind, Import, Occurrence,
-        OccurrenceRole, Position, Range, SourceLocation,
+        CompletionKind, Diagnostic, HintKind, HintSelector, Import, Occurrence, OccurrenceRole,
+        Parentheses, Position, Range, SourceLocation,
     },
     cancellation::Cancellation,
     configuration::{Configuration, Mode},
@@ -34,6 +33,6 @@ pub use self::{
     frontend::Frontend,
     host::{Context, Host, Navigation, Progress},
     instances::{Instance, Location},
-    semantic::{Completion, Hint, Hover, Parameter, Signature},
-    types::{Snapshot, Subject},
+    language::Language,
+    semantic::{Completion, Hint, Hover, Parameter, Presentation, Signature},
 };

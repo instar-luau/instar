@@ -1,11 +1,10 @@
 use std::{ops::Range, path::Path};
 
-use instar_bridge::{Completion, CompletionKind, Frontend};
+use instar_bridge::{Completion, CompletionKind, Frontend, Parentheses};
 
 use instar_core::{
     analysis::{self, TokenKind, is_identifier},
     lint::Symbols,
-    presentation::{self, Surface},
     workspace::{Purpose, SymbolOutcome},
 };
 
@@ -37,8 +36,38 @@ enum Resolve {
 
     Import {
         position: Position,
-        target: String,
+        target: Import,
     },
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+enum Import {
+    Module(String),
+    Service(String),
+}
+
+impl Import {
+    fn name(&self) -> Option<&str> {
+        let name = match self {
+            Self::Module(target) => {
+                let path = Path::new(target);
+
+                path.file_stem()
+                    .and_then(|name| name.to_str())
+                    .filter(|name| *name != "init")
+                    .or_else(|| {
+                        path.parent()
+                            .and_then(Path::file_name)
+                            .and_then(|name| name.to_str())
+                    })
+            }
+
+            Self::Service(name) => Some(name.as_str()),
+        };
+
+        name.filter(|name| is_identifier(name))
+    }
 }
 
 pub(crate) fn completion(
@@ -100,7 +129,7 @@ pub(crate) fn completion(
             CompletionKind::Binding | CompletionKind::Module
         )
     }) && !matches!(preceding, Some('.' | ':'))
-        && !document.analysis.tokens.iter().any(|token| {
+        && !document.analysis().tokens.iter().any(|token| {
             token.range.start <= offset
                 && offset < token.range.end
                 && matches!(token.kind, TokenKind::String | TokenKind::Comment)
@@ -113,8 +142,28 @@ pub(crate) fn completion(
     {
         let prefix = prefix.to_lowercase();
 
-        for target in project.index()? {
-            let Some(name) = import_name(&target) else {
+        let modules = if let Some(modules) = &project.modules {
+            modules.clone()
+        } else {
+            let modules = project.index()?;
+
+            if project.has_capability("/workspace/didChangeWatchedFiles/dynamicRegistration") {
+                project.modules = Some(modules.clone());
+            }
+
+            modules
+        };
+
+        let targets = project
+            .workspace
+            .services(&module)
+            .map_err(failure)?
+            .into_iter()
+            .map(Import::Service)
+            .chain(modules.into_iter().map(Import::Module));
+
+        for target in targets {
+            let Some(name) = target.name() else {
                 continue;
             };
 
@@ -130,15 +179,11 @@ pub(crate) fn completion(
                 &document,
                 position.position,
                 &target,
-                name,
                 &symbols,
+                false,
             )? {
                 if can_resolve(project, "detail") {
                     item.detail = None;
-                }
-
-                if can_resolve(project, "additionalTextEdits") {
-                    item.additional_text_edits = None;
                 }
 
                 item.data = Some(project.data(
@@ -166,7 +211,10 @@ pub(crate) fn completion_resolve(
     frontend: &mut Frontend<'_>,
     item: CompletionItem,
 ) -> Result<CompletionItem> {
-    let (module, identity) = project.resolve::<Resolve>(item.data)?;
+    let Some((module, identity)) = project.resolve::<Resolve>(item.data.clone())? else {
+        return Ok(item);
+    };
+
     let document = project.snapshot(&module)?;
 
     match identity {
@@ -177,22 +225,19 @@ pub(crate) fn completion_resolve(
         } => {
             let (line, column) = document.native(position, project.encoding)?;
 
-            let candidate = frontend
+            let Some(candidate) = frontend
                 .completion_detail(&module, line, column, index)
                 .map_err(failure)?
                 .filter(|candidate| candidate.label == label)
-                .ok_or_else(Error::content_modified)?;
+            else {
+                return Ok(item);
+            };
 
-            let mut item = semantic(project, &document, position, &candidate)?
-                .ok_or_else(Error::content_modified)?;
+            let Some(mut item) = semantic(project, &document, position, &candidate)? else {
+                return Ok(item);
+            };
 
-            item.detail = candidate
-                .snapshot
-                .as_ref()
-                .map(|snapshot| {
-                    presentation::compact(snapshot, Surface::Completion).map_err(failure)
-                })
-                .transpose()?;
+            item.detail.clone_from(&candidate.presentation);
 
             item.documentation = completion_documentation(project, &module, &candidate)?;
 
@@ -200,7 +245,17 @@ pub(crate) fn completion_resolve(
         }
 
         Resolve::Import { position, target } => {
-            if !project.index()?.contains(&target) {
+            let is_available = match &target {
+                Import::Module(target) => project.index()?.contains(target),
+
+                Import::Service(name) => project
+                    .workspace
+                    .services(&module)
+                    .map_err(failure)?
+                    .contains(name),
+            };
+
+            if !is_available {
                 return Err(Error::content_modified());
             }
 
@@ -210,10 +265,8 @@ pub(crate) fn completion_resolve(
                 return Err(Error::content_modified());
             };
 
-            let name = import_name(&target).ok_or_else(Error::content_modified)?;
-
             imported(
-                project, &module, &document, position, &target, name, &symbols,
+                project, &module, &document, position, &target, &symbols, true,
             )?
             .ok_or_else(Error::content_modified)
         }
@@ -229,11 +282,14 @@ fn semantic(
     let should_use_snippets = project.configuration.should_use_completion_snippets
         && project.has_capability("/textDocument/completion/completionItem/snippetSupport");
 
-    let insertion = if candidate.snippet && !should_use_snippets {
-        candidate.insert_text.replace("$0", "")
-    } else {
-        candidate.insert_text.clone()
-    };
+    let mut insertion = candidate.insert_text.clone();
+
+    insertion.push_str(match candidate.parentheses {
+        Parentheses::CursorAfter if should_use_snippets => "()$0",
+        Parentheses::CursorInside if should_use_snippets => "($0)",
+        Parentheses::CursorAfter | Parentheses::CursorInside => "()",
+        _ => "",
+    });
 
     let replacement = document.native_range(candidate.replacement.range, project.encoding)?;
 
@@ -282,83 +338,108 @@ fn semantic(
         detail: if can_resolve(project, "detail") {
             None
         } else {
-            candidate
-                .snapshot
-                .as_ref()
-                .map(|snapshot| {
-                    presentation::compact(snapshot, Surface::Completion).map_err(failure)
-                })
-                .transpose()?
+            candidate.presentation.clone()
         },
-        insert_text_format: Some(if candidate.snippet && should_use_snippets {
-            InsertTextFormat::Snippet
-        } else {
-            InsertTextFormat::PlainText
-        }),
+        insert_text_format: Some(
+            if candidate.parentheses != Parentheses::None && should_use_snippets {
+                InsertTextFormat::Snippet
+            } else {
+                InsertTextFormat::PlainText
+            },
+        ),
         text_edit: Some(text_edit(project, replacement, position, insertion)),
         additional_text_edits: (!additional.is_empty()).then_some(additional),
         ..CompletionItem::default()
     }))
 }
 
-fn import_name(target: &str) -> Option<&str> {
-    let path = Path::new(target);
-
-    path.file_stem()
-        .and_then(|name| name.to_str())
-        .filter(|name| *name != "init")
-        .or_else(|| {
-            path.parent()
-                .and_then(Path::file_name)
-                .and_then(|name| name.to_str())
-        })
-        .filter(|name| is_identifier(name))
-}
-
 fn imported(
-    project: &Project,
+    project: &mut Project,
     module: &str,
     document: &Document,
     position: Position,
-    target: &str,
-    name: &str,
+    target: &Import,
     symbols: &Symbols,
+    is_resolved: bool,
 ) -> Result<Option<CompletionItem>> {
-    if target == module
-        || !project
-            .configuration
-            .imports
-            .can_import(project.workspace.directory(), Path::new(target))
-        || project
-            .workspace
-            .is_excluded(target, Purpose::Index)
-            .map_err(failure)?
-    {
+    let Some(name) = target.name() else {
         return Ok(None);
-    }
+    };
 
-    if symbols.globals.contains(name)
+    if !project.configuration.imports.is_enabled
+        || symbols.globals.contains(name)
         || document
-            .analysis
+            .analysis()
             .bindings
             .iter()
-            .any(|binding| binding.name == name || binding.name == "require")
-        || is_written(document, "require")
+            .any(|binding| binding.name == name)
         || is_written(document, name)
     {
         return Ok(None);
     }
 
-    let Some(expression) = project
-        .workspace
-        .import(
-            module,
-            target,
-            project.configuration.imports.require == Require::Instance,
-        )
-        .map_err(failure)?
-    else {
-        return Ok(None);
+    let offset = document.offset(position, project.encoding)?;
+    let replacement = word(&document.text, offset);
+    let insertion = insertion(&document.text);
+    let is_combined = insertion == replacement.start;
+    let should_defer = !is_resolved && !is_combined && can_resolve(project, "additionalTextEdits");
+
+    let expression = match target {
+        Import::Module(target) => {
+            if target == module
+                || !project
+                    .configuration
+                    .imports
+                    .can_import(project.workspace.directory(), Path::new(target))
+                || project
+                    .workspace
+                    .is_excluded(target, Purpose::Index)
+                    .map_err(failure)?
+                || document
+                    .analysis()
+                    .bindings
+                    .iter()
+                    .any(|binding| binding.name == "require")
+                || is_written(document, "require")
+            {
+                return Ok(None);
+            }
+
+            let is_instance = project.configuration.imports.require == Require::Instance;
+            let key = (module.to_owned(), target.clone(), is_instance);
+
+            let expression = if should_defer && let Some(expression) = project.imports.get(&key) {
+                expression.clone()
+            } else {
+                let expression = project
+                    .workspace
+                    .import(module, target, is_instance)
+                    .map_err(failure)?;
+
+                if should_defer
+                    && project
+                        .has_capability("/workspace/didChangeWatchedFiles/dynamicRegistration")
+                {
+                    project.imports.insert(key, expression.clone());
+                }
+
+                expression
+            };
+
+            let Some(expression) = expression else {
+                return Ok(None);
+            };
+
+            expression
+        }
+
+        Import::Service(_) => {
+            if !symbols.globals.contains("game") {
+                return Ok(None);
+            }
+
+            format!("game:GetService(\"{name}\")")
+        }
     };
 
     let root = expression.split(['.', ':', '[']).next().unwrap_or_default();
@@ -367,7 +448,7 @@ fn imported(
         && (root == name
             || is_written(document, root)
             || document
-                .analysis
+                .analysis()
                 .bindings
                 .iter()
                 .any(|binding| binding.name == root))
@@ -375,9 +456,10 @@ fn imported(
         return Ok(None);
     }
 
-    let offset = document.offset(position, project.encoding)?;
-    let replacement = word(&document.text, offset);
-    let insertion = insertion(&document.text);
+    let expression = match target {
+        Import::Module(_) => format!("require({expression})"),
+        Import::Service(_) => expression,
+    };
 
     let newline = if document.text.contains("\r\n") {
         "\r\n"
@@ -386,30 +468,33 @@ fn imported(
     };
 
     let declaration = format!(
-        "{} {name} = require({expression}){newline}",
+        "{} {name} = {expression}{newline}",
         project.configuration.imports.binding.keyword()
     );
 
-    let is_combined = insertion == replacement.start;
-
-    if insertion > replacement.start {
+    if insertion > replacement.start || analysis::validate(&declaration).is_err() {
         return Ok(None);
     }
 
-    let mut proposed = document.text.to_string();
-    proposed.replace_range(replacement.clone(), name);
-    proposed.insert_str(insertion, &declaration);
+    if !should_defer {
+        let mut proposed = document.text.to_string();
+        proposed.replace_range(replacement.clone(), name);
+        proposed.insert_str(insertion, &declaration);
 
-    if analysis::validate(&proposed).is_err() {
-        return Ok(None);
+        if analysis::validate(&proposed).is_err() && analysis::validate(&document.text).is_ok() {
+            return Ok(None);
+        }
     }
 
     let replacement = document.range(replacement, project.encoding)?;
 
     Ok(Some(CompletionItem {
         label: name.to_owned(),
-        kind: Some(CompletionItemKind::Module),
-        detail: Some(format!("require({expression})")),
+        kind: Some(match target {
+            Import::Module(_) => CompletionItemKind::Module,
+            Import::Service(_) => CompletionItemKind::Variable,
+        }),
+        detail: Some(expression),
         text_edit: Some(text_edit(
             project,
             replacement,
@@ -421,7 +506,7 @@ fn imported(
             },
         )),
         insert_text_format: Some(InsertTextFormat::PlainText),
-        additional_text_edits: if is_combined {
+        additional_text_edits: if is_combined || should_defer {
             None
         } else {
             Some(vec![TextEdit {
@@ -435,7 +520,7 @@ fn imported(
 }
 
 fn is_written(document: &Document, name: &str) -> bool {
-    document.analysis.tokens.iter().any(|token| {
+    document.analysis().tokens.iter().any(|token| {
         token.access.is_write() && document.text.get(token.range.clone()) == Some(name)
     })
 }
@@ -489,7 +574,6 @@ fn completion_documentation(
         project,
         module,
         &candidate.documentation_symbol,
-        &candidate.documentation,
         should_use_markdown,
     )?;
 
@@ -500,10 +584,11 @@ fn completion_documentation(
 fn is_same_completion(left: &Completion, right: &Completion) -> bool {
     left.label == right.label
         && left.insert_text == right.insert_text
+        && left.parentheses == right.parentheses
         && left.replacement.range == right.replacement.range
         && left.operation == right.operation
-        && match (&left.snapshot, &right.snapshot) {
-            (Some(left), Some(right)) => left.equivalent(right),
+        && match (&left.presentation, &right.presentation) {
+            (Some(_), Some(_)) => left.equivalence != 0 && left.equivalence == right.equivalence,
             (None, None) => true,
             _ => false,
         }

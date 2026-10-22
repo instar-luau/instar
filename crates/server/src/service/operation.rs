@@ -4,13 +4,13 @@ use instar_bridge::Frontend;
 
 use tower_lsp_server::{
     gen_lsp_types::{ProgressToken, Range, TextEdit, Uri},
-    jsonrpc::{Error, Result},
+    jsonrpc::Result,
 };
 
 use super::protocol::Service;
 
 use crate::{
-    connection::Operation,
+    connection::{Consistency, Operation, Target},
     error::failure,
     output::{messages, progress::Progress},
     project::Project,
@@ -19,6 +19,7 @@ use crate::{
 impl Service {
     pub(super) async fn perform<Output, Pending>(
         &self,
+        consistency: Consistency,
         token: Option<ProgressToken>,
         execute: impl FnOnce(Arc<Operation>) -> Pending + Send,
     ) -> Result<Output>
@@ -27,6 +28,7 @@ impl Service {
         Pending: Future<Output = Result<Output>> + Send,
     {
         let operation = Arc::new(Operation::new(
+            consistency,
             token.clone().map(|token| (self.client.clone(), token)),
         ));
 
@@ -46,6 +48,7 @@ impl Service {
 
     pub(super) async fn query<Parameters, Output>(
         &self,
+        consistency: Consistency,
         uri: Uri,
         token: Option<ProgressToken>,
         parameters: Parameters,
@@ -57,9 +60,9 @@ impl Service {
         Parameters: Send + 'static,
         Output: Send + 'static,
     {
-        self.perform(token, |operation| {
+        self.perform(consistency, token, |operation| {
             self.connection
-                .query(uri, operation, move |project, frontend| {
+                .query(Target::Uri(uri), operation, move |project, frontend| {
                     execute(project, frontend, parameters)
                 })
         })
@@ -68,6 +71,7 @@ impl Service {
 
     pub(super) async fn source<Parameters, Output>(
         &self,
+        consistency: Consistency,
         uri: Uri,
         token: Option<ProgressToken>,
         parameters: Parameters,
@@ -77,7 +81,7 @@ impl Service {
         Parameters: Send + 'static,
         Output: Send + 'static,
     {
-        self.perform(token, |operation| {
+        self.perform(consistency, token, |operation| {
             self.connection
                 .source(uri, operation, move |project| execute(project, parameters))
         })
@@ -86,6 +90,7 @@ impl Service {
 
     pub(super) async fn source_or_query<Parameters, Output>(
         &self,
+        consistency: Consistency,
         uri: Uri,
         token: Option<ProgressToken>,
         parameters: Parameters,
@@ -98,41 +103,32 @@ impl Service {
         Parameters: Send + 'static,
         Output: Send + 'static,
     {
-        self.perform(token, |operation| async move {
+        self.perform(consistency, token, |operation| async move {
             let prepared = self
                 .connection
-                .source(
-                    uri.clone(),
-                    Arc::clone(&operation),
-                    move |project| match source(project, &parameters)? {
+                .source(uri, Arc::clone(&operation), move |project| {
+                    match source(project, &parameters)? {
                         ControlFlow::Break(output) => Ok(ControlFlow::Break(output)),
 
                         ControlFlow::Continue(()) => Ok(ControlFlow::Continue((
                             parameters,
-                            project.workspace.directory().to_owned(),
-                            project.generation,
-                            project.invalidation,
+                            Box::new(project.capture()),
                         ))),
-                    },
-                )
+                    }
+                })
                 .await?;
 
-            let (parameters, root, generation, invalidation) = match prepared {
+            let (parameters, snapshot) = match prepared {
                 ControlFlow::Break(output) => return Ok(output),
                 ControlFlow::Continue(prepared) => prepared,
             };
 
             self.connection
-                .query(uri, operation, move |project, frontend| {
-                    if project.workspace.directory() != root
-                        || project.generation != generation
-                        || project.invalidation != invalidation
-                    {
-                        return Err(Error::content_modified());
-                    }
-
-                    query(project, frontend, parameters)
-                })
+                .query(
+                    Target::Snapshot(snapshot),
+                    operation,
+                    move |project, frontend| query(project, frontend, parameters),
+                )
                 .await
         })
         .await
@@ -144,7 +140,7 @@ impl Service {
         token: Option<ProgressToken>,
         range: Option<Range>,
     ) -> Result<Option<Vec<TextEdit>>> {
-        self.perform(token, |operation| async move {
+        self.perform(Consistency::Current, token, |operation| async move {
             let permit = Arc::clone(&self.formatting)
                 .acquire_owned()
                 .await

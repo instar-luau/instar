@@ -17,13 +17,12 @@ mod symbols;
 mod write;
 
 pub use self::{
-    discovery::configuration_files,
+    discovery::{configuration_files, is_configuration},
     error::Error,
     generation::Generators,
+    instances::Sourcemap,
     model::Workspace,
     selection::{Access, Purpose},
     symbols::{InvalidSource, Origin, SymbolOutcome},
     write::replace,
 };
-
-pub(crate) use self::write::Replacement;

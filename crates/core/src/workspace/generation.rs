@@ -1,30 +1,36 @@
 use std::{
     collections::{BTreeMap, BTreeSet, btree_map::Entry},
-    fs, io, mem,
+    fs,
+    io::{self, Read as _, Seek as _, SeekFrom},
+    mem,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
-    rc::Rc,
-    sync::{
-        Arc, Mutex, MutexGuard,
-        atomic::{AtomicBool, Ordering},
-    },
+    process::Stdio,
+    sync::{Arc, Mutex, MutexGuard},
     thread::{self, JoinHandle},
-    time::Duration,
 };
 
+use process_wrap::tokio::{CommandWrap, KillOnDrop};
+
+#[cfg(windows)]
+use process_wrap::tokio::JobObject;
+
 use tokio::{
-    io::{AsyncBufReadExt as _, BufReader},
+    io::{AsyncBufReadExt as _, AsyncRead, AsyncReadExt as _, BufReader},
     process as asynchronous,
     runtime::Builder,
     sync::watch,
-    time,
 };
 
-use super::{Error, Workspace, instances, process};
+use tokio_util::sync::CancellationToken;
+
+use super::{Error, Sourcemap, Workspace, process};
 use crate::settings::resolution::Generator;
 
+const DIAGNOSTIC_LIMIT: usize = 8 * 1024;
+const SOURCE_LIMIT: usize = 64 * 1024 * 1024;
+
 impl Workspace {
-    /// Return nonempty generators from all known configuration scopes.
+    /// Return configured and automatically discovered sourcemap generators.
     #[must_use]
     pub fn generators(&self) -> BTreeSet<Generator> {
         self.scopes
@@ -33,6 +39,7 @@ impl Workspace {
             .filter_map(|scope| scope.configuration.resolve.generator.as_ref())
             .filter(|generator| !generator.command.is_empty())
             .cloned()
+            .chain(self.instances.borrow().discovered().cloned())
             .collect()
     }
 
@@ -40,13 +47,15 @@ impl Workspace {
     ///
     /// # Errors
     /// Returns process failures, invalid sourcemaps, or cancellation.
-    pub fn generate(&self, generator: &Generator) -> Result<Arc<str>, Error> {
-        let cancellation = Rc::clone(&self.is_cancelled.borrow());
-        let is_cancelled = cancellation.as_ref();
+    pub fn generate(&self, generator: &Generator) -> Result<Arc<Sourcemap>, Error> {
+        let cancellation = self.cancellation.borrow().clone();
+        let is_cancelled = &|| cancellation.is_cancelled();
         process::interrupted(is_cancelled)?;
 
-        if let Some(generation) = &self.generation {
-            return generation.source(generator, is_cancelled);
+        if let Some(generation) = &self.generation
+            && !generator.watch.is_empty()
+        {
+            return generation.source(generator, &cancellation);
         }
 
         let mut command = command(generator)?;
@@ -55,16 +64,36 @@ impl Workspace {
         let output = tempfile::NamedTempFile::new().map_err(failure)?;
         let diagnostics = tempfile::NamedTempFile::new().map_err(failure)?;
 
-        let mut child = command
+        command
+            .command_mut()
             .stdout(output.reopen().map_err(failure)?)
-            .stderr(diagnostics.reopen().map_err(failure)?)
-            .spawn()
-            .map_err(failure)?;
+            .stderr(diagnostics.reopen().map_err(failure)?);
 
-        let status = process::wait(&mut child, is_cancelled, failure)?;
+        let runtime = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(Error::Runtime)?;
+
+        let status = runtime.block_on(async {
+            let mut child = command.spawn().map_err(failure)?;
+
+            process::wait(child.as_mut(), &cancellation, failure).await
+        })?;
 
         if !status.success() {
-            let diagnostic = fs::read(diagnostics.path()).map_err(failure)?;
+            let mut file = fs::File::open(diagnostics.path()).map_err(failure)?;
+            let length = file.metadata().map_err(failure)?.len();
+
+            file.seek(SeekFrom::Start(
+                length.saturating_sub(DIAGNOSTIC_LIMIT as u64),
+            ))
+            .map_err(failure)?;
+
+            let mut diagnostic = Vec::new();
+
+            file.take(DIAGNOSTIC_LIMIT as u64)
+                .read_to_end(&mut diagnostic)
+                .map_err(failure)?;
 
             return Err(failure(io::Error::other(format!(
                 "Generator exited with {status}. {}",
@@ -74,20 +103,25 @@ impl Workspace {
 
         process::interrupted(is_cancelled)?;
 
-        validate(
-            executable,
-            fs::read_to_string(output.path()).map_err(failure)?,
-        )
+        let mut source = String::new();
+
+        fs::File::open(output.path())
+            .map_err(failure)?
+            .take((SOURCE_LIMIT + 1) as u64)
+            .read_to_string(&mut source)
+            .map_err(failure)?;
+
+        parse(executable, &source)
     }
 
     /// Return cached and preseeded sources, including lazily discovered generators.
     #[must_use]
-    pub fn generated(&self) -> BTreeMap<Generator, Arc<str>> {
+    pub fn generated(&self) -> BTreeMap<Generator, Arc<Sourcemap>> {
         self.instances.borrow().generated()
     }
 
     /// Seed generated sources and clear cached native instance maps.
-    pub fn set_generated(&mut self, sources: BTreeMap<Generator, Arc<str>>) {
+    pub fn set_generated(&mut self, sources: BTreeMap<Generator, Arc<Sourcemap>>) {
         self.instances.get_mut().set_generated(sources);
     }
 }
@@ -99,14 +133,13 @@ pub struct Generators {
 }
 
 impl Generators {
-    /// Create a session with cancellation and source-labeled message callbacks.
+    /// Create a session with cancellation and a source-labeled message callback.
     #[must_use]
-    pub fn new(is_cancelled: fn() -> bool, report: fn(&str, &str)) -> Self {
+    pub fn new(cancellation: &CancellationToken, report: fn(&str, &str)) -> Self {
         Self {
             registry: Arc::new(Mutex::new(Registry {
                 streams: BTreeMap::new(),
-                is_stopped: Arc::new(AtomicBool::new(false)),
-                is_cancelled,
+                cancellation: cancellation.child_token(),
                 report,
             })),
         }
@@ -115,24 +148,52 @@ impl Generators {
     /// Adopt changed snapshots between analysis batches.
     ///
     /// # Errors
-    /// Returns producer failures or cancellation.
+    /// Returns cancellation.
     pub fn advance(&self) -> Result<bool, Error> {
         let mut registry = self.registry();
         registry.check()?;
         let mut has_changed = false;
 
-        for stream in registry.streams.values_mut() {
-            if let Some(source) = stream.latest()? {
-                has_changed |= stream
-                    .active
-                    .as_ref()
-                    .is_none_or(|previous| !Arc::ptr_eq(previous, &source) && previous != &source);
+        for (generator, stream) in &mut registry.streams {
+            match stream.latest() {
+                Ok(Some(source)) => {
+                    has_changed |= stream.active.as_ref().is_none_or(|previous| {
+                        !Arc::ptr_eq(previous, &source) && previous != &source
+                    });
 
-                stream.active = Some(source);
+                    stream.active = Some(source);
+                }
+
+                Ok(None) => {}
+
+                Err(error) => {
+                    if !stream.failed {
+                        tracing::warn!(directory = %generator.directory.display(), %error, "Sourcemap generation failed");
+                        stream.failed = true;
+                        has_changed = true;
+                    }
+
+                    stream.active = None;
+                }
             }
         }
 
         Ok(has_changed)
+    }
+
+    /// Capture the active sourcemaps without adopting newer producer output.
+    #[must_use]
+    pub fn snapshots(&self) -> BTreeMap<Generator, Arc<Sourcemap>> {
+        self.registry()
+            .streams
+            .iter()
+            .filter_map(|(generator, stream)| {
+                stream
+                    .active
+                    .as_ref()
+                    .map(|source| (generator.clone(), Arc::clone(source)))
+            })
+            .collect()
     }
 
     /// Stop all producers and prevent this session from starting new ones.
@@ -142,7 +203,7 @@ impl Generators {
     pub fn shutdown(&self) -> Result<(), Error> {
         let streams = {
             let mut registry = self.registry();
-            registry.is_stopped.store(true, Ordering::Relaxed);
+            registry.cancellation.cancel();
 
             mem::take(&mut registry.streams)
         };
@@ -163,30 +224,29 @@ impl Generators {
     fn source(
         &self,
         generator: &Generator,
-        is_cancelled: &dyn Fn() -> bool,
-    ) -> Result<Arc<str>, Error> {
+        cancellation: &CancellationToken,
+    ) -> Result<Arc<Sourcemap>, Error> {
         loop {
-            process::interrupted(is_cancelled)?;
+            process::interrupted(&|| cancellation.is_cancelled())?;
 
-            {
+            let (mut output, shutdown) = {
                 let mut registry = self.registry();
                 registry.check()?;
 
-                for stream in registry.streams.values() {
-                    stream.latest()?;
-                }
-
-                let is_stopped = Arc::clone(&registry.is_stopped);
-                let is_cancelled = registry.is_cancelled;
+                let shutdown = registry.cancellation.clone();
                 let report = registry.report;
 
-                let stream = match registry.streams.entry(generator.clone()) {
-                    Entry::Occupied(entry) => entry.into_mut(),
+                if let Entry::Vacant(entry) = registry.streams.entry(generator.clone()) {
+                    entry.insert(Stream::new(generator, shutdown.clone(), report)?);
+                }
 
-                    Entry::Vacant(entry) => {
-                        entry.insert(Stream::new(generator, is_stopped, is_cancelled, report)?)
-                    }
-                };
+                let stream = registry
+                    .streams
+                    .get_mut(generator)
+                    .expect("Internal error: generator stream is missing.");
+
+                let mut output = stream.output.clone();
+                output.borrow_and_update();
 
                 let latest = stream.latest()?;
 
@@ -199,9 +259,25 @@ impl Generators {
 
                     return Ok(source);
                 }
-            }
 
-            thread::sleep(Duration::from_millis(50));
+                (output, shutdown)
+            };
+
+            let runtime = Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(Error::Runtime)?;
+
+            runtime.block_on(async {
+                tokio::select! {
+                    biased;
+                    () = cancellation.cancelled() => Err(Error::Cancelled),
+                    () = shutdown.cancelled() => Err(Error::Cancelled),
+                    result = output.changed() => result.map_err(|error| {
+                        failure(&generator.command[0], io::Error::other(error))
+                    }),
+                }
+            })?;
         }
     }
 
@@ -214,26 +290,19 @@ impl Generators {
 
 struct Registry {
     streams: BTreeMap<Generator, Stream>,
-    is_stopped: Arc<AtomicBool>,
-    is_cancelled: fn() -> bool,
+    cancellation: CancellationToken,
     report: fn(&str, &str),
 }
 
 impl Registry {
     fn check(&self) -> Result<(), Error> {
-        process::interrupted(&self.is_cancelled)?;
-
-        if self.is_stopped.load(Ordering::Relaxed) {
-            return Err(Error::Cancelled);
-        }
-
-        Ok(())
+        process::interrupted(&|| self.cancellation.is_cancelled())
     }
 }
 
 impl Drop for Registry {
     fn drop(&mut self) {
-        self.is_stopped.store(true, Ordering::Relaxed);
+        self.cancellation.cancel();
 
         for stream in self.streams.values_mut() {
             if let Err(error) = stream.join() {
@@ -245,21 +314,22 @@ impl Drop for Registry {
 
 struct Stream {
     executable: String,
-    active: Option<Arc<str>>,
+    active: Option<Arc<Sourcemap>>,
     output: watch::Receiver<Output>,
     thread: Option<JoinHandle<Result<(), Arc<Error>>>>,
+    failed: bool,
 }
 
 impl Stream {
     fn new(
         generator: &Generator,
-        is_stopped: Arc<AtomicBool>,
-        is_cancelled: fn() -> bool,
+        cancellation: CancellationToken,
         report: fn(&str, &str),
     ) -> Result<Self, Error> {
         let mut command = command(generator)?;
 
         command
+            .command_mut()
             .args(&generator.watch)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -275,14 +345,7 @@ impl Stream {
 
         let thread = thread::Builder::new()
             .spawn(move || {
-                runtime.block_on(supervise(
-                    command,
-                    &program,
-                    &sender,
-                    &is_stopped,
-                    is_cancelled,
-                    report,
-                ))
+                runtime.block_on(supervise(command, &program, &sender, &cancellation, report))
             })
             .map_err(|source| failure(&executable, source))?;
 
@@ -291,10 +354,11 @@ impl Stream {
             active: None,
             output,
             thread: Some(thread),
+            failed: false,
         })
     }
 
-    fn latest(&self) -> Result<Option<Arc<str>>, Error> {
+    fn latest(&self) -> Result<Option<Arc<Sourcemap>>, Error> {
         let is_finished = self.thread.as_ref().is_none_or(JoinHandle::is_finished);
 
         let source = match self.output.borrow().clone() {
@@ -339,20 +403,18 @@ impl Stream {
 #[derive(Clone)]
 enum Output {
     Pending,
-    Snapshot(Arc<str>),
+    Snapshot(Arc<Sourcemap>),
     Failed(Arc<Error>),
 }
 
 async fn supervise(
-    command: Command,
+    mut command: CommandWrap,
     executable: &str,
     output: &watch::Sender<Output>,
-    is_stopped: &AtomicBool,
-    is_cancelled: fn() -> bool,
+    cancellation: &CancellationToken,
     report: fn(&str, &str),
 ) -> Result<(), Arc<Error>> {
-    let mut command = asynchronous::Command::from(command);
-    let child = command.kill_on_drop(true).spawn();
+    let child = command.spawn();
 
     let mut child = match child {
         Ok(child) => child,
@@ -365,12 +427,12 @@ async fn supervise(
     };
 
     let stdout = child
-        .stdout
+        .stdout()
         .take()
         .expect("Internal error: generator standard output is not piped.");
 
     let stderr = child
-        .stderr
+        .stderr()
         .take()
         .expect("Internal error: generator standard error is not piped.");
 
@@ -379,17 +441,14 @@ async fn supervise(
     let snapshots = snapshots(stdout, executable, output);
     tokio::pin!(snapshots);
     let mut is_drained = false;
+    let mut diagnostic = String::new();
 
     let result = loop {
         tokio::select! {
             biased;
 
-            () = async {
-                while !is_stopped.load(Ordering::Relaxed) && !is_cancelled() {
-                    time::sleep(Duration::from_millis(50)).await;
-                }
-            } => break Err(Error::Cancelled),
-            status = child.wait() => {
+            () = cancellation.cancelled() => break Err(Error::Cancelled),
+            status = child.inner_mut().wait() => {
                 break match status {
                     Ok(status) => Err(failure(executable, io::Error::other(format!(
                         "Watch generator exited with {status}."
@@ -401,26 +460,15 @@ async fn supervise(
             result = &mut diagnostics, if !is_drained => {
                 is_drained = true;
 
-                if let Err(source) = result {
-                    break Err(failure(executable, source));
+                match result {
+                    Ok(message) => diagnostic = message,
+                    Err(source) => break Err(failure(executable, source)),
                 }
             },
         }
     };
 
-    let cleanup = async {
-        if child.try_wait()?.is_none()
-            && let Err(source) = child.start_kill()
-            && child.try_wait()?.is_none()
-        {
-            return Err(source);
-        }
-
-        child.wait().await?;
-
-        Ok::<_, io::Error>(())
-    }
-    .await;
+    let cleanup = process::stop(child.as_mut()).await;
 
     if let Err(source) = cleanup {
         let error = Arc::new(failure(executable, source));
@@ -429,15 +477,27 @@ async fn supervise(
         return Err(error);
     }
 
-    if !is_drained && let Err(source) = diagnostics.await {
-        output.send_replace(Output::Failed(Arc::new(failure(executable, source))));
+    if !is_drained {
+        match diagnostics.await {
+            Ok(message) => diagnostic = message,
 
-        return Ok(());
+            Err(source) => {
+                output.send_replace(Output::Failed(Arc::new(failure(executable, source))));
+
+                return Ok(());
+            }
+        }
     }
 
-    if let Err(error) = result
+    if let Err(mut error) = result
         && !matches!(error, Error::Cancelled)
     {
+        if !diagnostic.is_empty()
+            && let Error::Generate { details, .. } = &mut error
+        {
+            *details = format!("\n{}", diagnostic.trim_end());
+        }
+
         output.send_replace(Output::Failed(Arc::new(error)));
     }
 
@@ -445,43 +505,91 @@ async fn supervise(
 }
 
 async fn messages(
-    stderr: asynchronous::ChildStderr,
+    stderr: impl AsyncRead + Unpin,
     executable: &str,
     report: fn(&str, &str),
-) -> io::Result<()> {
+) -> io::Result<String> {
     let mut reader = BufReader::new(stderr);
     let mut line = Vec::new();
+    let mut diagnostic = Vec::new();
 
-    while reader.read_until(b'\n', &mut line).await? != 0 {
-        if line.last() == Some(&b'\n') {
+    loop {
+        let contents = reader.fill_buf().await?;
+
+        let count = contents
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(contents.len(), |index| index + 1);
+
+        let is_complete = count != 0 && contents[count - 1] == b'\n';
+        retain(&mut line, &contents[..count]);
+        reader.consume(count);
+
+        if is_complete || (count == 0 && !line.is_empty()) {
+            if line.last() == Some(&b'\n') {
+                line.pop();
+
+                if line.last() == Some(&b'\r') {
+                    line.pop();
+                }
+            }
+
+            report(executable, &String::from_utf8_lossy(&line));
+            retain(&mut diagnostic, &line);
+            retain(&mut diagnostic, b"\n");
+            line.clear();
+        }
+
+        if count == 0 {
+            break;
+        }
+    }
+
+    Ok(String::from_utf8_lossy(&diagnostic).into_owned())
+}
+
+fn retain(output: &mut Vec<u8>, contents: &[u8]) {
+    output.extend_from_slice(&contents[contents.len().saturating_sub(DIAGNOSTIC_LIMIT)..]);
+    output.drain(..output.len().saturating_sub(DIAGNOSTIC_LIMIT));
+}
+
+async fn snapshots(
+    stdout: impl AsyncRead + Unpin,
+    executable: &str,
+    output: &watch::Sender<Output>,
+) -> Result<(), Error> {
+    let mut reader = BufReader::new(stdout);
+
+    loop {
+        let mut line = String::new();
+
+        let length = (&mut reader)
+            .take((SOURCE_LIMIT + 1) as u64)
+            .read_line(&mut line)
+            .await
+            .map_err(|source| failure(executable, source))?;
+
+        if length == 0 {
+            break;
+        }
+
+        if length > SOURCE_LIMIT {
+            return Err(failure(
+                executable,
+                io::Error::other("Sourcemap exceeds 64 MiB."),
+            ));
+        }
+
+        if line.ends_with('\n') {
             line.pop();
 
-            if line.last() == Some(&b'\r') {
+            if line.ends_with('\r') {
                 line.pop();
             }
         }
 
-        report(executable, &String::from_utf8_lossy(&line));
-        line.clear();
-    }
-
-    Ok(())
-}
-
-async fn snapshots(
-    stdout: asynchronous::ChildStdout,
-    executable: &str,
-    output: &watch::Sender<Output>,
-) -> Result<(), Error> {
-    let mut lines = BufReader::new(stdout).lines();
-
-    while let Some(line) = lines
-        .next_line()
-        .await
-        .map_err(|source| failure(executable, source))?
-    {
         if !line.trim().is_empty() {
-            output.send_replace(Output::Snapshot(validate(executable, line)?));
+            output.send_replace(Output::Snapshot(parse(executable, &line)?));
         }
     }
 
@@ -494,7 +602,7 @@ async fn snapshots(
     ))
 }
 
-fn command(generator: &Generator) -> Result<Command, Error> {
+fn command(generator: &Generator) -> Result<CommandWrap, Error> {
     let executable = generator.command.first().map_or("", String::as_str);
 
     if executable.trim().is_empty() {
@@ -513,28 +621,42 @@ fn command(generator: &Generator) -> Result<Command, Error> {
         PathBuf::from(executable)
     };
 
-    let mut command = Command::new(program);
+    let mut command = asynchronous::Command::new(program);
 
     command
         .args(&generator.command[1..])
         .current_dir(&generator.directory)
         .stdin(Stdio::null());
 
+    let mut command = CommandWrap::from(command);
+    command.wrap(KillOnDrop);
+
+    #[cfg(windows)]
+    command.wrap(JobObject);
+
     Ok(command)
 }
 
-fn validate(executable: &str, source: String) -> Result<Arc<str>, Error> {
-    instances::validate(&source).map_err(|source| Error::GeneratedData {
-        executable: executable.to_owned(),
-        source,
-    })?;
+fn parse(executable: &str, source: &str) -> Result<Arc<Sourcemap>, Error> {
+    if source.len() > SOURCE_LIMIT {
+        return Err(failure(
+            executable,
+            io::Error::other("Sourcemap exceeds 64 MiB."),
+        ));
+    }
 
-    Ok(source.into())
+    serde_json::from_str(source)
+        .map(Arc::new)
+        .map_err(|source| Error::GeneratedData {
+            executable: executable.to_owned(),
+            source,
+        })
 }
 
 fn failure(executable: &str, source: io::Error) -> Error {
     Error::Generate {
         executable: executable.to_owned(),
         source,
+        details: String::new(),
     }
 }

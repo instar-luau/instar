@@ -10,6 +10,8 @@ use std::{
 };
 
 use instar_bridge::{Context, Frontend, Progress};
+use instar_core::workspace::is_configuration;
+use tokio_util::sync::CancellationToken;
 use tower_lsp_server::jsonrpc::{Error, Result};
 
 use super::{
@@ -56,7 +58,15 @@ pub(super) fn run(
                         work.snapshot.configuration.clone(),
                         Arc::clone(&work.snapshot.capabilities),
                         work.snapshot.encoding,
-                    ),
+                        work.snapshot.generators.clone(),
+                    )
+                    .map(|mut project| {
+                        Rc::get_mut(&mut project.workspace)
+                            .expect("Internal error: new workspace is shared.")
+                            .set_generated(work.snapshot.generated.clone());
+
+                        project
+                    }),
                     work.history.sequence,
                 )
             },
@@ -85,8 +95,7 @@ pub(super) fn run(
         let update = |stage: Progress<'_>| operation.borrow().report(stage);
 
         let is_discarded = {
-            let cancelled = Arc::clone(&work.operation);
-            workspace.set_cancellation(move || cancelled.is_cancelled());
+            workspace.set_cancellation(work.operation.cancellation.clone());
 
             *current
                 .lock()
@@ -110,8 +119,7 @@ pub(super) fn run(
                     Arc::downgrade(&next.operation);
 
                 *operation.borrow_mut() = Arc::clone(&next.operation);
-                let cancelled = Arc::clone(&next.operation);
-                workspace.set_cancellation(move || cancelled.is_cancelled());
+                workspace.set_cancellation(next.operation.cancellation.clone());
 
                 if let Ok(cancellation) = &cancellation {
                     next.operation.attach(cancellation);
@@ -123,27 +131,30 @@ pub(super) fn run(
                     Err(Error::request_cancelled())
                 } else {
                     match &cancellation {
-                        Ok(_) => frontend.as_mut().map_err(failure).and_then(|frontend| {
-                            if let Err(error) =
-                                invalidate(&mut project, sequence, &next.history, frontend)
-                            {
-                                is_discarded = true;
+                        Ok(_) => frontend
+                            .as_mut()
+                            .map_err(|error| failure(&*error))
+                            .and_then(|frontend| {
+                                if let Err(error) =
+                                    invalidate(&mut project, sequence, &next.history, frontend)
+                                {
+                                    is_discarded = true;
 
-                                return Err(error);
-                            }
+                                    return Err(error);
+                                }
 
-                            let applied = next.history.sequence;
+                                let applied = next.history.sequence;
 
-                            if let Err(error) = project.apply(next.snapshot, frontend) {
-                                is_discarded = true;
+                                if let Err(error) = project.apply(next.snapshot, frontend) {
+                                    is_discarded = true;
 
-                                return Err(error);
-                            }
+                                    return Err(error);
+                                }
 
-                            sequence = applied;
+                                sequence = applied;
 
-                            Ok((&mut project, frontend))
-                        }),
+                                Ok((&mut project, frontend))
+                            }),
 
                         Err(error) => Err(error.clone()),
                     }
@@ -151,7 +162,7 @@ pub(super) fn run(
 
                 let (is_successful, deliver) = (next.action)(session);
                 next.operation.detach();
-                workspace.set_cancellation(|| false);
+                workspace.set_cancellation(CancellationToken::new());
 
                 *current
                     .lock()
@@ -223,8 +234,7 @@ fn is_reusable(project: &Project, sequence: u64, work: &Work) -> bool {
 
     changes.all(|change| {
         change.paths.iter().all(|path| {
-            !(path.file_name().is_some_and(|name| name == "instar.toml")
-                && path.starts_with(project.workspace.directory())
+            !(is_configuration(path) && path.starts_with(project.workspace.directory())
                 || dependencies
                     .iter()
                     .any(|dependency| is_intersecting(dependency, path)))
@@ -245,6 +255,9 @@ fn invalidate(
     let changes = history
         .since(sequence)
         .ok_or_else(Error::content_modified)?;
+
+    project.modules = None;
+    project.imports.clear();
 
     for change in changes {
         let modules: BTreeSet<_> = project

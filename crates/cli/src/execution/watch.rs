@@ -7,16 +7,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-use eyre::{Result, WrapErr as _};
+use eyre::{Result, WrapErr as _, eyre};
 
-use instar_core::workspace::{Generators, Workspace, configuration_files};
+use instar_core::workspace::{Generators, Workspace, configuration_files, is_configuration};
 
-use notify::{
-    ErrorKind as WatchErrorKind, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _,
-    event::ModifyKind,
-};
+use notify::{ErrorKind as WatchErrorKind, Event, EventKind, RecursiveMode, event::ModifyKind};
+use notify_debouncer_full::{DebounceEventResult, Debouncer, RecommendedCache, new_debouncer_opt};
 
-use super::project;
+use super::{events::Events, project};
 use crate::{arguments::Options, interrupt, output};
 
 pub(super) enum Change {
@@ -32,14 +30,13 @@ pub(super) enum Change {
 }
 
 pub(crate) struct Watcher {
-    subscription: RecommendedWatcher,
-    receiver: Receiver<notify::Result<Event>>,
+    subscription: Debouncer<Events, RecommendedCache>,
+    receiver: Receiver<DebounceEventResult>,
     directories: BTreeMap<PathBuf, bool>,
     roots: BTreeSet<PathBuf>,
     reload: BTreeMap<PathBuf, bool>,
     observed: BTreeMap<PathBuf, PathBuf>,
     pub(super) generators: Generators,
-    debounce: Duration,
 }
 
 impl Watcher {
@@ -71,8 +68,14 @@ impl Watcher {
 
         let (sender, receiver) = mpsc::channel();
 
-        let mut subscription = notify::recommended_watcher(sender)
-            .wrap_err("Could not start the filesystem watcher.")?;
+        let mut subscription = new_debouncer_opt(
+            Duration::from_millis(options.debounce).max(Duration::from_millis(1)),
+            None,
+            sender,
+            RecommendedCache::new(),
+            notify::Config::default(),
+        )
+        .wrap_err("Could not start the filesystem watcher.")?;
 
         for (directory, is_recursive) in &directories {
             subscription
@@ -96,8 +99,7 @@ impl Watcher {
             roots,
             reload: BTreeMap::new(),
             observed: BTreeMap::new(),
-            generators: Generators::new(interrupt::is_requested, output::generator),
-            debounce: Duration::from_millis(options.debounce),
+            generators: Generators::new(&interrupt::CANCELLATION, output::generator),
         };
 
         watcher.observe(configuration_files(root, &options.configuration), true)?;
@@ -117,7 +119,7 @@ impl Watcher {
     pub(super) fn reset(&mut self) -> Result<()> {
         let previous = mem::replace(
             &mut self.generators,
-            Generators::new(interrupt::is_requested, output::generator),
+            Generators::new(&interrupt::CANCELLATION, output::generator),
         );
 
         project::shutdown(&previous)?;
@@ -229,6 +231,12 @@ impl Watcher {
             let is_structural = !is_modified(&event);
 
             for path in event.paths {
+                if is_configuration(&path) && self.roots.iter().any(|root| path.starts_with(root)) {
+                    self.reset()?;
+
+                    return Ok(Change::Reload { started });
+                }
+
                 for (dependency, did_exist) in &self.reload {
                     if path.starts_with(dependency)
                         || (dependency.starts_with(&path)
@@ -274,7 +282,6 @@ impl Watcher {
 
     pub(super) fn wait(&mut self, is_recovering: bool) -> Result<(Vec<Event>, bool)> {
         let mut events = Vec::new();
-        let mut updated = Instant::now();
         let mut has_generated_changes = false;
 
         loop {
@@ -284,35 +291,37 @@ impl Watcher {
                 has_generated_changes |= self.generators.advance()?;
             }
 
-            let remaining = self.debounce.saturating_sub(updated.elapsed());
-
-            let timeout = if has_generated_changes && events.is_empty() {
+            let timeout = if has_generated_changes {
                 Duration::ZERO
-            } else if events.is_empty() {
-                interrupt::INTERVAL
             } else {
-                remaining.min(interrupt::INTERVAL)
+                interrupt::INTERVAL
             };
 
-            let event = match self.receiver.recv_timeout(timeout) {
-                Ok(event) => event.wrap_err("Could not observe filesystem changes.")?,
+            let batch = match self.receiver.recv_timeout(timeout) {
+                Ok(events) => events.map_err(|errors| {
+                    eyre!(
+                        "Could not observe filesystem changes. {}",
+                        errors
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    )
+                })?,
 
-                Err(RecvTimeoutError::Timeout) => {
-                    if (has_generated_changes && events.is_empty())
-                        || (!events.is_empty() && updated.elapsed() >= self.debounce)
-                    {
-                        break;
-                    }
-
-                    continue;
-                }
-
+                Err(RecvTimeoutError::Timeout) if has_generated_changes => break,
+                Err(RecvTimeoutError::Timeout) => continue,
                 Err(error) => return Err(error).wrap_err("Could not receive filesystem changes."),
             };
 
-            if self.is_relevant(&event, is_recovering)? {
-                events.push(event);
-                updated = Instant::now();
+            for event in batch {
+                if self.is_relevant(&event.event, is_recovering)? {
+                    events.push(event.event);
+                }
+            }
+
+            if !events.is_empty() {
+                break;
             }
         }
 
@@ -375,7 +384,7 @@ impl Watcher {
                 .is_some_and(|extension| extension == "lua" || extension == "luau")
                 && !is_directory;
 
-            if ((is_recovering || is_source || is_directory)
+            if ((is_recovering || is_source || is_directory || is_configuration(path))
                 && self.roots.iter().any(|root| path.starts_with(root)))
                 || self.observed.values().any(|observed| {
                     observed.starts_with(path)

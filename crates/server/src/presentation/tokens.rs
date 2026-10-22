@@ -219,7 +219,7 @@ fn classify(
     let mut data = Vec::new();
     let mut previous = (0, 0);
 
-    for token in &document.analysis.tokens {
+    for token in &document.analysis().tokens {
         let mut kind = token.kind;
         let mut is_declaration = token.is_declaration;
         let mut is_modification = token.access.is_write() && !is_declaration;

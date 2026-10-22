@@ -36,10 +36,10 @@ use super::registration::Registrations;
 
 use crate::{
     configuration::Configuration,
-    connection::Connection,
+    connection::{Connection, Consistency, Target},
     document::{self, Encoding},
     editing,
-    error::failure,
+    error::{failure, reason},
     files, navigation,
     output::{messages, progress::Registry},
     presentation,
@@ -287,6 +287,7 @@ impl LanguageServer for Service {
 
     async fn hover(&self, parameters: HoverParams) -> Result<Option<Hover>> {
         self.query(
+            Consistency::Snapshot,
             parameters
                 .text_document_position_params
                 .text_document
@@ -301,6 +302,7 @@ impl LanguageServer for Service {
 
     async fn completion(&self, parameters: CompletionParams) -> Result<Option<CompletionResponse>> {
         self.query(
+            Consistency::Snapshot,
             parameters
                 .text_document_position_params
                 .text_document
@@ -316,8 +318,14 @@ impl LanguageServer for Service {
     async fn completion_resolve(&self, parameters: CompletionItem) -> Result<CompletionItem> {
         let uri = resolved_uri(parameters.data.as_ref())?;
 
-        self.query(uri, None, parameters, suggestions::completion_resolve)
-            .await
+        self.query(
+            Consistency::Snapshot,
+            uri,
+            None,
+            parameters,
+            suggestions::completion_resolve,
+        )
+        .await
     }
 
     async fn signature_help(
@@ -325,6 +333,7 @@ impl LanguageServer for Service {
         parameters: SignatureHelpParams,
     ) -> Result<Option<SignatureHelp>> {
         self.query(
+            Consistency::Snapshot,
             parameters
                 .text_document_position_params
                 .text_document
@@ -342,6 +351,7 @@ impl LanguageServer for Service {
         parameters: CodeActionParams,
     ) -> Result<Option<Vec<CodeActionResponse>>> {
         self.source(
+            Consistency::Current,
             parameters.text_document.uri.clone(),
             parameters.work_done_progress_params.work_done_token.clone(),
             parameters,
@@ -352,6 +362,7 @@ impl LanguageServer for Service {
 
     async fn inlay_hint(&self, parameters: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
         self.source_or_query(
+            Consistency::Snapshot,
             parameters.text_document.uri.clone(),
             parameters.work_done_progress_params.work_done_token.clone(),
             parameters,
@@ -367,6 +378,7 @@ impl LanguageServer for Service {
         let uri = resolved_uri(parameters.data.as_ref())?;
 
         self.source_or_query(
+            Consistency::Snapshot,
             uri,
             None,
             parameters,
@@ -381,6 +393,7 @@ impl LanguageServer for Service {
         parameters: DefinitionParams,
     ) -> Result<Option<DefinitionResponse>> {
         self.query(
+            Consistency::Snapshot,
             parameters
                 .text_document_position_params
                 .text_document
@@ -400,6 +413,7 @@ impl LanguageServer for Service {
         parameters: TypeDefinitionParams,
     ) -> Result<Option<TypeDefinitionResponse>> {
         self.query(
+            Consistency::Snapshot,
             parameters
                 .text_document_position_params
                 .text_document
@@ -419,6 +433,7 @@ impl LanguageServer for Service {
         parameters: DocumentHighlightParams,
     ) -> Result<Option<Vec<DocumentHighlight>>> {
         self.source_or_query(
+            Consistency::Snapshot,
             parameters
                 .text_document_position_params
                 .text_document
@@ -437,6 +452,7 @@ impl LanguageServer for Service {
         parameters: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
         self.source(
+            Consistency::Snapshot,
             parameters.text_document.uri.clone(),
             parameters.work_done_progress_params.work_done_token.clone(),
             parameters,
@@ -450,6 +466,7 @@ impl LanguageServer for Service {
         parameters: DocumentLinkParams,
     ) -> Result<Option<Vec<DocumentLink>>> {
         self.query(
+            Consistency::Snapshot,
             parameters.text_document.uri.clone(),
             parameters.work_done_progress_params.work_done_token.clone(),
             parameters,
@@ -465,6 +482,7 @@ impl LanguageServer for Service {
         parameters: TextDocumentPositionParams,
     ) -> Result<Option<PrepareRenameResult>> {
         self.source_or_query(
+            Consistency::Snapshot,
             parameters.text_document.uri.clone(),
             None,
             parameters,
@@ -476,6 +494,7 @@ impl LanguageServer for Service {
 
     async fn rename(&self, parameters: RenameParams) -> Result<Option<WorkspaceEdit>> {
         self.source_or_query(
+            Consistency::Current,
             parameters
                 .text_document_position_params
                 .text_document
@@ -518,6 +537,7 @@ impl LanguageServer for Service {
         parameters: SemanticTokensParams,
     ) -> Result<Option<SemanticTokens>> {
         self.query(
+            Consistency::Snapshot,
             parameters.text_document.uri.clone(),
             parameters.work_done_progress_params.work_done_token.clone(),
             parameters,
@@ -533,6 +553,7 @@ impl LanguageServer for Service {
         parameters: SemanticTokensDeltaParams,
     ) -> Result<Option<SemanticTokensDeltaResponse>> {
         self.query(
+            Consistency::Snapshot,
             parameters.text_document.uri.clone(),
             parameters.work_done_progress_params.work_done_token.clone(),
             parameters,
@@ -548,6 +569,7 @@ impl LanguageServer for Service {
         parameters: SemanticTokensRangeParams,
     ) -> Result<Option<SemanticTokens>> {
         self.query(
+            Consistency::Snapshot,
             parameters.text_document.uri.clone(),
             parameters.work_done_progress_params.work_done_token.clone(),
             parameters,
@@ -563,6 +585,7 @@ impl LanguageServer for Service {
         parameters: FoldingRangeParams,
     ) -> Result<Option<Vec<FoldingRange>>> {
         self.source(
+            Consistency::Snapshot,
             parameters.text_document.uri.clone(),
             parameters.work_done_progress_params.work_done_token.clone(),
             parameters,
@@ -576,6 +599,7 @@ impl LanguageServer for Service {
         parameters: SelectionRangeParams,
     ) -> Result<Option<Vec<SelectionRange>>> {
         self.source(
+            Consistency::Snapshot,
             parameters.text_document.uri.clone(),
             parameters.work_done_progress_params.work_done_token.clone(),
             parameters,
@@ -589,6 +613,7 @@ impl LanguageServer for Service {
         parameters: DocumentColorParams,
     ) -> Result<Vec<ColorInformation>> {
         self.source(
+            Consistency::Snapshot,
             parameters.text_document.uri.clone(),
             parameters.work_done_progress_params.work_done_token.clone(),
             parameters,
@@ -602,6 +627,7 @@ impl LanguageServer for Service {
         parameters: ColorPresentationParams,
     ) -> Result<Vec<ColorPresentation>> {
         self.source(
+            Consistency::Current,
             parameters.text_document.uri.clone(),
             parameters.work_done_progress_params.work_done_token.clone(),
             parameters,
@@ -612,6 +638,7 @@ impl LanguageServer for Service {
 
     async fn references(&self, parameters: ReferenceParams) -> Result<Option<Vec<Location>>> {
         self.source_or_query(
+            Consistency::Snapshot,
             parameters
                 .text_document_position_params
                 .text_document
@@ -631,7 +658,7 @@ impl LanguageServer for Service {
     ) -> Result<Option<WorkspaceSymbolResponse>> {
         let token = parameters.work_done_progress_params.work_done_token.clone();
 
-        self.perform(token, |operation| async move {
+        self.perform(Consistency::Snapshot, token, |operation| async move {
             let roots = self.connection.control(|state| state.roots()).await?;
             let mut information = Vec::new();
 
@@ -789,9 +816,9 @@ impl LanguageServer for Service {
             let parameters = parameters.clone();
 
             if let Some(edit) = self
-                .perform(None, |operation| {
+                .perform(Consistency::Current, None, |operation| {
                     self.connection
-                        .query(root, operation, move |project, frontend| {
+                        .query(Target::Uri(root), operation, move |project, frontend| {
                             files::will_rename(project, frontend, parameters)
                         })
                 })
@@ -869,6 +896,7 @@ impl LanguageServer for Service {
 
         let edit = self
             .perform(
+                Consistency::Current,
                 parameters.work_done_progress_params.work_done_token,
                 |operation| {
                     self.connection.source(uri, operation, move |project| {
@@ -883,7 +911,7 @@ impl LanguageServer for Service {
         let result = self.client.apply_edit(edit).await?;
 
         if !result.applied {
-            return Err(failure(
+            return Err(reason(
                 result
                     .failure_reason
                     .unwrap_or_else(|| "Client declined workspace edit.".to_owned()),

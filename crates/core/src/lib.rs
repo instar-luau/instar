@@ -4,7 +4,6 @@ pub mod analysis;
 pub mod assets;
 pub mod format;
 pub mod lint;
-pub mod presentation;
 pub mod settings;
 pub mod workspace;
 

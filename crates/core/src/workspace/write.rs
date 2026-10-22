@@ -46,103 +46,22 @@ impl Workspace {
 /// # Errors
 /// Returns concurrent changes, locking failures, or filesystem errors.
 pub fn replace(path: &Path, original: &str, proposed: &str) -> io::Result<()> {
-    guarded(path, original, None, |permissions| {
-        Replacement::prepare(path, proposed, permissions)
-    })?;
+    let (mut file, permissions) = locked(path)?;
 
-    Ok(())
-}
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::other("Write destination has no parent directory."))?;
 
-pub(crate) struct Replacement {
-    staged: NamedTempFile,
-    permissions: Permissions,
-}
+    let mut staged = NamedTempFile::new_in(parent)?;
+    staged.write_all(proposed.as_bytes())?;
+    staged.as_file().set_permissions(permissions.clone())?;
+    staged.as_file().sync_all()?;
 
-impl Replacement {
-    pub(crate) fn new(path: &Path, proposed: &str) -> io::Result<Self> {
-        Self::prepare(path, proposed, fs::symlink_metadata(path)?.permissions())
-    }
-
-    pub(crate) fn commit(
-        self,
-        path: &Path,
-        original: &str,
-        identity: &Handle,
-    ) -> io::Result<Handle> {
-        guarded(path, original, Some(identity), |_| Ok(self))
-    }
-
-    pub(crate) fn create(self, path: &Path) -> io::Result<Handle> {
-        let identity = Handle::from_file(self.staged.as_file().try_clone()?)?;
-
-        self.staged
-            .persist_noclobber(path)
-            .map_err(|error| error.error)?;
-
-        Ok(identity)
-    }
-
-    pub(crate) fn remove(
-        path: &Path,
-        original: &str,
-        permissions: &Permissions,
-        identity: &Handle,
-    ) -> io::Result<()> {
-        let (mut file, current) = locked(path)?;
-
-        if current != *permissions {
-            return Err(io::Error::other(
-                "Write destination changed before recovery.",
-            ));
-        }
-
-        validate(&mut file, path, original, permissions, Some(identity))?;
-
-        fs::remove_file(path)
-    }
-
-    fn prepare(path: &Path, proposed: &str, permissions: Permissions) -> io::Result<Self> {
-        let parent = path
-            .parent()
-            .ok_or_else(|| io::Error::other("Write destination has no parent directory."))?;
-
-        let mut staged = NamedTempFile::new_in(parent)?;
-        staged.write_all(proposed.as_bytes())?;
-        staged.as_file().set_permissions(permissions.clone())?;
-        staged.as_file().sync_all()?;
-
-        Ok(Self {
-            staged,
-            permissions,
-        })
-    }
-}
-
-fn guarded(
-    path: &Path,
-    original: &str,
-    identity: Option<&Handle>,
-    prepare: impl FnOnce(Permissions) -> io::Result<Replacement>,
-) -> io::Result<Handle> {
-    let (mut file, current) = locked(path)?;
-
-    let Replacement {
-        mut staged,
-        permissions,
-    } = prepare(current.clone())?;
-
-    if permissions != current {
-        return Err(io::Error::other(
-            "Write destination changed before replacement.",
-        ));
-    }
-
-    validate(&mut file, path, original, &permissions, identity)?;
-    let installed = Handle::from_file(staged.as_file().try_clone()?)?;
+    validate(&mut file, path, original, &permissions)?;
     fs::rename(staged.path(), path)?;
     staged.disable_cleanup(true);
 
-    Ok(installed)
+    Ok(())
 }
 
 fn locked(path: &Path) -> io::Result<(File, Permissions)> {
@@ -169,7 +88,6 @@ fn validate(
     path: &Path,
     original: &str,
     permissions: &Permissions,
-    identity: Option<&Handle>,
 ) -> io::Result<()> {
     let mut current = Vec::new();
 
@@ -197,8 +115,7 @@ fn validate(
 
     let current = Handle::from_file(file.try_clone()?)?;
 
-    if current != Handle::from_path(path)? || identity.is_some_and(|identity| *identity != current)
-    {
+    if current != Handle::from_path(path)? {
         return Err(io::Error::other(
             "Write destination changed before replacement.",
         ));

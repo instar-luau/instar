@@ -1,454 +1,95 @@
 use std::{
     collections::BTreeMap,
-    fs::{self, File, OpenOptions, Permissions},
+    fs,
     io::{self, Write as _},
     path::{self, Path, PathBuf},
 };
 
-use same_file::Handle;
-use tempfile::TempDir;
+use tempfile::NamedTempFile;
 
-use crate::{
-    assets::{Error, Generated, Target, generation::interrupted},
-    workspace,
-};
+use super::{Error, Generated, generation::interrupted};
 
-pub(in crate::assets) struct Publication {
-    originals: BTreeMap<PathBuf, Option<Original>>,
-    directory: PathBuf,
-    is_existing: bool,
-    _lock: File,
-}
+pub(super) fn write(
+    directory: &Path,
+    files: &BTreeMap<PathBuf, String>,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<Generated, Error> {
+    let directory = path::absolute(directory).map_err(|source| filesystem(directory, source))?;
 
-#[derive(Eq, PartialEq)]
-struct Original {
-    contents: String,
-    permissions: Permissions,
-    identity: Handle,
-}
+    let mut generated = Generated {
+        files: Vec::with_capacity(files.len()),
+        changed: 0,
+    };
 
-struct Installed {
-    relative: PathBuf,
-    identity: Handle,
-    permissions: Permissions,
-}
-
-impl Publication {
-    pub(in crate::assets) fn new(directory: &Path, targets: &[Target]) -> Result<Self, Error> {
-        let directory =
-            path::absolute(directory).map_err(|source| filesystem(directory, source))?;
-
-        validate_directory(&directory)?;
-        let lock = lock(&directory)?;
-        validate_directory(&directory)?;
-        let is_existing = is_present(&directory)?;
-        let mut originals = BTreeMap::new();
-
-        for relative in targets.iter().flat_map(|target| target.files()) {
-            let relative = PathBuf::from(relative);
-            let destination = directory.join(&relative);
-
-            validate_directory(
-                destination
-                    .parent()
-                    .expect("Internal error: output has no parent directory."),
-            )?;
-
-            originals.insert(relative, original(&destination)?);
-        }
-
-        Ok(Self {
-            originals,
-            directory,
-            is_existing,
-            _lock: lock,
-        })
-    }
-
-    pub(in crate::assets) fn has_path(&self, path: &Path) -> bool {
-        self.originals.contains_key(path)
-    }
-
-    pub(in crate::assets) fn write(
-        self,
-        files: &BTreeMap<PathBuf, String>,
-        is_cancelled: fn() -> bool,
-    ) -> Result<Generated, Error> {
+    for (relative, contents) in files {
         interrupted(is_cancelled)?;
+        let destination = directory.join(relative);
 
-        if !files.keys().eq(self.originals.keys()) {
-            return Err(Error::Invalid {
-                reason: "Generated files do not match the selected targets.".to_owned(),
-            });
-        }
+        let parent = destination
+            .parent()
+            .expect("Internal error: output has no parent directory.");
 
-        self.validate(files)?;
-
-        let changed = self
-            .originals
-            .iter()
-            .filter(|(relative, original)| {
-                original.as_ref().map(|original| original.contents.as_str())
-                    != Some(files[*relative].as_str())
-            })
-            .count();
-
-        let generated = Generated {
-            files: files
-                .keys()
-                .map(|relative| self.directory.join(relative))
-                .collect(),
-            changed,
-        };
-
-        if changed == 0 {
-            return Ok(generated);
-        }
-
-        let parent = self.directory.parent().unwrap_or(&self.directory);
-        let staging = tempfile::tempdir_in(parent).map_err(|source| filesystem(parent, source))?;
-        let mut replacements = BTreeMap::new();
-
-        for (relative, contents) in files {
-            interrupted(is_cancelled)?;
-
-            if !self.is_existing {
-                stage(&staging.path().join(relative), contents, None)?;
-                continue;
-            }
-
-            let original = self.originals[relative].as_ref();
-
-            if original.is_some_and(|original| original.contents == *contents) {
-                continue;
-            }
-
-            let path = if let Some(original) = original {
-                let path = staging.path().join("original").join(relative);
-                stage(&path, &original.contents, Some(&original.permissions))?;
-
-                path
-            } else {
-                let path = staging.path().join("proposed").join(relative);
-                stage(&path, contents, None)?;
-
-                path
-            };
-
-            let replacement = workspace::Replacement::new(&path, contents)
-                .map_err(|source| filesystem(&path, source))?;
-
-            let permissions = fs::symlink_metadata(&path)
-                .map_err(|source| filesystem(&path, source))?
-                .permissions();
-
-            replacements.insert(relative.clone(), (replacement, permissions));
-        }
-
-        self.validate(files)?;
-        interrupted(is_cancelled)?;
-
-        if !self.is_existing {
-            fs::rename(staging.path(), &self.directory)
-                .map_err(|source| filesystem(&self.directory, source))?;
-
-            return Ok(generated);
-        }
-
-        let mut ordered: Vec<_> = self.originals.iter().collect();
-
-        ordered.sort_by_key(|(relative, _)| {
-            relative
-                .file_name()
-                .is_some_and(|name| name == "metadata.json")
-        });
-
-        let mut committed = Vec::with_capacity(changed);
-
-        let result = (|| {
-            for (relative, original) in ordered {
-                let Some((replacement, permissions)) = replacements.remove(relative) else {
-                    continue;
-                };
-
-                let destination = self.directory.join(relative);
-
-                let parent = destination
-                    .parent()
-                    .expect("Internal error: output has no parent directory.");
-
-                validate_directory(parent)?;
-                fs::create_dir_all(parent).map_err(|source| filesystem(parent, source))?;
-                validate_directory(parent)?;
-
-                let result = if let Some(original) = original {
-                    replacement.commit(&destination, &original.contents, &original.identity)
-                } else {
-                    replacement.create(&destination)
-                };
-
-                let identity = result.map_err(|source| filesystem(&destination, source))?;
-
-                committed.push(Installed {
-                    relative: relative.clone(),
-                    identity,
-                    permissions,
-                });
-            }
-
-            Ok(())
-        })();
-
-        if let Err(source) = result {
-            return Err(self.recover(files, staging, &committed, source));
-        }
-
-        Ok(generated)
-    }
-
-    fn recover(
-        &self,
-        files: &BTreeMap<PathBuf, String>,
-        staging: TempDir,
-        committed: &[Installed],
-        source: Error,
-    ) -> Error {
-        let mut unrecovered = Vec::new();
-
-        for installed in committed.iter().rev() {
-            let destination = self.directory.join(&installed.relative);
-            let proposed = &files[&installed.relative];
-
-            let result = (|| {
-                validate_directory(
-                    destination
-                        .parent()
-                        .expect("Internal error: output has no parent directory."),
-                )?;
-
-                if let Some(original) = &self.originals[&installed.relative] {
-                    let backup = staging.path().join("original").join(&installed.relative);
-
-                    workspace::Replacement::new(&backup, &original.contents)
-                        .and_then(|replacement| {
-                            replacement.commit(&destination, proposed, &installed.identity)
-                        })
-                        .map_err(|source| filesystem(&destination, source))?;
-                } else {
-                    workspace::Replacement::remove(
-                        &destination,
-                        proposed,
-                        &installed.permissions,
-                        &installed.identity,
-                    )
+        let permissions = match fs::symlink_metadata(&destination) {
+            Ok(metadata) if metadata.is_file() => {
+                let original = fs::read_to_string(&destination)
                     .map_err(|source| filesystem(&destination, source))?;
+
+                if original == *contents {
+                    generated.files.push(destination);
+                    continue;
                 }
 
-                Ok::<(), Error>(())
-            })();
+                if metadata.permissions().readonly() {
+                    return Err(filesystem(
+                        &destination,
+                        io::Error::other("Cannot replace a read-only file."),
+                    ));
+                }
 
-            if result.is_err() {
-                unrecovered.push(destination);
+                Some(metadata.permissions())
             }
-        }
-
-        if unrecovered.is_empty() {
-            source
-        } else {
-            Error::Recovery {
-                source: Box::new(source),
-                backup: staging.keep(),
-                unrecovered,
-            }
-        }
-    }
-
-    fn validate(&self, files: &BTreeMap<PathBuf, String>) -> Result<(), Error> {
-        validate_directory(&self.directory)?;
-
-        if is_present(&self.directory)? != self.is_existing {
-            return Err(filesystem(
-                &self.directory,
-                io::Error::other("Output directory changed during generation."),
-            ));
-        }
-
-        for (relative, expected) in &self.originals {
-            let path = self.directory.join(relative);
-
-            validate_directory(
-                path.parent()
-                    .expect("Internal error: output has no parent directory."),
-            )?;
-
-            if original(&path)? != *expected {
-                return Err(filesystem(
-                    &path,
-                    io::Error::other("Output changed during generation."),
-                ));
-            }
-
-            if expected
-                .as_ref()
-                .is_some_and(|original| original.contents != files[relative])
-                && fs::symlink_metadata(&path)
-                    .map_err(|source| filesystem(&path, source))?
-                    .permissions()
-                    .readonly()
-            {
-                return Err(filesystem(
-                    &path,
-                    io::Error::other("Cannot replace a read-only file."),
-                ));
-            }
-        }
-
-        Ok(())
-    }
-}
-
-fn validate_directory(path: &Path) -> Result<(), Error> {
-    for ancestor in path.ancestors() {
-        match fs::symlink_metadata(ancestor) {
-            Ok(metadata) if metadata.is_dir() => {}
 
             Ok(_) => {
                 return Err(filesystem(
-                    ancestor,
-                    io::Error::other("Output parent is not a regular directory."),
+                    &destination,
+                    io::Error::other("Output is not a regular file."),
                 ));
             }
 
-            Err(source) if source.kind() == io::ErrorKind::NotFound => {}
-            Err(source) => return Err(filesystem(ancestor, source)),
-        }
-    }
+            Err(source) if source.kind() == io::ErrorKind::NotFound => None,
+            Err(source) => return Err(filesystem(&destination, source)),
+        };
 
-    Ok(())
-}
+        fs::create_dir_all(parent).map_err(|source| filesystem(parent, source))?;
 
-fn original(path: &Path) -> Result<Option<Original>, Error> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_file() => {
-            let mut file = File::open(path).map_err(|source| filesystem(path, source))?;
+        let mut staged =
+            NamedTempFile::new_in(parent).map_err(|source| filesystem(parent, source))?;
 
-            let contents =
-                io::read_to_string(&mut file).map_err(|source| filesystem(path, source))?;
+        staged
+            .write_all(contents.as_bytes())
+            .map_err(|source| filesystem(&destination, source))?;
 
-            let permissions = metadata.permissions();
-            let identity = Handle::from_file(file).map_err(|source| filesystem(path, source))?;
-            let current = fs::symlink_metadata(path).map_err(|source| filesystem(path, source))?;
-
-            if !current.is_file()
-                || current.permissions() != permissions
-                || identity != Handle::from_path(path).map_err(|source| filesystem(path, source))?
-            {
-                return Err(filesystem(
-                    path,
-                    io::Error::other("Output changed during generation."),
-                ));
-            }
-
-            Ok(Some(Original {
-                contents,
-                permissions,
-                identity,
-            }))
+        if let Some(permissions) = permissions {
+            staged
+                .as_file()
+                .set_permissions(permissions)
+                .map_err(|source| filesystem(&destination, source))?;
         }
 
-        Ok(_) => Err(filesystem(
-            path,
-            io::Error::other("Output is not a regular file."),
-        )),
+        staged
+            .as_file()
+            .sync_all()
+            .map_err(|source| filesystem(&destination, source))?;
 
-        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(source) => Err(filesystem(path, source)),
-    }
-}
+        staged
+            .persist(&destination)
+            .map_err(|error| filesystem(&destination, error.error))?;
 
-fn is_present(path: &Path) -> Result<bool, Error> {
-    match fs::symlink_metadata(path) {
-        Ok(_) => Ok(true),
-        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(source) => Err(filesystem(path, source)),
-    }
-}
-
-fn lock(directory: &Path) -> Result<File, Error> {
-    let parent = directory.parent().unwrap_or(directory);
-    fs::create_dir_all(parent).map_err(|source| filesystem(parent, source))?;
-    validate_directory(parent)?;
-
-    let directory = if is_present(directory)? {
-        fs::canonicalize(directory).map_err(|source| filesystem(directory, source))?
-    } else {
-        fs::canonicalize(parent)
-            .map_err(|source| filesystem(parent, source))?
-            .join(directory.file_name().unwrap_or_default())
-    };
-
-    let parent = directory.parent().unwrap_or(&directory);
-
-    let mut name = directory.file_name().unwrap_or_default().to_os_string();
-    name.push(".lock");
-    let path = parent.join(name);
-
-    if is_present(&path)?
-        && !fs::symlink_metadata(&path)
-            .map_err(|source| filesystem(&path, source))?
-            .is_file()
-    {
-        return Err(filesystem(
-            &path,
-            io::Error::other("Publication lock is not a regular file."),
-        ));
+        generated.files.push(destination);
+        generated.changed += 1;
     }
 
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&path)
-        .map_err(|source| filesystem(&path, source))?;
-
-    file.lock().map_err(|source| filesystem(&path, source))?;
-    let metadata = fs::symlink_metadata(&path).map_err(|source| filesystem(&path, source))?;
-
-    if !metadata.is_file()
-        || Handle::from_file(
-            file.try_clone()
-                .map_err(|source| filesystem(&path, source))?,
-        )
-        .map_err(|source| filesystem(&path, source))?
-            != Handle::from_path(&path).map_err(|source| filesystem(&path, source))?
-    {
-        return Err(filesystem(
-            &path,
-            io::Error::other("Publication lock changed before acquisition."),
-        ));
-    }
-
-    Ok(file)
-}
-
-fn stage(path: &Path, contents: &str, permissions: Option<&Permissions>) -> Result<(), Error> {
-    let parent = path
-        .parent()
-        .expect("Internal error: output has no parent directory.");
-
-    fs::create_dir_all(parent).map_err(|source| filesystem(parent, source))?;
-    let mut file = File::create(path).map_err(|source| filesystem(path, source))?;
-
-    file.write_all(contents.as_bytes())
-        .map_err(|source| filesystem(path, source))?;
-
-    if let Some(permissions) = permissions {
-        file.set_permissions(permissions.clone())
-            .map_err(|source| filesystem(path, source))?;
-    }
-
-    file.sync_all().map_err(|source| filesystem(path, source))
+    Ok(generated)
 }
 
 fn filesystem(path: &Path, source: io::Error) -> Error {

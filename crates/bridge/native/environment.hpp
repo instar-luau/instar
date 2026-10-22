@@ -18,7 +18,7 @@ namespace instar::luau {
         const rust::Vec<Diagnostic> &diagnostics;
     };
 
-    rust::String declarations(const DeclarationFlags &configuration);
+    bool declarations(const DeclarationFlags &configuration, rust::String &source);
 
     rust::Vec<Diagnostic> prepare(Luau::Frontend &frontend, const std::string &name, const Environment &environment);
 }

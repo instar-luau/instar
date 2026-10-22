@@ -1,12 +1,21 @@
-use std::{path::PathBuf, sync::atomic::Ordering};
+use std::{
+    path::PathBuf,
+    sync::{Arc, atomic::Ordering},
+};
 
 use tower_lsp_server::{
     gen_lsp_types::{ProgressToken, Uri},
-    jsonrpc::Result,
+    jsonrpc::{Error, Result},
 };
 
 use super::protocol::Service;
-use crate::{analysis, files, output::messages};
+
+use crate::{
+    analysis,
+    connection::{Consistency, Target},
+    files,
+    output::messages,
+};
 
 impl Service {
     pub(super) async fn publish(&self, uri: Uri, should_report_progress: bool) -> Result<()> {
@@ -23,25 +32,67 @@ impl Service {
             None
         };
 
-        let publications = self
-            .perform(token, |operation| {
-                self.connection.query(uri, operation, |project, frontend| {
-                    analysis::collect(project, frontend)
+        self.perform(Consistency::Current, token, |operation| async move {
+            let (prepared, snapshot) = self
+                .connection
+                .source(uri, Arc::clone(&operation), |project| {
+                    let prepared = analysis::prepare(project)?;
+
+                    Ok((prepared, Box::new(project.capture())))
                 })
-            })
-            .await?;
+                .await?;
 
-        for publication in publications {
-            self.client
-                .publish_diagnostics(
-                    publication.uri,
-                    publication.diagnostics,
-                    publication.version,
+            let (batch, publications, snapshot) = match prepared {
+                Some((batch, publications)) => (batch, publications, snapshot),
+
+                None => {
+                    self.connection
+                        .query(
+                            Target::Snapshot(snapshot),
+                            Arc::clone(&operation),
+                            |project, _| {
+                                let (batch, publications) = analysis::prepare(project)?
+                                    .ok_or_else(Error::internal_error)?;
+
+                                Ok((batch, publications, Box::new(project.capture())))
+                            },
+                        )
+                        .await?
+                }
+            };
+
+            for publication in publications {
+                self.client
+                    .publish_diagnostics(
+                        publication.uri,
+                        publication.diagnostics,
+                        publication.version,
+                    )
+                    .await;
+            }
+
+            let publications = self
+                .connection
+                .query(
+                    Target::Snapshot(snapshot),
+                    operation,
+                    move |project, frontend| analysis::check(project, frontend, batch),
                 )
-                .await;
-        }
+                .await?;
 
-        Ok(())
+            for publication in publications {
+                self.client
+                    .publish_diagnostics(
+                        publication.uri,
+                        publication.diagnostics,
+                        publication.version,
+                    )
+                    .await;
+            }
+
+            Ok(())
+        })
+        .await
     }
 
     pub(super) async fn revalidate(&self, should_report_progress: bool) -> Result<()> {

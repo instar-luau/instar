@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{bridge::bindings, error::Error};
 
@@ -9,10 +9,10 @@ pub struct Environment {
     pub definitions: Vec<Definition>,
 
     /// Optional Roblox enum families and their item names.
-    pub enumerations: Option<BTreeMap<String, Vec<String>>>,
+    pub enumerations: Option<Arc<BTreeMap<String, Vec<String>>>>,
 
     /// Optional class permissions; an empty list grants no construction or service capabilities.
-    pub classes: Option<Vec<Class>>,
+    pub classes: Option<Arc<[Class]>>,
 }
 
 /// A declaration source with its diagnostic identity and documentation namespace.
@@ -25,7 +25,7 @@ pub struct Definition {
     pub namespace: String,
 
     /// Complete declaration source text.
-    pub source: String,
+    pub source: Arc<str>,
 }
 
 /// Capabilities applied to a declared Roblox class.
@@ -62,11 +62,22 @@ pub struct Property {
 /// # Errors
 /// Returns invalid native flag settings.
 pub fn declarations() -> Result<String, Error> {
-    bindings::declarations(&bindings::DeclarationFlags {
-        settings: &[],
-        scoped: &[],
-    })
-    .map_err(|source| Error::Native {
-        reason: source.what().to_owned(),
-    })
+    let mut source = String::new();
+
+    let available = bindings::declarations(
+        &bindings::DeclarationFlags {
+            settings: &[],
+            scoped: &[],
+        },
+        &mut source,
+    )
+    .map_err(|error| Error::Native {
+        reason: error.what().to_owned(),
+    })?;
+
+    if available {
+        Ok(source)
+    } else {
+        Err(Error::FlagsBusy)
+    }
 }

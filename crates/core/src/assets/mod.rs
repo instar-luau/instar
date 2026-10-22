@@ -1,5 +1,6 @@
 //! Configuration schema and Luau environment asset generation.
 
+mod content;
 mod error;
 mod generation;
 mod mapping;
@@ -13,4 +14,4 @@ pub use self::{
     generation::{Generated, Target, generate},
 };
 
-pub(crate) use self::metadata::{Documentation, Metadata, digest};
+pub(crate) use self::metadata::{Capability, Metadata};

@@ -4,9 +4,11 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use instar_bridge::{Error as AnalysisError, Host as _, HostError, Instance, Navigation};
+use instar_bridge::{Class, Error as AnalysisError, Host as _, HostError, Instance, Navigation};
 
-use super::{Error, Workspace, host, instances, paths};
+use crate::syntax::literal::quoted;
+
+use super::{Error, Workspace, environment, host, instances, paths};
 
 impl Workspace {
     /// Generate a require argument for a source, using strings or instance navigation.
@@ -36,7 +38,7 @@ impl Workspace {
         }
 
         if is_instance {
-            return expression(self, &module, &target);
+            return expression(self, &module, &target, true);
         }
 
         let source = host::logical(&module)?;
@@ -54,6 +56,10 @@ impl Workspace {
             } else {
                 format!("./{relative}")
             });
+        }
+
+        if let Ok(remainder) = destination.strip_prefix(&source) {
+            candidates.insert(format!("@self/{}", paths::text(remainder)?));
         }
 
         for (name, alias) in &self.scope(&module)?.configuration.resolve.aliases {
@@ -94,7 +100,11 @@ impl Workspace {
             }
         }
 
-        Ok(None)
+        Ok(
+            expression(self, Path::new(&module), Path::new(&target), false)?
+                .as_deref()
+                .map(quoted),
+        )
     }
 }
 
@@ -176,7 +186,9 @@ fn resolve(workspace: &Workspace, module: &str, path: &str) -> Result<Navigation
     let mut components = path.split('/');
     let first = components.next().unwrap_or_default();
 
-    let mut navigation = if let Some(alias) = first.strip_prefix('@') {
+    let mut navigation = if first == "@self" {
+        Navigation::Found(module.to_owned())
+    } else if let Some(alias) = first.strip_prefix('@') {
         workspace.alias(module, alias).map_err(failure)?
     } else {
         let parent = workspace.parent(module).map_err(failure)?;
@@ -210,44 +222,94 @@ fn expression(
     workspace: &Workspace,
     module: &Path,
     target: &Path,
+    is_instance: bool,
 ) -> Result<Option<String>, Error> {
-    let scope = workspace.scope(module)?;
-    let locations = instances::configuration(workspace, &scope, module)?;
-
-    let Some(first) = locations.first() else {
-        return Ok(None);
-    };
-
-    if locations
-        .iter()
-        .any(|location| location.hierarchy != first.hierarchy)
+    if !is_instance
+        && !matches!(
+            workspace
+                .alias(&paths::text(module)?, "game")
+                .map_err(failure)?,
+            Navigation::Missing
+        )
     {
         return Ok(None);
     }
 
-    let Some(instances) = workspace.instances.borrow().get(&first.hierarchy) else {
-        return Ok(None);
-    };
+    let scope = workspace.scope(module)?;
+    let locations = instances::configuration(workspace, &scope, module)?;
 
-    let target = paths::text(target)?;
-
-    let mut matches = instances.iter().enumerate().filter(|(_, instance)| {
-        instance.class == "ModuleScript" && instance.module.as_deref() == Some(target.as_str())
-    });
-
-    let Some((destination, _)) = matches.next() else {
-        return Ok(None);
-    };
-
-    if matches.next().is_some() {
+    if locations.is_empty() {
         return Ok(None);
     }
 
-    let script = (locations.len() == 1).then_some(first.script).flatten();
+    let classes = if is_instance {
+        environment::identity(workspace, &scope, module)?.and_then(|name| {
+            workspace
+                .environments
+                .borrow()
+                .get(&name)
+                .and_then(|environment| environment.classes.clone())
+        })
+    } else {
+        None
+    };
+
+    let classes = classes.as_deref().unwrap_or_default();
+    let target = paths::text(target)?;
+    let registry = workspace.instances.borrow();
+    let mut candidates: Option<Vec<String>> = None;
+
+    for location in locations {
+        let Some(instances) = registry.get(&location.hierarchy) else {
+            return Ok(None);
+        };
+
+        let relative = navigate(instances, location.script, &target, is_instance, classes);
+
+        let absolute = if is_instance && location.script.is_some() {
+            navigate(instances, None, &target, is_instance, classes)
+        } else {
+            None
+        };
+
+        let available = [relative, absolute];
+
+        if let Some(candidates) = &mut candidates {
+            candidates
+                .retain(|candidate| available.iter().flatten().any(|value| value == candidate));
+        } else {
+            candidates = Some(available.into_iter().flatten().collect());
+        }
+    }
+
+    Ok(candidates.and_then(|candidates| candidates.into_iter().next()))
+}
+
+fn navigate(
+    instances: &[Instance],
+    script: Option<usize>,
+    target: &str,
+    is_instance: bool,
+    classes: &[Class],
+) -> Option<String> {
+    let mut matches = instances.iter().enumerate().filter(|(_, instance)| {
+        instance.class == "ModuleScript" && instance.module.as_deref() == Some(target)
+    });
+
+    let (destination, _) = matches.next()?;
+
+    if matches.next().is_some() {
+        return None;
+    }
+
     let mut ancestors = Vec::new();
-    let mut current = script;
+    let mut current = script.filter(|_| is_instance);
 
     while let Some(index) = current {
+        if instances[index].class == "DataModel" {
+            break;
+        }
+
         ancestors.push(index);
         current = instances[index].parent;
     }
@@ -261,10 +323,11 @@ fn expression(
         }
 
         let Some(parent) = instances[current].parent else {
-            break match instances[current].class.as_str() {
-                "DataModel" => "game".to_owned(),
-                "Workspace" => "workspace".to_owned(),
-                _ => return Ok(None),
+            break match (instances[current].class.as_str(), is_instance) {
+                ("DataModel", true) => "game".to_owned(),
+                ("DataModel", false) => "@game".to_owned(),
+                ("Workspace", true) => "workspace".to_owned(),
+                _ => return None,
             };
         };
 
@@ -275,15 +338,48 @@ fn expression(
     for child in children.into_iter().rev() {
         let instance = &instances[child];
 
-        if !is_unique(&instances, instance) {
-            return Ok(None);
+        if !is_instance {
+            if !is_unique(instances, instance)
+                || instance.name.is_empty()
+                || matches!(instance.name.as_str(), "." | "..")
+                || instance.name.contains(['/', '\\'])
+            {
+                return None;
+            }
+
+            expression.push('/');
+            expression.push_str(&instance.name);
+            continue;
         }
 
-        write!(expression, ":WaitForChild({})", quoted(&instance.name))
-            .expect("Internal error: writing to a string failed.");
+        let is_service = expression == "game"
+            && classes
+                .iter()
+                .any(|class| class.name == instance.class && class.service);
+
+        if is_service {
+            if instances
+                .iter()
+                .filter(|other| other.parent == instance.parent && other.class == instance.class)
+                .count()
+                != 1
+            {
+                return None;
+            }
+
+            write!(expression, ":GetService({})", quoted(&instance.class))
+                .expect("Internal error: writing to a string failed.");
+        } else {
+            if !is_unique(instances, instance) {
+                return None;
+            }
+
+            write!(expression, ":WaitForChild({})", quoted(&instance.name))
+                .expect("Internal error: writing to a string failed.");
+        }
     }
 
-    Ok(Some(expression))
+    Some(expression)
 }
 
 fn is_unique(instances: &[Instance], target: &Instance) -> bool {
@@ -292,28 +388,6 @@ fn is_unique(instances: &[Instance], target: &Instance) -> bool {
         .filter(|instance| instance.parent == target.parent && instance.name == target.name)
         .count()
         == 1
-}
-
-fn quoted(text: &str) -> String {
-    let mut quoted = String::from("\"");
-
-    for character in text.chars() {
-        match character {
-            '\\' => quoted.push_str("\\\\"),
-            '"' => quoted.push_str("\\\""),
-
-            character if character.is_ascii_control() => {
-                write!(quoted, "\\{:03}", u32::from(character))
-                    .expect("Internal error: writing to a string failed.");
-            }
-
-            character => quoted.push(character),
-        }
-    }
-
-    quoted.push('"');
-
-    quoted
 }
 
 fn failure(error: HostError) -> Error {

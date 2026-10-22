@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, iter, ops::Range};
+use std::{collections::BTreeMap, iter, ops::Range, sync::Arc};
 
 use reqwest::Url;
 
@@ -10,8 +10,9 @@ use vermis::{
 use crate::{
     analysis::{
         Access, Analysis, Binding, BindingKind, Fold, FoldKind, Import, ImportExpression, Link,
-        Occurrence, Symbol, SymbolKind, Token as SemanticToken, TokenKind, color::colors,
-        model::Identity,
+        Occurrence, Symbol, SymbolKind, Token as SemanticToken, TokenKind,
+        color::colors,
+        model::{Identity, Resolution},
     },
     syntax::{
         bindings::{Bindings, Category, text},
@@ -20,9 +21,68 @@ use crate::{
     },
 };
 
+impl Resolution {
+    fn new(tree: &Tree<'_>, bindings: &Bindings) -> Self {
+        let mut identities: Vec<_> = tree
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, node)| {
+                if !matches!(node.kind, NodeKind::Name { .. }) {
+                    return None;
+                }
+
+                let identifier = NodeIndex::new(index);
+
+                let identity = if let Some(local) = bindings.references[index] {
+                    Identity::Value(local)
+                } else if let Some(alias) = bindings.type_references[index] {
+                    Identity::Type(alias)
+                } else if bindings.is_type_name[index] {
+                    Identity::External(text(tree, identifier))
+                } else if bindings.accesses[index] != 0 {
+                    Identity::Global(text(tree, identifier))
+                } else {
+                    return None;
+                };
+
+                Some((node.span.start, identity))
+            })
+            .collect();
+
+        identities.sort_by_key(|(offset, _)| *offset);
+
+        Self {
+            identities: identities
+                .into_iter()
+                .map(|(_, identity)| identity)
+                .collect(),
+            scopes: bindings
+                .locals
+                .iter()
+                .map(|binding| binding.scope)
+                .chain(bindings.types.iter().map(|binding| binding.scope))
+                .collect(),
+            is_complete: tree.diagnostics.is_empty()
+                && !tree
+                    .nodes
+                    .iter()
+                    .any(|node| matches!(node.kind, NodeKind::Error | NodeKind::Missing { .. })),
+        }
+    }
+}
+
+pub(super) fn resolve(source: &str) -> Resolution {
+    let prefix = usize::from(source.starts_with('\u{feff}')) * 3;
+    let tree = vermis::parse(&source.as_bytes()[prefix..]);
+
+    Resolution::new(&tree, &Bindings::new(&tree))
+}
+
 /// Analyzes complete or incomplete source without applying strict lint or format validation.
 #[must_use]
-pub fn analyze(source: &str) -> Analysis {
+pub fn analyze(source: impl Into<Arc<str>>) -> Analysis {
+    let source = source.into();
     let prefix = usize::from(source.starts_with('\u{feff}')) * 3;
     let tree = vermis::parse(&source.as_bytes()[prefix..]);
     let bindings = Bindings::new(&tree);
@@ -35,15 +95,9 @@ pub fn analyze(source: &str) -> Analysis {
         links: Vec::new(),
         colors: colors(&tree, &bindings, prefix),
         bindings: Vec::new(),
-        source: source.to_owned(),
+        source: Arc::clone(&source),
         selections: iter::once(0..source.len()).collect(),
-        identities: Vec::new(),
-        scopes: Vec::new(),
-        is_complete: tree.diagnostics.is_empty()
-            && !tree
-                .nodes
-                .iter()
-                .any(|node| matches!(node.kind, NodeKind::Error | NodeKind::Missing { .. })),
+        resolution: Resolution::new(&tree, &bindings),
     };
 
     let mut tokens = BTreeMap::new();
@@ -92,7 +146,7 @@ pub fn analyze(source: &str) -> Analysis {
 
         if matches!(kind, TokenKind::Comment | TokenKind::String) {
             documentation(
-                source,
+                &source,
                 &(token.span.start + prefix..token.span.end + prefix),
                 &mut result.links,
             );
@@ -114,8 +168,6 @@ pub fn analyze(source: &str) -> Analysis {
             can_rename: text(&tree, local.declaration) == local.name,
             is_exported: false,
         });
-
-        result.scopes.push(local.scope);
     }
 
     for binding in &bindings.types {
@@ -134,11 +186,7 @@ pub fn analyze(source: &str) -> Analysis {
                     || matches!(tree.node(binding.statement).kind, NodeKind::Function { prefix: Some(prefix), .. }
                         if tree.token(prefix).bytes(tree.source) == b"type")),
         });
-
-        result.scopes.push(binding.scope);
     }
-
-    let mut identities = Vec::new();
 
     for (index, node) in tree.nodes.iter().enumerate() {
         let identifier = NodeIndex::new(index);
@@ -206,22 +254,6 @@ pub fn analyze(source: &str) -> Analysis {
                     bindings.accesses[index] & 2 != 0,
                 );
             }
-
-            let identity = if let Some(local) = local {
-                Some(Identity::Value(local))
-            } else if let Some(alias) = alias {
-                Some(Identity::Type(alias))
-            } else if bindings.is_type_name[index] {
-                Some(Identity::External(text(&tree, identifier)))
-            } else if bindings.accesses[index] != 0 {
-                Some(Identity::Global(text(&tree, identifier)))
-            } else {
-                None
-            };
-
-            if let Some(identity) = identity {
-                identities.push((node.span.start, identity));
-            }
         }
 
         if is_foldable(&node.kind) && is_multiline(&tree, node.span.start..node.span.end) {
@@ -256,13 +288,6 @@ pub fn analyze(source: &str) -> Analysis {
             }
         }
     }
-
-    identities.sort_by_key(|(offset, _)| *offset);
-
-    result.identities = identities
-        .into_iter()
-        .map(|(_, identity)| identity)
-        .collect();
 
     for binding in &mut result.bindings {
         binding

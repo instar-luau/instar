@@ -1,5 +1,6 @@
 #[cxx::bridge(namespace = "instar::luau")]
 pub(crate) mod bindings {
+    #[derive(Debug)]
     enum Mode {
         NoCheck,
         NonStrict,
@@ -12,6 +13,22 @@ pub(crate) mod bindings {
         environment: Text,
         flags: Vec<Flag>,
         locations: Vec<Location>,
+        type_errors: bool,
+    }
+
+    #[derive(Clone, Debug)]
+    struct Language {
+        mode: Mode,
+        globals: Vec<String>,
+        aliases: Vec<Alias>,
+        type_errors: bool,
+    }
+
+    #[derive(Clone, Debug)]
+    struct Alias {
+        name: String,
+        value: String,
+        configuration: String,
     }
 
     enum FlagKind {
@@ -138,50 +155,14 @@ pub(crate) mod bindings {
         range: Range,
     }
 
-    /// The selected hover subject's declaration category.
-    #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-    pub enum HoverKind {
-        /// A local binding or reference.
-        Local,
-
-        /// A global binding reference.
-        Global,
-
-        /// A type alias declaration.
-        Alias,
-
-        /// A property or named annotation parameter.
-        Field,
-
-        /// An individual type component or unnamed expression.
-        Type,
-
-        /// A locally declared function or reference to it.
-        LocalFunction,
-
-        /// A global function binding.
-        Function,
-
-        /// A function parameter or reference to it.
-        Parameter,
-
-        /// A loop variable or reference to it.
-        Loop,
-
-        /// A constant binding or reference to it.
-        Constant,
-
-        /// A constant function declaration or reference to it.
-        ConstantFunction,
-    }
-
     struct NativeHover {
         location: SourceLocation,
-        symbol: Vec<u8>,
-        kind: HoverKind,
-        snapshot: NativeSnapshot,
+        presentation: String,
         documentation_symbol: String,
-        documentation: String,
+        documentation_signature: String,
+        is_selected: bool,
+        is_namespace: bool,
+        has_receiver: bool,
     }
 
     /// Native completion category.
@@ -215,15 +196,29 @@ pub(crate) mod bindings {
         HotComment,
     }
 
+    /// Recommended call parentheses for a completion insertion.
+    #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+    pub enum Parentheses {
+        /// Insert the completion text alone.
+        None,
+
+        /// Place the cursor after the closing parenthesis.
+        CursorAfter,
+
+        /// Place the cursor between the parentheses.
+        CursorInside,
+    }
+
     struct NativeCompletion {
         label: String,
         kind: CompletionKind,
         is_function: bool,
-        snapshots: Vec<NativeSnapshot>,
+        presentations: Vec<String>,
+        is_complete: bool,
+        equivalence: usize,
         documentation_symbol: String,
-        documentation: String,
         insert_text: String,
-        is_snippet: bool,
+        parentheses: Parentheses,
         replacement: SourceLocation,
         replace_dot: bool,
         operation: Range,
@@ -232,18 +227,17 @@ pub(crate) mod bindings {
 
     struct NativeParameter {
         name: String,
-        subject: usize,
-        is_pack: bool,
+        start: usize,
+        end: usize,
         source_index: u32,
-        documentation: String,
         is_variadic: bool,
     }
 
     struct NativeSignature {
-        identity: String,
-        snapshot: NativeSnapshot,
+        label: String,
+        expanded: String,
         documentation_symbol: String,
-        documentation: String,
+        documentation_signature: String,
         parameters: Vec<NativeParameter>,
         active_parameter: u32,
         is_selected: bool,
@@ -313,178 +307,20 @@ pub(crate) mod bindings {
     struct NativeHint {
         location: SourceLocation,
         name: String,
-        snapshot: NativeSnapshot,
+        presentation: NativePresentation,
         kind: HintKind,
         is_obvious: bool,
         documentation_symbol: String,
-        documentation: String,
+        documentation_signature: String,
         has_parameter_index: bool,
         parameter_index: u32,
     }
 
-    #[repr(u8)]
-    enum NativeTypeKind {
-        Primitive = 0,
-        Singleton = 1,
-        Named = 2,
-        Generic = 3,
-        Function = 4,
-        Table = 5,
-        Union = 6,
-        Intersection = 7,
-        Metatable = 8,
-        Negation = 9,
-        Application = 10,
-        Reference = 11,
-        Unresolved = 12,
-        Omitted = 13,
-    }
-
-    #[repr(u8)]
-    enum NativePackKind {
-        Sequence = 0,
-        Variadic = 1,
-        Generic = 2,
-        Application = 3,
-        Reference = 4,
-        Unresolved = 5,
-        Omitted = 6,
-    }
-
-    #[repr(u8)]
-    enum NativePrimitiveState {
-        Nil = 0,
-        Boolean = 1,
-        Number = 2,
-        Integer = 3,
-        String = 4,
-        Thread = 5,
-        Function = 6,
-        Table = 7,
-        Buffer = 8,
-        Any = 9,
-        Unknown = 10,
-        Never = 11,
-        Invalid = 255,
-    }
-
-    #[repr(u8)]
-    enum NativeSingletonState {
-        Boolean = 0,
-        String = 1,
-    }
-
-    #[repr(u8)]
-    enum NativeProvenance {
-        Alias = 0,
-        External = 1,
-        Synthetic = 2,
-        Unverified = 3,
-    }
-
-    #[repr(u8)]
-    enum NativeUnresolvedState {
-        Free = 0,
-        Blocked = 1,
-        Lazy = 2,
-        Error = 3,
-        InternalRefinement = 4,
-    }
-
-    #[repr(u8)]
-    enum NativeTableState {
-        Sealed = 0,
-        Unsealed = 1,
-        Free = 2,
-        Generic = 3,
-        Exact = 4,
-        Invalid = 255,
-    }
-
-    #[repr(u8)]
-    enum NativeApplicationState {
-        Pending = 0,
-        Unreduced = 1,
-    }
-
-    #[derive(Copy, Clone)]
-    struct NativeIndex {
-        has_value: bool,
-        index: usize,
-    }
-
-    struct NativeApplication {
-        name: String,
-        qualifier: Text,
-        type_arguments: Vec<usize>,
-        pack_arguments: Vec<usize>,
-        state: NativeApplicationState,
-    }
-
-    struct NativeFunction {
-        generics: Vec<usize>,
-        generic_packs: Vec<usize>,
-        arguments: usize,
-        returns: usize,
-        argument_names: Vec<Text>,
-        is_checked: bool,
-    }
-
-    struct NativeProperty {
-        name: Vec<u8>,
-        read: NativeIndex,
-        write: NativeIndex,
-        is_shared: bool,
-    }
-
-    struct NativeIndexer {
-        key: usize,
-        value: usize,
-        is_read_only: bool,
-    }
-
-    struct NativeTable {
-        properties: Vec<NativeProperty>,
-        indexers: Vec<NativeIndexer>,
-        state: NativeTableState,
-    }
-
-    struct NativeType {
-        kind: NativeTypeKind,
-        state: u8,
-        name: String,
-        has_explicit_name: bool,
-        qualifier: Text,
-        identity: usize,
-        bytes: Vec<u8>,
-        boolean: bool,
-        types: Vec<usize>,
-        packs: Vec<usize>,
-        expansion: NativeIndex,
-        functions: Vec<NativeFunction>,
-        tables: Vec<NativeTable>,
-        applications: Vec<NativeApplication>,
-    }
-
-    struct NativePack {
-        kind: NativePackKind,
-        state: u8,
-        name: String,
-        has_explicit_name: bool,
-        identity: usize,
-        types: Vec<usize>,
-        packs: Vec<usize>,
-        tail: NativeIndex,
-        is_hidden: bool,
-        applications: Vec<NativeApplication>,
-    }
-
-    struct NativeSnapshot {
-        types: Vec<NativeType>,
-        packs: Vec<NativePack>,
-        root: usize,
-        is_root_pack: bool,
-        is_expanded: bool,
+    struct NativePresentation {
+        compact: String,
+        expanded: String,
+        is_complete: bool,
+        is_pack: bool,
     }
 
     /// An authoritatively resolved native require argument.
@@ -525,12 +361,16 @@ pub(crate) mod bindings {
             destination: &mut String,
         ) -> Result<Status>;
 
+        fn children(self: &Context<'_>, module: &str) -> Result<Vec<String>>;
+
         fn alias(
             self: &Context<'_>,
             module: &str,
             name: &str,
             destination: &mut String,
         ) -> Result<Status>;
+
+        fn aliases(self: &Context<'_>, module: &str) -> Result<Vec<String>>;
 
         fn configuration(self: &Context<'_>, module: &str) -> Result<Configuration>;
 
@@ -549,6 +389,15 @@ pub(crate) mod bindings {
         include!("native/frontend.hpp");
         include!("native/environment.hpp");
         include!("native/cancellation.hpp");
+        include!("native/configuration.hpp");
+
+        fn configure(
+            previous: &[Language],
+            name: &str,
+            source: &str,
+            executable: bool,
+        ) -> Result<Language>;
+
         type Frontend<'host>;
 
         #[namespace = "Luau"]
@@ -635,7 +484,7 @@ pub(crate) mod bindings {
         fn imports(self: Pin<&mut Frontend<'_>>, module: &str) -> Result<Vec<Import>>;
         fn cancellation(self: &Frontend<'_>) -> SharedPtr<FrontendCancellationToken>;
 
-        fn declarations(configuration: &DeclarationFlags<'_>) -> Result<String>;
+        fn declarations(configuration: &DeclarationFlags<'_>, source: &mut String) -> Result<bool>;
 
         fn cancel(token: &SharedPtr<FrontendCancellationToken>);
         fn reset(token: &SharedPtr<FrontendCancellationToken>);
@@ -663,6 +512,7 @@ impl From<Configuration> for bindings::Configuration {
             environment,
             flags: overrides,
             locations,
+            type_errors,
         } = configuration;
 
         let mode = match mode {
@@ -684,6 +534,7 @@ impl From<Configuration> for bindings::Configuration {
                     script: location.script.unwrap_or_default(),
                 })
                 .collect(),
+            type_errors,
         }
     }
 }
@@ -697,30 +548,35 @@ impl From<Environment> for bindings::Environment {
                 .map(|definition| bindings::Definition {
                     name: definition.name,
                     namespace: definition.namespace,
-                    source: definition.source,
+                    source: definition.source.to_string(),
                 })
                 .collect(),
             has_enumerations: environment.enumerations.is_some(),
             enumerations: environment
                 .enumerations
-                .unwrap_or_default()
+                .as_deref()
                 .into_iter()
-                .map(|(name, items)| bindings::Enumeration { name, items })
+                .flat_map(BTreeMap::iter)
+                .map(|(name, items)| bindings::Enumeration {
+                    name: name.clone(),
+                    items: items.clone(),
+                })
                 .collect(),
             has_capabilities: environment.classes.is_some(),
             classes: environment
                 .classes
+                .as_deref()
                 .unwrap_or_default()
-                .into_iter()
+                .iter()
                 .map(|class| bindings::Class {
-                    name: class.name,
+                    name: class.name.clone(),
                     is_service: class.service,
                     is_creatable: class.creatable,
                     properties: class
                         .properties
-                        .into_iter()
+                        .iter()
                         .map(|property| bindings::Property {
-                            name: property.name,
+                            name: property.name.clone(),
                             can_read: property.read,
                             can_write: property.write,
                         })

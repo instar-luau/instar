@@ -41,6 +41,8 @@ namespace instar::luau {
         std::optional<std::string>
         resolve(const std::string &context, InstanceQuery query, const std::string &name) const;
 
+        std::vector<std::string> children(const std::string &context) const;
+
     private:
         std::optional<Luau::TypeId> select(InstanceQuery query, std::optional<size_t> script) const;
 

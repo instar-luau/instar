@@ -16,9 +16,12 @@ namespace instar::luau::query {
         const std::string &text;
     };
 
+    std::vector<Luau::TypeId> overloads(Luau::TypeId root, PresentationBudget &budget);
+
     rust::Vec<NativeCompletion> completion(
         Luau::Frontend &frontend, const Host &host, const Prepared &prepared, Luau::Position position,
-        PresentationBudget &budget, std::size_t &candidate_index, std::optional<std::size_t> selected
+        PresentationBudget &budget, std::vector<CompletionType> &types, std::size_t &candidate_index,
+        std::optional<std::size_t> selected
     );
 
     rust::Vec<NativeSignature> signatures(
@@ -49,7 +52,17 @@ namespace instar::luau::query {
     SourceLocation locate(const Host &host, const std::string &identity, const Luau::Location &location);
     std::size_t offset(const std::string &source, Luau::Position position);
 
-    std::string documentation(const Luau::SourceModule &source, const Luau::Module &module, Luau::Position position);
+    std::string documentation(Luau::TypeId type, PresentationBudget &budget);
+
+    std::string documentation(
+        const Luau::SourceModule &source, const Luau::Module &module, Luau::Position position,
+        PresentationBudget &budget
+    );
+
+    std::string documentation(
+        const Luau::SourceModule &source, const Luau::Module &module, const Luau::AstExpr *expression,
+        PresentationBudget &budget
+    );
 
     Occurrence occurrence(const Host &host, const std::string &identity, const Entry &entry);
     void validate_identifier(const std::string &name);

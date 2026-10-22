@@ -61,7 +61,10 @@ impl Service {
                 })
                 .await?;
 
-            let mut watchers = vec![json!({"globPattern":"**/*.{lua,luau,toml,json}"})];
+            let mut watchers = vec![
+                json!({"globPattern":"**/*.{lua,luau,toml,json}"}),
+                json!({"globPattern":"**/.luaurc"}),
+            ];
 
             watchers.extend(dependencies.into_iter().filter_map(|path| {
                 path.to_str()

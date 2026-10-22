@@ -25,11 +25,23 @@ pub trait Host {
     /// Returns an operational alias-resolution failure.
     fn alias(&self, module: &str, name: &str) -> Result<Navigation, HostError>;
 
+    /// List aliases available in the requiring module's scope.
+    ///
+    /// # Errors
+    /// Returns the host's configuration error.
+    fn aliases(&self, module: &str) -> Result<Vec<String>, HostError>;
+
     /// Find a named child in the given navigation context.
     ///
     /// # Errors
     /// Returns an operational child-lookup failure.
     fn child(&self, module: &str, name: &str) -> Result<Navigation, HostError>;
+
+    /// List child names in the given navigation context.
+    ///
+    /// # Errors
+    /// Returns an operational directory-listing failure.
+    fn children(&self, module: &str) -> Result<Vec<String>, HostError>;
 
     /// Return the module's already-resolved type-checking configuration.
     ///
@@ -136,10 +148,21 @@ impl<'host> Context<'host> {
         let settings = bridge::flags(self.host.flags().map_err(Error::Host)?);
         let scoped = bridge::flags(flags);
 
-        self.complete(bindings::declarations(&bindings::DeclarationFlags {
-            settings: &settings,
-            scoped: &scoped,
-        }))
+        let mut source = String::new();
+
+        let available = self.complete(bindings::declarations(
+            &bindings::DeclarationFlags {
+                settings: &settings,
+                scoped: &scoped,
+            },
+            &mut source,
+        ))?;
+
+        if available {
+            Ok(source)
+        } else {
+            Err(Error::FlagsBusy)
+        }
     }
 
     pub(crate) fn alias(
@@ -155,6 +178,10 @@ impl<'host> Context<'host> {
         )
     }
 
+    pub(crate) fn aliases(&self, module: &str) -> Result<Vec<String>, &'static str> {
+        self.capture(self.host.aliases(module))
+    }
+
     pub(crate) fn child(
         &self,
         module: &str,
@@ -166,6 +193,10 @@ impl<'host> Context<'host> {
             || self.host.child(module, name),
             destination,
         )
+    }
+
+    pub(crate) fn children(&self, module: &str) -> Result<Vec<String>, &'static str> {
+        self.capture(self.host.children(module))
     }
 
     pub(crate) fn configuration(

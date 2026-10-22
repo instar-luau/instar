@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 use crate::{
-    analysis::{Analysis, BindingKind, Edit, analyze},
+    analysis::{Analysis, BindingKind, Edit, source::resolve},
     syntax::is_identifier,
 };
 
@@ -39,7 +39,7 @@ impl Analysis {
     /// Identifies an explicit local value or type name without selecting properties or globals.
     #[must_use]
     pub fn prepare_rename(&self, offset: usize) -> Option<RenameTarget> {
-        if !self.is_complete || !self.source.is_char_boundary(offset) {
+        if !self.resolution.is_complete || !self.source.is_char_boundary(offset) {
             return None;
         }
 
@@ -64,7 +64,7 @@ impl Analysis {
     ///
     /// Rejects incomplete source, invalid names, nonlocal targets, and binding conflicts or captures.
     pub fn rename(&self, offset: usize, name: &str) -> Result<Vec<Edit>, RenameError> {
-        if !self.is_complete {
+        if !self.resolution.is_complete {
             return Err(RenameError::Incomplete);
         }
 
@@ -95,7 +95,7 @@ impl Analysis {
         if self.bindings.iter().enumerate().any(|(other, candidate)| {
             other != index
                 && candidate.name == name
-                && self.scopes[other] == self.scopes[index]
+                && self.resolution.scopes[other] == self.resolution.scopes[index]
                 && is_type_binding(candidate.kind) == is_type_binding(binding.kind)
         }) {
             return Err(RenameError::Conflict);
@@ -110,19 +110,13 @@ impl Analysis {
             })
             .collect();
 
-        let mut source = self.source.clone();
+        let mut source = self.source.to_string();
 
         for edit in edits.iter().rev() {
             source.replace_range(edit.range.clone(), &edit.replacement);
         }
 
-        let renamed = analyze(&source);
-
-        if !renamed.is_complete
-            || renamed.identities != self.identities
-            || renamed.bindings.len() != self.bindings.len()
-            || renamed.scopes != self.scopes
-        {
+        if resolve(&source) != self.resolution {
             return Err(RenameError::Conflict);
         }
 

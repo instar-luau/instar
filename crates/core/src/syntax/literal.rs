@@ -1,4 +1,26 @@
-use std::str;
+use std::{fmt::Write as _, str};
+
+pub(crate) fn quoted(text: &str) -> String {
+    let mut quoted = String::from("\"");
+
+    for character in text.chars() {
+        match character {
+            '\\' => quoted.push_str("\\\\"),
+            '"' => quoted.push_str("\\\""),
+
+            character if character.is_ascii_control() => {
+                write!(quoted, "\\{:03}", u32::from(character))
+                    .expect("Internal error: writing to a string failed.");
+            }
+
+            character => quoted.push(character),
+        }
+    }
+
+    quoted.push('"');
+
+    quoted
+}
 
 pub(crate) fn decode(bytes: &[u8]) -> Option<Vec<u8>> {
     str::from_utf8(bytes).ok()?;

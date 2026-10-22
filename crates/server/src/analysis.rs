@@ -4,16 +4,18 @@ use std::{
     sync::Arc,
 };
 
-use instar_bridge::{Frontend, Position as NativePosition, Range as NativeRange};
+use instar_bridge::{
+    Error as BridgeError, Frontend, Position as NativePosition, Range as NativeRange,
+};
 
 use instar_core::{
     lint,
-    workspace::{Access, InvalidSource, Origin, Purpose, SymbolOutcome},
+    workspace::{Access, Error as WorkspaceError, InvalidSource, Origin, Purpose, SymbolOutcome},
 };
 
 use tower_lsp_server::{
     gen_lsp_types::{Diagnostic, PublishDiagnosticsParams, Range},
-    jsonrpc::Result,
+    jsonrpc::{Error, Result},
 };
 
 use crate::{
@@ -24,10 +26,20 @@ use crate::{
     project::Project,
 };
 
-pub(crate) fn collect(
+pub(crate) struct Batch {
+    checked: BTreeSet<String>,
+    open: BTreeSet<String>,
+    environments: BTreeMap<String, SymbolOutcome>,
+    sources: BTreeMap<String, Arc<str>>,
+    findings: BTreeMap<String, Vec<Diagnostic>>,
+    syntax: BTreeMap<String, Vec<Diagnostic>>,
+    versions: BTreeMap<String, Option<i32>>,
+    should_check_workspace: bool,
+}
+
+pub(crate) fn prepare(
     project: &mut Project,
-    frontend: &mut Frontend<'_>,
-) -> Result<Vec<PublishDiagnosticsParams>> {
+) -> Result<Option<(Batch, Vec<PublishDiagnosticsParams>)>> {
     let open: BTreeSet<_> = project
         .documents
         .iter()
@@ -74,18 +86,21 @@ pub(crate) fn collect(
         .map(|module| (module.clone(), Vec::new()))
         .collect();
 
-    let mut versions = BTreeMap::new();
+    let mut syntax: BTreeMap<String, Vec<Diagnostic>> = BTreeMap::new();
 
-    let environments: BTreeMap<_, _> = checked
-        .union(&linted)
-        .map(|module| {
-            project
-                .workspace
-                .symbols(module)
-                .map(|symbols| (module.clone(), symbols))
-                .map_err(failure)
-        })
-        .collect::<Result<_>>()?;
+    let mut versions = BTreeMap::new();
+    let mut sources = BTreeMap::new();
+
+    let mut environments = BTreeMap::new();
+
+    for module in checked.union(&linted) {
+        let symbols = match project.workspace.symbols(module) {
+            Err(WorkspaceError::Analysis(BridgeError::FlagsBusy)) => return Ok(None),
+            result => result.map_err(failure)?,
+        };
+
+        environments.insert(module.clone(), symbols);
+    }
 
     for (module, symbols) in &environments {
         if let SymbolOutcome::Invalid(invalid) = symbols
@@ -101,6 +116,102 @@ pub(crate) fn collect(
                         .map_err(failure)?))
         {
             environment(project, module, invalid, &mut findings, &mut versions)?;
+        }
+    }
+
+    for module in &linted {
+        if project
+            .workspace
+            .is_excluded(module, Purpose::Lint)
+            .map_err(failure)?
+        {
+            continue;
+        }
+
+        let source = project.snapshot(module)?;
+        sources.insert(module.clone(), Arc::clone(&source.text));
+        let settings = project.workspace.linting(module).map_err(failure)?;
+
+        let symbols = match &environments[module] {
+            SymbolOutcome::Ready(symbols) => symbols,
+            SymbolOutcome::Invalid(_) => continue,
+        };
+
+        let result = source.findings(settings, Arc::clone(symbols));
+
+        let diagnostics = syntax.entry(module.clone()).or_default();
+
+        match result {
+            Ok(findings) => {
+                for finding in findings.iter() {
+                    diagnostics.push(diagnostics::finding(
+                        source.range(finding.range.clone(), project.encoding)?,
+                        finding.rule.clone(),
+                        finding.severity,
+                        finding.message.clone(),
+                    ));
+                }
+            }
+
+            Err(failure) => {
+                let (code, error) = match failure {
+                    lint::Failure::Syntax(error) => ("syntax", error),
+                    lint::Failure::Directive(error) => ("lint", error),
+                };
+
+                diagnostics.push(diagnostics::error(
+                    source.range(error.range, project.encoding)?,
+                    code,
+                    error.message,
+                ));
+            }
+        }
+    }
+
+    let publications = publications(project, findings.clone(), syntax.clone(), &versions)?;
+
+    project.published.extend(
+        findings
+            .iter()
+            .chain(&syntax)
+            .filter(|(_, diagnostics)| !diagnostics.is_empty())
+            .map(|(module, _)| module.clone()),
+    );
+
+    Ok(Some((
+        Batch {
+            checked,
+            open,
+            environments,
+            sources,
+            findings,
+            syntax,
+            versions,
+            should_check_workspace,
+        },
+        publications,
+    )))
+}
+
+pub(crate) fn check(
+    project: &mut Project,
+    frontend: &mut Frontend<'_>,
+    batch: Batch,
+) -> Result<Vec<PublishDiagnosticsParams>> {
+    let Batch {
+        checked,
+        open,
+        environments,
+        sources,
+        mut findings,
+        syntax,
+        versions,
+        should_check_workspace,
+    } = batch;
+
+    for (module, source) in sources {
+        if project.snapshot(&module)?.text != source {
+            return Err(Error::content_modified());
         }
     }
 
@@ -159,7 +270,7 @@ pub(crate) fn collect(
                     Arc::clone(&invalid.text),
                     None,
                     0,
-                )
+                )?
             } else {
                 project.snapshot(target)?
             };
@@ -198,52 +309,27 @@ pub(crate) fn collect(
         }
     }
 
-    for module in &linted {
-        if project
-            .workspace
-            .is_excluded(module, Purpose::Lint)
-            .map_err(failure)?
-        {
-            continue;
-        }
+    let published = findings
+        .iter()
+        .chain(&syntax)
+        .filter(|(_, diagnostics)| !diagnostics.is_empty())
+        .map(|(module, _)| module.clone())
+        .collect();
 
-        let source = project.snapshot(module)?;
-        let settings = project.workspace.linting(module).map_err(failure)?;
+    let publications = publications(project, findings, syntax, &versions)?;
+    project.published = published;
 
-        let symbols = match &environments[module] {
-            SymbolOutcome::Ready(symbols) => symbols,
-            SymbolOutcome::Invalid(_) => continue,
-        };
+    Ok(publications)
+}
 
-        let result = lint::lint(&source.text, &settings, symbols);
-
-        let diagnostics = findings.entry(module.clone()).or_default();
-
-        match result {
-            Ok(findings) => {
-                for finding in findings {
-                    diagnostics.push(diagnostics::finding(
-                        source.range(finding.range, project.encoding)?,
-                        finding.rule,
-                        finding.severity,
-                        finding.message,
-                    ));
-                }
-            }
-
-            Err(failure) => {
-                let (code, error) = match failure {
-                    lint::Failure::Syntax(error) => ("syntax", error),
-                    lint::Failure::Directive(error) => ("lint", error),
-                };
-
-                diagnostics.push(diagnostics::error(
-                    source.range(error.range, project.encoding)?,
-                    code,
-                    error.message,
-                ));
-            }
-        }
+fn publications(
+    project: &Project,
+    mut findings: BTreeMap<String, Vec<Diagnostic>>,
+    syntax: BTreeMap<String, Vec<Diagnostic>>,
+    versions: &BTreeMap<String, Option<i32>>,
+) -> Result<Vec<PublishDiagnosticsParams>> {
+    for (module, diagnostics) in syntax {
+        findings.entry(module).or_default().extend(diagnostics);
     }
 
     for module in &project.published {
@@ -251,7 +337,6 @@ pub(crate) fn collect(
     }
 
     let mut publications = Vec::new();
-    let mut published = BTreeSet::new();
 
     for (module, diagnostics) in findings {
         let uri = document::uri(Path::new(&module))?;
@@ -263,14 +348,8 @@ pub(crate) fn collect(
                 .and_then(|source| source.version)
         });
 
-        if !diagnostics.is_empty() {
-            published.insert(module);
-        }
-
         publications.push(diagnostics::publication(uri, version, diagnostics));
     }
-
-    project.published = published;
 
     Ok(publications)
 }
@@ -292,7 +371,7 @@ fn environment(
         None => document::uri(Path::new(module))?,
     };
 
-    let snapshot = Document::new(uri.clone(), Arc::clone(&invalid.text), None, 0);
+    let snapshot = Document::new(uri.clone(), Arc::clone(&invalid.text), None, 0)?;
     let range = snapshot.range(invalid.error.range.clone(), project.encoding)?;
     let position = snapshot.position(invalid.error.range.start, Encoding::Scalars)?;
 

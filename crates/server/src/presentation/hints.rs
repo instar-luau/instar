@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use tower_lsp_server::{
     gen_lsp_types::{InlayHint, InlayHintParams},
-    jsonrpc::{Error, ErrorCode, Result},
+    jsonrpc::{Error, Result},
 };
 
 use crate::{configuration, error::failure, output::hints, project::Project};
@@ -139,14 +139,8 @@ pub(crate) fn inlay_hint_resolve_source(
     project: &mut Project,
     parameters: &InlayHint,
 ) -> Result<ControlFlow<InlayHint>> {
-    let record: Annotation = match project.resolve(parameters.data.clone()) {
-        Ok((_, record)) => record,
-
-        Err(error) if error.code == ErrorCode::ContentModified => {
-            return Ok(ControlFlow::Continue(()));
-        }
-
-        Err(error) => return Err(error),
+    let Some((_, record)) = project.resolve::<Annotation>(parameters.data.clone())? else {
+        return Ok(ControlFlow::Break(parameters.clone()));
     };
 
     if !is_configured(project, &record.kind) {
@@ -161,7 +155,9 @@ pub(crate) fn inlay_hint_resolve(
     frontend: &mut Frontend<'_>,
     mut parameters: InlayHint,
 ) -> Result<InlayHint> {
-    let (module, record): (_, Annotation) = project.resolve(parameters.data.clone())?;
+    let Some((module, record)) = project.resolve::<Annotation>(parameters.data.clone())? else {
+        return Ok(parameters);
+    };
 
     if !is_configured(project, &record.kind) {
         return Err(Error::content_modified());

@@ -11,10 +11,11 @@
 
 namespace instar::luau {
     namespace {
-        class Navigation final : public Luau::Require::NavigationContext {
+        class Navigation final : public Luau::Require::NavigationContext, public Luau::RequireNode {
         public:
             Navigation(const Context &context, Frontend &frontend, const Luau::ModuleInfo &requirer, std::string source)
-                : context(context), frontend(frontend), requirer(requirer), source(std::move(source)) {}
+                : current(source), context(context), frontend(frontend), requirer(requirer), source(std::move(source)) {
+            }
 
             NavigateResult resetToRequirer() override {
                 current = source;
@@ -62,6 +63,66 @@ namespace instar::luau {
                 return move(status, destination);
             }
 
+            std::string getPathComponent() const override {
+                return component;
+            }
+
+            std::unique_ptr<Luau::RequireNode> resolvePathToNode(const std::string &path) const override {
+                auto navigation = std::make_unique<Navigation>(*this);
+                Luau::Require::ErrorHandler errors;
+                Luau::Require::Navigator navigator(*navigation, errors);
+
+                const auto target = path == "." || path == ".." ? path + "/" : path;
+
+                if (navigator.navigate(target) != Luau::Require::Navigator::Status::Success) {
+                    return nullptr;
+                }
+
+                return navigation;
+            }
+
+            std::vector<std::unique_ptr<Luau::RequireNode>> getChildren() const override {
+                std::vector<std::string> names;
+
+                if (hierarchy) {
+                    names = hierarchy->children(current);
+                } else {
+                    for (const auto &name : context.children(current)) {
+                        names.emplace_back(name);
+                    }
+                }
+
+                std::vector<std::unique_ptr<Luau::RequireNode>> result;
+
+                for (const auto &name : names) {
+                    auto child = std::make_unique<Navigation>(*this);
+
+                    if (child->toChild(name) == NavigateResult::Success) {
+                        child->component = name;
+                        result.push_back(std::move(child));
+                    }
+                }
+
+                return result;
+            }
+
+            std::vector<Luau::RequireAlias> getAvailableAliases() const override {
+                std::vector<Luau::RequireAlias> aliases;
+
+                for (const auto &name : context.aliases(source)) {
+                    aliases.emplace_back(std::string(name));
+                }
+
+                if (frontend.hierarchy(requirer.name) &&
+                    std::none_of(aliases.begin(), aliases.end(), [](const auto &alias) {
+                        return alias.alias == "game";
+                    })) {
+                    aliases.emplace_back("game");
+                }
+
+                return aliases;
+            }
+
             std::string current;
 
         private:
@@ -94,14 +155,37 @@ namespace instar::luau {
 
             const Context &context;
             Frontend &frontend;
-            const Luau::ModuleInfo &requirer;
+            const Luau::ModuleInfo requirer;
             const std::string source;
             const Instances *hierarchy = nullptr;
+            std::string component;
+        };
+
+        class Suggestions final : public Luau::RequireSuggester {
+        public:
+            Suggestions(const Context &context, Frontend &frontend, const Host &host)
+                : context(context), frontend(frontend), host(host) {}
+
+        private:
+            std::unique_ptr<Luau::RequireNode> getNode(const Luau::ModuleName &name) const override {
+                return std::make_unique<Navigation>(
+                    context,
+                    frontend,
+                    Luau::ModuleInfo{name},
+                    host.getHumanReadableModuleName(name)
+                );
+            }
+
+            const Context &context;
+            Frontend &frontend;
+            const Host &host;
         };
     }
 
     Host::Host(const Context &context, const Flags &flags, Frontend &frontend)
-        : callbacks(context), flags(flags), frontend(frontend) {}
+        : callbacks(context), flags(flags), frontend(frontend) {
+        requireSuggester = std::make_shared<Suggestions>(context, frontend, *this);
+    }
 
     std::optional<Luau::SourceCode> Host::readSource(const Luau::ModuleName &name) {
         hierarchy = nullptr;
@@ -333,6 +417,9 @@ namespace instar::luau {
 
         Settings settings;
         auto &native = settings.configuration;
+
+        native.typeErrors = configuration.type_errors;
+
         native.parseOptions.allowDeclarationSyntax = true;
 
         switch (configuration.mode) {

@@ -1,5 +1,3 @@
-use instar_core::analysis;
-
 use tower_lsp_server::{
     gen_lsp_types::{
         Color, ColorInformation, ColorPresentation, ColorPresentationParams, DocumentColorParams,
@@ -23,7 +21,7 @@ pub(crate) fn document_color(
     let document = project.snapshot(&module)?;
 
     document
-        .analysis
+        .analysis()
         .colors
         .iter()
         .map(|color| {
@@ -56,21 +54,22 @@ pub(crate) fn color_presentation(
     let range = document.bytes(parameters.range, project.encoding)?;
     let color = parameters.color;
 
-    analysis::color_presentations(
-        &document.text,
-        range,
-        [color.red, color.green, color.blue, color.alpha].map(f64::from),
-    )
-    .into_iter()
-    .map(|edit| {
-        Ok(ColorPresentation {
-            label: edit.replacement.clone(),
-            text_edit: Some(TextEdit {
-                range: document.range(edit.range, project.encoding)?,
-                new_text: edit.replacement,
-            }),
-            additional_text_edits: None,
+    document
+        .analysis()
+        .color_presentations(
+            range,
+            [color.red, color.green, color.blue, color.alpha].map(f64::from),
+        )
+        .into_iter()
+        .map(|edit| {
+            Ok(ColorPresentation {
+                label: edit.replacement.clone(),
+                text_edit: Some(TextEdit {
+                    range: document.range(edit.range, project.encoding)?,
+                    new_text: edit.replacement,
+                }),
+                additional_text_edits: None,
+            })
         })
-    })
-    .collect()
+        .collect()
 }

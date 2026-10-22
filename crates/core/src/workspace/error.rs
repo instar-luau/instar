@@ -30,12 +30,14 @@ pub enum Error {
     },
 
     /// A sourcemap generator could not run successfully.
-    #[error("Could not generate a sourcemap with `{executable}`.")]
+    #[error("Could not generate a sourcemap with `{executable}`.{details}")]
     Generate {
         /// The generator executable.
         executable: String,
         /// The process or output failure.
         source: io::Error,
+        /// Additional generator diagnostics.
+        details: String,
     },
 
     /// A generator returned an invalid sourcemap.
@@ -62,6 +64,15 @@ pub enum Error {
     /// Configuration could not be loaded or deserialized.
     #[error("Invalid configuration.")]
     Configuration(#[source] Box<figment::Error>),
+
+    /// Native language configuration could not be parsed or evaluated.
+    #[error("Invalid language configuration `{}`.", path.display())]
+    Language {
+        /// The configuration file.
+        path: PathBuf,
+        /// The native parsing or execution failure.
+        source: instar_bridge::Error,
+    },
 
     /// Native environment settings could not be validated.
     #[error("Could not prepare analysis.")]

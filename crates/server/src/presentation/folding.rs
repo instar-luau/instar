@@ -30,7 +30,7 @@ pub(crate) fn folding_range(
 
     let mut ranges = Vec::new();
 
-    for fold in &document.analysis.folds {
+    for fold in &document.analysis().folds {
         let range = document.range(fold.range.clone(), project.encoding)?;
 
         let end_line = if range.end.character == 0 {

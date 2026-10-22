@@ -5,7 +5,9 @@ use std::{
     sync::Arc,
 };
 
+use instar_core::workspace::Generators;
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 
 use tower_lsp_server::{
     gen_lsp_types::Uri,
@@ -161,6 +163,9 @@ impl State {
             self.configuration.clone(),
             Arc::clone(&self.capabilities),
             self.encoding,
+            Generators::new(&CancellationToken::new(), |executable, message| {
+                tracing::info!(executable, message, "Sourcemap generator");
+            }),
         )?;
 
         let root = project.workspace.directory().to_owned();
@@ -393,6 +398,11 @@ impl State {
     }
 
     pub(super) fn synchronize(&mut self, root: &Path) -> Result<()> {
+        self.projects
+            .get_mut(root)
+            .expect("Internal error: synchronized project is missing.")
+            .advance_generators()?;
+
         let mut borrowed = BTreeMap::new();
 
         for (owner, project) in &self.projects {
@@ -521,6 +531,9 @@ impl State {
             self.configuration.clone(),
             Arc::clone(&self.capabilities),
             self.encoding,
+            Generators::new(&CancellationToken::new(), |executable, message| {
+                tracing::info!(executable, message, "Sourcemap generator");
+            }),
         )?;
 
         project.should_index = false;

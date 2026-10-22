@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     ops::{ControlFlow, Range},
+    sync::Arc,
 };
 
 use instar_bridge::Frontend;
@@ -45,13 +46,13 @@ pub(super) fn code_action(
     };
 
     let findings = if is_requested("quickfix") || is_requested("source.fixAll.instar") {
-        project.findings(&module, &document.text)?
+        project.findings(&module, &document)?
     } else {
-        Vec::new()
+        Arc::from([])
     };
 
     if is_requested("quickfix") {
-        for finding in &findings {
+        for finding in findings.iter() {
             if finding.edits.is_empty() || !is_intersecting(&range, &finding.range) {
                 continue;
             }
@@ -113,10 +114,11 @@ pub(super) fn code_action(
             .collect();
 
         let selected: Vec<_> = findings
-            .into_iter()
+            .iter()
             .filter(|finding| {
                 parameters.context.diagnostics.is_empty() || rules.contains(&finding.rule)
             })
+            .cloned()
             .collect();
 
         if let Ok(edit) = fix(project, &module, &document, &selected)
@@ -140,7 +142,7 @@ pub(super) fn action(project: &mut Project, module: &str, kind: &str) -> Result<
     match kind {
         "source.fixAll" | "source.fixAll.instar" => {
             let document = project.snapshot(module)?;
-            let findings = project.findings(module, &document.text)?;
+            let findings = project.findings(module, &document)?;
 
             fix(project, module, &document, &findings)
         }
@@ -159,8 +161,8 @@ pub(super) fn prepare_rename_source(
     let document = project.snapshot(&module)?;
     let offset = document.offset(parameters.position, project.encoding)?;
 
-    if let Some(target) = document.analysis.prepare_rename(offset)
-        && !document.analysis.bindings.iter().any(|binding| {
+    if let Some(target) = document.analysis().prepare_rename(offset)
+        && !document.analysis().bindings.iter().any(|binding| {
             binding.is_exported
                 && binding
                     .occurrences
@@ -188,7 +190,7 @@ pub(super) fn prepare_rename(
     let document = project.snapshot(&module)?;
     let offset = document.offset(parameters.position, project.encoding)?;
 
-    let Some(token) = document.analysis.tokens.iter().find(|token| {
+    let Some(token) = document.analysis().tokens.iter().find(|token| {
         token.range.contains(&offset)
             && matches!(
                 token.kind,
@@ -231,13 +233,13 @@ pub(super) fn rename_source(
     let document = project.snapshot(&module)?;
     let offset = document.offset(position.position, project.encoding)?;
 
-    if document.analysis.prepare_rename(offset).is_some() {
+    if document.analysis().prepare_rename(offset).is_some() {
         let edits = document
-            .analysis
+            .analysis()
             .rename(offset, &parameters.new_name)
             .map_err(failure)?;
 
-        if !document.analysis.bindings.iter().any(|binding| {
+        if !document.analysis().bindings.iter().any(|binding| {
             binding.is_exported
                 && binding
                     .occurrences

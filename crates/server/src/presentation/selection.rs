@@ -17,7 +17,7 @@ pub(crate) fn selection_range(
         let offset = document.offset(position, project.encoding)?;
         let mut parent: Option<Box<SelectionRange>> = None;
 
-        for range in document.analysis.selection(offset).into_iter().rev() {
+        for range in document.analysis().selection(offset).into_iter().rev() {
             let range = document.range(range, project.encoding)?;
 
             if parent

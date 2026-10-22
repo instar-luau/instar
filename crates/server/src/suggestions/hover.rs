@@ -1,5 +1,6 @@
+use std::collections::BTreeSet;
+
 use instar_bridge::Frontend;
-use instar_core::presentation;
 
 use tower_lsp_server::{
     gen_lsp_types::{Contents, Hover, HoverParams},
@@ -23,19 +24,57 @@ pub(crate) fn hover(
 
     let mut sections = Vec::new();
     let mut range = None;
+    let mut descriptions = BTreeSet::new();
+    let information = frontend.hover(&module, line, column).map_err(failure)?;
 
-    for value in frontend.hover(&module, line, column).map_err(failure)? {
-        let detail = presentation::hover(&value).map_err(failure)?;
-
-        let documentation = documentation::documentation(
+    for value in information {
+        let metadata = documentation::overload(
             project,
             &module,
             &value.documentation_symbol,
-            &value.documentation,
+            &value.documentation_signature,
+        )?;
+
+        let text = documentation::render(
+            project,
+            &module,
+            metadata.as_deref(),
+            value.receiver,
             should_use_markdown,
         )?;
 
-        let section = documentation::presentation(&detail, &documentation, should_use_markdown)?;
+        let description = if descriptions.insert(text.clone()) {
+            text.as_str()
+        } else {
+            ""
+        };
+
+        let mut section = if value.namespace {
+            let name = if should_use_markdown {
+                format!("**{}**", value.presentation)
+            } else {
+                value.presentation.clone()
+            };
+
+            if description.is_empty() {
+                name
+            } else {
+                format!("{name}\n\n{description}")
+            }
+        } else {
+            documentation::presentation(&value.presentation, description, should_use_markdown)?
+        };
+
+        if value.selected {
+            section = format!(
+                "{}\n\n{section}",
+                if should_use_markdown {
+                    "**Selected overload**"
+                } else {
+                    "Selected overload"
+                }
+            );
+        }
 
         if !sections.contains(&section) {
             sections.push(section);

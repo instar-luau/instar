@@ -6,14 +6,20 @@
 #include <cstddef>
 #include <map>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <variant>
 
 namespace instar::luau {
     struct Flag;
 
+    struct FlagConflict : std::invalid_argument {
+        using std::invalid_argument::invalid_argument;
+    };
+
     class Flags {
     public:
+        Flags();
         explicit Flags(rust::Slice<const Flag> flags);
         ~Flags();
         Flags(const Flags &) = delete;

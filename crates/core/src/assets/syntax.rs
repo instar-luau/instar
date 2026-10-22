@@ -6,7 +6,7 @@ use vermis::{
     tree::{NodeIndex, NodeKind, TokenIndex, Tree},
 };
 
-use crate::syntax::{self, is_identifier};
+use crate::syntax::{self, is_identifier, literal::quoted};
 
 use super::{
     Error,
@@ -50,26 +50,14 @@ impl Output {
         self.atoms.push(Atom::Source(source.into()));
     }
 
-    pub(super) fn name(&mut self, name: &str) -> Result<(), Error> {
-        if !is_identifier(name) {
-            return Err(invalid(format!("Invalid declaration identifier `{name}`.")));
-        }
-
-        self.source(name);
-
-        Ok(())
-    }
-
-    pub(super) fn property(&mut self, name: &str) -> Result<(), Error> {
+    pub(super) fn property(&mut self, name: &str) {
         if is_identifier(name) {
             self.source(name);
         } else {
             self.symbol(Symbol::LeftBracket);
-            self.source(quoted(name)?);
+            self.source(quoted(name));
             self.symbol(Symbol::RightBracket);
         }
-
-        Ok(())
     }
 
     pub(super) fn newline(&mut self) {
@@ -80,7 +68,7 @@ impl Output {
         self.atoms.extend(output.atoms);
     }
 
-    pub(super) fn finish(&self, is_cancelled: fn() -> bool) -> Result<String, Error> {
+    pub(super) fn finish(&self, is_cancelled: &dyn Fn() -> bool) -> Result<String, Error> {
         let mut emitter = Emitter::new(LineEnding::LineFeed);
 
         for atom in &self.atoms {
@@ -133,7 +121,7 @@ pub(super) fn parse(source: &str) -> Result<Tree<'_>, Error> {
     })
 }
 
-pub(super) fn blocks(source: &str, is_cancelled: fn() -> bool) -> Result<Vec<Block>, Error> {
+pub(super) fn blocks(source: &str, is_cancelled: &dyn Fn() -> bool) -> Result<Vec<Block>, Error> {
     let tree = parse(source)?;
     let mut result = Vec::new();
 
@@ -198,37 +186,18 @@ pub(super) fn blocks(source: &str, is_cancelled: fn() -> bool) -> Result<Vec<Blo
 
 pub(super) fn replacements(
     source: &str,
-    is_cancelled: fn() -> bool,
+    is_cancelled: &dyn Fn() -> bool,
 ) -> Result<Vec<(String, Vec<Replacement>)>, Error> {
     let tree = parse(source)?;
     let mut result = Vec::new();
 
-    for statement in statements(&tree)? {
+    for (name, members) in tree.nodes.iter().filter_map(|node| match &node.kind {
+        NodeKind::Class { name, members, .. } => Some((name, members)),
+        _ => None,
+    }) {
         if is_cancelled() {
             return Err(Error::Cancelled);
         }
-
-        if !matches!(
-            tree.node(statement).kind,
-            NodeKind::Declaration {
-                external: Some(_),
-                ..
-            }
-        ) {
-            return Err(invalid("Invalid member declaration."));
-        }
-
-        let declaration = declaration(&tree, statement);
-
-        let NodeKind::Class {
-            name,
-            members,
-            end: Some(_),
-            ..
-        } = &tree.node(declaration).kind
-        else {
-            return Err(invalid("Invalid member declaration."));
-        };
 
         let mut signatures = Vec::new();
 
@@ -239,17 +208,11 @@ pub(super) fn replacements(
                 } => name,
 
                 NodeKind::TypeField { key, .. } => key,
-                _ => return Err(invalid("Invalid replacement member.")),
+                _ => continue,
             };
 
-            let name = text(&tree, name)?.to_owned();
-
-            if !is_identifier(&name) {
-                return Err(invalid("Invalid replacement member name."));
-            }
-
             signatures.push(Replacement {
-                name,
+                name: text(&tree, name)?.to_owned(),
                 source: text(&tree, member.node)?.to_owned(),
             });
         }
@@ -260,7 +223,7 @@ pub(super) fn replacements(
     Ok(result)
 }
 
-pub(super) fn ordered(source: &str, is_cancelled: fn() -> bool) -> Result<String, Error> {
+pub(super) fn ordered(source: &str, is_cancelled: &dyn Fn() -> bool) -> Result<String, Error> {
     let mut pending = blocks(source, is_cancelled)?;
     let mut emitted = BTreeSet::new();
     let mut output = Output::default();
@@ -314,7 +277,7 @@ pub(super) fn injected(
     globals: &[String],
     exports: &[String],
     declarations: &[Block],
-    is_cancelled: fn() -> bool,
+    is_cancelled: &dyn Fn() -> bool,
 ) -> Result<String, Error> {
     let mut sections = String::new();
     let mut remaining = source;
@@ -393,42 +356,4 @@ fn declaration(tree: &Tree<'_>, mut index: NodeIndex) -> NodeIndex {
 fn text<'source>(tree: &Tree<'source>, index: NodeIndex) -> Result<&'source str, Error> {
     from_utf8(tree.text(index))
         .map_err(|error| invalid(format!("Declaration text is not valid UTF-8. {error}")))
-}
-
-fn quoted(value: &str) -> Result<String, Error> {
-    let quoted = serde_json::to_string(value).map_err(|source| Error::Data {
-        input: "property name".to_owned(),
-        source,
-    })?;
-
-    let mut result = String::with_capacity(quoted.len());
-    let mut characters = quoted.chars();
-
-    while let Some(character) = characters.next() {
-        result.push(character);
-
-        if character == '\\'
-            && let Some(escaped) = characters.next()
-        {
-            match escaped {
-                'u' => {
-                    result.push_str("u{");
-
-                    for _ in 0..4 {
-                        if let Some(digit) = characters.next() {
-                            result.push(digit);
-                        }
-                    }
-
-                    result.push('}');
-                }
-
-                'b' => result.push_str("x08"),
-                'f' => result.push_str("x0c"),
-                escaped => result.push(escaped),
-            }
-        }
-    }
-
-    Ok(result)
 }

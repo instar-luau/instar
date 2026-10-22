@@ -6,13 +6,18 @@ use std::{
     sync::Arc,
 };
 
-use figment::Figment;
+use figment::{Figment, providers::Serialized};
+use instar_bridge::{Language, Mode};
+use serde_json::json;
+use tokio_util::sync::CancellationToken;
 
-use super::{Error, Generators, discovery, environment::Registry, instances, paths};
+use super::{
+    Error, Generators, assets::Assets, discovery, environment::Registry, instances, paths,
+};
 
 use crate::{
     format, lint,
-    settings::{Configuration, resolve},
+    settings::{Configuration, check, defaults, resolve},
 };
 
 /// Filesystem sources with cached, automatically discovered configuration scopes.
@@ -28,16 +33,17 @@ pub struct Workspace {
     pub(super) sources: RefCell<BTreeMap<String, Arc<str>>>,
     pub(super) snapshots: RefCell<BTreeMap<String, Option<Arc<str>>>>,
     pub(super) observed_paths: RefCell<BTreeSet<PathBuf>>,
+    pub(super) assets: Assets,
     pub(super) environments: RefCell<Registry>,
-    pub(super) is_cancelled: RefCell<Rc<dyn Fn() -> bool>>,
+    pub(super) cancellation: RefCell<CancellationToken>,
     pub(super) generation: Option<Generators>,
 }
 
 impl Workspace {
     /// Open a workspace, applying JSON overrides after its TOML layers.
     ///
-    /// An empty file list discovers ancestor and nested `instar.toml` files.
-    /// Explicit files replace discovery and apply in the supplied order.
+    /// Discovers ancestor and nested project and native language configuration files.
+    /// Explicit files replace project configuration discovery in the supplied order.
     /// Relative explicit files and override paths use the workspace root.
     ///
     /// # Errors
@@ -55,8 +61,9 @@ impl Workspace {
             sources: RefCell::new(BTreeMap::new()),
             snapshots: RefCell::new(BTreeMap::new()),
             observed_paths: RefCell::new(BTreeSet::new()),
+            assets: Assets::default(),
             environments: RefCell::new(Registry::default()),
-            is_cancelled: RefCell::new(Rc::new(|| false)),
+            cancellation: RefCell::new(CancellationToken::new()),
             generation: None,
         };
 
@@ -65,26 +72,31 @@ impl Workspace {
         Ok(workspace)
     }
 
-    /// Use the supplied callback to cancel background workspace operations.
+    /// Use the supplied token to cancel background workspace operations.
     #[must_use]
-    pub fn with_cancellation(self, is_cancelled: impl Fn() -> bool + 'static) -> Self {
-        self.set_cancellation(is_cancelled);
+    pub fn with_cancellation(self, cancellation: CancellationToken) -> Self {
+        self.set_cancellation(cancellation);
 
         self
     }
 
-    /// Replace the callback captured by subsequent synchronous workspace operations.
-    pub fn set_cancellation(&self, is_cancelled: impl Fn() -> bool + 'static) {
-        *self.is_cancelled.borrow_mut() = Rc::new(is_cancelled);
+    /// Replace the token captured by subsequent synchronous workspace operations.
+    pub fn set_cancellation(&self, cancellation: CancellationToken) {
+        *self.cancellation.borrow_mut() = cancellation;
     }
 
     /// Share persistent sourcemap producers with this workspace.
     #[must_use]
     pub fn with_generators(mut self, generators: Generators) -> Self {
-        self.generation = Some(generators);
-        *self.instances.get_mut() = instances::Registry::default();
+        self.set_generators(generators);
 
         self
+    }
+
+    /// Replace the persistent sourcemap producers and invalidate cached instance maps.
+    pub fn set_generators(&mut self, generators: Generators) {
+        self.generation = Some(generators);
+        *self.instances.get_mut() = instances::Registry::default();
     }
 
     /// Reload configuration, preserving the previous scopes if the root cannot load.
@@ -154,24 +166,6 @@ impl Workspace {
         dependencies
     }
 
-    /// Identify configuration, resolution, and environment inputs that require a full reload.
-    ///
-    /// Existing dependency paths are compared by canonical identity; missing candidates are skipped.
-    ///
-    /// # Errors
-    /// Returns inaccessible paths or an unavailable module identity.
-    pub fn should_reload(&self, module: &str) -> Result<bool, Error> {
-        let module = paths::canonical(Path::new(module))?;
-
-        for path in self.reload_dependencies() {
-            if paths::metadata(&path)?.is_some() && paths::canonical(&path)? == module {
-                return Ok(true);
-            }
-        }
-
-        Ok(false)
-    }
-
     /// Normalize a path relative to the root without accessing the filesystem.
     ///
     /// # Errors
@@ -228,17 +222,38 @@ impl Workspace {
 
 pub(super) struct Scope {
     pub(super) layers: Figment,
+    pub(super) language: Option<Language>,
     pub(super) configuration: Configuration,
     pub(super) format: Arc<format::Prepared>,
     pub(super) lint: Arc<lint::Prepared>,
-    pub(super) environments: RefCell<BTreeMap<bool, Option<String>>>,
-    pub(super) builtins: RefCell<Option<Arc<str>>>,
+    pub(super) symbols: RefCell<BTreeMap<Option<String>, super::SymbolOutcome>>,
 }
 
 impl Scope {
-    pub(super) fn new(base: &Path, layers: Figment, overrides: &[String]) -> Result<Self, Error> {
-        let configuration =
-            resolve(base, layers.clone(), overrides).map_err(Error::Configuration)?;
+    pub(super) fn new(
+        base: &Path,
+        layers: Figment,
+        language: Option<Language>,
+        overrides: &[String],
+    ) -> Result<Self, Error> {
+        let mut settings = defaults();
+
+        if let Some(language) = &language {
+            let mode = match language.mode() {
+                Mode::Strict => check::Mode::Strict,
+                Mode::NonStrict => check::Mode::NonStrict,
+                Mode::NoCheck => check::Mode::NoCheck,
+            };
+
+            settings = settings.merge(Serialized::defaults(json!({
+                "check": { "mode": mode },
+                "environment": { "globals": language.globals() },
+                "resolve": { "aliases": language.aliases() },
+            })));
+        }
+
+        let configuration = resolve(base, settings.merge(layers.clone()), overrides)
+            .map_err(Error::Configuration)?;
 
         let format = format::Prepared::new(&configuration.format).map_err(|mut error| {
             error.path.insert(0, "format".to_owned());
@@ -255,11 +270,11 @@ impl Scope {
 
         Ok(Self {
             layers,
+            language,
             configuration,
             format: Arc::new(format),
             lint: Arc::new(lint),
-            environments: RefCell::new(BTreeMap::new()),
-            builtins: RefCell::new(None),
+            symbols: RefCell::default(),
         })
     }
 }

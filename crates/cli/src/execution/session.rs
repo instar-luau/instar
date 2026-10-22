@@ -21,7 +21,7 @@ use crate::{
 
 pub(crate) enum Response {
     Completed(Batch),
-    Reload { should_reset: bool },
+    Reload,
 }
 
 pub(crate) enum Outcome {
@@ -62,11 +62,7 @@ pub(crate) fn session(
         let mut batch = match result? {
             Response::Completed(batch) => batch,
 
-            Response::Reload { should_reset } => {
-                if should_reset && let Some(watcher) = &mut watcher {
-                    watcher.reset()?;
-                }
-
+            Response::Reload => {
                 return Ok(Outcome::Reload { started });
             }
         };

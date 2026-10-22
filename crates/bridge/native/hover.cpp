@@ -1,22 +1,82 @@
 #include "hover.hpp"
 
 #include "Luau/AstQuery.h"
+#include "Luau/Lexer.h"
+#include "Luau/StringUtils.h"
 #include "query.hpp"
 
+#include <algorithm>
+#include <cstdint>
 #include <optional>
 #include <unordered_set>
 #include <utility>
 
 namespace instar::luau::query {
     namespace {
-        std::optional<std::string>
-        property_documentation(Luau::TypeId root, const std::string &name, PresentationBudget &budget) {
+        enum class HoverKind : std::uint8_t {
+            Local,
+            Global,
+            Alias,
+            Field,
+            Type,
+            LocalFunction,
+            Function,
+            Parameter,
+            Loop,
+            Constant,
+            ConstantFunction,
+        };
+
+        struct Target {
+            Luau::TypeId type = nullptr;
+            Luau::TypeId declared_type = nullptr;
+            Luau::TypePackId pack = nullptr;
+            Luau::Location location;
+            std::string symbol;
+            std::string documentation_symbol;
+            bool is_alias = false;
+            std::string qualifier;
+            std::vector<Luau::TypeId> type_arguments;
+            std::vector<Luau::TypePackId> pack_arguments;
+            HoverKind kind = HoverKind::Type;
+
+            Target(
+                Luau::TypeId type, Luau::TypePackId pack, Luau::Location location, std::string symbol = {},
+                HoverKind kind = HoverKind::Type
+            )
+                : type(type), pack(pack), location(location), symbol(std::move(symbol)), kind(kind) {}
+        };
+
+        std::string documented_name(const std::string &symbol) {
+            for (const std::string prefix : {"/global/", "/globaltype/"}) {
+                if (const auto start = symbol.find(prefix); start != std::string::npos) {
+                    const auto begin = start + prefix.size();
+                    const auto end = symbol.find('/', begin);
+
+                    if (end != std::string::npos && symbol.find("/overload/", end) != end) {
+                        return {};
+                    }
+
+                    return symbol.substr(begin, end - begin);
+                }
+            }
+
+            return {};
+        }
+
+        void property(Target &target, const Luau::Module &module, Luau::AstExpr *receiver, PresentationBudget &budget) {
             struct Lookup {
                 Luau::TypeId type;
                 bool is_metatable;
             };
 
-            std::vector<Lookup> pending{{root, false}};
+            const auto *root = module.astTypes.find(receiver);
+
+            if (!root) {
+                return;
+            }
+
+            std::vector<Lookup> pending{{*root, false}};
             std::unordered_set<Luau::TypeId> direct_seen;
             std::unordered_set<Luau::TypeId> metatable_seen;
 
@@ -59,14 +119,28 @@ namespace instar::luau::query {
                 }
 
                 if (properties) {
-                    const auto found = properties->find(current.is_metatable ? "__index" : name);
+                    const auto found = properties->find(current.is_metatable ? "__index" : target.symbol);
 
                     if (found == properties->end()) {
                         continue;
                     }
 
                     if (!current.is_metatable) {
-                        return found->second.documentationSymbol;
+                        target.declared_type = found->second.readTy.value_or(found->second.writeTy.value_or(nullptr));
+
+                        if (const auto &symbol = found->second.documentationSymbol) {
+                            target.documentation_symbol = *symbol;
+                        }
+
+                        if (const auto *external = Luau::get<Luau::ExternType>(current.type)) {
+                            target.qualifier = external->name;
+                        } else if (const auto *table = Luau::get<Luau::TableType>(current.type)) {
+                            target.qualifier = current.type->documentationSymbol
+                                                   ? documented_name(*current.type->documentationSymbol)
+                                                   : table->name.value_or("");
+                        }
+
+                        return;
                     }
 
                     const auto type = found->second.readTy ? found->second.readTy : found->second.writeTy;
@@ -76,32 +150,7 @@ namespace instar::luau::query {
                     }
                 }
             }
-
-            return std::nullopt;
         }
-
-        struct Target {
-            Luau::TypeId type = nullptr;
-            Luau::TypePackId pack = nullptr;
-            Luau::Location location;
-            std::string symbol;
-            std::string documentation_symbol;
-            bool is_alias = false;
-            std::string qualifier;
-            std::vector<Luau::TypeId> type_arguments;
-            std::vector<Luau::TypePackId> pack_arguments;
-            HoverKind kind = HoverKind::Type;
-
-            Target(
-                Luau::TypeId type, Luau::TypePackId pack, Luau::Location location, std::string symbol = {},
-                HoverKind kind = HoverKind::Type
-            )
-                : type(type), pack(pack), location(location), symbol(std::move(symbol)), kind(kind) {
-                if (type && type->documentationSymbol) {
-                    documentation_symbol = *type->documentationSymbol;
-                }
-            }
-        };
 
         class Declaration final : public Luau::AstVisitor {
         public:
@@ -225,7 +274,7 @@ namespace instar::luau::query {
                             : HoverKind::Type};
 
                     if (node->is<Luau::AstExprLocal>() || node->is<Luau::AstExprGlobal>()) {
-                        candidate.documentation_symbol = documentation(prepared.source, module, position);
+                        candidate.documentation_symbol = documentation(prepared.source, module, position, budget);
                     }
 
                     accept(std::move(candidate));
@@ -260,7 +309,8 @@ namespace instar::luau::query {
                         node->index.value,
                         HoverKind::Field};
 
-                    candidate.documentation_symbol = documentation(prepared.source, module, position);
+                    candidate.documentation_symbol = documentation(prepared.source, module, position, budget);
+                    property(candidate, module, node->expr, budget);
                     accept(std::move(candidate));
 
                     return false;
@@ -284,13 +334,7 @@ namespace instar::luau::query {
                         std::string(key->value.data, key->value.size),
                         HoverKind::Field};
 
-                    const auto *receiver = module.astTypes.find(node->expr);
-
-                    if (receiver) {
-                        if (const auto symbol = property_documentation(*receiver, candidate.symbol, budget)) {
-                            candidate.documentation_symbol = *symbol;
-                        }
-                    }
+                    property(candidate, module, node->expr, budget);
 
                     accept(std::move(candidate));
 
@@ -512,7 +556,7 @@ namespace instar::luau::query {
                         name->name.value,
                         HoverKind::Function};
 
-                    candidate.documentation_symbol = documentation(prepared.source, module, position);
+                    candidate.documentation_symbol = documentation(prepared.source, module, position, budget);
                     accept(std::move(candidate));
 
                     return false;
@@ -632,6 +676,14 @@ namespace instar::luau::query {
                     return;
                 }
 
+                if (candidate.documentation_symbol.empty()) {
+                    candidate.documentation_symbol = documentation(candidate.type, budget);
+                }
+
+                if (candidate.documentation_symbol.empty()) {
+                    candidate.documentation_symbol = documentation(candidate.declared_type, budget);
+                }
+
                 result = std::move(candidate);
             }
 
@@ -658,7 +710,7 @@ namespace instar::luau::query {
                         local->name.value,
                         binding_kind(local)};
 
-                    candidate.documentation_symbol = documentation(prepared.source, module, position);
+                    candidate.documentation_symbol = documentation(prepared.source, module, position, budget);
                     accept(std::move(candidate));
                 }
             }
@@ -711,7 +763,7 @@ namespace instar::luau::query {
     }
 
     rust::Vec<NativeHover> hover(
-        Luau::Frontend &frontend, const Host &host, const Prepared &prepared, Luau::Position position,
+        Luau::Frontend &, const Host &host, const Prepared &prepared, Luau::Position position,
         PresentationBudget &budget
     ) {
         rust::Vec<NativeHover> result;
@@ -729,40 +781,142 @@ namespace instar::luau::query {
             return result;
         }
 
-        Extraction extraction(
-            budget,
-            true,
-            Luau::findScopeAtPosition(prepared.module, position),
-            prepared.module,
-            prepared.source,
-            *frontend.builtinTypes,
-            frontend.moduleResolver
-        );
+        Printer printer(budget, Luau::findScopeAtPosition(prepared.module, position));
 
-        const auto root = target->pack       ? extraction.pack(target->pack)
-                          : target->is_alias ? extraction.named(
-                                                   target->type,
-                                                   target->symbol,
-                                                   target->qualifier,
-                                                   target->type_arguments,
-                                                   target->pack_arguments
-                                               )
-                                             : extraction.type(target->type);
+        const auto type =
+            target->type ? Luau::follow(target->type, Luau::FollowOption::DisableLazyTypeThunks) : nullptr;
 
-        rust::Vec<std::uint8_t> symbol;
+        const auto name = documented_name(target->documentation_symbol);
 
-        for (unsigned char byte : target->symbol) {
-            budget.check();
-            symbol.push_back(byte);
+        const bool is_namespace = type && Luau::get<Luau::TableType>(type) && !name.empty() &&
+                                  target->documentation_symbol.find("/global/") != std::string::npos;
+
+        const bool is_binding = target->kind == HoverKind::Local || target->kind == HoverKind::Constant;
+
+        const bool is_qualified_field = target->kind == HoverKind::Field && !target->qualifier.empty() &&
+                                        Luau::isIdentifier(target->symbol) && !Luau::Lexer::isReserved(target->symbol);
+
+        auto functions = overloads(type, budget);
+
+        if (!target->is_alias && !target->symbol.empty() && !functions.empty()) {
+            Luau::TypeId selected = nullptr;
+
+            for (const auto *node : Luau::findAstAncestryOfPosition(prepared.source, position)) {
+                if (const auto *call = node->as<Luau::AstExprCall>(); call && call->func->location.contains(position)) {
+                    if (const auto *resolved = prepared.module.astOverloadResolvedTypes.find(call)) {
+                        selected = Luau::follow(*resolved, Luau::FollowOption::DisableLazyTypeThunks);
+                    }
+                }
+            }
+
+            std::stable_sort(functions.begin(), functions.end(), [selected](auto left, auto right) {
+                return left == selected && right != selected;
+            });
+
+            if (is_binding) {
+                const auto binding =
+                    (target->kind == HoverKind::Constant ? "const " : "local ") + target->symbol +
+                    (!name.empty() && target->documentation_symbol.find("/global/") != std::string::npos
+                            ? ": typeof(" + name + ")"
+                            : "");
+
+                result.push_back(
+                    {locate(host, prepared.module.name, target->location), binding, {}, {}, false, false, false}
+                );
+            }
+
+            for (const auto callable : functions) {
+                budget.check();
+                const auto *function = Luau::get<Luau::FunctionType>(callable);
+
+                auto qualified = name.empty()
+                                     ? (is_qualified_field ? target->qualifier + "." + target->symbol : target->symbol)
+                                     : name;
+
+                if (function->hasSelf) {
+                    if (const auto separator = qualified.rfind('.'); separator != std::string::npos) {
+                        qualified[separator] = ':';
+                    }
+                }
+
+                const std::string prefix = target->kind == HoverKind::LocalFunction      ? "local function "
+                                           : target->kind == HoverKind::ConstantFunction ? "const function "
+                                                                                         : "function ";
+
+                result.push_back(
+                    {locate(host, prepared.module.name, target->location),
+                        printer.finish(
+                            (function->isCheckedFunction ? "@checked " : "") + prefix +
+                            printer.function(*function, qualified, true)
+                        ),
+                        target->documentation_symbol,
+                        printer.signature(callable),
+                        functions.size() > 1 && callable == selected,
+                        false,
+                        function->hasSelf && qualified.find(':') != std::string::npos}
+                );
+            }
+
+            return result;
         }
+
+        const auto describe = [&] {
+            if (target->is_alias) {
+                std::string name =
+                    target->qualifier.empty() ? target->symbol : target->qualifier + "." + target->symbol;
+
+                bool first = true;
+
+                const auto argument = [&](const std::string &text) {
+                    name += first ? "<" : ", ";
+                    name += text;
+                    first = false;
+                };
+
+                for (const auto type : target->type_arguments) {
+                    argument(printer.type(type));
+                }
+
+                for (const auto pack : target->pack_arguments) {
+                    argument(printer.pack(pack));
+                }
+
+                if (!first) {
+                    name += '>';
+                }
+
+                return printer.finish("type " + name + " = " + printer.type(target->type, true));
+            }
+
+            if (is_namespace) {
+                return is_binding ? (target->kind == HoverKind::Constant ? "const " : "local ") + target->symbol +
+                                        ": typeof(" + name + ")"
+                                  : name;
+            }
+
+            auto text = target->pack ? printer.pack(target->pack, true) : printer.type(target->type);
+
+            if (target->kind == HoverKind::Local || target->kind == HoverKind::Constant) {
+                text = (target->kind == HoverKind::Constant ? "const " : "local ") + target->symbol + ": " + text;
+            } else if (target->kind == HoverKind::Field) {
+                text = target->qualifier +
+                       (is_qualified_field ? "." + target->symbol : "[\"" + Luau::escape(target->symbol) + "\"]") +
+                       ": " + text;
+            } else if (target->kind != HoverKind::Type && !target->symbol.empty()) {
+                text = target->symbol + ": " + text;
+            }
+
+            return printer.finish(std::move(text));
+        };
 
         result.push_back(
             {locate(host, prepared.module.name, target->location),
-                std::move(symbol),
-                target->kind,
-                extraction.finish(root, bool(target->pack)),
+                describe(),
                 target->documentation_symbol,
-                {}}
+                {},
+                false,
+                is_namespace && !is_binding && !target->is_alias,
+                false}
         );
 
         return result;

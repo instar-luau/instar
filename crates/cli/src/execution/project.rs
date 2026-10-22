@@ -32,7 +32,7 @@ pub(super) fn open(
     stdin: Option<&(PathBuf, Arc<str>)>,
 ) -> Result<(Workspace, Option<String>)> {
     let workspace = Workspace::new(root, &options.configuration, overrides)?
-        .with_cancellation(interrupt::is_requested);
+        .with_cancellation(interrupt::CANCELLATION.clone());
 
     let module = stdin
         .map(|(path, source)| workspace.set_source(path, Arc::clone(source)))
@@ -63,19 +63,10 @@ pub(super) fn prepare(
         workspace = workspace.with_generators(generators.clone());
     }
 
-    if !matches!(operation, Operation::Format(_)) {
-        if let Some(watcher) = watcher {
-            watcher.observe(workspace.reload_dependencies(), true)?;
-        }
-
-        let mut generated = BTreeMap::new();
-
-        for generator in workspace.generators() {
-            let source = workspace.generate(&generator)?;
-            generated.insert(generator, source);
-        }
-
-        workspace.set_generated(generated);
+    if !matches!(operation, Operation::Format(_))
+        && let Some(watcher) = watcher
+    {
+        watcher.observe(workspace.reload_dependencies(), true)?;
     }
 
     Ok(Project {

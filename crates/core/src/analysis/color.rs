@@ -6,7 +6,7 @@ use vermis::{
 };
 
 use crate::{
-    analysis::{Edit, analyze},
+    analysis::{Analysis, Edit},
     syntax::{bindings::Bindings, expression::number, literal},
 };
 
@@ -20,57 +20,58 @@ pub struct Color {
     pub components: [f64; 4],
 }
 
-/// Returns validated Color3 constructor replacements for a recognized, comment-free expression.
-#[must_use]
-pub fn color_presentations(source: &str, range: Range<usize>, components: [f64; 4]) -> Vec<Edit> {
-    if components
-        .iter()
-        .any(|component| !component.is_finite() || !(0.0..=1.0).contains(component))
-        || !components[3].total_cmp(&1.0).is_eq()
-        || !source.is_char_boundary(range.start)
-        || !source.is_char_boundary(range.end)
-        || !analyze(source)
-            .colors
+impl Analysis {
+    /// Returns validated Color3 constructor replacements for a recognized, comment-free expression.
+    #[must_use]
+    pub fn color_presentations(&self, range: Range<usize>, components: [f64; 4]) -> Vec<Edit> {
+        let source = &self.source;
+
+        if components
             .iter()
-            .any(|color| color.range == range)
-    {
-        return Vec::new();
-    }
+            .any(|component| !component.is_finite() || !(0.0..=1.0).contains(component))
+            || !components[3].total_cmp(&1.0).is_eq()
+            || !source.is_char_boundary(range.start)
+            || !source.is_char_boundary(range.end)
+            || !self.colors.iter().any(|color| color.range == range)
+        {
+            return Vec::new();
+        }
 
-    let Some(expression) = source.get(range.clone()) else {
-        return Vec::new();
-    };
+        let Some(expression) = source.get(range.clone()) else {
+            return Vec::new();
+        };
 
-    let tree = vermis::parse(expression.as_bytes());
+        let tree = vermis::parse(expression.as_bytes());
 
-    if !tree.diagnostics.is_empty()
-        || tree.tokens.iter().any(|token| {
-            matches!(
-                token.kind,
-                TokenKind::Comment | TokenKind::BlockComment | TokenKind::MalformedComment
-            )
+        if !tree.diagnostics.is_empty()
+            || tree.tokens.iter().any(|token| {
+                matches!(
+                    token.kind,
+                    TokenKind::Comment | TokenKind::BlockComment | TokenKind::MalformedComment
+                )
+            })
+        {
+            return Vec::new();
+        }
+
+        let [red, green, blue, _] = components;
+
+        [
+            format!("Color3.new({red}, {green}, {blue})"),
+            format!(
+                "Color3.fromRGB({}, {}, {})",
+                red * 255.0,
+                green * 255.0,
+                blue * 255.0
+            ),
+        ]
+        .into_iter()
+        .map(move |replacement| Edit {
+            range: range.clone(),
+            replacement,
         })
-    {
-        return Vec::new();
+        .collect()
     }
-
-    let [red, green, blue, _] = components;
-
-    [
-        format!("Color3.new({red}, {green}, {blue})"),
-        format!(
-            "Color3.fromRGB({}, {}, {})",
-            red * 255.0,
-            green * 255.0,
-            blue * 255.0
-        ),
-    ]
-    .into_iter()
-    .map(move |replacement| Edit {
-        range: range.clone(),
-        replacement,
-    })
-    .collect()
 }
 
 pub(super) fn colors(tree: &Tree<'_>, bindings: &Bindings, prefix: usize) -> Vec<Color> {
@@ -81,9 +82,15 @@ pub(super) fn colors(tree: &Tree<'_>, bindings: &Bindings, prefix: usize) -> Vec
                 return None;
             };
 
-            let constructor = ["new", "fromRGB", "fromHSV", "fromHex"]
-                .into_iter()
-                .find(|name| bindings.is_global(tree, callee, &format!("Color3.{name}")))?;
+            let constructor = [
+                "Color3.new",
+                "Color3.fromRGB",
+                "Color3.fromHSV",
+                "Color3.fromHex",
+            ]
+            .into_iter()
+            .find(|name| bindings.is_global(tree, callee, name))?
+            .strip_prefix("Color3.")?;
 
             let NodeKind::Arguments {
                 values,

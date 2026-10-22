@@ -105,13 +105,19 @@ namespace instar::luau {
         }
     }
 
+    Flags::Flags() : mutex(state().mutex), users(state().users) {
+        std::lock_guard<std::mutex> lock(mutex);
+        values = state().active;
+        ++users;
+    }
+
     Flags::Flags(rust::Slice<const Flag> flags) : mutex(state().mutex), users(state().users) {
         State &shared = state();
         std::lock_guard<std::mutex> lock(shared.mutex);
         values = normalize(flags, shared);
 
         if (shared.users != 0 && values != shared.active) {
-            throw std::invalid_argument("Different Luau flag settings are already in use by another frontend.");
+            throw FlagConflict("Different Luau flag settings are already in use by another frontend.");
         }
 
         if (shared.users == 0) {

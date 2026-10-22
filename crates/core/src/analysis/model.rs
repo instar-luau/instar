@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::{ops::Range, sync::Arc};
 
 use super::Color;
 
@@ -26,11 +26,9 @@ pub struct Analysis {
     /// Lexically resolved value and type bindings.
     pub bindings: Vec<Binding>,
 
-    pub(super) source: String,
+    pub(super) source: Arc<str>,
     pub(super) selections: Vec<Range<usize>>,
-    pub(super) identities: Vec<Identity>,
-    pub(super) scopes: Vec<usize>,
-    pub(super) is_complete: bool,
+    pub(super) resolution: Resolution,
 }
 
 /// A named declaration and its nested declarations.
@@ -301,4 +299,11 @@ pub(super) enum Identity {
     Type(usize),
     Global(String),
     External(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct Resolution {
+    pub(super) identities: Vec<Identity>,
+    pub(super) scopes: Vec<usize>,
+    pub(super) is_complete: bool,
 }

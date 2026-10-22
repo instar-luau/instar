@@ -14,15 +14,17 @@ use tokio::{
     task,
 };
 
+use tokio_util::sync::CancellationToken;
+
 use tower_lsp_server::{
     gen_lsp_types::{Range as ProtocolRange, TextEdit, Uri},
     jsonrpc::{Error, Result},
 };
 
 use super::{
-    message::{Action, Delivery, Message},
+    message::{Action, Delivery, Message, Target},
     native,
-    operation::{Guard, Operation},
+    operation::{Consistency, Guard, Operation},
     source::{self, Ticket},
 };
 
@@ -108,7 +110,9 @@ impl Connection {
 
                     drop(validated.send(Message::Control(Box::new(move |state| {
                         let is_valid = state.projects.get(&root).is_some_and(|project| {
-                            project.generation == generation && project.invalidation == invalidation
+                            project.invalidation == invalidation
+                                && (pending.consistency == Consistency::Snapshot
+                                    || project.generation == generation)
                         });
 
                         drop(sender.send(if !is_valid {
@@ -155,7 +159,7 @@ impl Connection {
 
                 project
                     .workspace
-                    .set_cancellation(move || pending.is_cancelled());
+                    .set_cancellation(pending.cancellation.clone());
 
                 let captured: Result<_> = (|| {
                     let module = project.module(&uri)?;
@@ -171,7 +175,7 @@ impl Connection {
                     Ok((document, encoding, settings, range))
                 })();
 
-                project.workspace.set_cancellation(|| false);
+                project.workspace.set_cancellation(CancellationToken::new());
                 let (document, encoding, settings, range) = captured?;
                 let ticket = Ticket::capture(state, root);
 
@@ -221,7 +225,7 @@ impl Connection {
 
     pub(crate) async fn query<ValueType: Send + 'static>(
         &self,
-        uri: Uri,
+        target: Target,
         operation: Arc<Operation>,
         execute: impl FnOnce(&mut Project, &mut Frontend<'_>) -> Result<ValueType> + Send + 'static,
     ) -> Result<ValueType> {
@@ -255,7 +259,7 @@ impl Connection {
 
         self.sender
             .send(Message::Query {
-                uri,
+                target,
                 operation,
                 action,
             })

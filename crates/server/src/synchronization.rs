@@ -18,18 +18,21 @@ pub(super) fn open(project: &mut Project, parameters: DidOpenTextDocumentParams)
     let document = parameters.text_document;
     let path = document::path(&document.uri)?;
     let source: Arc<str> = Arc::from(document.text);
+    let revision = project.advance()?;
+
+    let document = Document::new(
+        document.uri,
+        Arc::clone(&source),
+        Some(document.version),
+        revision,
+    )?;
 
     let module = project
         .workspace
         .set_source(&path, Arc::clone(&source))
         .map_err(failure)?;
 
-    let revision = project.advance()?;
-
-    project.documents.insert(
-        module,
-        Document::new(document.uri, source, Some(document.version), revision),
-    );
+    project.documents.insert(module, document);
 
     project.changed()
 }
@@ -80,15 +83,19 @@ pub(super) fn save(project: &mut Project, parameters: DidSaveTextDocumentParams)
     let revision = project.advance()?;
     let source: Arc<str> = Arc::from(text);
 
+    let document = Document::new(
+        previous.uri,
+        Arc::clone(&source),
+        previous.version,
+        revision,
+    )?;
+
     project
         .workspace
         .set_source(Path::new(&module), Arc::clone(&source))
         .map_err(failure)?;
 
-    project.documents.insert(
-        module,
-        Document::new(previous.uri, source, previous.version, revision),
-    );
+    project.documents.insert(module, document);
 
     project.changed()
 }

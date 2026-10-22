@@ -17,6 +17,11 @@ pub(super) type Delivery = Box<dyn FnOnce(Result<()>) + Send>;
 pub(super) type Action =
     Box<dyn FnOnce(Result<(&mut Project, &mut Frontend<'_>)>) -> (bool, Delivery) + Send>;
 
+pub(crate) enum Target {
+    Uri(Uri),
+    Snapshot(Box<Snapshot>),
+}
+
 pub(super) struct Work {
     pub(super) identifier: u64,
     pub(super) snapshot: Snapshot,
@@ -40,7 +45,7 @@ pub(super) enum Message {
     },
 
     Query {
-        uri: Uri,
+        target: Target,
         operation: Arc<Operation>,
         action: Action,
     },

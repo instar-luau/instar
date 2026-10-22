@@ -1,19 +1,57 @@
 use std::{
-    fs::{self, File, OpenOptions, TryLockError},
+    collections::BTreeMap,
+    fs::{self, File},
     io::{self, Write as _},
     path::{Path, PathBuf},
-    rc::Rc,
+    sync::{Arc, Mutex, Weak},
     thread,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use reqwest::Client;
-use tokio::{runtime::Builder, sync::oneshot, time};
+use tokio::{runtime::Builder, sync::oneshot};
+use tokio_util::sync::CancellationToken;
 
-use super::{Error, Workspace, environment, process};
-use crate::assets::{Target, digest};
+use super::{Error, Workspace, process};
 
 const ADDRESS: &str = "https://instar-luau.github.io/instar";
+
+static SHARED: Mutex<Weak<Shared>> = Mutex::new(Weak::new());
+
+type Files = Mutex<BTreeMap<(Namespace, &'static str), Cached>>;
+
+pub(super) struct Assets(Arc<Shared>);
+
+struct Shared {
+    files: Arc<Files>,
+    refreshes: Mutex<BTreeMap<(Namespace, &'static str), Refresh>>,
+}
+
+struct Cached {
+    source: Arc<str>,
+    checked: SystemTime,
+}
+
+impl Default for Assets {
+    fn default() -> Self {
+        let mut shared = SHARED
+            .lock()
+            .expect("Internal error: asset cache mutex is poisoned.");
+
+        let assets = shared.upgrade().unwrap_or_else(|| {
+            let assets = Arc::new(Shared {
+                files: Arc::default(),
+                refreshes: Mutex::default(),
+            });
+
+            *shared = Arc::downgrade(&assets);
+
+            assets
+        });
+
+        Self(assets)
+    }
+}
 
 #[derive(Copy, Clone, Eq, Ord, PartialEq, PartialOrd)]
 pub(super) enum Namespace {
@@ -22,32 +60,15 @@ pub(super) enum Namespace {
 }
 
 impl Namespace {
-    pub(super) fn name(self) -> &'static str {
+    fn name(self) -> &'static str {
         match self {
             Self::Luau => "luau",
             Self::Roblox => "roblox",
         }
     }
-
-    fn files(self) -> impl Iterator<Item = &'static str> {
-        let target = match self {
-            Self::Luau => Target::Luau,
-            Self::Roblox => Target::Roblox,
-        };
-
-        target
-            .files()
-            .iter()
-            .map(|path| {
-                path.split_once('/')
-                    .expect("Internal error: environment asset has no namespace.")
-                    .1
-            })
-            .filter(|name| *name != "metadata.json")
-    }
 }
 
-pub(super) struct Refresh {
+struct Refresh {
     cancellation: Option<oneshot::Sender<()>>,
     thread: Option<thread::JoinHandle<()>>,
 }
@@ -64,24 +85,87 @@ impl Drop for Refresh {
     }
 }
 
-pub(super) fn directory(
+pub(super) fn load(
     workspace: &Workspace,
     namespace: Namespace,
-    refreshes: &mut Vec<Refresh>,
-) -> Result<PathBuf, Error> {
-    let cancellation = Rc::clone(&workspace.is_cancelled.borrow());
-    let is_cancelled = cancellation.as_ref();
-    process::interrupted(is_cancelled)?;
+    filename: &'static str,
+) -> Result<(PathBuf, Arc<str>), Error> {
+    let cancellation = workspace.cancellation.borrow().clone();
 
-    let parent = dirs::cache_dir()
+    let path = dirs::cache_dir()
         .ok_or_else(|| Error::Path {
             path: workspace.root.clone(),
             reason: "The operating system cache directory is unavailable.",
         })?
         .join("instar")
-        .join(namespace.name());
+        .join(namespace.name())
+        .join(filename);
 
-    fs::create_dir_all(&parent).map_err(|source| filesystem(&parent, source))?;
+    let source = acquire(
+        &path,
+        (namespace, filename),
+        &workspace.assets.0,
+        &cancellation,
+    )?;
+
+    Ok((path, source))
+}
+
+fn acquire(
+    path: &Path,
+    key: (Namespace, &'static str),
+    shared: &Shared,
+    cancellation: &CancellationToken,
+) -> Result<Arc<str>, Error> {
+    process::interrupted(&|| cancellation.is_cancelled())?;
+
+    let mut files = shared
+        .files
+        .lock()
+        .expect("Internal error: asset cache mutex is poisoned.");
+
+    if !files.contains_key(&key)
+        && let Some(cached) = read(path)?
+    {
+        files.insert(key, cached);
+    }
+
+    if let Some(cached) = files.get(&key) {
+        let source = Arc::clone(&cached.source);
+
+        let expired = cached
+            .checked
+            .elapsed()
+            .map_or(true, |age| age >= Duration::from_hours(12));
+
+        drop(files);
+
+        if expired {
+            let mut refreshes = shared
+                .refreshes
+                .lock()
+                .expect("Internal error: asset refresh mutex is poisoned.");
+
+            if refreshes.get(&key).is_none_or(|refresh| {
+                refresh
+                    .thread
+                    .as_ref()
+                    .is_none_or(thread::JoinHandle::is_finished)
+            }) {
+                match update(path.to_owned(), key, Arc::clone(&shared.files)) {
+                    Ok(refresh) => {
+                        refreshes.insert(key, refresh);
+                    }
+
+                    Err(error) => tracing::warn!(%error, "Could not start asset refresh."),
+                }
+            }
+        }
+
+        return Ok(source);
+    }
+
+    drop(files);
 
     let runtime = Builder::new_current_thread()
         .enable_all()
@@ -91,65 +175,17 @@ pub(super) fn directory(
     runtime.block_on(async {
         tokio::select! {
             biased;
-
-            () = async {
-                while !is_cancelled() {
-                    time::sleep(Duration::from_millis(50)).await;
-                }
-            } => Err(Error::Cancelled),
-            result = acquire(&parent, namespace, refreshes, is_cancelled) => result,
+            () = cancellation.cancelled() => Err(Error::Cancelled),
+            result = refresh(&shared.files, path, key) => result,
         }
     })
 }
 
-async fn acquire(
-    parent: &Path,
-    namespace: Namespace,
-    refreshes: &mut Vec<Refresh>,
-    is_cancelled: &dyn Fn() -> bool,
-) -> Result<PathBuf, Error> {
-    if let Some(directory) = cached(parent)? {
-        validate(&directory, namespace, is_cancelled)?;
-        process::interrupted(is_cancelled)?;
-
-        match update(parent.to_owned(), namespace) {
-            Ok(refresh) => refreshes.push(refresh),
-
-            Err(error) => {
-                tracing::warn!(%error, namespace = namespace.name(), "Could not start asset refresh.");
-            }
-        }
-
-        return Ok(directory);
-    }
-
-    let lock_path = parent.join("lock");
-    let lock = lockfile(&lock_path)?;
-
-    loop {
-        process::interrupted(is_cancelled)?;
-
-        match lock.try_lock() {
-            Ok(()) => break,
-            Err(TryLockError::WouldBlock) => time::sleep(Duration::from_millis(50)).await,
-            Err(TryLockError::Error(source)) => return Err(filesystem(&lock_path, source)),
-        }
-    }
-
-    if let Some(directory) = cached(parent)? {
-        validate(&directory, namespace, is_cancelled)?;
-
-        return Ok(directory);
-    }
-
-    refresh(parent, namespace, None, is_cancelled).await
-}
-
-fn update(parent: PathBuf, namespace: Namespace) -> io::Result<Refresh> {
+fn update(path: PathBuf, key: (Namespace, &'static str), files: Arc<Files>) -> io::Result<Refresh> {
     let (cancellation, cancelled) = oneshot::channel();
 
     let thread = thread::Builder::new()
-        .name(format!("{} assets", namespace.name()))
+        .name(format!("{} {}", key.0.name(), key.1))
         .spawn(move || {
             let result = Builder::new_current_thread()
                 .enable_all()
@@ -159,31 +195,14 @@ fn update(parent: PathBuf, namespace: Namespace) -> io::Result<Refresh> {
                     runtime.block_on(async {
                         tokio::select! {
                             biased;
-
                             _ = cancelled => Ok(()),
-                            result = async {
-                                let lock_path = parent.join("lock");
-                                let lock = lockfile(&lock_path)?;
-
-                                match lock.try_lock() {
-                                    Ok(()) => {}
-                                    Err(TryLockError::WouldBlock) => return Ok(()),
-                                    Err(TryLockError::Error(source)) => {
-                                        return Err(filesystem(&lock_path, source));
-                                    }
-                                }
-
-                                let cached = cached(&parent)?;
-                                refresh(&parent, namespace, cached.as_deref(), &|| false).await?;
-
-                                Ok(())
-                            } => result,
+                            result = refresh(&files, &path, key) => result.map(|_| ()),
                         }
                     })
                 });
 
             if let Err(error) = result {
-                tracing::warn!(%error, namespace = namespace.name(), "Could not refresh cached assets.");
+                tracing::warn!(%error, "Could not refresh cached asset.");
             }
         })?;
 
@@ -193,168 +212,99 @@ fn update(parent: PathBuf, namespace: Namespace) -> io::Result<Refresh> {
     })
 }
 
-fn lockfile(path: &Path) -> Result<File, Error> {
-    OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path)
-        .map_err(|source| filesystem(path, source))
-}
-
 async fn refresh(
-    parent: &Path,
-    namespace: Namespace,
-    cached: Option<&Path>,
-    is_cancelled: &dyn Fn() -> bool,
-) -> Result<PathBuf, Error> {
-    let staging = tempfile::tempdir_in(parent).map_err(|source| filesystem(parent, source))?;
-    let bundle = staging.path().join("bundle");
-    fs::create_dir(&bundle).map_err(|source| filesystem(&bundle, source))?;
+    files: &Files,
+    path: &Path,
+    key: (Namespace, &'static str),
+) -> Result<Arc<str>, Error> {
+    let parent = path
+        .parent()
+        .expect("Internal error: asset has no parent directory.");
 
-    let address = format!("{ADDRESS}/{}", namespace.name());
+    fs::create_dir_all(parent).map_err(|source| filesystem(parent, source))?;
 
-    let client = Client::builder()
-        .https_only(true)
-        .connect_timeout(Duration::from_secs(30))
-        .timeout(Duration::from_secs(300))
-        .build()
-        .map_err(|source| Error::Download {
-            url: address.clone(),
-            source,
-        })?;
+    let mut staged =
+        tempfile::NamedTempFile::new_in(parent).map_err(|source| filesystem(parent, source))?;
 
-    let metadata = bundle.join("metadata.json");
-    download(&client, &address, "metadata.json", &metadata, is_cancelled).await?;
-    let contents = fs::read(&metadata).map_err(|source| filesystem(&metadata, source))?;
-    let identity = digest(&contents);
-    let directory = parent.join(&identity);
-
-    if is_present(&directory)? {
-        validate(&directory, namespace, is_cancelled)?;
-    } else {
-        for filename in namespace.files() {
-            download(
-                &client,
-                &address,
-                filename,
-                &bundle.join(filename),
-                is_cancelled,
-            )
-            .await?;
-        }
-
-        environment::validate(&bundle, namespace, is_cancelled)?;
-        process::interrupted(is_cancelled)?;
-        fs::rename(&bundle, &directory).map_err(|source| filesystem(&directory, source))?;
-    }
-
-    process::interrupted(is_cancelled)?;
-
-    if cached != Some(directory.as_path()) {
-        let pointer = parent.join("current");
-
-        let mut staged =
-            tempfile::NamedTempFile::new_in(parent).map_err(|source| filesystem(parent, source))?;
-
-        staged
-            .write_all(identity.as_bytes())
-            .map_err(|source| filesystem(&pointer, source))?;
-
-        staged
-            .as_file()
-            .sync_all()
-            .map_err(|source| filesystem(&pointer, source))?;
-
-        process::interrupted(is_cancelled)?;
-
-        staged
-            .persist(&pointer)
-            .map_err(|error| filesystem(&pointer, error.error))?;
-    }
-
-    Ok(directory)
-}
-
-async fn download(
-    client: &Client,
-    address: &str,
-    filename: &str,
-    destination: &Path,
-    is_cancelled: &dyn Fn() -> bool,
-) -> Result<(), Error> {
-    process::interrupted(is_cancelled)?;
-
-    let url = format!("{address}/{filename}");
+    let url = format!("{ADDRESS}/{}/{}", key.0.name(), key.1);
 
     let failure = |source| Error::Download {
         url: url.clone(),
         source,
     };
 
-    let response = client.get(&url).send().await.map_err(failure)?;
-    let mut response = response.error_for_status().map_err(failure)?;
-    let mut file = File::create(destination).map_err(|source| filesystem(destination, source))?;
+    let client = Client::builder()
+        .https_only(true)
+        .connect_timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(300))
+        .build()
+        .map_err(failure)?;
+
+    let mut response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(failure)?
+        .error_for_status()
+        .map_err(failure)?;
 
     while let Some(chunk) = response.chunk().await.map_err(failure)? {
-        process::interrupted(is_cancelled)?;
-
-        file.write_all(&chunk)
-            .map_err(|source| filesystem(destination, source))?;
+        staged
+            .write_all(&chunk)
+            .map_err(|source| filesystem(path, source))?;
     }
 
-    Ok(())
+    let source = fs::read_to_string(staged.path()).map_err(|source| filesystem(path, source))?;
+
+    let mut files = files
+        .lock()
+        .expect("Internal error: asset cache mutex is poisoned.");
+
+    let source = files
+        .get(&key)
+        .filter(|cached| *cached.source == source)
+        .map_or_else(|| Arc::from(source), |cached| Arc::clone(&cached.source));
+
+    let checked = SystemTime::now();
+
+    staged
+        .as_file()
+        .set_modified(checked)
+        .map_err(|source| filesystem(path, source))?;
+
+    staged
+        .persist(path)
+        .map_err(|error| filesystem(path, error.error))?;
+
+    files.insert(
+        key,
+        Cached {
+            source: Arc::clone(&source),
+            checked,
+        },
+    );
+
+    Ok(source)
 }
 
-fn cached(parent: &Path) -> Result<Option<PathBuf>, Error> {
-    let pointer = parent.join("current");
-
-    let identity = match fs::read_to_string(&pointer) {
-        Ok(identity) => identity,
+fn read(path: &Path) -> Result<Option<Cached>, Error> {
+    let file = match File::open(path) {
+        Ok(file) => file,
         Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(source) => return Err(filesystem(&pointer, source)),
+        Err(source) => return Err(filesystem(path, source)),
     };
 
-    if identity.len() != 64 || !identity.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(Error::Path {
-            path: pointer,
-            reason: "Invalid cached asset identity.",
-        });
-    }
+    let checked = file
+        .metadata()
+        .and_then(|metadata| metadata.modified())
+        .map_err(|source| filesystem(path, source))?;
 
-    let directory = parent.join(identity);
+    let source = io::read_to_string(file).map_err(|source| filesystem(path, source))?;
 
-    Ok(is_present(&directory)?.then_some(directory))
-}
-
-fn validate(
-    directory: &Path,
-    namespace: Namespace,
-    is_cancelled: &dyn Fn() -> bool,
-) -> Result<(), Error> {
-    process::interrupted(is_cancelled)?;
-    let metadata = directory.join("metadata.json");
-    let contents = fs::read(&metadata).map_err(|source| filesystem(&metadata, source))?;
-
-    if directory.file_name().and_then(|name| name.to_str()) != Some(digest(&contents).as_str()) {
-        return Err(Error::Path {
-            path: metadata,
-            reason: "Cached asset metadata does not match its identity.",
-        });
-    }
-
-    environment::validate(directory, namespace, is_cancelled)?;
-
-    Ok(())
-}
-
-fn is_present(path: &Path) -> Result<bool, Error> {
-    match fs::symlink_metadata(path) {
-        Ok(_) => Ok(true),
-        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(source) => Err(filesystem(path, source)),
-    }
+    Ok(Some(Cached {
+        source: source.into(),
+        checked,
+    }))
 }
 
 fn filesystem(path: &Path, source: io::Error) -> Error {

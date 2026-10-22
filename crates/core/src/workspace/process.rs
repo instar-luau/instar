@@ -1,9 +1,7 @@
-use std::{
-    io,
-    process::{Child, ExitStatus},
-    thread,
-    time::Duration,
-};
+use std::{io, process::ExitStatus};
+
+use process_wrap::tokio::ChildWrapper;
+use tokio_util::sync::CancellationToken;
 
 use super::Error;
 
@@ -15,35 +13,33 @@ pub(super) fn interrupted(is_cancelled: &dyn Fn() -> bool) -> Result<(), Error> 
     }
 }
 
-pub(super) fn wait(
-    child: &mut Child,
-    is_cancelled: &dyn Fn() -> bool,
+pub(super) async fn wait(
+    child: &mut dyn ChildWrapper,
+    cancellation: &CancellationToken,
     failure: impl Fn(io::Error) -> Error,
 ) -> Result<ExitStatus, Error> {
-    let result = loop {
-        if is_cancelled() {
-            break Err(Error::Cancelled);
-        }
-
-        match child.try_wait() {
-            Ok(Some(status)) => break Ok(status),
-            Ok(None) => thread::sleep(Duration::from_millis(50)),
-            Err(source) => break Err(failure(source)),
-        }
+    let result = tokio::select! {
+        biased;
+        () = cancellation.cancelled() => Err(Error::Cancelled),
+        status = child.inner_mut().wait() => status.map_err(&failure),
     };
 
-    if result.is_err() {
-        let termination = child.kill();
-        let reaping = child.wait();
-
-        if let Err(source) = termination
-            && source.kind() != io::ErrorKind::InvalidInput
-        {
-            return Err(failure(source));
-        }
-
-        reaping.map_err(failure)?;
-    }
+    stop(child).await.map_err(failure)?;
 
     result
+}
+
+pub(super) async fn stop(child: &mut dyn ChildWrapper) -> io::Result<()> {
+    let termination = child.start_kill();
+    let reaping = child.wait().await;
+
+    if let Err(source) = termination
+        && source.kind() != io::ErrorKind::InvalidInput
+    {
+        return Err(source);
+    }
+
+    reaping?;
+
+    Ok(())
 }

@@ -76,11 +76,11 @@ pub(super) fn references_source(
     let document = project.snapshot(&module)?;
     let offset = document.offset(position.position, project.encoding)?;
 
-    if document.analysis.prepare_rename(offset).is_none() {
+    if document.analysis().prepare_rename(offset).is_none() {
         return Ok(ControlFlow::Continue(()));
     }
 
-    let Some(binding) = document.analysis.bindings.iter().find(|binding| {
+    let Some(binding) = document.analysis().bindings.iter().find(|binding| {
         matches!(
             binding.kind,
             BindingKind::Local | BindingKind::Parameter | BindingKind::Loop
@@ -123,7 +123,7 @@ pub(super) fn references(
     let mut result = Vec::new();
 
     if declarations.is_empty() {
-        if let Some(binding) = document.analysis.bindings.iter().find(|binding| {
+        if let Some(binding) = document.analysis().bindings.iter().find(|binding| {
             binding
                 .occurrences
                 .iter()
@@ -186,7 +186,7 @@ pub(super) fn document_highlight_source(
     let document = project.snapshot(&module)?;
     let offset = document.offset(position.position, project.encoding)?;
 
-    if let Some(binding) = document.analysis.bindings.iter().find(|binding| {
+    if let Some(binding) = document.analysis().bindings.iter().find(|binding| {
         binding
             .occurrences
             .iter()
@@ -268,7 +268,7 @@ pub(super) fn document_symbol(
         {
             DocumentSymbolResponse::DocumentSymbolList(
                 document
-                    .analysis
+                    .analysis()
                     .symbols
                     .iter()
                     .map(|symbol| outline(&document, symbol, project.encoding))
@@ -279,7 +279,7 @@ pub(super) fn document_symbol(
 
             flatten(
                 &document,
-                &document.analysis.symbols,
+                &document.analysis().symbols,
                 None,
                 project.encoding,
                 &mut result,
@@ -300,7 +300,7 @@ pub(super) fn symbol(
     for module in project.index()? {
         let document = project.snapshot(&module)?;
         let mut entries = Vec::new();
-        indexed(&document.analysis.symbols, None, &mut entries);
+        indexed(&document.analysis().symbols, None, &mut entries);
 
         for (symbol, container) in entries {
             if !is_match(&symbol.name, &query) {
@@ -360,13 +360,13 @@ fn definitions(
     let (line, column) = document.native(position.position, project.encoding)?;
 
     let origin = document
-        .analysis
+        .analysis()
         .tokens
         .iter()
         .find(|token| token.range.contains(&offset))
         .or_else(|| {
             document
-                .analysis
+                .analysis()
                 .tokens
                 .iter()
                 .find(|token| token.range.end == offset)
@@ -384,7 +384,7 @@ fn definitions(
         let bytes = target.native_bytes(declaration.range)?;
         let selection = target.range(bytes.clone(), project.encoding)?;
 
-        let range = enclosing(&target.analysis.symbols, &bytes)
+        let range = enclosing(&target.analysis().symbols, &bytes)
             .map(|symbol| target.range(symbol.range.clone(), project.encoding))
             .transpose()?
             .unwrap_or(selection);
@@ -403,7 +403,7 @@ fn definitions(
 
     if result.is_empty()
         && !should_find_types
-        && let Some(binding) = document.analysis.bindings.iter().find(|binding| {
+        && let Some(binding) = document.analysis().bindings.iter().find(|binding| {
             binding
                 .occurrences
                 .iter()
@@ -412,7 +412,7 @@ fn definitions(
     {
         let selection = document.range(binding.declaration.clone(), project.encoding)?;
 
-        let range = enclosing(&document.analysis.symbols, &binding.declaration)
+        let range = enclosing(&document.analysis().symbols, &binding.declaration)
             .map(|symbol| document.range(symbol.range.clone(), project.encoding))
             .transpose()?
             .unwrap_or(selection);
@@ -591,7 +591,7 @@ fn links(
         }
     }
 
-    for link in &document.analysis.links {
+    for link in &document.analysis().links {
         result.push((
             document.range(link.range.clone(), project.encoding)?,
             link.target.parse().map_err(failure)?,

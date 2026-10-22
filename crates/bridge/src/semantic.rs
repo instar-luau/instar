@@ -1,9 +1,21 @@
+use std::ops;
+
 use crate::{
-    CompletionKind, HintKind, HoverKind, Range, SourceLocation,
-    bridge::bindings,
-    error::Error,
-    types::{Snapshot, Subject},
+    CompletionKind, HintKind, Parentheses, Range, SourceLocation, bridge::bindings, error::Error,
 };
+
+/// Luau-printed type or declaration text.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Presentation {
+    /// Single-line editor text.
+    pub compact: String,
+
+    /// Expanded editor text.
+    pub expanded: String,
+
+    /// Whether the printer produced complete, valid type information.
+    pub complete: bool,
+}
 
 /// Owned semantic hover information.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -11,20 +23,23 @@ pub struct Hover {
     /// Exact selected source component.
     pub location: SourceLocation,
 
-    /// Original identifier or string-key bytes when available.
-    pub symbol: Vec<u8>,
-
-    /// Declaration category of the selected source component.
-    pub kind: HoverKind,
-
-    /// Selected type or pack.
-    pub snapshot: Snapshot,
+    /// Printed declaration or selected type.
+    pub presentation: String,
 
     /// Native documentation catalog symbol.
     pub documentation_symbol: String,
 
-    /// Existing documentation text.
-    pub documentation: String,
+    /// Canonical overload signature used for documentation lookup.
+    pub documentation_signature: String,
+
+    /// Whether native resolution selected this overload at the hovered call.
+    pub selected: bool,
+
+    /// Whether the presentation names a documented library or constructor namespace.
+    pub namespace: bool,
+
+    /// Whether the method signature has an implicit receiver.
+    pub receiver: bool,
 }
 
 /// An owned native completion candidate.
@@ -39,20 +54,20 @@ pub struct Completion {
     /// Whether the candidate is callable.
     pub is_function: bool,
 
-    /// Available semantic type.
-    pub snapshot: Option<Snapshot>,
+    /// Available printed type.
+    pub presentation: Option<String>,
+
+    /// Request-local semantic equivalence group, or zero when unproven.
+    pub equivalence: usize,
 
     /// Native documentation catalog symbol.
     pub documentation_symbol: String,
 
-    /// Existing documentation text.
-    pub documentation: String,
-
     /// Exact insertion text, never presentation text.
     pub insert_text: String,
 
-    /// Whether insertion uses snippet placeholders.
-    pub snippet: bool,
+    /// Recommended call parentheses following the insertion text.
+    pub parentheses: Parentheses,
 
     /// Source replacement range.
     pub replacement: SourceLocation,
@@ -70,33 +85,30 @@ pub struct Parameter {
     /// Argument name when available.
     pub name: String,
 
-    /// Type or pack in the containing signature's snapshot.
-    pub subject: Subject,
+    /// Exact byte range in the containing signature label.
+    pub range: ops::Range<usize>,
 
     /// Original native argument index for documentation lookup.
     pub source_index: u32,
-
-    /// Existing parameter documentation.
-    pub documentation: String,
 
     /// Whether this is the visible variadic tail.
     pub variadic: bool,
 }
 
-/// One native overload with an authoritative visible parameter sequence.
+/// One native overload with its visible parameter sequence.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Signature {
-    /// Native module identity of the call.
-    pub identity: String,
+    /// Printed single-line signature.
+    pub label: String,
 
-    /// Function graph, shared by its parameter subjects.
-    pub snapshot: Snapshot,
+    /// Expanded signature text.
+    pub expanded: String,
 
     /// Native documentation catalog symbol.
     pub documentation_symbol: String,
 
-    /// Existing function documentation.
-    pub documentation: String,
+    /// Canonical overload signature used for documentation lookup.
+    pub documentation_signature: String,
 
     /// Visible parameters with the colon receiver removed exactly once.
     pub parameters: Vec<Parameter>,
@@ -108,7 +120,7 @@ pub struct Signature {
     pub selected: bool,
 }
 
-/// A semantic inlay subject, independent of its rendered label.
+/// An inferred inlay subject and its printed type.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Hint {
     /// Zero-width insertion location and native identity.
@@ -117,8 +129,8 @@ pub struct Hint {
     /// Selected call parameter name, empty for type and return hints.
     pub name: String,
 
-    /// Binding type, return pack, or selected call parameter.
-    pub snapshot: Snapshot,
+    /// Printed binding type, return pack, or selected call parameter.
+    pub presentation: Presentation,
 
     /// Inlay subject category.
     pub kind: HintKind,
@@ -129,17 +141,40 @@ pub struct Hint {
     /// Selected subject's documentation symbol.
     pub documentation_symbol: String,
 
-    /// Existing documentation text.
-    pub documentation: String,
+    /// Canonical callable signature for parameter documentation lookup.
+    pub documentation_signature: String,
 
     /// Original callable parameter index for metadata lookup.
     pub parameter_index: Option<u32>,
+}
+
+impl TryFrom<bindings::NativePresentation> for Presentation {
+    type Error = Error;
+
+    fn try_from(value: bindings::NativePresentation) -> Result<Self, Error> {
+        validate_text(&value.compact)?;
+        validate_text(&value.expanded)?;
+
+        if value.compact.contains(['\n', '\r']) {
+            return Err(Error::Native {
+                reason: "Invalid compact presentation.".into(),
+            });
+        }
+
+        Ok(Self {
+            compact: value.compact,
+            expanded: value.expanded,
+            complete: value.is_complete,
+        })
+    }
 }
 
 impl TryFrom<bindings::NativeHover> for Hover {
     type Error = Error;
 
     fn try_from(value: bindings::NativeHover) -> Result<Self, Error> {
+        validate_text(&value.presentation)?;
+
         let range = value.location.range;
 
         if (range.start.line, range.start.column) >= (range.end.line, range.end.column) {
@@ -148,33 +183,14 @@ impl TryFrom<bindings::NativeHover> for Hover {
             });
         }
 
-        match value.kind {
-            HoverKind::Local
-            | HoverKind::Global
-            | HoverKind::Alias
-            | HoverKind::Field
-            | HoverKind::LocalFunction
-            | HoverKind::Function
-            | HoverKind::Parameter
-            | HoverKind::Loop
-            | HoverKind::Constant
-            | HoverKind::ConstantFunction
-            | HoverKind::Type => {}
-
-            _ => {
-                return Err(Error::Native {
-                    reason: "Unknown hover subject kind.".into(),
-                });
-            }
-        }
-
         Ok(Self {
             location: value.location,
-            symbol: value.symbol,
-            kind: value.kind,
-            snapshot: value.snapshot.try_into()?,
+            presentation: value.presentation,
             documentation_symbol: value.documentation_symbol,
-            documentation: value.documentation,
+            documentation_signature: value.documentation_signature,
+            selected: value.is_selected,
+            namespace: value.is_namespace,
+            receiver: value.has_receiver,
         })
     }
 }
@@ -183,7 +199,7 @@ impl TryFrom<bindings::NativeCompletion> for Completion {
     type Error = Error;
 
     fn try_from(value: bindings::NativeCompletion) -> Result<Self, Error> {
-        if value.snapshots.len() > 1 {
+        if value.presentations.len() > 1 {
             return Err(Error::Native {
                 reason: "Invalid completion presentation cardinality.".into(),
             });
@@ -206,31 +222,42 @@ impl TryFrom<bindings::NativeCompletion> for Completion {
             });
         }
 
-        let snapshot = value
-            .snapshots
-            .into_iter()
-            .next()
-            .map(Snapshot::try_from)
-            .transpose()?;
-
-        if snapshot
-            .as_ref()
-            .is_some_and(|snapshot| !matches!(snapshot.root, Subject::Type(_)))
-        {
+        if !matches!(
+            value.parentheses,
+            Parentheses::None | Parentheses::CursorAfter | Parentheses::CursorInside
+        ) {
             return Err(Error::Native {
-                reason: "Invalid completion type subject.".into(),
+                reason: "Invalid completion parentheses recommendation.".into(),
             });
+        }
+
+        let presentation = value.presentations.into_iter().next();
+
+        if value.equivalence != 0 && (presentation.is_none() || !value.is_complete) {
+            return Err(Error::Native {
+                reason: "Invalid completion type identity.".into(),
+            });
+        }
+
+        if let Some(presentation) = &presentation {
+            validate_text(presentation)?;
+
+            if presentation.contains(['\n', '\r']) {
+                return Err(Error::Native {
+                    reason: "Invalid compact presentation.".into(),
+                });
+            }
         }
 
         Ok(Self {
             label: value.label,
             kind: value.kind,
             is_function: value.is_function,
-            snapshot,
+            presentation,
+            equivalence: value.equivalence,
             documentation_symbol: value.documentation_symbol,
-            documentation: value.documentation,
             insert_text: value.insert_text,
-            snippet: value.is_snippet,
+            parentheses: value.parentheses,
             replacement: value.replacement,
             operation: value.replace_dot.then_some(value.operation),
             deprecated: value.is_deprecated,
@@ -242,11 +269,12 @@ impl TryFrom<bindings::NativeSignature> for Signature {
     type Error = Error;
 
     fn try_from(value: bindings::NativeSignature) -> Result<Self, Error> {
-        let snapshot = Snapshot::try_from(value.snapshot)?;
+        validate_text(&value.label)?;
+        validate_text(&value.expanded)?;
 
-        if !matches!(snapshot.root, Subject::Type(_)) {
+        if value.label.contains(['\n', '\r']) {
             return Err(Error::Native {
-                reason: "Invalid signature type subject.".into(),
+                reason: "Invalid signature label.".into(),
             });
         }
 
@@ -254,28 +282,18 @@ impl TryFrom<bindings::NativeSignature> for Signature {
             .parameters
             .into_iter()
             .map(|parameter| {
-                let subject = if parameter.is_pack {
-                    Subject::Pack(parameter.subject)
-                } else {
-                    Subject::Type(parameter.subject)
-                };
+                let range = parameter.start..parameter.end;
 
-                let is_valid = match subject {
-                    Subject::Type(index) => index < snapshot.types.len(),
-                    Subject::Pack(index) => index < snapshot.packs.len(),
-                };
-
-                if !is_valid || parameter.is_pack != parameter.is_variadic {
+                if range.is_empty() || value.label.get(range.clone()).is_none() {
                     return Err(Error::Native {
-                        reason: "Invalid signature parameter subject.".into(),
+                        reason: "Invalid signature parameter span.".into(),
                     });
                 }
 
                 Ok(Parameter {
                     name: parameter.name,
-                    subject,
+                    range,
                     source_index: parameter.source_index,
-                    documentation: parameter.documentation,
                     variadic: parameter.is_variadic,
                 })
             })
@@ -286,6 +304,7 @@ impl TryFrom<bindings::NativeSignature> for Signature {
             .is_some_and(|parameter| parameter.source_index > 1)
             || parameters.windows(2).any(|pair| {
                 pair[0].variadic
+                    || pair[0].range.end > pair[1].range.start
                     || pair[0].source_index.checked_add(1) != Some(pair[1].source_index)
             })
         {
@@ -295,10 +314,10 @@ impl TryFrom<bindings::NativeSignature> for Signature {
         }
 
         Ok(Self {
-            identity: value.identity,
-            snapshot,
+            label: value.label,
+            expanded: value.expanded,
             documentation_symbol: value.documentation_symbol,
-            documentation: value.documentation,
+            documentation_signature: value.documentation_signature,
             parameters,
             active_parameter: value.active_parameter,
             selected: value.is_selected,
@@ -328,10 +347,8 @@ impl TryFrom<bindings::NativeHint> for Hint {
             });
         }
 
-        let snapshot = Snapshot::try_from(value.snapshot)?;
-
-        if (value.kind == HintKind::Type && !matches!(snapshot.root, Subject::Type(_)))
-            || (value.kind == HintKind::Return && !matches!(snapshot.root, Subject::Pack(_)))
+        if (value.kind == HintKind::Type && value.presentation.is_pack)
+            || (value.kind == HintKind::Return && !value.presentation.is_pack)
         {
             return Err(Error::Native {
                 reason: "Invalid inlay type subject.".into(),
@@ -341,12 +358,22 @@ impl TryFrom<bindings::NativeHint> for Hint {
         Ok(Self {
             location: value.location,
             name: value.name,
-            snapshot,
+            presentation: value.presentation.try_into()?,
             kind: value.kind,
             obvious: value.is_obvious,
             documentation_symbol: value.documentation_symbol,
-            documentation: value.documentation,
+            documentation_signature: value.documentation_signature,
             parameter_index: value.has_parameter_index.then_some(value.parameter_index),
         })
     }
+}
+
+fn validate_text(value: &str) -> Result<(), Error> {
+    if value.is_empty() || value.len() > 32 * 1024 || value.lines().count() > 256 {
+        return Err(Error::Native {
+            reason: "Invalid native presentation bounds.".into(),
+        });
+    }
+
+    Ok(())
 }

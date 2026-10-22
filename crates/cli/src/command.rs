@@ -14,7 +14,7 @@ pub(super) fn main() -> ExitCode {
         let result = match &arguments.command {
             Command::Generate(options) => generate::run(&arguments, options),
             Command::Files(operation) => execution::run(&arguments, operation),
-            Command::Server => instar_server::run(interrupt::is_requested),
+            Command::Server => instar_server::run(&interrupt::CANCELLATION),
         };
 
         if interrupt::is_requested() {

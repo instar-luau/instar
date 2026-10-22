@@ -1,35 +1,41 @@
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::{Arc, Mutex};
 
 use instar_bridge::{Cancellation, Progress};
 use tokio::runtime::Handle;
+use tokio_util::sync::CancellationToken;
 use tower_lsp_server::{Client, gen_lsp_types::ProgressToken};
 
 use crate::output::progress;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Consistency {
+    Snapshot,
+    Current,
+}
+
 pub(crate) struct Operation {
-    is_cancelled: AtomicBool,
+    pub(super) consistency: Consistency,
+    pub(super) cancellation: CancellationToken,
     native: Mutex<Option<Cancellation>>,
     progress: Option<(Client, ProgressToken, Handle)>,
 }
 
 impl Operation {
-    pub(crate) fn new(progress: Option<(Client, ProgressToken)>) -> Self {
+    pub(crate) fn new(consistency: Consistency, progress: Option<(Client, ProgressToken)>) -> Self {
         Self {
-            is_cancelled: AtomicBool::new(false),
+            consistency,
+            cancellation: CancellationToken::new(),
             native: Mutex::new(None),
             progress: progress.map(|(client, token)| (client, token, Handle::current())),
         }
     }
 
     pub(crate) fn is_cancelled(&self) -> bool {
-        self.is_cancelled.load(Ordering::Relaxed)
+        self.cancellation.is_cancelled()
     }
 
     pub(crate) fn cancel(&self) {
-        self.is_cancelled.store(true, Ordering::Relaxed);
+        self.cancellation.cancel();
 
         if let Some(native) = &*self
             .native

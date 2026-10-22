@@ -1,25 +1,20 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
-    str::from_utf8,
 };
 
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use vermis::{
-    token::{Keyword, Symbol},
-    tree::NodeKind,
-};
+use vermis::token::{Keyword, Symbol};
 
 use super::{
-    Error,
+    Error, content,
     generation::interrupted,
     mapping::{
-        self, Argument, Class, Corrections, Dump, Enumeration, HIERARCHY, Member, Signature, Type,
-        Types, invalid,
+        self, Argument, Class, Corrections, Dump, HIERARCHY, Member, Signature, Types, invalid,
     },
-    metadata::{Access, Documentation, Metadata, digest},
+    metadata::{Capability, Metadata, Permission, Profile},
     syntax::{self, Output, Replacement},
 };
 
@@ -34,7 +29,7 @@ struct Context<'context> {
     corrections: &'context Corrections,
     replacements: &'context BTreeMap<String, Vec<Replacement>>,
     labels: &'context [&'context str],
-    is_cancelled: fn() -> bool,
+    is_cancelled: &'context dyn Fn() -> bool,
 }
 
 pub(super) fn render(
@@ -42,13 +37,9 @@ pub(super) fn render(
     source: &str,
     documentation: Value,
     builtins: &str,
-    is_cancelled: fn() -> bool,
+    is_cancelled: &dyn Fn() -> bool,
 ) -> Result<BTreeMap<PathBuf, String>, Error> {
     interrupted(is_cancelled)?;
-
-    if !documentation.is_object() {
-        return Err(invalid("Documentation must be an object."));
-    }
 
     let dump: Dump = mapping::decode(dump, "API dump")?;
 
@@ -77,19 +68,11 @@ pub(super) fn render(
         is_cancelled,
     )?;
 
-    validate(
-        [&classes, &data_types, &constructors],
-        &dump.enumerations,
-        [declarations, &injections],
-        &corrections,
-        is_cancelled,
-    )?;
-
     let configuration = Prepared::new(&Configuration::default())
         .map_err(|error| invalid(format!("Invalid default formatting settings. {error}")))?;
 
     let mut definitions = BTreeMap::new();
-    let mut properties = BTreeMap::new();
+    let mut profiles = BTreeMap::new();
 
     for (name, level) in [("none", 0), ("local", 1), ("plugin", 2), ("roblox", 4)] {
         interrupted(is_cancelled)?;
@@ -128,12 +111,11 @@ pub(super) fn render(
         let ordered = syntax::ordered(&output.finish(is_cancelled)?, is_cancelled)?;
         let formatted = format::format(&ordered, &configuration)?;
         interrupted(is_cancelled)?;
-        definitions.insert(name.to_owned(), formatted);
-
-        let mut entries = Vec::new();
+        let mut capabilities = BTreeMap::new();
 
         for class in &classes {
             interrupted(is_cancelled)?;
+            let mut properties = Vec::new();
 
             for member in &class.members {
                 interrupted(is_cancelled)?;
@@ -144,17 +126,40 @@ pub(super) fn render(
                 {
                     let (can_read, can_write) = member.permissions(labels)?;
 
-                    entries.push(Access {
-                        class: class.name.clone(),
+                    properties.push(Permission {
                         name: member.name.clone(),
                         can_read,
                         can_write,
                     });
                 }
             }
+
+            let is_service = mapping::has_tag(class.tags.as_deref(), "Service");
+
+            let is_creatable =
+                !is_service && !mapping::has_tag(class.tags.as_deref(), "NotCreatable");
+
+            if is_service || is_creatable || !properties.is_empty() {
+                capabilities.insert(
+                    class.name.clone(),
+                    Capability {
+                        name: class.name.clone(),
+                        is_service,
+                        is_creatable,
+                        properties,
+                    },
+                );
+            }
         }
 
-        properties.insert(name.to_owned(), entries);
+        profiles.insert(
+            name.to_owned(),
+            Profile {
+                classes: capabilities.into_values().collect(),
+            },
+        );
+
+        definitions.insert(name.to_owned(), formatted);
     }
 
     let luau_roots: BTreeSet<_> = syntax::blocks(builtins, is_cancelled)?
@@ -178,55 +183,27 @@ pub(super) fn render(
         .as_object()
         .ok_or_else(|| invalid("Documentation must be an object."))?;
 
-    if canonical
-        .keys()
-        .any(|key| !key.starts_with("@luau/") && !key.starts_with("@roblox/"))
-    {
-        return Err(invalid("Unrecognized documentation namespace."));
-    }
-
-    let mut documents = BTreeMap::new();
+    let mut result = BTreeMap::new();
 
     for namespace in ["luau", "roblox"] {
         interrupted(is_cancelled)?;
         let prefix = format!("@{namespace}/");
 
-        let symbols: Map<_, _> = canonical
-            .iter()
-            .filter(|(key, _)| key.starts_with(&prefix))
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect();
+        let mut symbols = Map::new();
 
-        documents.insert(namespace, serialize(&symbols, "documentation")?);
+        for (symbol, value) in canonical.iter().filter(|(key, _)| key.starts_with(&prefix)) {
+            interrupted(is_cancelled)?;
+            symbols.insert(symbol.clone(), content::prepare(value, canonical)?);
+        }
+
+        result.insert(
+            PathBuf::from(format!("{namespace}/documentation.json")),
+            serialize(&symbols, "documentation")?,
+        );
     }
 
-    let luau_documentation = documents
-        .remove("luau")
-        .ok_or_else(|| invalid("Missing Luau documentation."))?;
-
-    let roblox_documentation = documents
-        .remove("roblox")
-        .ok_or_else(|| invalid("Missing Roblox documentation."))?;
-
     let metadata = Metadata {
-        services: classes
-            .iter()
-            .filter(|class| mapping::has_tag(class.tags.as_deref(), "Service"))
-            .map(|class| class.name.clone())
-            .collect(),
-        creatable_instances: classes
-            .iter()
-            .filter(|class| {
-                !mapping::has_tag(class.tags.as_deref(), "NotCreatable")
-                    && !mapping::has_tag(class.tags.as_deref(), "Service")
-            })
-            .map(|class| class.name.clone())
-            .collect(),
-        profiles: definitions
-            .iter()
-            .map(|(name, source)| (name.clone(), digest(source.as_bytes())))
-            .collect(),
-        documentation: digest(roblox_documentation.as_bytes()),
+        profiles,
         enumerations: dump
             .enumerations
             .into_iter()
@@ -240,35 +217,17 @@ pub(super) fn render(
                         .collect(),
                 )
             })
-            .collect(),
-        properties,
+            .collect::<BTreeMap<_, _>>()
+            .into(),
     };
-
-    let mut result = BTreeMap::new();
 
     for (name, source) in definitions {
         result.insert(PathBuf::from(format!("roblox/{name}.d.luau")), source);
     }
 
     result.insert(
-        PathBuf::from("roblox/documentation.json"),
-        roblox_documentation,
-    );
-
-    result.insert(
         PathBuf::from("roblox/metadata.json"),
         serialize(&metadata, "Roblox metadata")?,
-    );
-
-    let luau_metadata = Documentation {
-        documentation: digest(luau_documentation.as_bytes()),
-    };
-
-    result.insert(PathBuf::from("luau/documentation.json"), luau_documentation);
-
-    result.insert(
-        PathBuf::from("luau/metadata.json"),
-        serialize(&luau_metadata, "Luau metadata")?,
     );
 
     interrupted(is_cancelled)?;
@@ -290,7 +249,7 @@ fn declaration(class: &Class, context: &Context<'_>) -> Result<Output, Error> {
             .superclass
             .as_deref()
             .filter(|parent| *parent != "<<<ROOT>>>"),
-    )?;
+    );
 
     let replacements = context
         .replacements
@@ -326,7 +285,7 @@ fn declaration(class: &Class, context: &Context<'_>) -> Result<Output, Error> {
             output.append(signature(
                 &member.name,
                 member.signature(&context.corrections.types)?,
-            )?);
+            ));
 
             output.newline();
         }
@@ -401,12 +360,12 @@ fn emit_permission(
     Ok(is_allowed)
 }
 
-fn signature(name: &str, signature: &Signature) -> Result<Output, Error> {
+fn signature(name: &str, signature: &Signature) -> Output {
     let mut output = Output::default();
 
     match signature {
         Signature::Property { value } => {
-            output.property(name)?;
+            output.property(name);
             output.symbol(Symbol::Colon);
             output.source(value);
         }
@@ -416,7 +375,7 @@ fn signature(name: &str, signature: &Signature) -> Result<Output, Error> {
             returns: result,
         } => {
             output.keyword(Keyword::Function);
-            output.property(name)?;
+            output.property(name);
             output.symbol(Symbol::LeftParenthesis);
             output.source("self");
 
@@ -434,7 +393,7 @@ fn signature(name: &str, signature: &Signature) -> Result<Output, Error> {
             parameters: values,
             returns: result,
         } => {
-            output.property(name)?;
+            output.property(name);
             output.symbol(Symbol::Colon);
             output.symbol(Symbol::LeftParenthesis);
             parameters(&mut output, values, true);
@@ -444,7 +403,7 @@ fn signature(name: &str, signature: &Signature) -> Result<Output, Error> {
         }
 
         Signature::Event { arguments } => {
-            output.property(name)?;
+            output.property(name);
             output.symbol(Symbol::Colon);
             output.source("RBXScriptSignal");
             output.symbol(Symbol::LessThan);
@@ -453,7 +412,7 @@ fn signature(name: &str, signature: &Signature) -> Result<Output, Error> {
         }
     }
 
-    Ok(output)
+    output
 }
 
 fn parameters(output: &mut Output, values: &[Argument], is_callback: bool) {
@@ -524,7 +483,7 @@ fn constructor(class: &Class, context: &Context<'_>) -> Result<Output, Error> {
     }
 
     output.source("declare");
-    output.name(&class.name)?;
+    output.source(&class.name);
     output.symbol(Symbol::Colon);
     output.symbol(Symbol::LeftBrace);
     output.newline();
@@ -544,7 +503,7 @@ fn constructor(class: &Class, context: &Context<'_>) -> Result<Output, Error> {
             output.append(signature(
                 &member.name,
                 member.signature(&context.corrections.types)?,
-            )?);
+            ));
         }
     }
 
@@ -563,7 +522,7 @@ fn constructor(class: &Class, context: &Context<'_>) -> Result<Output, Error> {
         }
 
         fields += 1;
-        output.property(&member.name)?;
+        output.property(&member.name);
         output.symbol(Symbol::Colon);
 
         for (index, overload) in class
@@ -640,156 +599,26 @@ fn inherited<'classes>(
     }
 }
 
-fn class_header(output: &mut Output, name: &str, parent: Option<&str>) -> Result<(), Error> {
+fn class_header(output: &mut Output, name: &str, parent: Option<&str>) {
     output.source("declare");
     output.source("extern");
     output.source("type");
-    output.name(name)?;
+    output.source(name);
 
     if let Some(parent) = parent {
         output.source("extends");
-        output.name(parent)?;
+        output.source(parent);
     }
 
     output.source("with");
     output.newline();
-
-    Ok(())
-}
-
-fn validate(
-    classes: [&[Class]; 3],
-    enumerations: &[Enumeration],
-    declarations: [&str; 2],
-    corrections: &Corrections,
-    is_cancelled: fn() -> bool,
-) -> Result<(), Error> {
-    let mut defined: BTreeSet<_> = classes[..2]
-        .iter()
-        .flat_map(|classes| classes.iter())
-        .map(|class| class.name.clone())
-        .collect();
-
-    defined.extend(["Enum", "EnumItem", "Enumerations"].map(str::to_owned));
-
-    for enumeration in enumerations {
-        interrupted(is_cancelled)?;
-
-        if !is_identifier(&enumeration.name) || enumeration.name == "GetEnums" {
-            return Err(invalid(format!(
-                "Invalid enum name `{}`.",
-                enumeration.name
-            )));
-        }
-
-        if !defined.insert(format!("Enum.{}", enumeration.name)) {
-            return Err(invalid(format!("Duplicate enum `{}`.", enumeration.name)));
-        }
-
-        let mut items = BTreeSet::from(["GetEnumItems", "FromName", "FromValue"]);
-
-        for item in &enumeration.items {
-            interrupted(is_cancelled)?;
-
-            if item.name.is_empty() || item.name.contains('\0') {
-                return Err(invalid(format!(
-                    "Invalid enum item name in `{}`.",
-                    enumeration.name
-                )));
-            }
-
-            if !items.insert(&item.name) {
-                return Err(invalid(format!(
-                    "Duplicate enum member `{}.{}`.",
-                    enumeration.name, item.name
-                )));
-            }
-        }
-    }
-
-    for source in declarations {
-        let tree = syntax::parse(source)?;
-
-        for node in &tree.nodes {
-            interrupted(is_cancelled)?;
-
-            if let NodeKind::TypeAlias { name, .. } | NodeKind::Class { name, .. } = node.kind {
-                let name = from_utf8(tree.text(name))
-                    .map_err(|error| invalid(format!("Type name is not valid UTF-8. {error}")))?;
-
-                defined.insert(name.to_owned());
-            }
-        }
-    }
-
-    let mut references = BTreeSet::new();
-
-    for class in classes.into_iter().flatten() {
-        interrupted(is_cancelled)?;
-
-        for member in &class.members {
-            interrupted(is_cancelled)?;
-
-            if !member.can_access(&HIERARCHY)? {
-                continue;
-            }
-
-            for value in member.value_type.iter().chain(
-                member
-                    .parameters
-                    .iter()
-                    .flatten()
-                    .map(|parameter| &parameter.value),
-            ) {
-                value.references(&corrections.types, &mut references)?;
-            }
-
-            for values in member
-                .return_type
-                .iter()
-                .filter(|_| member.tuple_returns.is_some())
-            {
-                let values = match values {
-                    Value::Array(values) => values.clone(),
-                    value => vec![value.clone()],
-                };
-
-                for value in values {
-                    let value: Type = mapping::decode(value, "tuple return type")?;
-                    value.references(&corrections.types, &mut references)?;
-                }
-            }
-
-            for value in member.returns("tuple return type")? {
-                value.references(&corrections.types, &mut references)?;
-            }
-        }
-    }
-
-    let missing: Vec<_> = references
-        .difference(&defined)
-        .map(String::as_str)
-        .collect();
-
-    if !missing.is_empty() {
-        return Err(invalid(format!(
-            "Unresolved API types: {}.",
-            missing
-                .iter()
-                .map(|name| format!("`{name}`"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )));
-    }
-
-    Ok(())
 }
 
 fn canonical(
     value: Value,
     luau: &BTreeSet<String>,
     roblox: &BTreeSet<String>,
-    is_cancelled: fn() -> bool,
+    is_cancelled: &dyn Fn() -> bool,
 ) -> Result<Value, Error> {
     interrupted(is_cancelled)?;
 

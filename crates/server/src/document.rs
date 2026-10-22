@@ -1,11 +1,16 @@
 use std::{
-    iter,
     ops::Range,
     path::{Path, PathBuf},
-    sync::Arc,
+    result,
+    sync::{Arc, Mutex, OnceLock},
 };
 
-use instar_core::analysis::{self, Analysis};
+use instar_core::{
+    analysis::{self, Analysis},
+    lint,
+};
+
+use line_index::{LineCol, LineIndex, TextSize, WideEncoding, WideLineCol};
 
 use tower_lsp_server::{
     gen_lsp_types::{
@@ -20,24 +25,68 @@ pub(super) struct Document {
     pub(super) text: Arc<str>,
     pub(super) version: Option<i32>,
     pub(super) revision: u64,
-    pub(super) analysis: Arc<Analysis>,
-    lines: Arc<[usize]>,
+    analysis: Arc<OnceLock<Analysis>>,
+    findings: Arc<Mutex<Option<Lint>>>,
+    lines: Arc<LineIndex>,
+}
+
+struct Lint {
+    settings: Arc<lint::Prepared>,
+    symbols: Arc<lint::Symbols>,
+    findings: result::Result<Arc<[lint::Finding]>, lint::Failure>,
 }
 
 impl Document {
-    pub(super) fn new(uri: Uri, text: Arc<str>, version: Option<i32>, revision: u64) -> Self {
-        let lines = lines(&text);
+    pub(super) fn new(
+        uri: Uri,
+        text: Arc<str>,
+        version: Option<i32>,
+        revision: u64,
+    ) -> Result<Self> {
+        let lines = Arc::new(lines(&text)?);
 
-        let analysis = Arc::new(analysis::analyze(&text));
-
-        Self {
+        Ok(Self {
             uri,
             text,
             version,
             revision,
-            analysis,
+            analysis: Arc::new(OnceLock::new()),
+            findings: Arc::new(Mutex::new(None)),
             lines,
+        })
+    }
+
+    pub(super) fn analysis(&self) -> &Analysis {
+        self.analysis
+            .get_or_init(|| analysis::analyze(Arc::clone(&self.text)))
+    }
+
+    pub(super) fn findings(
+        &self,
+        settings: Arc<lint::Prepared>,
+        symbols: Arc<lint::Symbols>,
+    ) -> result::Result<Arc<[lint::Finding]>, lint::Failure> {
+        let mut cached = self
+            .findings
+            .lock()
+            .expect("Internal error: lint cache mutex is poisoned.");
+
+        if let Some(cached) = &*cached
+            && Arc::ptr_eq(&cached.settings, &settings)
+            && Arc::ptr_eq(&cached.symbols, &symbols)
+        {
+            return cached.findings.clone();
         }
+
+        let findings = lint::lint(&self.text, &settings, &symbols).map(Arc::from);
+
+        *cached = Some(Lint {
+            settings,
+            symbols,
+            findings: findings.clone(),
+        });
+
+        findings
     }
 
     pub(super) fn offset(&self, position: Position, encoding: Encoding) -> Result<usize> {
@@ -45,28 +94,45 @@ impl Document {
     }
 
     pub(super) fn position(&self, offset: usize, encoding: Encoding) -> Result<Position> {
-        if !self.text.is_char_boundary(offset) {
-            return Err(Error::invalid_params(
-                "Source offset is outside the document or splits a character.",
-            ));
-        }
+        let position = TextSize::try_from(offset)
+            .ok()
+            .and_then(|offset| self.lines.try_line_col(offset))
+            .ok_or_else(|| {
+                Error::invalid_params(
+                    "Source offset is outside the document or splits a character.",
+                )
+            })?;
 
-        let line = self
+        let start = self
             .lines
-            .partition_point(|start| *start <= offset)
-            .saturating_sub(1);
+            .offset(LineCol {
+                line: position.line,
+                col: 0,
+            })
+            .expect("Internal error: indexed line is missing.");
 
-        let text = self.text[self.lines[line]..offset].trim_end_matches(['\r', '\n']);
+        let text = self.text[usize::from(start)..offset].trim_end_matches(['\r', '\n']);
 
-        let character: usize = text
-            .chars()
-            .map(|character| encoding.width(character))
-            .sum();
+        let position = LineCol {
+            line: position.line,
+            col: u32::try_from(text.len())
+                .map_err(|error| Error::invalid_params(error.to_string()))?,
+        };
+
+        let character = match encoding.wide() {
+            Some(encoding) => {
+                self.lines
+                    .to_wide(encoding, position)
+                    .ok_or_else(|| Error::invalid_params("Source column is outside the line."))?
+                    .col
+            }
+
+            None => position.col,
+        };
 
         Ok(Position {
-            line: u32::try_from(line).map_err(|error| Error::invalid_params(error.to_string()))?,
-            character: u32::try_from(character)
-                .map_err(|error| Error::invalid_params(error.to_string()))?,
+            line: position.line,
+            character,
         })
     }
 
@@ -88,14 +154,11 @@ impl Document {
     pub(super) fn native(&self, position: Position, encoding: Encoding) -> Result<(u32, u32)> {
         let offset = self.offset(position, encoding)?;
 
-        let start = self.lines[usize::try_from(position.line)
-            .map_err(|error| Error::invalid_params(error.to_string()))?];
+        let position = self.lines.line_col(
+            TextSize::try_from(offset).map_err(|error| Error::invalid_params(error.to_string()))?,
+        );
 
-        Ok((
-            position.line,
-            u32::try_from(offset - start)
-                .map_err(|error| Error::invalid_params(error.to_string()))?,
-        ))
+        Ok((position.line, position.col))
     }
 
     pub(super) fn native_range(
@@ -138,7 +201,7 @@ impl Document {
         for change in changes {
             match change {
                 TextDocumentContentChangeEvent::TextDocumentContentChangePartial(change) => {
-                    let lines = lines(&text);
+                    let lines = lines(&text)?;
                     let range = bytes(&text, &lines, change.range, encoding)?;
                     text.replace_range(range, &change.text);
                 }
@@ -149,12 +212,7 @@ impl Document {
             }
         }
 
-        Ok(Self::new(
-            self.uri.clone(),
-            Arc::from(text),
-            Some(version),
-            revision,
-        ))
+        Self::new(self.uri.clone(), Arc::from(text), Some(version), revision)
     }
 }
 
@@ -177,59 +235,71 @@ impl Encoding {
         }
     }
 
-    fn width(self, character: char) -> usize {
+    fn wide(self) -> Option<WideEncoding> {
         match self {
-            Self::Bytes => character.len_utf8(),
-            Self::Units => character.len_utf16(),
-            Self::Scalars => 1,
+            Self::Bytes => None,
+            Self::Units => Some(WideEncoding::Utf16),
+            Self::Scalars => Some(WideEncoding::Utf32),
         }
     }
 }
 
-fn lines(text: &str) -> Arc<[usize]> {
-    iter::once(0)
-        .chain(text.match_indices('\n').map(|(offset, _)| offset + 1))
-        .collect()
+fn lines(text: &str) -> Result<LineIndex> {
+    u32::try_from(text.len())
+        .ok()
+        .filter(|length| *length < u32::MAX)
+        .ok_or_else(|| Error::invalid_params("Document exceeds the 32-bit source size limit."))?;
+
+    Ok(LineIndex::new(text))
 }
 
-fn offset(source: &str, lines: &[usize], position: Position, encoding: Encoding) -> Result<usize> {
-    let line =
-        usize::try_from(position.line).map_err(|error| Error::invalid_params(error.to_string()))?;
-
-    let start = *lines
-        .get(line)
+fn offset(
+    source: &str,
+    lines: &LineIndex,
+    position: Position,
+    encoding: Encoding,
+) -> Result<usize> {
+    let range = lines
+        .line(position.line)
         .ok_or_else(|| Error::invalid_params("Source line is outside the document."))?;
 
-    let end = lines.get(line + 1).copied().unwrap_or(source.len());
-    let text = source[start..end].trim_end_matches(['\r', '\n']);
+    let start = usize::from(range.start());
+    let text = source[start..usize::from(range.end())].trim_end_matches(['\r', '\n']);
 
-    let expected = usize::try_from(position.character)
-        .map_err(|error| Error::invalid_params(error.to_string()))?;
+    let position = match encoding.wide() {
+        Some(encoding) => lines
+            .to_utf8(
+                encoding,
+                WideLineCol {
+                    line: position.line,
+                    col: position.character,
+                },
+            )
+            .ok_or_else(|| Error::invalid_params("Source column is outside the line."))?,
 
-    let mut units = 0;
+        None => LineCol {
+            line: position.line,
+            col: position.character,
+        },
+    };
 
-    for (offset, character) in text.char_indices() {
-        if units == expected {
-            return Ok(start + offset);
-        }
+    let column =
+        usize::try_from(position.col).map_err(|error| Error::invalid_params(error.to_string()))?;
 
-        units += encoding.width(character);
-
-        if units > expected {
-            return Err(Error::invalid_params("Source position splits a character."));
-        }
+    if column > text.len() {
+        return Err(Error::invalid_params("Source column is outside the line."));
     }
 
-    if units == expected {
-        Ok(start + text.len())
-    } else {
-        Err(Error::invalid_params("Source column is outside the line."))
+    if !text.is_char_boundary(column) {
+        return Err(Error::invalid_params("Source position splits a character."));
     }
+
+    Ok(start + column)
 }
 
 fn bytes(
     text: &str,
-    lines: &[usize],
+    lines: &LineIndex,
     range: ProtocolRange,
     encoding: Encoding,
 ) -> Result<Range<usize>> {

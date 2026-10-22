@@ -8,7 +8,7 @@ mod source;
 mod validation;
 
 pub use self::{
-    color::{Color, color_presentations},
+    color::Color,
     error::Error,
     model::{
         Access, Analysis, Binding, BindingKind, Edit, Fold, FoldKind, Import, ImportExpression,

@@ -2,7 +2,6 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Component, Path, PathBuf},
-    rc::Rc,
 };
 
 use globset::{Glob, GlobBuilder, GlobMatcher, escape};
@@ -107,8 +106,8 @@ pub(super) fn select(
     access: Access,
 ) -> Result<BTreeMap<String, PathBuf>, Error> {
     let mut selected = BTreeMap::new();
-    let cancellation = Rc::clone(&workspace.is_cancelled.borrow());
-    let is_cancelled = cancellation.as_ref();
+    let cancellation = workspace.cancellation.borrow().clone();
+    let is_cancelled = &|| cancellation.is_cancelled();
     process::interrupted(is_cancelled)?;
 
     if inputs.is_empty() {
@@ -221,8 +220,8 @@ fn walk(
     purpose: Purpose,
     selected: &mut BTreeMap<String, PathBuf>,
 ) -> Result<(), Error> {
-    let cancellation = Rc::clone(&workspace.is_cancelled.borrow());
-    let is_cancelled = cancellation.as_ref();
+    let cancellation = workspace.cancellation.borrow().clone();
+    let is_cancelled = &|| cancellation.is_cancelled();
 
     for entry in WalkBuilder::new(root).standard_filters(false).build() {
         process::interrupted(is_cancelled)?;

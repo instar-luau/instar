@@ -1,29 +1,38 @@
-use std::{collections::BTreeMap, fmt::Write as _};
+use std::{collections::BTreeMap, sync::Arc};
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest as _, Sha256};
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Metadata {
-    pub(crate) services: Vec<String>,
-    pub(crate) creatable_instances: Vec<String>,
-    pub(crate) profiles: BTreeMap<String, String>,
-    pub(crate) documentation: String,
-    pub(crate) enumerations: BTreeMap<String, Vec<String>>,
-    pub(crate) properties: BTreeMap<String, Vec<Access>>,
+    pub(crate) profiles: BTreeMap<String, Profile>,
+    pub(crate) enumerations: Arc<BTreeMap<String, Vec<String>>>,
 }
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct Documentation {
-    pub(crate) documentation: String,
+pub(crate) struct Profile {
+    pub(crate) classes: Vec<Capability>,
 }
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct Access {
-    pub(crate) class: String,
+pub(crate) struct Capability {
+    pub(crate) name: String,
+
+    #[serde(rename = "service")]
+    pub(crate) is_service: bool,
+
+    #[serde(rename = "creatable")]
+    pub(crate) is_creatable: bool,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) properties: Vec<Permission>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Permission {
     pub(crate) name: String,
 
     #[serde(rename = "read")]
@@ -33,12 +42,21 @@ pub(crate) struct Access {
     pub(crate) can_write: bool,
 }
 
-pub(crate) fn digest(contents: &[u8]) -> String {
-    let mut digest = String::with_capacity(64);
-
-    for byte in Sha256::digest(contents) {
-        write!(digest, "{byte:02x}").expect("Internal error: cannot write to a string.");
+impl From<Capability> for instar_bridge::Class {
+    fn from(capability: Capability) -> Self {
+        Self {
+            name: capability.name,
+            service: capability.is_service,
+            creatable: capability.is_creatable,
+            properties: capability
+                .properties
+                .into_iter()
+                .map(|property| instar_bridge::Property {
+                    name: property.name,
+                    read: property.can_read,
+                    write: property.can_write,
+                })
+                .collect(),
+        }
     }
-
-    digest
 }

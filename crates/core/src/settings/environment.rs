@@ -44,7 +44,7 @@ pub struct Group {
     #[schemars(extend("items" = schema::path()))]
     pub definitions: Vec<PathBuf>,
 
-    /// Ordered documentation files.
+    /// Ordered documentation files with prepared Markdown.
     #[serde(default)]
     #[schemars(extend("items" = schema::path()))]
     pub documentation: Vec<PathBuf>,

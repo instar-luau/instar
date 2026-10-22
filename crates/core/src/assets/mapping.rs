@@ -1,14 +1,10 @@
-use std::{
-    cell::OnceCell,
-    collections::{BTreeMap, BTreeSet},
-};
+use std::{cell::OnceCell, collections::BTreeMap};
 
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
 use vermis::token::Symbol;
 
 use super::{Error, syntax::Output};
-use crate::syntax::is_identifier;
 
 pub(super) const HIERARCHY: [&str; 5] = [
     "None",
@@ -166,12 +162,10 @@ impl Type {
         let mut output = Output::default();
         self.emit(mappings, &mut output)?;
 
-        output.finish(|| false)
+        output.finish(&|| false)
     }
 
     fn emit(&self, mappings: &BTreeMap<String, String>, output: &mut Output) -> Result<(), Error> {
-        self.validate_shape()?;
-
         if let Some(generic) = &self.generic {
             output.symbol(Symbol::LeftBrace);
             output.source(generic);
@@ -217,57 +211,6 @@ impl Type {
             output.source(format!("Enum.{name}"));
         } else {
             output.source(mappings.get(name).unwrap_or(name));
-        }
-
-        Ok(())
-    }
-
-    pub(super) fn references(
-        &self,
-        mappings: &BTreeMap<String, String>,
-        result: &mut BTreeSet<String>,
-    ) -> Result<(), Error> {
-        self.validate_shape()?;
-
-        if let Some(union) = &self.union {
-            for part in union {
-                part.references(mappings, result)?;
-            }
-
-            return Ok(());
-        }
-
-        if let Some(nested) = self.tuple.as_ref().or(self.variadic.as_ref()) {
-            return nested.references(mappings, result);
-        }
-
-        let value = if let Some(generic) = &self.generic {
-            let value = Self {
-                name: Some(generic.clone()),
-                ..Self::default()
-            };
-
-            value.resolve(mappings)?
-        } else {
-            self.resolve(mappings)?
-        };
-
-        let value = value.strip_suffix('?').unwrap_or(&value);
-
-        if (is_identifier(value) || value.strip_prefix("Enum.").is_some_and(is_identifier))
-            && !is_primitive(value)
-        {
-            result.insert(value.to_owned());
-        }
-
-        Ok(())
-    }
-
-    fn validate_shape(&self) -> Result<(), Error> {
-        if self.generic.is_some()
-            && (self.union.is_some() || self.tuple.is_some() || self.variadic.is_some())
-        {
-            return Err(invalid("Generic and structural type shapes conflict."));
         }
 
         Ok(())
@@ -460,17 +403,26 @@ impl Member {
 }
 
 pub(super) fn decode<Target: DeserializeOwned>(value: Value, input: &str) -> Result<Target, Error> {
-    serde_json::from_value(value).map_err(|source| Error::Data {
-        input: input.to_owned(),
-        source,
+    serde_path_to_error::deserialize(value).map_err(|source| Error::Data {
+        input: format!("{input} at {}", source.path()),
+        source: source.into_inner(),
     })
 }
 
 pub(super) fn parse<Target: DeserializeOwned>(source: &str, input: &str) -> Result<Target, Error> {
-    serde_json::from_str(source).map_err(|source| Error::Data {
+    let mut decoder = serde_json::Deserializer::from_str(source);
+
+    let value = serde_path_to_error::deserialize(&mut decoder).map_err(|source| Error::Data {
+        input: format!("{input} at {}", source.path()),
+        source: source.into_inner(),
+    })?;
+
+    decoder.end().map_err(|source| Error::Data {
         input: input.to_owned(),
         source,
-    })
+    })?;
+
+    Ok(value)
 }
 
 pub(super) fn invalid(reason: impl Into<String>) -> Error {
@@ -504,7 +456,7 @@ pub(super) fn has_tag(tags: Option<&[Value]>, name: &str) -> bool {
 pub(super) fn corrected(
     values: Vec<Value>,
     patches: &[Value],
-    is_cancelled: fn() -> bool,
+    is_cancelled: &dyn Fn() -> bool,
 ) -> Result<Vec<Class>, Error> {
     let mut result = Vec::with_capacity(values.len());
 

@@ -1,11 +1,13 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
+    fs,
     path::{Component, Path, PathBuf},
     sync::Arc,
 };
 
 use instar_bridge::{
-    Configuration, Environment, Flag, Host, HostError, Instance, Mode, Navigation, Operation,
+    Configuration, Environment, Flag, Host, HostError, Instance, Language, Mode, Navigation,
+    Operation,
 };
 
 use super::{Error, Workspace, environment, instances, paths};
@@ -26,6 +28,20 @@ impl Host for Workspace {
             .map_err(|error| failure(module, Operation::Alias, error))
     }
 
+    fn aliases(&self, module: &str) -> Result<Vec<String>, HostError> {
+        self.scope(Path::new(module))
+            .map(|scope| {
+                scope
+                    .configuration
+                    .resolve
+                    .aliases
+                    .keys()
+                    .cloned()
+                    .collect()
+            })
+            .map_err(|error| failure(module, Operation::Aliases, error))
+    }
+
     fn child(&self, module: &str, name: &str) -> Result<Navigation, HostError> {
         let mut components = Path::new(name).components();
 
@@ -36,6 +52,11 @@ impl Host for Workspace {
         logical(Path::new(module))
             .and_then(|path| resolve(self, &path.join(name)))
             .map_err(|error| failure(module, Operation::Child, error))
+    }
+
+    fn children(&self, module: &str) -> Result<Vec<String>, HostError> {
+        children(self, Path::new(module))
+            .map_err(|error| failure(module, Operation::Children, error))
     }
 
     fn configuration(&self, module: &str) -> Result<Configuration, HostError> {
@@ -61,6 +82,7 @@ impl Host for Workspace {
                 .map_err(|error| failure(module, Operation::Environment, error))?,
             flags: flags(configuration),
             locations,
+            type_errors: scope.language.as_ref().is_none_or(Language::type_errors),
         })
     }
 
@@ -78,7 +100,7 @@ impl Host for Workspace {
             .extend(prepared.definitions.iter().map(|definition| {
                 (
                     definition.name.clone(),
-                    Some(Arc::from(definition.source.as_str())),
+                    Some(Arc::clone(&definition.source)),
                 )
             }));
 
@@ -90,11 +112,15 @@ impl Host for Workspace {
     }
 
     fn hierarchy(&self, name: &str) -> Result<Vec<Instance>, HostError> {
-        self.instances.borrow().get(name).ok_or_else(|| HostError {
-            module: name.to_owned(),
-            operation: Operation::Hierarchy,
-            source: "Unknown instance hierarchy.".into(),
-        })
+        self.instances
+            .borrow()
+            .get(name)
+            .map(<[Instance]>::to_vec)
+            .ok_or_else(|| HostError {
+                module: name.to_owned(),
+                operation: Operation::Hierarchy,
+                source: "Unknown instance hierarchy.".into(),
+            })
     }
 
     fn parent(&self, module: &str) -> Result<Navigation, HostError> {
@@ -150,6 +176,58 @@ pub(super) fn logical(path: &Path) -> Result<PathBuf, Error> {
     }
 
     Ok(path.to_owned())
+}
+
+fn children(workspace: &Workspace, module: &Path) -> Result<Vec<String>, Error> {
+    let directory = logical(module)?;
+
+    workspace
+        .observed_paths
+        .borrow_mut()
+        .insert(directory.clone());
+
+    if !paths::metadata(&directory)?.is_some_and(|metadata| metadata.is_dir()) {
+        return Ok(Vec::new());
+    }
+
+    let entries = fs::read_dir(&directory)
+        .and_then(|entries| {
+            entries
+                .map(|entry| entry.map(|entry| entry.path()))
+                .collect::<Result<BTreeSet<_>, _>>()
+        })
+        .map_err(|source| Error::Filesystem {
+            path: directory.clone(),
+            source,
+        })?;
+
+    let sources = workspace.sources.borrow();
+    let mut names = BTreeSet::new();
+
+    for entry in entries.iter().map(PathBuf::as_path).chain(
+        sources
+            .keys()
+            .map(Path::new)
+            .filter(|path| path.parent() == Some(directory.as_path())),
+    ) {
+        if workspace.cancellation.borrow().is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+
+        let name = if paths::metadata(entry)?.is_some_and(|metadata| metadata.is_dir()) {
+            entry.file_name()
+        } else if paths::is_source(entry) {
+            entry.file_stem().filter(|name| *name != "init")
+        } else {
+            None
+        };
+
+        if let Some(name) = name {
+            names.insert(paths::text(Path::new(name))?);
+        }
+    }
+
+    Ok(names.into_iter().collect())
 }
 
 fn resolve(workspace: &Workspace, path: &Path) -> Result<Navigation, Error> {

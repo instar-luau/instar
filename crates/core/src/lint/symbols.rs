@@ -1,11 +1,13 @@
 use std::collections::BTreeSet;
 
+use serde::{Deserialize, Serialize};
 use vermis::tree::NodeKind;
 
 use crate::lint::{Error, syntax::parse};
 
 /// Value and type names supplied by the selected declaration environment.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Symbols {
     /// Declared global values.
     pub globals: BTreeSet<String>,

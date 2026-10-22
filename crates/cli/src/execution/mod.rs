@@ -1,6 +1,7 @@
 pub(crate) mod workers;
 
 mod command;
+mod events;
 mod project;
 mod session;
 mod watch;

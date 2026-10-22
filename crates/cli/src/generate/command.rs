@@ -35,20 +35,6 @@ pub(crate) fn run(arguments: &Arguments, options: &Generate) -> Result<u8> {
         .into());
     }
 
-    if options.revision.is_some()
-        && !options.targets.is_empty()
-        && options
-            .targets
-            .iter()
-            .all(|target| *target == Target::Schema)
-    {
-        return Err(output::Validation::new(
-            "--revision requires the luau or roblox target.",
-            "Include luau or roblox in the selected targets, or remove --revision.",
-        )
-        .into());
-    }
-
     let root = options.root.as_deref().unwrap_or_else(|| Path::new("."));
 
     let root = path::absolute(root)
@@ -80,8 +66,7 @@ pub(crate) fn run(arguments: &Arguments, options: &Generate) -> Result<u8> {
     let target = if options.targets.len() == 1 {
         Some(match options.targets[0] {
             Target::Schema => "schema",
-            Target::Luau => "luau",
-            Target::Roblox => "roblox",
+            Target::Environments => "environments",
         })
     } else {
         None
@@ -89,12 +74,7 @@ pub(crate) fn run(arguments: &Arguments, options: &Generate) -> Result<u8> {
 
     output::generation("Generating", target)?;
 
-    let generated = assets::generate(
-        &output,
-        &options.targets,
-        options.revision.as_deref(),
-        interrupt::is_requested,
-    )?;
+    let generated = assets::generate(&output, &options.targets, &interrupt::CANCELLATION)?;
 
     interrupt::check()?;
     output::generation("Finalizing generation", None)?;
