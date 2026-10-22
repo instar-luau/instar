@@ -1,0 +1,137 @@
+name: release
+
+on:
+  pull_request:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.event_name == 'push' && 'release' || format('release-{0}', github.ref) }}
+  queue: max
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  plan:
+    name: plan release
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - name: check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: set up dist
+        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        with:
+          install_args: aqua:axodotdev/cargo-dist
+          cache: false
+
+      - name: set up nushell
+        uses: hustcer/setup-nu@95cd3bfe252450ef7d35dd9a7ddecf3484341134 # v3.28
+        with:
+          check-latest: true
+
+      - name: plan release
+        id: plan
+        run: nu scripts/release.nu plan
+
+  build:
+    name: build release
+    needs: plan
+    if: github.event_name == 'push'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - name: check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: set up dist
+        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        with:
+          install_args: aqua:axodotdev/cargo-dist
+          cache: false
+
+      - name: set up nushell
+        uses: hustcer/setup-nu@95cd3bfe252450ef7d35dd9a7ddecf3484341134 # v3.28
+        with:
+          check-latest: true
+
+      - name: build archive
+        id: artifacts
+        run: nu scripts/release.nu archive
+
+      - name: upload archive
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: archive-${{ matrix.target }}
+          path: ${{ steps.artifacts.outputs.paths }}
+          if-no-files-found: error
+
+  publish:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      contents: write # Publish release archives and checksums.
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: set up dist
+        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        with:
+          install_args: aqua:axodotdev/cargo-dist
+          cache: false
+
+      - name: set up nushell
+        uses: hustcer/setup-nu@95cd3bfe252450ef7d35dd9a7ddecf3484341134 # v3.28
+        with:
+          check-latest: true
+
+      - name: download archives
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: archive-*
+          path: target/distrib
+          merge-multiple: true
+
+      - name: build checksums
+        run: nu scripts/release.nu package
+
+      - name: publish release
+        run: nu scripts/release.nu publish
+
+  assets:
+    needs: publish
+    permissions:
+      contents: read
+      pages: write # Publish generated assets to Pages.
+      id-token: write # Authenticate the Pages deployment.
+    uses: ./.github/workflows/assets.yml
+    with:
+      tag: ${{ github.ref_name }}

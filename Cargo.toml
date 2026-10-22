@@ -109,3 +109,6 @@ unsafe_op_in_unsafe_fn = "deny"
 
 [profile.dev]
 debug = "line-tables-only"
+
+[profile.dist]
+inherits = "release"
