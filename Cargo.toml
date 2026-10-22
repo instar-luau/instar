@@ -5,6 +5,7 @@ members = ["crates/*"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+readme = "README.md"
 repository = "https://github.com/instar-luau/instar"
 license = "MIT"
 keywords = ["formatter", "linter", "lsp", "luau", "roblox"]

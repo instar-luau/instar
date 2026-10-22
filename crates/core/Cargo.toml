@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 description = "Project services, formatting, and linting for Instar"
 repository.workspace = true
+readme.workspace = true
 license.workspace = true
 keywords.workspace = true
 categories.workspace = true
