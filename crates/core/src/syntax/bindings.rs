@@ -144,13 +144,35 @@ impl Bindings {
     }
 
     pub(crate) fn is_global(&self, tree: &Tree<'_>, node: NodeIndex, expected: &str) -> bool {
-        self.is_runtime[node.get()]
-            && !expected.is_empty()
-            && self.path(tree, node) == expected
-            && !self.writes.contains("_G")
-            && !self
+        if !self.is_runtime[node.get()]
+            || expected.is_empty()
+            || self.writes.contains("_G")
+            || self
                 .writes
                 .contains(expected.split('.').next().unwrap_or(expected))
+        {
+            return false;
+        }
+
+        let mut node = unwrap(tree, node);
+        let mut expected = expected;
+
+        while let NodeKind::Field { receiver, name, .. } = tree.node(node).kind {
+            let Some((root, field)) = expected.rsplit_once('.') else {
+                return false;
+            };
+
+            if tree.text(name) != field.as_bytes() {
+                return false;
+            }
+
+            node = unwrap(tree, receiver);
+            expected = root;
+        }
+
+        matches!(tree.node(node).kind, NodeKind::Name { .. })
+            && self.references[node.get()].is_none()
+            && tree.text(node) == expected.as_bytes()
     }
 
     pub(crate) fn value(&self, tree: &Tree<'_>, mut node: NodeIndex) -> NodeIndex {
