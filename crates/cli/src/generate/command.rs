@@ -8,21 +8,10 @@ use instar_core::assets::{self, Target};
 
 use super::association;
 
-use crate::{
-    arguments::{Arguments, Generate},
-    interrupt, output,
-};
+use crate::{arguments::Generate, interrupt, output};
 
-pub(crate) fn run(arguments: &Arguments, options: &Generate) -> Result<u8> {
+pub(crate) fn run(options: &Generate) -> Result<u8> {
     let started = Instant::now();
-
-    if arguments.stdin_filepath.is_some() {
-        return Err(output::Validation::new(
-            "--stdin-filepath cannot be used with generate.",
-            "Remove --stdin-filepath.",
-        )
-        .into());
-    }
 
     if options.associate.is_some()
         && !options.targets.is_empty()

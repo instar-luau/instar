@@ -17,12 +17,9 @@ use super::{
     watch::Watcher,
 };
 
-use crate::{
-    arguments::{Arguments, Operation},
-    check, format, interrupt, lint, output,
-};
+use crate::{arguments::Operation, check, format, interrupt, lint, output};
 
-pub(crate) fn run(arguments: &Arguments, operation: &Operation) -> Result<u8> {
+pub(crate) fn run(operation: &Operation) -> Result<u8> {
     let mut started = Instant::now();
 
     let options = operation.options();
@@ -55,7 +52,7 @@ pub(crate) fn run(arguments: &Arguments, operation: &Operation) -> Result<u8> {
         .into());
     }
 
-    if stdin_count == 0 && arguments.stdin_filepath.is_some() {
+    if stdin_count == 0 && options.stdin_filepath.is_some() {
         return Err(output::Validation::new(
             "--stdin-filepath requires stdin input.",
             "Add - to the input list.",
@@ -75,7 +72,7 @@ pub(crate) fn run(arguments: &Arguments, operation: &Operation) -> Result<u8> {
 
     let stdin = if stdin_count == 1 {
         Some((
-            arguments
+            options
                 .stdin_filepath
                 .clone()
                 .unwrap_or_else(|| PathBuf::from("stdin.luau")),

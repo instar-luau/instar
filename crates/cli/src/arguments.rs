@@ -48,14 +48,6 @@ pub(super) struct Arguments {
     )]
     pub(super) color: Option<ColorChoice>,
 
-    #[arg(
-        long,
-        global = true,
-        value_name = "PATH",
-        help = "Use this module path for stdin"
-    )]
-    pub(super) stdin_filepath: Option<PathBuf>,
-
     #[command(subcommand)]
     pub(super) command: Command,
 }
@@ -214,6 +206,9 @@ pub(super) struct Options {
         help = "Select files, directories, patterns, or - for stdin. Defaults to ."
     )]
     pub(super) inputs: Vec<PathBuf>,
+
+    #[arg(long, value_name = "PATH", help = "Use this module path for stdin")]
+    pub(super) stdin_filepath: Option<PathBuf>,
 
     #[arg(id = "watch", long = "watch", help = "Run again when files change")]
     pub(super) should_watch: bool,
