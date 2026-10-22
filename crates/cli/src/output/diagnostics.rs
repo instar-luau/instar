@@ -12,7 +12,6 @@ use instar_core::workspace::Error as WorkspaceError;
 
 use miette::{
     Diagnostic, GraphicalReportHandler, GraphicalTheme, LabeledSpan, MietteDiagnostic, NamedSource,
-    SourceCode,
 };
 
 use super::{
@@ -45,11 +44,17 @@ impl fmt::Display for Validation {
 
 impl Error for Validation {}
 
-#[derive(Debug)]
+#[derive(Debug, Diagnostic)]
+#[diagnostic(forward(diagnostic))]
 struct View<'error> {
     diagnostic: MietteDiagnostic,
+
+    #[source_code]
     source: Option<NamedSource<Arc<str>>>,
+
     cause: Option<&'error (dyn Error + 'static)>,
+
+    #[related]
     related: Vec<Self>,
 }
 
@@ -73,38 +78,6 @@ impl fmt::Display for View<'_> {
 impl Error for View<'_> {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         self.cause
-    }
-}
-
-impl Diagnostic for View<'_> {
-    fn code(&self) -> Option<Box<dyn fmt::Display + '_>> {
-        self.diagnostic.code()
-    }
-
-    fn severity(&self) -> Option<miette::Severity> {
-        self.diagnostic.severity()
-    }
-
-    fn help(&self) -> Option<Box<dyn fmt::Display + '_>> {
-        self.diagnostic.help()
-    }
-
-    fn labels(&self) -> Option<Box<dyn Iterator<Item = LabeledSpan> + '_>> {
-        self.diagnostic.labels()
-    }
-
-    fn source_code(&self) -> Option<&dyn SourceCode> {
-        self.source.as_ref().map(|source| source as &dyn SourceCode)
-    }
-
-    fn related(&self) -> Option<Box<dyn Iterator<Item = &dyn Diagnostic> + '_>> {
-        (!self.related.is_empty()).then(|| {
-            Box::new(
-                self.related
-                    .iter()
-                    .map(|related| related as &dyn Diagnostic),
-            ) as Box<dyn Iterator<Item = &dyn Diagnostic>>
-        })
     }
 }
 
