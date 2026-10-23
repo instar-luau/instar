@@ -95,6 +95,8 @@ impl Host for Workspace {
             source: "Unknown declaration environment.".into(),
         })?;
 
+        self.observations.borrow_mut().take();
+
         self.snapshots
             .borrow_mut()
             .extend(prepared.definitions.iter().map(|definition| {
@@ -181,10 +183,7 @@ pub(super) fn logical(path: &Path) -> Result<PathBuf, Error> {
 fn children(workspace: &Workspace, module: &Path) -> Result<Vec<String>, Error> {
     let directory = logical(module)?;
 
-    workspace
-        .observed_paths
-        .borrow_mut()
-        .insert(directory.clone());
+    workspace.observe(directory.clone());
 
     if !paths::metadata(&directory)?.is_some_and(|metadata| metadata.is_dir()) {
         return Ok(Vec::new());
@@ -231,10 +230,7 @@ fn children(workspace: &Workspace, module: &Path) -> Result<Vec<String>, Error> 
 }
 
 fn resolve(workspace: &Workspace, path: &Path) -> Result<Navigation, Error> {
-    workspace
-        .observed_paths
-        .borrow_mut()
-        .insert(path.to_owned());
+    workspace.observe(path.to_owned());
 
     let mut candidate = None;
 
@@ -243,7 +239,7 @@ fn resolve(workspace: &Workspace, path: &Path) -> Result<Navigation, Error> {
             let mut file = path.as_os_str().to_owned();
             file.push(suffix);
             let file = PathBuf::from(file);
-            workspace.observed_paths.borrow_mut().insert(file.clone());
+            workspace.observe(file.clone());
 
             if is_source(workspace, &file)? {
                 if candidate.is_some() {
@@ -271,7 +267,7 @@ fn directory(workspace: &Workspace, path: &Path) -> Result<Navigation, Error> {
 
     for name in ["init.luau", "init.lua"] {
         let file = path.join(name);
-        workspace.observed_paths.borrow_mut().insert(file.clone());
+        workspace.observe(file.clone());
 
         if is_source(workspace, &file)? {
             if candidate.is_some() {

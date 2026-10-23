@@ -15,7 +15,7 @@ use instar_core::{
     analysis::Edit as SourceEdit,
     lint,
     settings::resolution::Generator,
-    workspace::{Access, Generators, Purpose, Sourcemap, SymbolOutcome, Workspace},
+    workspace::{Access, Generators, Observations, Purpose, Sourcemap, SymbolOutcome, Workspace},
 };
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -60,6 +60,7 @@ pub(super) struct Project {
     pub(super) nested: BTreeSet<PathBuf>,
     native_dependencies: BTreeSet<PathBuf>,
     native_reload_dependencies: BTreeSet<PathBuf>,
+    native_observations: Option<Arc<Observations>>,
     revision: u64,
 }
 
@@ -96,6 +97,7 @@ impl Project {
             nested: BTreeSet::new(),
             native_dependencies: BTreeSet::new(),
             native_reload_dependencies: BTreeSet::new(),
+            native_observations: None,
             revision: 0,
         })
     }
@@ -312,6 +314,7 @@ impl Project {
     pub(super) fn invalidate(&mut self, module: &str) {
         self.workspace.invalidate(module);
         self.observed.remove(module);
+        self.native_observations = None;
 
         if self
             .documents
@@ -349,6 +352,7 @@ impl Project {
         self.observed.clear();
         self.native_dependencies.clear();
         self.native_reload_dependencies.clear();
+        self.native_observations = None;
 
         previous.shutdown().map_err(failure)
     }
@@ -481,32 +485,34 @@ impl Project {
     }
 
     pub(super) fn feedback(&self) -> Feedback {
-        let dependencies = self.workspace.dependencies();
-
-        let observed = dependencies
-            .iter()
-            .filter_map(|path| {
-                let module = path.to_str()?;
-
-                Some((module.to_owned(), self.workspace.snapshot(module)?))
-            })
-            .collect();
-
         Feedback {
-            dependencies,
-            reload_dependencies: self.workspace.reload_dependencies(),
-            observed,
+            observations: self.workspace.observations(),
             published: self.published.clone(),
         }
     }
 
-    pub(super) fn accept(&mut self, feedback: Feedback, should_publish: bool) {
-        self.native_dependencies.extend(feedback.dependencies);
+    pub(super) fn accept(
+        &mut self,
+        feedback: Feedback,
+        should_observe: bool,
+        should_publish: bool,
+    ) {
+        if self
+            .native_observations
+            .as_ref()
+            .is_none_or(|previous| !Arc::ptr_eq(previous, &feedback.observations))
+        {
+            self.native_dependencies
+                .extend(feedback.observations.dependencies.iter().cloned());
 
-        self.native_reload_dependencies
-            .extend(feedback.reload_dependencies);
+            self.native_reload_dependencies
+                .extend(feedback.observations.reload_dependencies.iter().cloned());
 
-        self.observed.extend(feedback.observed);
+            if should_observe {
+                self.observed.extend(feedback.observations.sources.clone());
+                self.native_observations = Some(feedback.observations);
+            }
+        }
 
         if should_publish {
             self.published = feedback.published;
@@ -531,9 +537,7 @@ pub(super) struct Snapshot {
 }
 
 pub(super) struct Feedback {
-    pub(super) dependencies: BTreeSet<PathBuf>,
-    pub(super) reload_dependencies: BTreeSet<PathBuf>,
-    pub(super) observed: BTreeMap<String, Arc<str>>,
+    pub(super) observations: Arc<Observations>,
     pub(super) published: BTreeSet<String>,
 }
 

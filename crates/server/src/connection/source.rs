@@ -63,7 +63,7 @@ impl Ticket {
 
     fn has_current_observations(&self, state: &State, feedback: &Feedback) -> bool {
         state.events[self.events..].iter().all(|event| {
-            feedback.dependencies.iter().all(|dependency| {
+            feedback.observations.dependencies.iter().all(|dependency| {
                 if !dependency.starts_with(event) && !event.starts_with(dependency) {
                     return true;
                 }
@@ -72,7 +72,7 @@ impl Ticket {
                     return false;
                 };
 
-                let Some(observed) = feedback.observed.get(module) else {
+                let Some(observed) = feedback.observations.sources.get(module) else {
                     return false;
                 };
 
@@ -224,7 +224,7 @@ pub(super) fn run(receiver: &Receiver<Message>, worker: &Sender<Work>) {
                     .ticket
                     .accepts(&state, request.operation.consistency);
 
-                if let Some(mut feedback) = completion.feedback {
+                if let Some(feedback) = completion.feedback {
                     let has_current_observations =
                         request.ticket.has_current_observations(&state, &feedback);
 
@@ -234,10 +234,11 @@ pub(super) fn run(receiver: &Receiver<Message>, worker: &Sender<Work>) {
                         && project.invalidation == request.ticket.invalidation
                     {
                         if !has_current_observations {
-                            feedback.observed.clear();
-
                             let mut dependencies = project.reload_dependencies();
-                            dependencies.extend(feedback.reload_dependencies.iter().cloned());
+
+                            dependencies
+                                .extend(feedback.observations.reload_dependencies.iter().cloned());
+
                             let paths = &state.events[request.ticket.events..];
 
                             if let Err(error) = files::invalidate(project, paths, &dependencies) {
@@ -255,6 +256,7 @@ pub(super) fn run(receiver: &Receiver<Message>, worker: &Sender<Work>) {
 
                         project.accept(
                             feedback,
+                            has_current_observations,
                             is_current
                                 && is_valid
                                 && completion.is_successful

@@ -8,6 +8,7 @@ mod host;
 mod imports;
 mod instances;
 mod model;
+mod observations;
 mod paths;
 mod process;
 mod selection;
@@ -21,6 +22,7 @@ pub use self::{
     generation::Generators,
     instances::Sourcemap,
     model::Workspace,
+    observations::Observations,
     selection::{Access, Purpose},
     symbols::{InvalidSource, Origin, SymbolOutcome},
     write::replace,

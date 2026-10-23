@@ -123,6 +123,7 @@ impl Workspace {
     /// Seed generated sources and clear cached native instance maps.
     pub fn set_generated(&mut self, sources: BTreeMap<Generator, Arc<Sourcemap>>) {
         self.instances.get_mut().set_generated(sources);
+        self.observations.get_mut().take();
     }
 }
 

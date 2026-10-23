@@ -31,7 +31,7 @@ impl Workspace {
         let mut registry = self.environments.borrow_mut();
 
         if let Some(documentation) = registry
-            .documents(&scope.configuration.environment.groups)?
+            .documents(self, &scope.configuration.environment.groups)?
             .iter()
             .rev()
             .find_map(|documentation| documentation.get(symbol).cloned())
@@ -168,7 +168,11 @@ impl Registry {
         SymbolOutcome::Ready(Arc::new(symbols))
     }
 
-    pub(super) fn documents(&mut self, groups: &[Group]) -> Result<&[Documentation], Error> {
+    pub(super) fn documents(
+        &mut self,
+        workspace: &Workspace,
+        groups: &[Group],
+    ) -> Result<&[Documentation], Error> {
         let paths = groups
             .iter()
             .flat_map(|group| group.documentation.iter().cloned())
@@ -178,6 +182,7 @@ impl Registry {
             Entry::Occupied(entry) => Ok(entry.into_mut()),
 
             Entry::Vacant(entry) => {
+                workspace.observations.borrow_mut().take();
                 let mut documents = Vec::new();
 
                 for path in entry.key() {
@@ -216,6 +221,7 @@ impl Registry {
 
     fn identity(
         &mut self,
+        workspace: &Workspace,
         inputs: Inputs,
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<String, Error> {
@@ -223,6 +229,8 @@ impl Registry {
             Entry::Occupied(entry) => *entry.get(),
 
             Entry::Vacant(entry) => {
+                workspace.observations.borrow_mut().take();
+
                 let prepared = if let Some(profile) = &entry.key().roblox {
                     profile.prepare(is_cancelled)?
                 } else {
@@ -388,6 +396,7 @@ pub(super) fn identity(
 
             Some(
                 registry.identity(
+                    workspace,
                     Inputs {
                         roblox: assets,
                         capabilities: settings

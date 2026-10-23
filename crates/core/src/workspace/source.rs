@@ -13,13 +13,13 @@ impl Workspace {
     /// # Errors
     /// Returns inaccessible paths or non-UTF-8 source contents.
     pub fn source(&self, module: &str) -> Result<Option<Arc<str>>, Error> {
-        self.observed_paths
-            .borrow_mut()
-            .insert(PathBuf::from(module));
+        self.observe(PathBuf::from(module));
 
         if let Some(source) = self.snapshots.borrow().get(module) {
             return Ok(source.clone());
         }
+
+        self.observations.borrow_mut().take();
 
         let source = if let Some(source) = self.sources.borrow().get(module) {
             Some(Arc::clone(source))
@@ -69,6 +69,7 @@ impl Workspace {
     /// Discard a cached source snapshot while retaining any source overlay.
     pub fn invalidate(&self, module: &str) {
         self.snapshots.borrow_mut().remove(module);
+        self.observations.borrow_mut().take();
     }
 
     /// Refresh a source snapshot and report whether its contents changed.

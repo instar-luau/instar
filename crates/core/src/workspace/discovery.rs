@@ -84,6 +84,10 @@ pub(super) fn directory(workspace: &Workspace, directory: &Path) -> Result<Rc<Sc
         pending.push(ancestor);
     }
 
+    if !pending.is_empty() {
+        workspace.observations.borrow_mut().take();
+    }
+
     workspace
         .configuration_paths
         .borrow_mut()

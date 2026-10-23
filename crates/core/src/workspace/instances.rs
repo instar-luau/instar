@@ -117,7 +117,11 @@ impl Registry {
         Ok(found.clone())
     }
 
-    fn automatic(&mut self, directory: &Path) -> Result<Option<PathBuf>, Error> {
+    fn automatic(
+        &mut self,
+        workspace: &Workspace,
+        directory: &Path,
+    ) -> Result<Option<PathBuf>, Error> {
         let mut pending = Vec::new();
         let mut found = None;
 
@@ -136,6 +140,10 @@ impl Registry {
             }
         }
 
+        if !pending.is_empty() {
+            workspace.observations.borrow_mut().take();
+        }
+
         for directory in pending {
             self.automatic.insert(directory, found.clone());
         }
@@ -143,12 +151,14 @@ impl Registry {
         Ok(found)
     }
 
-    fn load(&mut self, path: &Path, base: &Path) -> Option<usize> {
+    fn load(&mut self, workspace: &Workspace, path: &Path, base: &Path) -> Option<usize> {
         let key = (path.to_owned(), base.to_owned());
 
         if let Some(index) = self.inputs.get(&key) {
             return *index;
         }
+
+        workspace.observations.borrow_mut().take();
 
         let result = (|| {
             let root: Option<Node> =
@@ -187,6 +197,8 @@ impl Registry {
         if let Some(index) = self.generators.get(generator) {
             return Ok(*index);
         }
+
+        workspace.observations.borrow_mut().take();
 
         let result = (|| {
             let source = if let Some(source) = self.generated.get(generator) {
@@ -374,7 +386,7 @@ pub(super) fn configuration(
     }
 
     for (path, base) in inputs {
-        indices.extend(registry.load(&path, &base));
+        indices.extend(registry.load(workspace, &path, &base));
     }
 
     let mut maps = BTreeSet::new();
@@ -437,7 +449,7 @@ fn inputs(
     Ok(workspace
         .instances
         .borrow_mut()
-        .automatic(module.parent().unwrap_or(&workspace.root))?
+        .automatic(workspace, module.parent().unwrap_or(&workspace.root))?
         .map(|path| {
             let base = path.parent().unwrap_or(&workspace.root).to_owned();
 
@@ -489,6 +501,7 @@ fn discover(workspace: &Workspace) -> Result<Vec<Generator>, Error> {
                 .is_none_or(|exclude| !exclude.is_match(path, false))
         {
             let path = paths::canonical(path)?;
+            workspace.observations.borrow_mut().take();
 
             workspace
                 .configuration_paths

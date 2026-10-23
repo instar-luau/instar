@@ -11,7 +11,7 @@ use instar_bridge::{Language, Mode};
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
-use super::{Error, Generators, discovery, environment::Registry, instances, paths};
+use super::{Error, Generators, Observations, discovery, environment::Registry, instances, paths};
 
 use crate::{
     assets::Cache,
@@ -32,6 +32,7 @@ pub struct Workspace {
     pub(super) sources: RefCell<BTreeMap<String, Arc<str>>>,
     pub(super) snapshots: RefCell<BTreeMap<String, Option<Arc<str>>>>,
     pub(super) observed_paths: RefCell<BTreeSet<PathBuf>>,
+    pub(super) observations: RefCell<Option<Arc<Observations>>>,
     pub(super) assets: Cache,
     pub(super) environments: RefCell<Registry>,
     pub(super) cancellation: RefCell<CancellationToken>,
@@ -60,6 +61,7 @@ impl Workspace {
             sources: RefCell::new(BTreeMap::new()),
             snapshots: RefCell::new(BTreeMap::new()),
             observed_paths: RefCell::new(BTreeSet::new()),
+            observations: RefCell::new(None),
             assets: Cache::default(),
             environments: RefCell::new(Registry::default()),
             cancellation: RefCell::new(CancellationToken::new()),
@@ -96,6 +98,7 @@ impl Workspace {
     pub fn set_generators(&mut self, generators: Generators) {
         self.generation = Some(generators);
         *self.instances.get_mut() = instances::Registry::default();
+        self.observations.get_mut().take();
     }
 
     /// Reload configuration, preserving the previous scopes if the root cannot load.
@@ -110,6 +113,7 @@ impl Workspace {
         *self.environments.get_mut() = Registry::default();
         self.snapshots.get_mut().clear();
         self.observed_paths.get_mut().clear();
+        self.observations.get_mut().take();
 
         Ok(())
     }
