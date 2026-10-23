@@ -12,16 +12,15 @@ use tower_lsp_server::{
         BaseSymbolInformation, Definition, DefinitionLink, DefinitionParams, DefinitionResponse,
         DocumentHighlight, DocumentHighlightKind, DocumentHighlightParams, DocumentLink,
         DocumentLinkParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, Location,
-        Range as ProtocolRange, ReferenceParams, SymbolInformation, SymbolKind,
-        TextDocumentPositionParams, TypeDefinitionParams, TypeDefinitionResponse, Uri,
-        WorkspaceSymbolParams,
+        ReferenceParams, SymbolInformation, SymbolKind, TextDocumentPositionParams,
+        TypeDefinitionParams, TypeDefinitionResponse, WorkspaceSymbolParams,
     },
-    jsonrpc::Result,
+    jsonrpc::{Error, Result},
 };
 
 use super::{
     document::{self, Document, Encoding},
-    error::failure,
+    error::{failure, reason},
     project::Project,
 };
 
@@ -330,22 +329,82 @@ pub(super) fn symbol(
 
 pub(super) fn document_link(
     project: &mut Project,
-    frontend: &mut Frontend<'_>,
     parameters: &DocumentLinkParams,
 ) -> Result<Option<Vec<DocumentLink>>> {
     let module = project.module(&parameters.text_document.uri)?;
+    let document = project.snapshot(&module)?;
+    let mut links = Vec::new();
 
-    Ok(Some(
-        links(project, frontend, &module)?
-            .into_iter()
-            .map(|(range, target)| DocumentLink {
-                range,
-                target: Some(target),
-                tooltip: None,
-                data: None,
-            })
-            .collect(),
-    ))
+    for range in &document.analysis().requires {
+        links.push(DocumentLink {
+            range: document.range(range.clone(), project.encoding)?,
+            target: None,
+            tooltip: None,
+            data: Some(project.data(&module, range)?),
+        });
+    }
+
+    for link in &document.analysis().links {
+        links.push(DocumentLink {
+            range: document.range(link.range.clone(), project.encoding)?,
+            target: Some(link.target.parse().map_err(failure)?),
+            tooltip: None,
+            data: None,
+        });
+    }
+
+    Ok(Some(links))
+}
+
+pub(super) fn document_link_resolve_source(
+    project: &mut Project,
+    link: &DocumentLink,
+) -> Result<ControlFlow<DocumentLink>> {
+    project
+        .resolve::<Range<usize>>(link.data.clone())?
+        .ok_or_else(Error::content_modified)?;
+
+    Ok(ControlFlow::Continue(()))
+}
+
+pub(super) fn document_link_resolve(
+    project: &mut Project,
+    frontend: &mut Frontend<'_>,
+    mut link: DocumentLink,
+) -> Result<DocumentLink> {
+    let (module, range) = project
+        .resolve::<Range<usize>>(link.data.clone())?
+        .ok_or_else(Error::content_modified)?;
+
+    let document = project.snapshot(&module)?;
+
+    if !document.analysis().requires.contains(&range)
+        || document.range(range.clone(), project.encoding)? != link.range
+    {
+        return Err(Error::invalid_params("Document link range is invalid."));
+    }
+
+    let mut targets = BTreeSet::new();
+
+    for import in frontend.imports(&module).map_err(failure)? {
+        if document.native_bytes(import.location.range)? == range {
+            targets.insert(import.target);
+        }
+    }
+
+    if targets.len() > 1 {
+        return Err(reason("Import resolves to multiple targets."));
+    }
+
+    let target = targets
+        .into_iter()
+        .next()
+        .ok_or_else(|| reason("Import target is unavailable."))?;
+
+    link.target = Some(document::uri(Path::new(&target))?);
+    link.data = None;
+
+    Ok(link)
 }
 
 fn definitions(
@@ -563,40 +622,4 @@ fn is_match(name: &str, query: &str) -> bool {
     query
         .chars()
         .all(|expected| characters.by_ref().any(|character| character == expected))
-}
-
-fn links(
-    project: &mut Project,
-    frontend: &mut Frontend<'_>,
-    module: &str,
-) -> Result<Vec<(ProtocolRange, Uri)>> {
-    let document = project.snapshot(module)?;
-    let mut result = Vec::new();
-    let mut seen = BTreeSet::new();
-
-    for import in frontend.imports(module).map_err(failure)? {
-        let range = document.native_range(import.location.range, project.encoding)?;
-        let target = document::uri(Path::new(&import.target))?;
-
-        let identity = (
-            range.start.line,
-            range.start.character,
-            range.end.line,
-            range.end.character,
-            target.to_string(),
-        );
-
-        if seen.insert(identity) {
-            result.push((range, target));
-        }
-    }
-
-    for link in &document.analysis().links {
-        result.push((
-            document.range(link.range.clone(), project.encoding)?,
-            link.target.parse().map_err(failure)?,
-        ));
-    }
-
-    Ok(result)
 }

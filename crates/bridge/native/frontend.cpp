@@ -533,31 +533,39 @@ namespace instar::luau {
                     throw std::runtime_error("Analysis interrupted.");
                 }
 
-                const auto text = host.readSource(name);
+                const auto cached = frontend->requireTrace.find(name);
 
-                if (!text) {
-                    throw std::runtime_error("Source is unavailable for import resolution.");
-                }
-
-                Luau::SourceModule source;
-
-                const auto parsed = Luau::Parser::parse(
-                    text->source.data(),
-                    text->source.size(),
-                    *source.names,
-                    *source.allocator,
-                    host.getConfig(name, limits).parseOptions
-                );
-
-                if (options.cancellationToken->requested()) {
-                    throw std::runtime_error("Analysis interrupted.");
-                }
-
-                if (parsed.root) {
-                    const auto trace = Luau::traceRequires(&host, parsed.root, name, limits);
-
-                    for (auto &value : query::imports(host, name, trace)) {
+                if (cached != frontend->requireTrace.end() && !frontend->isDirty(name)) {
+                    for (auto &value : query::imports(host, name, cached->second)) {
                         result.push_back(std::move(value));
+                    }
+                } else {
+                    const auto text = host.readSource(name);
+
+                    if (!text) {
+                        throw std::runtime_error("Source is unavailable for import resolution.");
+                    }
+
+                    Luau::SourceModule source;
+
+                    const auto parsed = Luau::Parser::parse(
+                        text->source.data(),
+                        text->source.size(),
+                        *source.names,
+                        *source.allocator,
+                        host.getConfig(name, limits).parseOptions
+                    );
+
+                    if (options.cancellationToken->requested()) {
+                        throw std::runtime_error("Analysis interrupted.");
+                    }
+
+                    if (parsed.root) {
+                        const auto trace = Luau::traceRequires(&host, parsed.root, name, limits);
+
+                        for (auto &value : query::imports(host, name, trace)) {
+                            result.push_back(std::move(value));
+                        }
                     }
                 }
 

@@ -174,7 +174,7 @@ impl LanguageServer for Service {
                 "definitionProvider":true,"typeDefinitionProvider":true,"referencesProvider":true,
                 "documentHighlightProvider":true,"documentSymbolProvider":true,
                 "workspaceSymbolProvider":{"workDoneProgress":true},
-                "documentLinkProvider":{},
+                "documentLinkProvider":{"resolveProvider":true},
                 "renameProvider":{"prepareProvider":true,"workDoneProgress":true},
                 "documentFormattingProvider":true,"documentRangeFormattingProvider":true,
                 "semanticTokensProvider":{"legend":presentation::legend(&capabilities),"full":{"delta":true},"range":true,"workDoneProgress":true},
@@ -465,14 +465,30 @@ impl LanguageServer for Service {
         &self,
         parameters: DocumentLinkParams,
     ) -> Result<Option<Vec<DocumentLink>>> {
-        self.query(
+        self.source(
             Consistency::Snapshot,
             parameters.text_document.uri.clone(),
             parameters.work_done_progress_params.work_done_token.clone(),
             parameters,
-            |project, frontend, parameters| {
-                navigation::document_link(project, frontend, &parameters)
-            },
+            |project, parameters| navigation::document_link(project, &parameters),
+        )
+        .await
+    }
+
+    async fn document_link_resolve(&self, parameters: DocumentLink) -> Result<DocumentLink> {
+        if parameters.target.is_some() {
+            return Ok(parameters);
+        }
+
+        let uri = resolved_uri(parameters.data.as_ref())?;
+
+        self.source_or_query(
+            Consistency::Snapshot,
+            uri,
+            None,
+            parameters,
+            navigation::document_link_resolve_source,
+            navigation::document_link_resolve,
         )
         .await
     }

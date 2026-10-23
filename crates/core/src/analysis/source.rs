@@ -92,6 +92,7 @@ pub fn analyze(source: impl Into<Arc<str>>) -> Analysis {
         tokens: Vec::new(),
         folds: Vec::new(),
         imports: Vec::new(),
+        requires: Vec::new(),
         links: Vec::new(),
         colors: colors(&tree, &bindings, prefix),
         bindings: Vec::new(),
@@ -268,6 +269,7 @@ pub fn analyze(source: impl Into<Arc<str>>) -> Analysis {
             && let NodeKind::Arguments { values, .. } = &tree.node(arguments).kind
             && let [argument] = tree.list(values)
         {
+            result.requires.push(range(&tree, argument.node, prefix));
             let argument = unwrap(&tree, argument.node);
 
             let expression = if matches!(tree.node(argument).kind, NodeKind::String { .. }) {
@@ -301,6 +303,7 @@ pub fn analyze(source: impl Into<Arc<str>>) -> Analysis {
 
     result.tokens = tokens.into_values().collect();
     result.imports.sort_by_key(|import| import.range.start);
+    result.requires.sort_by_key(|range| range.start);
     comments(&tree, prefix, &mut result.folds);
     import_folds(&tree, &result.imports, prefix, &mut result.folds);
 

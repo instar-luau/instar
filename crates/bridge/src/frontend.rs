@@ -256,7 +256,7 @@ impl<'host> Frontend<'host> {
             .collect()
     }
 
-    /// Parse the source and resolve require arguments for every native identity.
+    /// Resolve require arguments for every native identity.
     ///
     /// # Errors
     /// Returns host, native parsing or resolution, or cancellation errors.
