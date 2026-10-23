@@ -1,6 +1,7 @@
 #include "frontend.hpp"
 
 #include "Luau/BuiltinDefinitions.h"
+#include "Luau/Common.h"
 #include "Luau/Parser.h"
 #include "Luau/RequireTracer.h"
 #include "Luau/TypeCheckLimits.h"
@@ -13,16 +14,102 @@
 #include "types.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <functional>
+#include <future>
 #include <set>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 #include <vector>
+
+LUAU_FASTFLAG(LuauSplitIceHandler)
+LUAU_FASTFLAG(DebugLuauLogSolverToJson)
 
 namespace instar::luau {
     namespace {
         struct CheckedModule {
             Luau::ModulePtr module;
             const Luau::SourceModule &source;
+        };
+
+        class Checking {
+        public:
+            explicit Checking(Luau::Frontend &frontend)
+                : frontend(frontend), prepare(frontend.prepareModuleScope), pending(frontend.moduleQueue) {
+                frontend.prepareModuleScope = [this](const Luau::ModuleName &name, const Luau::ScopePtr &scope, bool) {
+                    for (const auto &[symbol, binding] : std::as_const(scopes).at(name)->bindings) {
+                        scope->bindings.insert_or_assign(symbol, binding);
+                    }
+                };
+            }
+
+            ~Checking() {
+                frontend.prepareModuleScope = std::move(prepare);
+            }
+
+            Checking(const Checking &) = delete;
+            Checking &operator=(const Checking &) = delete;
+
+            void execute(std::vector<std::function<void()>> tasks) {
+                while (!pending.empty()) {
+                    auto name = std::move(pending.back());
+                    pending.pop_back();
+
+                    if (scopes.count(name) || !frontend.isDirty(name)) {
+                        continue;
+                    }
+
+                    const auto source = frontend.sourceNodes.find(name);
+
+                    if (source == frontend.sourceNodes.end()) {
+                        continue;
+                    }
+
+                    auto scope = std::make_shared<Luau::Scope>(nullptr);
+                    prepare(name, scope, false);
+                    scopes.emplace(name, std::move(scope));
+                    pending.insert(pending.end(), source->second->requireSet.begin(), source->second->requireSet.end());
+                }
+
+                const auto count =
+                    FFlag::LuauSplitIceHandler && !FFlag::DebugLuauLogSolverToJson
+                        ? std::min<std::size_t>(tasks.size(), std::max(1u, std::thread::hardware_concurrency()))
+                        : 1;
+
+                std::atomic<std::size_t> next{0};
+
+                auto perform = [&] {
+                    while (true) {
+                        const auto position = next.fetch_add(1, std::memory_order_relaxed);
+
+                        if (position >= tasks.size()) {
+                            return;
+                        }
+
+                        tasks[position]();
+                    }
+                };
+
+                std::vector<std::future<void>> workers;
+                workers.reserve(count);
+
+                for (std::size_t index = 1; index < count; ++index) {
+                    workers.push_back(std::async(std::launch::async, perform));
+                }
+
+                perform();
+
+                for (auto &worker : workers) {
+                    worker.get();
+                }
+            }
+
+        private:
+            Luau::Frontend &frontend;
+            decltype(Luau::Frontend::prepareModuleScope) prepare;
+            std::vector<std::string> pending;
+            std::unordered_map<std::string, Luau::ScopePtr> scopes;
         };
 
         CheckedModule checked_module(Luau::Frontend &frontend, const std::string &name) {
@@ -55,11 +142,16 @@ namespace instar::luau {
             frontend->queueModuleCheck(names);
             bool is_interrupted = false;
 
-            const auto checked_names =
-                frontend->checkQueuedModules({}, {}, [&](std::size_t completed, std::size_t total) {
+            Checking checking(*frontend);
+
+            const auto checked_names = frontend->checkQueuedModules(
+                {},
+                [&](std::vector<std::function<void()>> tasks) { checking.execute(std::move(tasks)); },
+                [&](std::size_t completed, std::size_t total) {
                     is_interrupted = !callbacks.advance(completed, total);
                     return !is_interrupted;
-                });
+                }
+            );
 
             if (is_interrupted || options.cancellationToken->requested()) {
                 throw std::runtime_error("Analysis interrupted.");
