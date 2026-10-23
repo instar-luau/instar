@@ -1,0 +1,30 @@
+{
+  "Sources": {
+    "https://luau.org/library/": "https://raw.githubusercontent.com/luau-lang/site/master/src/content/docs/reference/library.md",
+    "https://luau.org/types-library/": "https://raw.githubusercontent.com/luau-lang/site/master/src/content/docs/reference/types-library.md",
+    "https://rfcs.luau.org/type-long-integer.html": "https://raw.githubusercontent.com/luau-lang/rfcs/master/docs/type-long-integer.md",
+    "https://rfcs.luau.org/function-coroutine-finally.html": "https://raw.githubusercontent.com/luau-lang/rfcs/master/docs/function-coroutine-finally.md"
+  },
+  "Symbols": {
+    "singletontype.": "type.",
+    "generictype.": "type.",
+    "tabletype.": "type.",
+    "functiontype.": "type.",
+    "uniontype.": "type.",
+    "intersectiontype.": "type.",
+    "externtype.": "type."
+  },
+  "Imports": {
+    "@luau/globaltype/vector": "https://luau.org/library/#vector-library",
+    "@luau/global/types": "https://luau.org/types-library/",
+    "@luau/globaltype/type": "https://luau.org/types-library/#type-instance",
+    "@luau/global/types.integer": "https://rfcs.luau.org/type-long-integer.html#extensions-to-the-type-library-type-functions",
+    "@luau/global/integer": "https://rfcs.luau.org/type-long-integer.html#library",
+    "@luau/global/coroutine.finally": "https://rfcs.luau.org/function-coroutine-finally.html#design"
+  },
+  "Additions": {
+    "@luau/globaltype/vector.x": "@luau/globaltype/vector",
+    "@luau/globaltype/vector.y": "@luau/globaltype/vector",
+    "@luau/globaltype/vector.z": "@luau/globaltype/vector"
+  }
+}

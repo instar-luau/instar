@@ -21,24 +21,14 @@ pub enum SymbolOutcome {
 /// A declaration failure with its original source snapshot.
 #[derive(Clone, Debug)]
 pub struct InvalidSource {
-    /// The source that could not be parsed.
-    pub origin: Origin,
+    /// The declaration file that could not be parsed.
+    pub path: PathBuf,
 
     /// Exact declaration bytes used during symbol collection.
     pub text: Arc<str>,
 
     /// The declaration syntax failure, relative to the retained text.
     pub error: lint::Error,
-}
-
-/// The origin of a declaration source.
-#[derive(Clone, Debug)]
-pub enum Origin {
-    /// A declaration file.
-    File(PathBuf),
-
-    /// Native in-memory builtin declarations.
-    Builtins,
 }
 
 impl Workspace {

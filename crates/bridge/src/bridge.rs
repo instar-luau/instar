@@ -43,9 +43,28 @@ pub(crate) mod bindings {
         integer: i32,
     }
 
-    struct DeclarationFlags<'flags> {
+    struct BuiltinFlags<'flags> {
         settings: &'flags [Flag],
         scoped: &'flags [Flag],
+    }
+
+    /// A symbol and its documentation identity from Luau's builtin registries.
+    #[derive(Clone, Debug)]
+    pub struct Builtin {
+        /// Qualified symbol name.
+        name: String,
+
+        /// Documentation identity assigned by Luau, or empty when absent.
+        documentation: String,
+
+        /// Whether the symbol belongs to a type.
+        is_type: bool,
+
+        /// Whether the symbol is a member rather than a root binding.
+        is_member: bool,
+
+        /// Whether the symbol belongs to the type-function environment.
+        is_type_function: bool,
     }
 
     struct Definition {
@@ -224,6 +243,7 @@ pub(crate) mod bindings {
         label: String,
         kind: CompletionKind,
         is_function: bool,
+        has_receiver: bool,
         presentations: Vec<String>,
         is_complete: bool,
         equivalence: usize,
@@ -497,7 +517,7 @@ pub(crate) mod bindings {
         fn imports(self: Pin<&mut Frontend<'_>>, module: &str) -> Result<Vec<Import>>;
         fn cancellation(self: &Frontend<'_>) -> SharedPtr<FrontendCancellationToken>;
 
-        fn declarations(configuration: &DeclarationFlags<'_>, source: &mut String) -> Result<bool>;
+        fn builtins(configuration: &BuiltinFlags<'_>, symbols: &mut Vec<Builtin>) -> Result<bool>;
 
         fn cancel(token: &SharedPtr<FrontendCancellationToken>);
         fn reset(token: &SharedPtr<FrontendCancellationToken>);

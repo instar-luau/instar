@@ -8,7 +8,7 @@ use instar_bridge::{Frontend, Position as NativePosition, Range as NativeRange};
 
 use instar_core::{
     lint,
-    workspace::{Access, InvalidSource, Origin, Purpose, SymbolOutcome},
+    workspace::{Access, InvalidSource, Purpose, SymbolOutcome},
 };
 
 use tower_lsp_server::{
@@ -224,7 +224,7 @@ pub(crate) fn check(
             };
 
             let invalid = match &environments[module] {
-                SymbolOutcome::Invalid(invalid) if matches!(&invalid.origin, Origin::File(path) if path == Path::new(target)) => {
+                SymbolOutcome::Invalid(invalid) if invalid.path == Path::new(target) => {
                     Some(invalid)
                 }
 
@@ -354,22 +354,15 @@ fn environment(
     findings: &mut BTreeMap<String, Vec<Diagnostic>>,
     versions: &mut BTreeMap<String, Option<i32>>,
 ) -> Result<()> {
-    let target = match &invalid.origin {
-        Origin::File(path) => Some(path),
-        Origin::Builtins => None,
-    };
-
-    let uri = match target {
-        Some(path) => document::uri(path)?,
-        None => document::uri(Path::new(module))?,
-    };
+    let target = &invalid.path;
+    let uri = document::uri(target)?;
 
     let snapshot = Document::new(uri.clone(), Arc::clone(&invalid.text), None, 0)?;
     let range = snapshot.range(invalid.error.range.clone(), project.encoding)?;
     let position = snapshot.position(invalid.error.range.start, Encoding::Scalars)?;
 
     let captured = target
-        .and_then(|path| path.to_str())
+        .to_str()
         .and_then(|module| {
             project
                 .documents
@@ -380,7 +373,7 @@ fn environment(
 
     let is_matching = captured.is_none_or(|document| document.text == invalid.text);
 
-    if let Some(target) = target.and_then(|path| path.to_str())
+    if let Some(target) = target.to_str()
         && project.is_owner(target)
         && is_matching
     {
@@ -401,13 +394,13 @@ fn environment(
         return Ok(());
     }
 
-    let related = (target.is_some() && is_matching).then_some((uri, range));
+    let related = is_matching.then_some((uri, range));
 
     findings
         .entry(module.to_owned())
         .or_default()
         .push(diagnostics::environment(
-            &invalid.origin,
+            &invalid.path,
             position,
             &invalid.error.message,
             related,

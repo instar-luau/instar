@@ -1,6 +1,9 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use crate::{bridge::bindings, error::Error};
+use crate::{
+    bridge::bindings::{self, Builtin},
+    error::Error,
+};
 
 /// Ordered declarations, enum data, and class capabilities for one named environment.
 #[derive(Clone, Debug, Default)]
@@ -57,26 +60,26 @@ pub struct Property {
     pub write: bool,
 }
 
-/// Return standard built-in declarations using the native registry defaults.
+/// Return registered builtin symbols using native registry defaults.
 ///
 /// # Errors
-/// Returns invalid native flag settings.
-pub fn declarations() -> Result<String, Error> {
-    let mut source = String::new();
+/// Returns invalid native flag settings or registry initialization failures.
+pub fn builtins() -> Result<Vec<Builtin>, Error> {
+    let mut symbols = Vec::new();
 
-    let available = bindings::declarations(
-        &bindings::DeclarationFlags {
+    let is_available = bindings::builtins(
+        &bindings::BuiltinFlags {
             settings: &[],
             scoped: &[],
         },
-        &mut source,
+        &mut symbols,
     )
     .map_err(|error| Error::Native {
         reason: error.what().to_owned(),
     })?;
 
-    if available {
-        Ok(source)
+    if is_available {
+        Ok(symbols)
     } else {
         Err(Error::FlagsBusy)
     }

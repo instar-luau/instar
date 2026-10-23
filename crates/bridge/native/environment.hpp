@@ -10,7 +10,8 @@
 namespace instar::luau {
     struct Diagnostic;
     struct Environment;
-    struct DeclarationFlags;
+    struct Builtin;
+    struct BuiltinFlags;
 
     struct DeclarationFailure : std::exception {
         explicit DeclarationFailure(const rust::Vec<Diagnostic> &diagnostics) noexcept;
@@ -18,7 +19,7 @@ namespace instar::luau {
         const rust::Vec<Diagnostic> &diagnostics;
     };
 
-    bool declarations(const DeclarationFlags &configuration, rust::String &source);
+    bool builtins(const BuiltinFlags &configuration, rust::Vec<Builtin> &symbols);
 
     rust::Vec<Diagnostic> prepare(Luau::Frontend &frontend, const std::string &name, const Environment &environment);
 }

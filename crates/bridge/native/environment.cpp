@@ -1,7 +1,9 @@
 #include "environment.hpp"
 
 #include "Luau/BuiltinDefinitions.h"
+#include "Luau/ConfigResolver.h"
 #include "Luau/Error.h"
+#include "Luau/FileResolver.h"
 #include "Luau/Module.h"
 #include "Luau/Scope.h"
 #include "Luau/Type.h"
@@ -54,18 +56,59 @@ namespace instar::luau {
                 rebase_type(type.type, prefix, replacement);
             }
         }
+
+        void collect(
+            rust::Vec<Builtin> &symbols, const std::string &name, Luau::TypeId type,
+            const std::optional<std::string> &documentation, bool is_type, bool is_type_function
+        ) {
+            symbols.push_back({name, documentation.value_or(""), is_type, false, is_type_function});
+            type = Luau::follow(type);
+
+            const auto properties = [&](const auto &members) {
+                for (const auto &[member, property] : members) {
+                    symbols.push_back(
+                        {name + "." + member,
+                            property.documentationSymbol.value_or(""),
+                            is_type,
+                            true,
+                            is_type_function}
+                    );
+                }
+            };
+
+            if (const auto *table = Luau::get<Luau::TableType>(type)) {
+                properties(table->props);
+            } else if (const auto *external = Luau::get<Luau::ExternType>(type)) {
+                properties(external->props);
+            }
+        }
+
+        void collect(rust::Vec<Builtin> &symbols, const Luau::ScopePtr &scope, bool is_type_function) {
+            for (const auto &[name, binding] : scope->bindings) {
+                collect(symbols, name.c_str(), binding.typeId, binding.documentationSymbol, false, is_type_function);
+            }
+
+            for (const auto &[name, binding] : scope->exportedTypeBindings) {
+                const auto type = Luau::follow(binding.type);
+                collect(symbols, name, type, type->documentationSymbol, true, is_type_function);
+            }
+        }
     }
 
     DeclarationFailure::DeclarationFailure(const rust::Vec<Diagnostic> &diagnostics) noexcept
         : diagnostics(diagnostics) {}
 
-    bool declarations(const DeclarationFlags &configuration, rust::String &source) {
+    bool builtins(const BuiltinFlags &configuration, rust::Vec<Builtin> &symbols) {
         try {
             const Flags flags(configuration.settings);
             flags.require(configuration.scoped);
 
-            source = Luau::getBuiltinDefinitionSource() + "\ndeclare string: any\ndeclare next: any\ndeclare pairs: "
-                                                          "any\ndeclare getmetatable: any\ndeclare setmetatable: any\n";
+            Luau::NullFileResolver files;
+            Luau::NullConfigResolver settings;
+            Luau::Frontend frontend(Luau::SolverMode::New, &files, &settings);
+            Luau::registerBuiltinGlobals(frontend, frontend.globals);
+            collect(symbols, frontend.globals.globalScope, false);
+            collect(symbols, frontend.globals.globalTypeFunctionScope, true);
 
             return true;
         } catch (const FlagConflict &) {

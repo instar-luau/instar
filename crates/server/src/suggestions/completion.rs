@@ -566,7 +566,7 @@ fn completion_documentation(
         project,
         module,
         metadata.as_deref(),
-        candidate.documentation.symbol.contains("/globaltype/"),
+        candidate.has_receiver,
         should_use_markdown,
     )?;
 
@@ -578,6 +578,7 @@ fn is_same_completion(left: &Completion, right: &Completion) -> bool {
     left.label == right.label
         && left.insert_text == right.insert_text
         && left.parentheses == right.parentheses
+        && left.has_receiver == right.has_receiver
         && left.replacement.range == right.replacement.range
         && left.operation == right.operation
         && match (&left.presentation, &right.presentation) {

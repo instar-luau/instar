@@ -140,26 +140,26 @@ impl<'host> Context<'host> {
         self
     }
 
-    /// Return built-in declaration syntax using validated host and scope flags.
+    /// Return registered builtin symbols using validated host and scope flags.
     ///
     /// # Errors
-    /// Returns host configuration failures or invalid native flag settings.
-    pub fn builtins(&self, flags: BTreeMap<String, Flag>) -> Result<String, Error> {
+    /// Returns host configuration, native flag, or registry initialization failures.
+    pub fn builtins(&self, flags: BTreeMap<String, Flag>) -> Result<Vec<bindings::Builtin>, Error> {
         let settings = bridge::flags(self.host.flags().map_err(Error::Host)?);
         let scoped = bridge::flags(flags);
 
-        let mut source = String::new();
+        let mut symbols = Vec::new();
 
-        let available = self.complete(bindings::declarations(
-            &bindings::DeclarationFlags {
+        let is_available = self.complete(bindings::builtins(
+            &bindings::BuiltinFlags {
                 settings: &settings,
                 scoped: &scoped,
             },
-            &mut source,
+            &mut symbols,
         ))?;
 
-        if available {
-            Ok(source)
+        if is_available {
+            Ok(symbols)
         } else {
             Err(Error::FlagsBusy)
         }

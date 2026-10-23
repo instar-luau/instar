@@ -24,6 +24,6 @@ pub use self::{
     model::Workspace,
     observations::Observations,
     selection::{Access, Purpose},
-    symbols::{InvalidSource, Origin, SymbolOutcome},
+    symbols::{InvalidSource, SymbolOutcome},
     write::replace,
 };

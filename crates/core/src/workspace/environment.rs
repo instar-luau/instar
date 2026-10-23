@@ -5,15 +5,13 @@ use std::{
     sync::Arc,
 };
 
-use instar_bridge::{Class, Definition, Environment};
+use instar_bridge::{Builtin, Class, Definition, Environment};
 
 use serde::Deserialize;
 
 use serde_json::Value;
 
-use super::{
-    Error, InvalidSource, Origin, SymbolOutcome, Workspace, instances, model::Scope, paths,
-};
+use super::{Error, InvalidSource, SymbolOutcome, Workspace, instances, model::Scope, paths};
 
 use crate::{
     assets::{self, Capability, Metadata},
@@ -125,16 +123,19 @@ impl Registry {
         &self,
         name: Option<&str>,
         globals: &[String],
-        builtins: &str,
+        builtins: &[Builtin],
     ) -> SymbolOutcome {
         let mut symbols = Symbols::default();
 
-        if let Err(error) = symbols.declare(builtins) {
-            return SymbolOutcome::Invalid(InvalidSource {
-                origin: Origin::Builtins,
-                text: Arc::from(builtins),
-                error,
-            });
+        for builtin in builtins
+            .iter()
+            .filter(|builtin| !builtin.is_member && !builtin.is_type_function)
+        {
+            if builtin.is_type {
+                symbols.types.insert(builtin.name.clone());
+            } else {
+                symbols.globals.insert(builtin.name.clone());
+            }
         }
 
         if let Some(prepared) = name
@@ -155,7 +156,7 @@ impl Registry {
             {
                 if let Err(error) = symbols.declare(&definition.source) {
                     return SymbolOutcome::Invalid(InvalidSource {
-                        origin: Origin::File(PathBuf::from(&definition.name)),
+                        path: PathBuf::from(&definition.name),
                         text: Arc::clone(&definition.source),
                         error,
                     });

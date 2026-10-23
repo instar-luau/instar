@@ -77,7 +77,7 @@ namespace instar::luau::query {
             return location;
         }
 
-        bool is_callable(Luau::TypeId root, PresentationBudget &budget) {
+        bool is_callable(Luau::TypeId root, PresentationBudget &budget, bool &has_receiver) {
             std::vector<Luau::TypeId> pending{root};
             std::unordered_set<Luau::TypeId> seen;
 
@@ -107,7 +107,9 @@ namespace instar::luau::query {
                     }
 
                     pending.push_back(value);
-                } else if (!Luau::get<Luau::FunctionType>(type)) {
+                } else if (const auto *function = Luau::get<Luau::FunctionType>(type)) {
+                    has_receiver = has_receiver && function->hasSelf;
+                } else {
                     return false;
                 }
             }
@@ -657,7 +659,8 @@ namespace instar::luau::query {
             const auto type =
                 entry.type ? Luau::follow(*entry.type, Luau::FollowOption::DisableLazyTypeThunks) : nullptr;
 
-            const bool is_function = type && is_callable(type, budget);
+            bool has_receiver = true;
+            const bool is_function = type && is_callable(type, budget, has_receiver);
             rust::Vec<rust::String> presentations;
             bool is_complete = false;
             std::size_t equivalence = 0;
@@ -704,6 +707,7 @@ namespace instar::luau::query {
                 {label,
                     completion_kind(entry.kind),
                     is_function,
+                    is_function && has_receiver,
                     std::move(presentations),
                     is_complete,
                     equivalence,

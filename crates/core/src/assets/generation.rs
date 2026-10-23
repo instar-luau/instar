@@ -5,12 +5,13 @@ use std::{
     time::Duration,
 };
 
+use instar_bridge::Builtin;
 use reqwest::Client;
 use serde_json::Value;
 use tokio::runtime::Builder;
 use tokio_util::sync::CancellationToken;
 
-use super::{Error, publication, rendering};
+use super::{Error, publication, reference, rendering};
 use crate::settings;
 
 /// A generated configuration or environment asset collection.
@@ -51,11 +52,12 @@ struct Inputs {
     dump: Value,
     source: String,
     documentation: Value,
+    references: reference::Catalog,
 }
 
 /// Generate selected configuration and environment assets.
 ///
-/// An empty target list selects every target. Upstream inputs use the tracker's
+/// An empty target list selects every target. Roblox inputs use the tracker's
 /// `roblox` branch.
 ///
 /// # Errors
@@ -93,22 +95,24 @@ pub fn generate(
             .build()
             .map_err(Error::Runtime)?;
 
+        let builtins = instar_bridge::builtins()?;
+
         let inputs = runtime.block_on(async {
             tokio::select! {
                 biased;
 
                 () = cancellation.cancelled() => Err(Error::Cancelled),
-                result = acquire() => result,
+                result = acquire(&builtins) => result,
             }
         })?;
 
         interrupted(is_cancelled)?;
-        let builtins = instar_bridge::declarations()?;
 
         let rendered = rendering::render(
             inputs.dump,
             &inputs.source,
             inputs.documentation,
+            inputs.references,
             &builtins,
             is_cancelled,
         )?;
@@ -119,7 +123,7 @@ pub fn generate(
     publication::write(directory, &files, is_cancelled)
 }
 
-async fn acquire() -> Result<Inputs, Error> {
+async fn acquire(builtins: &[Builtin]) -> Result<Inputs, Error> {
     let tracker = "https://raw.githubusercontent.com/MaximumADHD/Roblox-Client-Tracker/roblox";
 
     let client = Client::builder()
@@ -140,11 +144,13 @@ async fn acquire() -> Result<Inputs, Error> {
     })?;
 
     let documentation = document(&client, &format!("{tracker}/api-docs/en-us.json")).await?;
+    let references = reference::acquire(&client, builtins).await?;
 
     Ok(Inputs {
         dump,
         source,
         documentation,
+        references,
     })
 }
 
@@ -157,7 +163,7 @@ async fn document(client: &Client, address: &str) -> Result<Value, Error> {
     })
 }
 
-async fn download(client: &Client, address: &str) -> Result<Vec<u8>, Error> {
+pub(super) async fn download(client: &Client, address: &str) -> Result<Vec<u8>, Error> {
     let failure = |source| Error::Download {
         address: address.to_owned(),
         source,

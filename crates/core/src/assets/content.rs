@@ -46,6 +46,8 @@ pub(super) fn prepare(value: &Value, documents: &Map<String, Value>) -> Result<V
     let mut document = parse(value)?;
 
     if is_alias(&document.documentation, documents) {
+        resolve(&document.documentation, documents)?;
+
         return Ok(json!({ "documentation": document.documentation }));
     }
 
@@ -109,7 +111,7 @@ fn resolve<'documents>(
     while visited.insert(reference) {
         let value = documents
             .get(reference)
-            .ok_or_else(|| invalid(format!("Missing return documentation `{reference}`.")))?;
+            .ok_or_else(|| invalid(format!("Missing documentation reference `{reference}`.")))?;
 
         let text = value
             .as_str()
@@ -124,7 +126,7 @@ fn resolve<'documents>(
     }
 
     Err(invalid(format!(
-        "Cyclic return documentation reference `{reference}`."
+        "Cyclic documentation reference `{reference}`."
     )))
 }
 

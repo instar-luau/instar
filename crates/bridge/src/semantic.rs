@@ -49,6 +49,9 @@ pub struct Completion {
     /// Whether the candidate is callable.
     pub is_function: bool,
 
+    /// Whether every callable overload has an implicit receiver.
+    pub has_receiver: bool,
+
     /// Available printed type.
     pub presentation: Option<String>,
 
@@ -240,6 +243,7 @@ impl TryFrom<bindings::NativeCompletion> for Completion {
             label: value.label,
             kind: value.kind,
             is_function: value.is_function,
+            has_receiver: value.has_receiver,
             presentation,
             equivalence: value.equivalence,
             documentation: value.documentation,

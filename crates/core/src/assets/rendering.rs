@@ -3,6 +3,7 @@ use std::{
     path::PathBuf,
 };
 
+use instar_bridge::Builtin;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
@@ -15,6 +16,7 @@ use super::{
         self, Argument, Class, Corrections, Dump, HIERARCHY, Member, Signature, Types, invalid,
     },
     metadata::{Capability, Metadata, Permission, Profile},
+    reference,
     syntax::{self, Output, Replacement},
 };
 
@@ -36,7 +38,8 @@ pub(super) fn render(
     dump: Value,
     source: &str,
     documentation: Value,
-    builtins: &str,
+    references: reference::Catalog,
+    builtins: &[Builtin],
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<BTreeMap<PathBuf, String>, Error> {
     interrupted(is_cancelled)?;
@@ -162,26 +165,13 @@ pub(super) fn render(
         definitions.insert(name.to_owned(), formatted);
     }
 
-    let luau_roots: BTreeSet<_> = syntax::blocks(builtins, is_cancelled)?
-        .into_iter()
-        .map(|block| block.name)
-        .collect();
-
-    let mut roblox_roots = BTreeSet::from(["Enum".to_owned()]);
-
-    for definition in definitions.values() {
-        for block in syntax::blocks(definition, is_cancelled)? {
-            if !block.is_type {
-                roblox_roots.insert(block.name);
-            }
-        }
-    }
-
-    let canonical = canonical(documentation, &luau_roots, &roblox_roots, is_cancelled)?;
-
-    let canonical = canonical
-        .as_object()
-        .ok_or_else(|| invalid("Documentation must be an object."))?;
+    let canonical = catalog(
+        documentation,
+        references,
+        builtins,
+        &definitions,
+        is_cancelled,
+    )?;
 
     let mut result = BTreeMap::new();
 
@@ -193,7 +183,7 @@ pub(super) fn render(
 
         for (symbol, value) in canonical.iter().filter(|(key, _)| key.starts_with(&prefix)) {
             interrupted(is_cancelled)?;
-            symbols.insert(symbol.clone(), content::prepare(value, canonical)?);
+            symbols.insert(symbol.clone(), content::prepare(value, &canonical)?);
         }
 
         result.insert(
@@ -614,10 +604,76 @@ fn class_header(output: &mut Output, name: &str, parent: Option<&str>) {
     output.newline();
 }
 
+fn catalog(
+    documentation: Value,
+    references: reference::Catalog,
+    builtins: &[Builtin],
+    definitions: &BTreeMap<String, String>,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<Map<String, Value>, Error> {
+    let mut roblox = BTreeSet::new();
+
+    for definition in definitions.values() {
+        for block in syntax::blocks(definition, is_cancelled)? {
+            roblox.insert((block.is_type, block.name));
+        }
+    }
+
+    let mut replacements = BTreeMap::new();
+
+    for builtin in builtins.iter().filter(|builtin| !builtin.is_member) {
+        interrupted(is_cancelled)?;
+
+        if !roblox.contains(&(builtin.is_type, builtin.name.clone()))
+            && let Some(symbol) = builtin.documentation.strip_prefix("@luau/")
+        {
+            replacements.insert(format!("@roblox/{symbol}"), builtin.documentation.clone());
+        }
+    }
+
+    let upstream = canonical(documentation, &replacements, is_cancelled)?;
+    let upstream: Map<String, Value> = mapping::decode(upstream, "documentation")?;
+
+    let required: BTreeSet<_> = builtins
+        .iter()
+        .map(|builtin| &builtin.documentation)
+        .filter(|symbol| !symbol.is_empty())
+        .cloned()
+        .collect();
+
+    for symbol in references
+        .documents
+        .keys()
+        .chain(references.additions.keys())
+        .chain(references.corrections.keys())
+    {
+        interrupted(is_cancelled)?;
+
+        if !required.contains(symbol) && !upstream.contains_key(symbol) {
+            return Err(invalid(format!("Unknown documentation symbol `{symbol}`.")));
+        }
+    }
+
+    let documents = references.merge(upstream, is_cancelled)?;
+
+    let missing: Vec<_> = required
+        .into_iter()
+        .filter(|symbol| !documents.contains_key(symbol))
+        .collect();
+
+    if !missing.is_empty() {
+        return Err(invalid(format!(
+            "Missing built-in documentation: {}.",
+            missing.join(", ")
+        )));
+    }
+
+    Ok(documents)
+}
+
 fn canonical(
     value: Value,
-    luau: &BTreeSet<String>,
-    roblox: &BTreeSet<String>,
+    replacements: &BTreeMap<String, String>,
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<Value, Error> {
     interrupted(is_cancelled)?;
@@ -629,13 +685,13 @@ fn canonical(
 
             for (key, value) in values {
                 interrupted(is_cancelled)?;
-                let replacement = canonical_symbol(&key, luau, roblox);
+                let replacement = canonical_symbol(&key, replacements);
 
                 if replacement != key && keys.contains(&replacement) {
                     continue;
                 }
 
-                result.insert(replacement, canonical(value, luau, roblox, is_cancelled)?);
+                result.insert(replacement, canonical(value, replacements, is_cancelled)?);
             }
 
             Ok(Value::Object(result))
@@ -644,28 +700,31 @@ fn canonical(
         Value::Array(values) => {
             let values: Result<Vec<_>, _> = values
                 .into_iter()
-                .map(|value| canonical(value, luau, roblox, is_cancelled))
+                .map(|value| canonical(value, replacements, is_cancelled))
                 .collect();
 
             Ok(Value::Array(values?))
         }
 
-        Value::String(value) => Ok(Value::String(canonical_symbol(&value, luau, roblox))),
+        Value::String(value) => Ok(Value::String(canonical_symbol(&value, replacements))),
         value => Ok(value),
     }
 }
 
-fn canonical_symbol(value: &str, luau: &BTreeSet<String>, roblox: &BTreeSet<String>) -> String {
-    if let Some(symbol) = value.strip_prefix("@roblox/global/") {
-        let boundary = symbol.find(['.', '/']).unwrap_or(symbol.len());
-        let (root, suffix) = symbol.split_at(boundary);
+fn canonical_symbol(value: &str, replacements: &BTreeMap<String, String>) -> String {
+    let mut root = value;
 
-        if is_identifier(root) && luau.contains(root) && !roblox.contains(root) {
-            return format!("@luau/global/{root}{suffix}");
+    loop {
+        if let Some(replacement) = replacements.get(root) {
+            return format!("{replacement}{}", &value[root.len()..]);
         }
-    }
 
-    value.to_owned()
+        let Some(boundary) = root.rfind(['.', '/']) else {
+            return value.to_owned();
+        };
+
+        root = &root[..boundary];
+    }
 }
 
 fn serialize(value: &impl Serialize, input: &str) -> Result<String, Error> {

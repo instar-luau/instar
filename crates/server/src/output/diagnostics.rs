@@ -1,6 +1,6 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, path::Path};
 
-use instar_core::{settings::lint::Severity, workspace::Origin};
+use instar_core::settings::lint::Severity;
 
 use tower_lsp_server::gen_lsp_types::{
     Code, Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Location, Message,
@@ -61,15 +61,12 @@ pub(crate) fn conflict(target: &str, position: Position, message: &str) -> Strin
 }
 
 pub(crate) fn environment(
-    origin: &Origin,
+    path: &Path,
     position: Position,
     message: &str,
     related: Option<(Uri, Range)>,
 ) -> Diagnostic {
-    let origin = match origin {
-        Origin::File(path) => path.display().to_string(),
-        Origin::Builtins => "<builtins>".to_owned(),
-    };
+    let origin = path.display();
 
     let mut diagnostic = error(
         Range::default(),

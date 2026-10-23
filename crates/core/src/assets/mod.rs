@@ -7,6 +7,7 @@ mod generation;
 mod mapping;
 mod metadata;
 mod publication;
+mod reference;
 mod rendering;
 mod syntax;
 

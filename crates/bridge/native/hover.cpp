@@ -48,18 +48,75 @@ namespace instar::luau::query {
                 : type(type), pack(pack), location(location), symbol(std::move(symbol)), kind(kind) {}
         };
 
-        std::string documented_name(const std::string &symbol) {
-            for (const std::string prefix : {"/global/", "/globaltype/"}) {
-                if (const auto start = symbol.find(prefix); start != std::string::npos) {
-                    const auto begin = start + prefix.size();
-                    const auto end = symbol.find('/', begin);
+        struct DocumentedName {
+            std::string name;
+            bool is_type = false;
+        };
 
-                    if (end != std::string::npos && symbol.find("/overload/", end) != end) {
-                        return {};
+        DocumentedName documented_name(Luau::ScopePtr scope, const std::string &symbol, PresentationBudget &budget) {
+            if (symbol.empty()) {
+                return {};
+            }
+
+            const auto lookup = [&](const std::string &name,
+                                    Luau::TypeId type,
+                                    const std::optional<std::string> &identity,
+                                    bool is_type) -> DocumentedName {
+                budget.check();
+
+                if (identity) {
+                    if (*identity == symbol) {
+                        return {name, is_type};
                     }
 
-                    return symbol.substr(begin, end - begin);
+                    if (symbol.compare(0, identity->size(), *identity) != 0) {
+                        return {};
+                    }
                 }
+
+                type = Luau::follow(type, Luau::FollowOption::DisableLazyTypeThunks);
+                const Luau::TableType::Props *properties = nullptr;
+
+                if (const auto *table = Luau::get<Luau::TableType>(type)) {
+                    properties = &table->props;
+                } else if (const auto *external = Luau::get<Luau::ExternType>(type)) {
+                    properties = &external->props;
+                }
+
+                if (properties) {
+                    for (const auto &[member, property] : *properties) {
+                        budget.check();
+
+                        if (property.documentationSymbol == symbol) {
+                            return {name + "." + member, is_type};
+                        }
+                    }
+                }
+
+                return {};
+            };
+
+            while (scope) {
+                for (const auto &[name, binding] : scope->bindings) {
+                    if (!name.local) {
+                        auto result = lookup(name.c_str(), binding.typeId, binding.documentationSymbol, false);
+
+                        if (!result.name.empty()) {
+                            return result;
+                        }
+                    }
+                }
+
+                for (const auto &[name, binding] : scope->exportedTypeBindings) {
+                    const auto type = Luau::follow(binding.type, Luau::FollowOption::DisableLazyTypeThunks);
+                    auto result = lookup(name, type, type->documentationSymbol, true);
+
+                    if (!result.name.empty()) {
+                        return result;
+                    }
+                }
+
+                scope = scope->parent;
             }
 
             return {};
@@ -140,7 +197,12 @@ namespace instar::luau::query {
                         }
 
                         if (const auto &symbol = current.type->documentationSymbol) {
-                            auto name = documented_name(*symbol);
+                            auto name = documented_name(
+                                Luau::findScopeAtPosition(module, receiver->location.begin),
+                                *symbol,
+                                budget
+                            )
+                                            .name;
 
                             if (!name.empty()) {
                                 target.qualifier = std::move(name);
@@ -789,17 +851,19 @@ namespace instar::luau::query {
             return result;
         }
 
-        Printer printer(budget, Luau::findScopeAtPosition(prepared.module, position));
+        const auto scope = Luau::findScopeAtPosition(prepared.module, position);
+        Printer printer(budget, scope);
 
         const auto type =
             target->type ? Luau::follow(target->type, Luau::FollowOption::DisableLazyTypeThunks) : nullptr;
 
-        const auto name = documented_name(target->documentation_symbol);
+        const auto documented = documented_name(scope, target->documentation_symbol, budget);
+        const auto &name = documented.name;
 
         const bool is_namespace = type &&
                                   (Luau::get<Luau::TableType>(type) ||
                                       (Luau::get<Luau::ExternType>(type) && Luau::hasTag(type, "instar.namespace"))) &&
-                                  !name.empty() && target->documentation_symbol.find("/global/") != std::string::npos;
+                                  !name.empty() && !documented.is_type;
 
         const bool is_binding = target->kind == HoverKind::Local || target->kind == HoverKind::Constant;
 
@@ -824,11 +888,8 @@ namespace instar::luau::query {
             }
 
             if (is_binding) {
-                const auto binding =
-                    (target->kind == HoverKind::Constant ? "const " : "local ") + target->symbol +
-                    (!name.empty() && target->documentation_symbol.find("/global/") != std::string::npos
-                            ? ": typeof(" + name + ")"
-                            : "");
+                const auto binding = (target->kind == HoverKind::Constant ? "const " : "local ") + target->symbol +
+                                     (!name.empty() && !documented.is_type ? ": typeof(" + name + ")" : "");
 
                 result.push_back({locate(host, prepared.module.name, target->location), binding, {}, false, false});
             }
@@ -847,7 +908,7 @@ namespace instar::luau::query {
                         receiver ? Luau::follow(*receiver, Luau::FollowOption::DisableLazyTypeThunks) : nullptr;
 
                     if (type && Luau::get<Luau::ExternType>(type) && Luau::hasTag(type, "instar.namespace")) {
-                        const auto owner = documented_name(documentation(type, budget));
+                        const auto owner = documented_name(scope, documentation(type, budget), budget).name;
 
                         if (!owner.empty()) {
                             qualified.replace(0, separator, owner);

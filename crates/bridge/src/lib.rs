@@ -22,12 +22,12 @@ mod semantic;
 
 pub use self::{
     bridge::bindings::{
-        CompletionKind, Diagnostic, Documentation, HintKind, HintSelector, Import, Occurrence,
-        OccurrenceRole, Parentheses, Position, Range, SourceLocation,
+        Builtin, CompletionKind, Diagnostic, Documentation, HintKind, HintSelector, Import,
+        Occurrence, OccurrenceRole, Parentheses, Position, Range, SourceLocation,
     },
     cancellation::Cancellation,
     configuration::{Configuration, Mode},
-    environment::{Class, Definition, Environment, Property, declarations},
+    environment::{Class, Definition, Environment, Property, builtins},
     error::{Error, HostError, Operation},
     flags::Flag,
     frontend::Frontend,

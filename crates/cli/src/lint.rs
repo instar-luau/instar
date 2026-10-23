@@ -5,7 +5,7 @@ use eyre::{Result, eyre};
 use instar_core::{
     lint,
     settings::lint::Severity,
-    workspace::{Error, Origin, SymbolOutcome, Workspace},
+    workspace::{Error, SymbolOutcome, Workspace},
 };
 
 use super::{
@@ -82,13 +82,10 @@ fn process(
         Ok(SymbolOutcome::Ready(symbols)) => symbols,
 
         Ok(SymbolOutcome::Invalid(invalid)) => {
-            let module = match &invalid.origin {
-                Origin::File(path) => path
-                    .to_str()
-                    .ok_or_else(|| eyre!("The declaration path must be valid UTF-8."))?,
-
-                Origin::Builtins => "<builtins>",
-            };
+            let module = invalid
+                .path
+                .to_str()
+                .ok_or_else(|| eyre!("The declaration path must be valid UTF-8."))?;
 
             batch.findings.push(Finding::new(
                 FindingSeverity::Error,
