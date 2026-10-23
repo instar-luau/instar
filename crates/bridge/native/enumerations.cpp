@@ -134,6 +134,8 @@ namespace instar::luau {
         const auto root =
             external(globals, "Enumerations", builtins->externType, root_metatable, "@roblox/global/Enum");
 
+        Luau::attachTag(root, "instar.namespace");
+
         auto &base_properties = Luau::getMutable<Luau::ExternType>(base)->props;
 
         base_properties.emplace(
@@ -184,6 +186,7 @@ namespace instar::luau {
             const std::string documentation = "@roblox/global/Enum." + name;
             const auto member = external(globals, "Enum." + name, item, item_metatable, documentation);
             const auto collection = external(globals, "typeof(Enum." + name + ")", base, enum_metatable, documentation);
+            Luau::attachTag(collection, "instar.namespace");
             auto &properties = Luau::getMutable<Luau::ExternType>(collection)->props;
 
             for (const rust::String &value : enumeration.items) {

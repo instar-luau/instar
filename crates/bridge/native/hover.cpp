@@ -3,6 +3,7 @@
 #include "Luau/AstQuery.h"
 #include "Luau/Lexer.h"
 #include "Luau/StringUtils.h"
+#include "Luau/TypePack.h"
 #include "query.hpp"
 
 #include <algorithm>
@@ -135,9 +136,15 @@ namespace instar::luau::query {
                         if (const auto *external = Luau::get<Luau::ExternType>(current.type)) {
                             target.qualifier = external->name;
                         } else if (const auto *table = Luau::get<Luau::TableType>(current.type)) {
-                            target.qualifier = current.type->documentationSymbol
-                                                   ? documented_name(*current.type->documentationSymbol)
-                                                   : table->name.value_or("");
+                            target.qualifier = table->name.value_or("");
+                        }
+
+                        if (const auto &symbol = current.type->documentationSymbol) {
+                            auto name = documented_name(*symbol);
+
+                            if (!name.empty()) {
+                                target.qualifier = std::move(name);
+                            }
                         }
 
                         return;
@@ -421,13 +428,14 @@ namespace instar::luau::query {
                         }
                     }
 
-                    accept(
-                        {type,
-                            nullptr,
-                            *node->prefixLocation,
-                            node->prefix ? node->prefix->value : "",
-                            node->prefixLocal ? binding_kind(node->prefixLocal) : HoverKind::Global}
-                    );
+                    Target candidate{type,
+                        nullptr,
+                        *node->prefixLocation,
+                        node->prefix ? node->prefix->value : "",
+                        node->prefixLocal ? binding_kind(node->prefixLocal) : HoverKind::Global};
+
+                    candidate.documentation_symbol = documentation(type, budget);
+                    accept(std::move(candidate));
 
                     return false;
                 }
@@ -788,30 +796,32 @@ namespace instar::luau::query {
 
         const auto name = documented_name(target->documentation_symbol);
 
-        const bool is_namespace = type && Luau::get<Luau::TableType>(type) && !name.empty() &&
-                                  target->documentation_symbol.find("/global/") != std::string::npos;
+        const bool is_namespace = type &&
+                                  (Luau::get<Luau::TableType>(type) ||
+                                      (Luau::get<Luau::ExternType>(type) && Luau::hasTag(type, "instar.namespace"))) &&
+                                  !name.empty() && target->documentation_symbol.find("/global/") != std::string::npos;
 
         const bool is_binding = target->kind == HoverKind::Local || target->kind == HoverKind::Constant;
 
         const bool is_qualified_field = target->kind == HoverKind::Field && !target->qualifier.empty() &&
                                         Luau::isIdentifier(target->symbol) && !Luau::Lexer::isReserved(target->symbol);
 
-        auto functions = overloads(type, budget);
+        const auto functions = overloads(type, budget);
 
         if (!target->is_alias && !target->symbol.empty() && !functions.empty()) {
-            Luau::TypeId selected = nullptr;
+            auto callable = functions.front();
 
             for (const auto *node : Luau::findAstAncestryOfPosition(prepared.source, position)) {
                 if (const auto *call = node->as<Luau::AstExprCall>(); call && call->func->location.contains(position)) {
                     if (const auto *resolved = prepared.module.astOverloadResolvedTypes.find(call)) {
-                        selected = Luau::follow(*resolved, Luau::FollowOption::DisableLazyTypeThunks);
+                        const auto selected = Luau::follow(*resolved, Luau::FollowOption::DisableLazyTypeThunks);
+
+                        if (std::find(functions.begin(), functions.end(), selected) != functions.end()) {
+                            callable = selected;
+                        }
                     }
                 }
             }
-
-            std::stable_sort(functions.begin(), functions.end(), [selected](auto left, auto right) {
-                return left == selected && right != selected;
-            });
 
             if (is_binding) {
                 const auto binding =
@@ -820,42 +830,49 @@ namespace instar::luau::query {
                             ? ": typeof(" + name + ")"
                             : "");
 
-                result.push_back(
-                    {locate(host, prepared.module.name, target->location), binding, {}, {}, false, false, false}
-                );
+                result.push_back({locate(host, prepared.module.name, target->location), binding, {}, {}, false, false});
             }
 
-            for (const auto callable : functions) {
-                budget.check();
-                const auto *function = Luau::get<Luau::FunctionType>(callable);
+            budget.check();
+            const auto *function = Luau::get<Luau::FunctionType>(callable);
 
-                auto qualified = name.empty()
-                                     ? (is_qualified_field ? target->qualifier + "." + target->symbol : target->symbol)
-                                     : name;
+            auto qualified =
+                name.empty() ? (is_qualified_field ? target->qualifier + "." + target->symbol : target->symbol) : name;
 
-                if (function->hasSelf) {
-                    if (const auto separator = qualified.rfind('.'); separator != std::string::npos) {
-                        qualified[separator] = ':';
+            if (function->hasSelf) {
+                if (const auto separator = qualified.rfind('.'); separator != std::string::npos) {
+                    const auto receiver = Luau::first(function->argTypes);
+
+                    const auto type =
+                        receiver ? Luau::follow(*receiver, Luau::FollowOption::DisableLazyTypeThunks) : nullptr;
+
+                    if (type && Luau::get<Luau::ExternType>(type) && Luau::hasTag(type, "instar.namespace")) {
+                        const auto owner = documented_name(documentation(type, budget));
+
+                        if (!owner.empty()) {
+                            qualified.replace(0, separator, owner);
+                        }
                     }
+
+                    qualified[qualified.rfind('.')] = ':';
                 }
-
-                const std::string prefix = target->kind == HoverKind::LocalFunction      ? "local function "
-                                           : target->kind == HoverKind::ConstantFunction ? "const function "
-                                                                                         : "function ";
-
-                result.push_back(
-                    {locate(host, prepared.module.name, target->location),
-                        printer.finish(
-                            (function->isCheckedFunction ? "@checked " : "") + prefix +
-                            printer.function(*function, qualified, true)
-                        ),
-                        target->documentation_symbol,
-                        printer.signature(callable),
-                        functions.size() > 1 && callable == selected,
-                        false,
-                        function->hasSelf && qualified.find(':') != std::string::npos}
-                );
             }
+
+            const std::string prefix = target->kind == HoverKind::LocalFunction      ? "local function "
+                                       : target->kind == HoverKind::ConstantFunction ? "const function "
+                                                                                     : "function ";
+
+            result.push_back(
+                {locate(host, prepared.module.name, target->location),
+                    printer.finish(
+                        (function->isCheckedFunction ? "@checked " : "") + prefix +
+                        printer.function(*function, qualified, true)
+                    ),
+                    target->documentation_symbol,
+                    printer.signature(callable),
+                    false,
+                    function->hasSelf && qualified.find(':') != std::string::npos}
+            );
 
             return result;
         }
@@ -914,7 +931,6 @@ namespace instar::luau::query {
                 describe(),
                 target->documentation_symbol,
                 {},
-                false,
                 is_namespace && !is_binding && !target->is_alias,
                 false}
         );

@@ -32,9 +32,6 @@ pub struct Hover {
     /// Canonical overload signature used for documentation lookup.
     pub documentation_signature: String,
 
-    /// Whether native resolution selected this overload at the hovered call.
-    pub selected: bool,
-
     /// Whether the presentation names a documented library or constructor namespace.
     pub namespace: bool,
 
@@ -188,7 +185,6 @@ impl TryFrom<bindings::NativeHover> for Hover {
             presentation: value.presentation,
             documentation_symbol: value.documentation_symbol,
             documentation_signature: value.documentation_signature,
-            selected: value.is_selected,
             namespace: value.is_namespace,
             receiver: value.has_receiver,
         })

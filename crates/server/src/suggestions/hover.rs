@@ -49,7 +49,7 @@ pub(crate) fn hover(
             ""
         };
 
-        let mut section = if value.namespace {
+        let section = if value.namespace {
             let name = if should_use_markdown {
                 format!("**{}**", value.presentation)
             } else {
@@ -64,17 +64,6 @@ pub(crate) fn hover(
         } else {
             documentation::presentation(&value.presentation, description, should_use_markdown)?
         };
-
-        if value.selected {
-            section = format!(
-                "{}\n\n{section}",
-                if should_use_markdown {
-                    "**Selected overload**"
-                } else {
-                    "Selected overload"
-                }
-            );
-        }
 
         if !sections.contains(&section) {
             sections.push(section);

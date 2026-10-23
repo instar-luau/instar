@@ -160,7 +160,6 @@ pub(crate) mod bindings {
         presentation: String,
         documentation_symbol: String,
         documentation_signature: String,
-        is_selected: bool,
         is_namespace: bool,
         has_receiver: bool,
     }
