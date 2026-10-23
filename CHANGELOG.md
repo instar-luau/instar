@@ -1,4 +1,18 @@
 # Changelog
+## [0.1.4](https://github.com/instar-luau/instar/compare/v0.1.3...v0.1.4) - 2026-10-23
+
+### Added
+
+- **assets:** import authoritative Luau documentation
+
+### Fixed
+
+- **server:** skip source-less documentation fallbacks
+
+### Other
+
+- apply boolean naming prefixes
+
 ## [0.1.3](https://github.com/instar-luau/instar/compare/v0.1.2...v0.1.3) - 2026-10-23
 
 ### Fixed
