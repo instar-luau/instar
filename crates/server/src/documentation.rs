@@ -38,6 +38,15 @@ pub(crate) fn resolve(
     }
 
     for declaration in &reference.declarations {
+        if project
+            .workspace
+            .source(&declaration.module)
+            .map_err(failure)?
+            .is_none()
+        {
+            continue;
+        }
+
         let document = project.snapshot(&declaration.module)?;
         let range = document.native_bytes(declaration.range)?;
 
