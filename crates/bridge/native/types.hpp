@@ -42,6 +42,8 @@ namespace instar::luau {
         bool complete = true;
 
     private:
+        template <typename Formatter> std::string render(bool expanded, Formatter formatter);
+
         PresentationBudget &budget;
         Luau::ToStringOptions options;
     };

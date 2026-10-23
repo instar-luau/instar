@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 
@@ -18,8 +19,8 @@ namespace instar::luau {
 
         class Inspection final : public Luau::TypeVisitor {
         public:
-            explicit Inspection(PresentationBudget &budget)
-                : Luau::TypeVisitor("Presentation", false), budget(budget) {}
+            Inspection(PresentationBudget &budget, bool exhaustive)
+                : Luau::TypeVisitor("Presentation", false), budget(budget), exhaustive(exhaustive) {}
 
             bool visit(Luau::TypeId value) override {
                 count();
@@ -51,6 +52,21 @@ namespace instar::luau {
 
                     if (table->boundTo) {
                         check(*table->boundTo);
+
+                        return true;
+                    }
+
+                    for (const auto argument : table->instantiatedTypeParams) {
+                        check(argument);
+                        traverse(argument);
+                    }
+
+                    for (const auto argument : table->instantiatedTypePackParams) {
+                        traverse(argument);
+                    }
+
+                    if (!exhaustive && (table->name || table->syntheticName)) {
+                        return false;
                     }
 
                     for (const auto &[name, property] : table->props) {
@@ -63,15 +79,6 @@ namespace instar::luau {
                     if (table->indexer) {
                         check(table->indexer->indexType);
                         check(table->indexer->indexResultType);
-                    }
-
-                    for (const auto argument : table->instantiatedTypeParams) {
-                        check(argument);
-                        traverse(argument);
-                    }
-
-                    for (const auto argument : table->instantiatedTypePackParams) {
-                        traverse(argument);
                     }
                 } else if (const auto *external = Luau::get<Luau::ExternType>(value)) {
                     structural = false;
@@ -171,6 +178,7 @@ namespace instar::luau {
             }
 
             PresentationBudget &budget;
+            bool exhaustive;
             std::size_t nodes = 0;
             std::size_t edges = 0;
             std::size_t bytes = 0;
@@ -223,7 +231,6 @@ namespace instar::luau {
         options.scope = std::move(scope);
         options.functionTypeArguments = true;
         options.hideTableKind = true;
-        options.exhaustive = true;
     }
 
     std::string Printer::finish(std::string value) {
@@ -243,24 +250,64 @@ namespace instar::luau {
         }
     }
 
+    template <typename Formatter> std::string Printer::render(bool expanded, Formatter formatter) {
+        auto rendering = options;
+        rendering.useLineBreaks = expanded;
+        rendering.hideTableAliasExpansions = true;
+
+        rendering.maxTypeLength =
+            rendering.maxTypeLength ? std::min(rendering.maxTypeLength, maximum_bytes) : maximum_bytes;
+
+        auto result = formatter(rendering);
+        budget.check();
+
+        if (result.truncated || result.name.size() > rendering.maxTypeLength) {
+            rendering.maxTableLength = rendering.maxTableLength
+                                           ? std::min(rendering.maxTableLength, rendering.maxTypeLength)
+                                           : rendering.maxTypeLength;
+
+            rendering.maxTypeLength = maximum_bytes;
+            result = formatter(rendering);
+            complete = false;
+        }
+
+        complete &= !result.invalid && !result.error && !result.truncated &&
+                    result.name.size() <= rendering.maxTypeLength && rendering.maxTableLength == 0;
+
+        options.nameMap = std::move(rendering.nameMap);
+
+        return finish(std::move(result.name));
+    }
+
     std::string Printer::type(Luau::TypeId value, bool expanded) {
         try {
             if (!value) {
                 throw Limit{};
             }
 
-            Inspection inspection(budget);
+            Inspection inspection(budget, false);
             inspection.check(value);
+            const auto followed = Luau::follow(value, Luau::FollowOption::DisableLazyTypeThunks);
+            std::optional<Luau::Type> declaration;
+
+            if (expanded && (Luau::get<Luau::TableType>(followed) || Luau::get<Luau::MetatableType>(followed))) {
+                declaration.emplace(followed->clone());
+
+                if (auto *table = Luau::get_if<Luau::TableType>(&declaration->ty)) {
+                    table->name.reset();
+                    table->syntheticName.reset();
+                } else if (auto *metatable = Luau::get_if<Luau::MetatableType>(&declaration->ty)) {
+                    metatable->syntheticName.reset();
+                }
+
+                value = &*declaration;
+            }
+
             inspection.traverse(value);
-            options.useLineBreaks = expanded;
-            options.hideTableAliasExpansions = !expanded;
-            const auto result = Luau::toStringDetailed(value, options);
 
-            complete &= !result.invalid && !result.error && !result.truncated &&
-                        (options.maxTypeLength == 0 || result.name.size() <= options.maxTypeLength) &&
-                        options.maxTableLength == 0;
-
-            return finish(result.name);
+            return render(expanded, [&](Luau::ToStringOptions &rendering) {
+                return Luau::toStringDetailed(value, rendering);
+            });
         } catch (const Limit &) {
             complete = false;
 
@@ -274,16 +321,12 @@ namespace instar::luau {
                 throw Limit{};
             }
 
-            Inspection inspection(budget);
+            Inspection inspection(budget, false);
             inspection.traverse(value);
-            options.useLineBreaks = expanded;
-            const auto result = Luau::toStringDetailed(value, options);
 
-            complete &= !result.invalid && !result.error && !result.truncated &&
-                        (options.maxTypeLength == 0 || result.name.size() <= options.maxTypeLength) &&
-                        options.maxTableLength == 0;
-
-            auto text = result.name;
+            auto text = render(expanded, [&](Luau::ToStringOptions &rendering) {
+                return Luau::toStringDetailed(value, rendering);
+            });
 
             if (returns && Luau::get<Luau::TypePack>(Luau::follow(value))) {
                 const auto size = Luau::size(value);
@@ -303,14 +346,17 @@ namespace instar::luau {
 
     std::string Printer::function(const Luau::FunctionType &value, const std::string &name, bool expanded) {
         try {
-            Inspection inspection(budget);
+            Inspection inspection(budget, false);
             inspection.traverse(value.argTypes);
             inspection.traverse(value.retTypes);
-            options.useLineBreaks = expanded;
-            options.hideFunctionSelfArgument = name.find(':') != std::string::npos;
-            options.hideTableAliasExpansions = true;
 
-            return finish(Luau::toStringNamedFunction(name, value, options));
+            return render(expanded, [&](Luau::ToStringOptions &rendering) {
+                rendering.hideFunctionSelfArgument = name.find(':') != std::string::npos;
+                Luau::ToStringResult result;
+                result.name = Luau::toStringNamedFunction(name, value, rendering);
+
+                return result;
+            });
         } catch (const Limit &) {
             complete = false;
 
@@ -319,12 +365,22 @@ namespace instar::luau {
     }
 
     std::string Printer::signature(Luau::TypeId value) {
-        const auto saved = options;
-        options = Luau::ToStringOptions{};
-        const auto text = type(value);
-        options = saved;
+        try {
+            if (!value) {
+                throw Limit{};
+            }
 
-        return text;
+            Inspection inspection(budget, false);
+            inspection.check(value);
+            inspection.traverse(value);
+            Luau::ToStringOptions canonical;
+
+            return finish(Luau::toStringDetailed(value, canonical).name);
+        } catch (const Limit &) {
+            complete = false;
+
+            return "<omitted>";
+        }
     }
 
     NativePresentation Printer::presentation(Luau::TypeId value, bool expanded) {
@@ -346,7 +402,7 @@ namespace instar::luau {
             return 0;
         }
 
-        Inspection inspection(budget);
+        Inspection inspection(budget, true);
 
         try {
             inspection.check(value);
