@@ -497,21 +497,8 @@ namespace instar::luau::query {
                 auto presentation =
                     pack ? printer.presentation(pack, is_expanded) : printer.presentation(type, is_expanded);
 
-                const auto single = type ? type
-                                    : pack && Luau::finite(pack) && Luau::size(pack) == 1
-                                        ? Luau::first(pack).value_or(nullptr)
-                                        : nullptr;
-
-                const auto &compact = presentation.compact;
-
-                if (kind != HintKind::Parameter && single &&
-                    Luau::get<Luau::TableType>(Luau::follow(single, Luau::FollowOption::DisableLazyTypeThunks)) &&
-                    compact.size() > 38 && compact.data()[0] == '{' &&
-                    std::count_if(compact.data(), compact.data() + compact.size(), [](unsigned char character) {
-                        return (character & 0xC0U) != 0x80U;
-                    }) > 38) {
-                    presentation.compact = "{…}";
-                    presentation.is_complete = false;
+                if (kind != HintKind::Parameter) {
+                    printer.abbreviate(presentation);
                 }
 
                 result.push_back(

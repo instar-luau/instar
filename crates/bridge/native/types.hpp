@@ -35,6 +35,7 @@ namespace instar::luau {
         std::string signature(Luau::TypeId value);
         NativePresentation presentation(Luau::TypeId value, bool expanded);
         NativePresentation presentation(Luau::TypePackId value, bool expanded);
+        void abbreviate(NativePresentation &presentation);
 
         std::size_t equivalence(Luau::TypeId value, const std::string &text, std::vector<CompletionType> &types);
 

@@ -1,5 +1,6 @@
 #include "types.hpp"
 
+#include "Luau/Lexer.h"
 #include "Luau/StringUtils.h"
 #include "Luau/StructuralTypeEquality.h"
 #include "Luau/VisitType.h"
@@ -8,12 +9,14 @@
 #include <exception>
 #include <optional>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 
 namespace instar::luau {
     namespace {
         constexpr std::size_t maximum_bytes = 32 * 1024 - 32;
         constexpr std::size_t maximum_lines = 250;
+        constexpr std::size_t maximum_label_characters = 38;
 
         struct Limit final : std::exception {};
 
@@ -182,6 +185,79 @@ namespace instar::luau {
             std::size_t nodes = 0;
             std::size_t edges = 0;
             std::size_t bytes = 0;
+        };
+
+        std::size_t characters(std::string_view text) {
+            return std::count_if(text.begin(), text.end(), [](unsigned char character) {
+                return (character & 0xC0U) != 0x80U;
+            });
+        }
+
+        struct Label {
+            struct Part {
+                std::string text;
+                char separator = 0;
+                bool variadic = false;
+            };
+
+            char opening = 0;
+            std::vector<Part> parts{{}};
+
+            std::string render(char closing, PresentationBudget &budget) const {
+                std::string text;
+
+                for (const auto &part : parts) {
+                    budget.check();
+
+                    if (part.separator) {
+                        text += part.separator;
+                    }
+
+                    text += part.text;
+                }
+
+                if (characters(text) + (opening ? 2 : 0) > maximum_label_characters) {
+                    if (opening == '{') {
+                        text = "…";
+                    } else if (parts.size() > 1) {
+                        std::string shortened;
+                        bool omitted = false;
+
+                        for (std::size_t index = 0; index < parts.size(); ++index) {
+                            budget.check();
+                            const auto &part = parts[index];
+                            const bool retain = index == 0 || part.variadic;
+
+                            if (!retain && omitted) {
+                                continue;
+                            }
+
+                            if (part.separator) {
+                                shortened += part.separator == ',' ? ", " : std::string{" "} + part.separator + " ";
+                            }
+
+                            if (retain) {
+                                const auto start = part.text.find_first_not_of(" \t\r\n");
+
+                                if (start != std::string::npos) {
+                                    shortened
+                                        .append(part.text, start, part.text.find_last_not_of(" \t\r\n") - start + 1);
+                                }
+                            } else {
+                                shortened += "…";
+                            }
+
+                            omitted = !retain;
+                        }
+
+                        if (characters(shortened) < characters(text)) {
+                            text = std::move(shortened);
+                        }
+                    }
+                }
+
+                return opening ? opening + text + closing : text;
+            }
         };
 
         std::string unicode(const std::string &value, PresentationBudget &budget) {
@@ -395,6 +471,89 @@ namespace instar::luau {
         const auto detail = expanded ? pack(value, true, true) : compact;
 
         return {compact, detail, complete, true};
+    }
+
+    void Printer::abbreviate(NativePresentation &presentation) {
+        const std::string text(presentation.compact);
+
+        if (characters(text) <= maximum_label_characters) {
+            return;
+        }
+
+        Luau::Allocator allocator;
+        Luau::AstNameTable names(allocator);
+        Luau::Lexer lexer(text.data(), text.size(), names);
+        std::vector<Label> labels(1);
+        std::size_t previous = 0;
+
+        while (lexer.next().type != Luau::Lexeme::Eof) {
+            budget.check();
+            const auto &token = lexer.current();
+            const auto end = lexer.getOffset();
+            auto start = previous;
+
+            while (start < end && Luau::isSpace(text[start])) {
+                ++start;
+            }
+
+            auto &label = labels.back();
+            auto &part = label.parts.back();
+            part.text.append(text, previous, start - previous);
+            const char character = token.type < Luau::Lexeme::Char_END ? static_cast<char>(token.type) : 0;
+            const auto opening = std::string_view("({[<").find(character);
+            const auto closing = std::string_view(")}]>").find(character);
+
+            if (opening != std::string_view::npos) {
+                labels.push_back({character});
+            } else if (closing != std::string_view::npos) {
+                if (labels.size() == 1 || std::string_view("({[<").find(label.opening) != closing) {
+                    return;
+                }
+
+                const auto nested = label.render(character, budget);
+                labels.pop_back();
+                labels.back().parts.back().text += nested;
+            } else if (character == ',' || character == '|' || character == '&') {
+                label.parts.push_back({{}, character});
+            } else if (token.type == Luau::Lexeme::QuotedString &&
+                       characters(std::string_view(text).substr(start, end - start)) > maximum_label_characters) {
+                part.text += "…";
+            } else if (token.type == Luau::Lexeme::Name && std::string_view(token.name) == "where" &&
+                       labels.size() == 1 && lexer.lookahead().type == Luau::Lexeme::Name) {
+                part.text += "where …";
+                break;
+            } else {
+                if (token.type == Luau::Lexeme::Dot3) {
+                    auto marker = lexer;
+
+                    if (marker.next().type == Luau::Lexeme::Number && marker.next().type == Luau::Lexeme::Name &&
+                        std::string_view(marker.current().name) == "more" && marker.next().type == Luau::Lexeme::Dot3) {
+                        for (unsigned index = 0; index < 3; ++index) {
+                            lexer.next();
+                        }
+
+                        part.text += "…";
+                        previous = lexer.getOffset();
+                        continue;
+                    }
+
+                    part.variadic = true;
+                }
+
+                part.text.append(text, start, end - start);
+            }
+
+            previous = end;
+        }
+
+        if (labels.size() == 1) {
+            auto shortened = labels.front().render(0, budget);
+
+            if (shortened != text) {
+                presentation.compact = finish(std::move(shortened));
+                presentation.is_complete = false;
+            }
+        }
     }
 
     std::size_t Printer::equivalence(Luau::TypeId value, const std::string &text, std::vector<CompletionType> &types) {
