@@ -134,74 +134,6 @@ namespace instar::luau {
             return identifier ? std::optional<Declaration>{{identity, *identifier}} : std::nullopt;
         }
 
-        std::optional<Declaration>
-        reference_declaration(Luau::Frontend &frontend, const Luau::Module &module, Luau::AstTypeReference *reference) {
-            auto scope = Luau::findScopeAtPosition(module, reference->location.begin);
-
-            if (reference->prefix) {
-                while (scope) {
-                    const auto imported = scope->importedModules.find(reference->prefix->value);
-
-                    if (imported != scope->importedModules.end()) {
-                        const auto target = frontend.moduleResolver.getModule(imported->second);
-                        const auto *source = frontend.getSourceModule(imported->second);
-
-                        if (target && source && source->root) {
-                            const auto binding = target->exportedTypeBindings.find(reference->name.value);
-
-                            if (binding != target->exportedTypeBindings.end()) {
-                                return type_declaration(
-                                    frontend,
-                                    imported->second,
-                                    binding->second.definitionLocation,
-                                    reference->name.value,
-                                    true
-                                );
-                            }
-                        }
-
-                        return std::nullopt;
-                    }
-
-                    scope = scope->parent;
-                }
-            } else {
-                while (scope) {
-                    const auto found = scope->typeAliasNameLocations.find(reference->name.value);
-
-                    if (found != scope->typeAliasNameLocations.end()) {
-                        return Declaration{module.name, found->second};
-                    }
-
-                    const auto binding = scope->privateTypeBindings.find(reference->name.value);
-
-                    if (binding != scope->privateTypeBindings.end()) {
-                        return type_declaration(
-                            frontend,
-                            module.name,
-                            binding->second.definitionLocation,
-                            reference->name.value
-                        );
-                    }
-
-                    const auto exported = scope->exportedTypeBindings.find(reference->name.value);
-
-                    if (exported != scope->exportedTypeBindings.end()) {
-                        return type_declaration(
-                            frontend,
-                            module.name,
-                            exported->second.definitionLocation,
-                            reference->name.value
-                        );
-                    }
-
-                    scope = scope->parent;
-                }
-            }
-
-            return std::nullopt;
-        }
-
         class Indexer final : public Luau::AstVisitor {
         public:
             Indexer(
@@ -458,7 +390,7 @@ namespace instar::luau {
                     add_local(node->prefixLocal, *node->prefixLocation, OccurrenceRole::Read);
                 }
 
-                if (const auto target = reference_declaration(frontend, module, node)) {
+                if (const auto target = annotation_declaration(frontend, module, node)) {
                     result.entries.push_back(
                         {node->nameLocation, *target, OccurrenceRole::Type, true, BindingKind::Type, node->name.value}
                     );
@@ -574,26 +506,15 @@ namespace instar::luau {
             ) {
                 result.properties.insert(name);
 
-                if (const auto found = property(type, name)) {
-                    const auto target =
-                        found->property->location ? found->property->location : found->property->typeLocation;
+                if (const auto target = property_declaration(type, name)) {
+                    const auto access =
+                        role == OccurrenceRole::Write && target->identity == module.name && target->location == location
+                            ? OccurrenceRole::Declaration
+                            : role;
 
-                    if (target && !found->identity.empty()) {
-                        const auto access =
-                            role == OccurrenceRole::Write && found->identity == module.name && *target == location
-                                ? OccurrenceRole::Declaration
-                                : role;
-
-                        result.entries.push_back(
-                            {location,
-                                {found->identity, *target},
-                                access,
-                                false,
-                                BindingKind::Property,
-                                name,
-                                is_editable}
-                        );
-                    }
+                    result.entries.push_back(
+                        {location, *target, access, false, BindingKind::Property, name, is_editable}
+                    );
                 }
             }
 
@@ -666,6 +587,18 @@ namespace instar::luau {
         return std::nullopt;
     }
 
+    std::optional<Declaration> property_declaration(Luau::TypeId type, const std::string &name) {
+        if (const auto found = property(type, name)) {
+            const auto location = found->property->location ? found->property->location : found->property->typeLocation;
+
+            if (location && !found->identity.empty()) {
+                return Declaration{found->identity, *location};
+            }
+        }
+
+        return std::nullopt;
+    }
+
     Luau::TypeId local_type(const Luau::Module &module, Luau::AstLocal *local) {
         for (const auto &[location, scope] : module.scopes) {
             const auto found = scope->bindings.find(Luau::Symbol{local});
@@ -690,6 +623,66 @@ namespace instar::luau {
         return result;
     }
 
+    std::optional<Declaration> alias_declaration(
+        Luau::Frontend &frontend, const Luau::Module &module, Luau::Position position, const std::string &name,
+        std::optional<Luau::AstName> prefix
+    ) {
+        auto scope = Luau::findScopeAtPosition(module, position);
+
+        if (prefix) {
+            while (scope) {
+                const auto imported = scope->importedModules.find(prefix->value);
+
+                if (imported != scope->importedModules.end()) {
+                    const auto target = frontend.moduleResolver.getModule(imported->second);
+                    const auto *source = frontend.getSourceModule(imported->second);
+
+                    if (target && source && source->root) {
+                        const auto binding = target->exportedTypeBindings.find(name);
+
+                        if (binding != target->exportedTypeBindings.end()) {
+                            return type_declaration(
+                                frontend,
+                                imported->second,
+                                binding->second.definitionLocation,
+                                name,
+                                true
+                            );
+                        }
+                    }
+
+                    return std::nullopt;
+                }
+
+                scope = scope->parent;
+            }
+        } else {
+            while (scope) {
+                const auto found = scope->typeAliasNameLocations.find(name);
+
+                if (found != scope->typeAliasNameLocations.end()) {
+                    return Declaration{module.name, found->second};
+                }
+
+                const auto binding = scope->privateTypeBindings.find(name);
+
+                if (binding != scope->privateTypeBindings.end()) {
+                    return type_declaration(frontend, module.name, binding->second.definitionLocation, name);
+                }
+
+                const auto exported = scope->exportedTypeBindings.find(name);
+
+                if (exported != scope->exportedTypeBindings.end()) {
+                    return type_declaration(frontend, module.name, exported->second.definitionLocation, name);
+                }
+
+                scope = scope->parent;
+            }
+        }
+
+        return std::nullopt;
+    }
+
     std::optional<Declaration>
     annotation_declaration(Luau::Frontend &frontend, const Luau::Module &module, Luau::AstType *annotation) {
         if (!annotation) {
@@ -701,7 +694,13 @@ namespace instar::luau {
         }
 
         if (auto *reference = annotation->as<Luau::AstTypeReference>()) {
-            return reference_declaration(frontend, module, reference);
+            return alias_declaration(
+                frontend,
+                module,
+                reference->location.begin,
+                reference->name.value,
+                reference->prefix
+            );
         }
 
         return std::nullopt;

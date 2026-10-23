@@ -1,7 +1,8 @@
 use std::ops;
 
 use crate::{
-    CompletionKind, HintKind, Parentheses, Range, SourceLocation, bridge::bindings, error::Error,
+    CompletionKind, Documentation, HintKind, Parentheses, Range, SourceLocation, bridge::bindings,
+    error::Error,
 };
 
 /// Luau-printed type or declaration text.
@@ -26,11 +27,8 @@ pub struct Hover {
     /// Printed declaration or selected type.
     pub presentation: String,
 
-    /// Native documentation catalog symbol.
-    pub documentation_symbol: String,
-
-    /// Canonical overload signature used for documentation lookup.
-    pub documentation_signature: String,
+    /// Catalog and declaration documentation references.
+    pub documentation: Documentation,
 
     /// Whether the presentation names a documented library or constructor namespace.
     pub namespace: bool,
@@ -57,8 +55,8 @@ pub struct Completion {
     /// Request-local semantic equivalence group, or zero when unproven.
     pub equivalence: usize,
 
-    /// Native documentation catalog symbol.
-    pub documentation_symbol: String,
+    /// Catalog and declaration documentation references.
+    pub documentation: Documentation,
 
     /// Exact insertion text, never presentation text.
     pub insert_text: String,
@@ -101,11 +99,8 @@ pub struct Signature {
     /// Expanded signature text.
     pub expanded: String,
 
-    /// Native documentation catalog symbol.
-    pub documentation_symbol: String,
-
-    /// Canonical overload signature used for documentation lookup.
-    pub documentation_signature: String,
+    /// Selected overload's catalog and declaration documentation references.
+    pub documentation: Documentation,
 
     /// Visible parameters with the colon receiver removed exactly once.
     pub parameters: Vec<Parameter>,
@@ -135,11 +130,8 @@ pub struct Hint {
     /// Whether the source makes the information obvious.
     pub obvious: bool,
 
-    /// Selected subject's documentation symbol.
-    pub documentation_symbol: String,
-
-    /// Canonical callable signature for parameter documentation lookup.
-    pub documentation_signature: String,
+    /// Selected subject's catalog and declaration documentation references.
+    pub documentation: Documentation,
 
     /// Original callable parameter index for metadata lookup.
     pub parameter_index: Option<u32>,
@@ -183,8 +175,7 @@ impl TryFrom<bindings::NativeHover> for Hover {
         Ok(Self {
             location: value.location,
             presentation: value.presentation,
-            documentation_symbol: value.documentation_symbol,
-            documentation_signature: value.documentation_signature,
+            documentation: value.documentation,
             namespace: value.is_namespace,
             receiver: value.has_receiver,
         })
@@ -251,7 +242,7 @@ impl TryFrom<bindings::NativeCompletion> for Completion {
             is_function: value.is_function,
             presentation,
             equivalence: value.equivalence,
-            documentation_symbol: value.documentation_symbol,
+            documentation: value.documentation,
             insert_text: value.insert_text,
             parentheses: value.parentheses,
             replacement: value.replacement,
@@ -312,8 +303,7 @@ impl TryFrom<bindings::NativeSignature> for Signature {
         Ok(Self {
             label: value.label,
             expanded: value.expanded,
-            documentation_symbol: value.documentation_symbol,
-            documentation_signature: value.documentation_signature,
+            documentation: value.documentation,
             parameters,
             active_parameter: value.active_parameter,
             selected: value.is_selected,
@@ -357,8 +347,7 @@ impl TryFrom<bindings::NativeHint> for Hint {
             presentation: value.presentation.try_into()?,
             kind: value.kind,
             obvious: value.is_obvious,
-            documentation_symbol: value.documentation_symbol,
-            documentation_signature: value.documentation_signature,
+            documentation: value.documentation,
             parameter_index: value.has_parameter_index.then_some(value.parameter_index),
         })
     }

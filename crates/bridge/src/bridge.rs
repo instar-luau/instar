@@ -155,11 +155,23 @@ pub(crate) mod bindings {
         range: Range,
     }
 
+    /// Catalog identity and ordered source declarations for semantic documentation.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct Documentation {
+        /// Native documentation catalog symbol.
+        symbol: String,
+
+        /// Canonical selected overload signature, empty for an unselected overload set.
+        signature: String,
+
+        /// Source declarations in lookup priority order.
+        declarations: Vec<SourceLocation>,
+    }
+
     struct NativeHover {
         location: SourceLocation,
         presentation: String,
-        documentation_symbol: String,
-        documentation_signature: String,
+        documentation: Documentation,
         is_namespace: bool,
         has_receiver: bool,
     }
@@ -215,7 +227,7 @@ pub(crate) mod bindings {
         presentations: Vec<String>,
         is_complete: bool,
         equivalence: usize,
-        documentation_symbol: String,
+        documentation: Documentation,
         insert_text: String,
         parentheses: Parentheses,
         replacement: SourceLocation,
@@ -235,8 +247,7 @@ pub(crate) mod bindings {
     struct NativeSignature {
         label: String,
         expanded: String,
-        documentation_symbol: String,
-        documentation_signature: String,
+        documentation: Documentation,
         parameters: Vec<NativeParameter>,
         active_parameter: u32,
         is_selected: bool,
@@ -309,8 +320,7 @@ pub(crate) mod bindings {
         presentation: NativePresentation,
         kind: HintKind,
         is_obvious: bool,
-        documentation_symbol: String,
-        documentation_signature: String,
+        documentation: Documentation,
         has_parameter_index: bool,
         parameter_index: u32,
     }

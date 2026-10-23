@@ -7,7 +7,7 @@ use tower_lsp_server::{
     jsonrpc::Result,
 };
 
-use crate::{error::failure, output::documentation, project::Project};
+use crate::{documentation as resolution, error::failure, output::documentation, project::Project};
 
 pub(crate) fn hover(
     project: &mut Project,
@@ -28,12 +28,7 @@ pub(crate) fn hover(
     let information = frontend.hover(&module, line, column).map_err(failure)?;
 
     for value in information {
-        let metadata = documentation::overload(
-            project,
-            &module,
-            &value.documentation_symbol,
-            &value.documentation_signature,
-        )?;
+        let metadata = resolution::resolve(project, &module, &value.documentation)?;
 
         let text = documentation::render(
             project,

@@ -5,7 +5,7 @@ use tower_lsp_server::{
     jsonrpc::{Error, Result},
 };
 
-use crate::{output::documentation, project::Project};
+use crate::{documentation as resolution, output::documentation, project::Project};
 
 pub(crate) fn annotation(position: Position, hint: &Hint) -> Result<InlayHint> {
     let label = match hint.kind {
@@ -36,7 +36,11 @@ pub(crate) fn annotation(position: Position, hint: &Hint) -> Result<InlayHint> {
     })
 }
 
-pub(crate) fn tooltip(project: &Project, module: &str, information: &[Hint]) -> Result<Tooltip> {
+pub(crate) fn tooltip(
+    project: &mut Project,
+    module: &str,
+    information: &[Hint],
+) -> Result<Tooltip> {
     let mut details = Vec::new();
 
     let should_use_markdown =
@@ -52,15 +56,10 @@ pub(crate) fn tooltip(project: &Project, module: &str, information: &[Hint]) -> 
             )
         };
 
-        let metadata = documentation::overload(
-            project,
-            module,
-            &information.documentation_symbol,
-            &information.documentation_signature,
-        )?;
+        let metadata = resolution::resolve(project, module, &information.documentation)?;
 
         let value = if let Some(index) = information.parameter_index {
-            documentation::parameter(metadata.as_deref(), &information.name, index)
+            resolution::parameter(metadata.as_deref(), &information.name, index)
         } else {
             metadata.as_deref()
         };

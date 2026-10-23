@@ -393,13 +393,15 @@ namespace instar::luau::query {
                         if (const auto *function = Luau::get<Luau::FunctionType>(
                                 Luau::follow(*type, Luau::FollowOption::DisableLazyTypeThunks)
                             )) {
-                            add(node->argLocation->end,
+                            add(
+                                node->argLocation->end,
                                 {},
                                 nullptr,
                                 function->retTypes,
                                 HintKind::Return,
                                 false,
-                                documentation(source, module, node->location.begin, budget));
+                                documentation(host, *type, documentation(source, module, node->location.begin, budget))
+                            );
                         }
                     }
                 }
@@ -419,6 +421,14 @@ namespace instar::luau::query {
                     const auto *function = Luau::get<Luau::FunctionType>(types.front());
                     const std::size_t skip = node->self ? 1 : 0;
                     const auto [arguments, tail] = parameter_types(function->argTypes, budget);
+                    Printer printer(budget, Luau::findScopeAtPosition(module, node->location.begin));
+
+                    const auto reference = documentation(
+                        host,
+                        types.front(),
+                        documentation(source, module, node->func, budget),
+                        printer.signature(types.front())
+                    );
 
                     for (std::size_t index = 0; index < node->args.size && index + skip < function->argNames.size();
                         ++index) {
@@ -428,7 +438,6 @@ namespace instar::luau::query {
                             const auto argument = Luau::getIdentifier(node->args.data[index]);
 
                             const auto parameter = index + skip < arguments.size() ? arguments[index + skip] : nullptr;
-                            auto symbol = documentation(source, module, node->func, budget);
 
                             add(node->args.data[index]->location.begin,
                                 name->name,
@@ -436,9 +445,8 @@ namespace instar::luau::query {
                                 parameter ? nullptr : tail.value_or(nullptr),
                                 HintKind::Parameter,
                                 argument.value && argument.value == name->name,
-                                symbol,
-                                static_cast<std::uint32_t>(index + skip),
-                                types.front());
+                                reference,
+                                static_cast<std::uint32_t>(index + skip));
                         }
                     }
                 }
@@ -454,21 +462,30 @@ namespace instar::luau::query {
 
                 if (!local->annotation) {
                     if (const auto type = local_type(module, local)) {
+                        rust::Vec<SourceLocation> declarations;
+                        declarations.push_back(locate(host, module.name, local->location));
+
                         add(local->location.end,
                             {},
                             type,
                             nullptr,
                             HintKind::Type,
                             is_obvious,
-                            documentation(source, module, local->location.begin, budget));
+                            documentation(
+                                host,
+                                type,
+                                documentation(source, module, local->location.begin, budget),
+                                {},
+                                std::move(declarations)
+                            ));
                     }
                 }
             }
 
             void
             add(Luau::Position position, const std::string &name, Luau::TypeId type, Luau::TypePackId pack,
-                HintKind kind, bool is_obvious = false, const std::string &symbol = {},
-                std::optional<std::uint32_t> parameter_index = std::nullopt, Luau::TypeId callable = nullptr) {
+                HintKind kind, bool is_obvious, const Documentation &reference,
+                std::optional<std::uint32_t> parameter_index = std::nullopt) {
                 budget.check();
 
                 if (position < start || end < position || (selected && (*selected != kind || position != start))) {
@@ -503,8 +520,7 @@ namespace instar::luau::query {
                         std::move(presentation),
                         kind,
                         is_obvious,
-                        symbol,
-                        callable ? printer.signature(callable) : std::string{},
+                        reference,
                         bool(parameter_index),
                         parameter_index.value_or(0)}
                 );
@@ -586,12 +602,18 @@ namespace instar::luau::query {
         );
 
         Luau::Location operation{position, position};
+        Luau::TypeId owner = nullptr;
+        std::optional<Luau::AstName> type_namespace;
 
         for (const auto *node : native.ancestry) {
             if (const auto *index = node->as<Luau::AstExprIndexName>()) {
                 if (index->indexLocation.containsClosed(position)) {
                     replace = index->indexLocation;
                     operation = {index->opPosition, 1};
+
+                    if (const auto *type = prepared.module.astTypes.find(index->expr)) {
+                        owner = *type;
+                    }
                 }
             }
 
@@ -599,6 +621,10 @@ namespace instar::luau::query {
                 if (literal->location.containsClosed(position)) {
                     replace = contents(prepared.text, literal->location);
                 }
+            }
+
+            if (const auto *reference = node->as<Luau::AstTypeReference>()) {
+                type_namespace = reference->prefix;
             }
         }
 
@@ -658,12 +684,32 @@ namespace instar::luau::query {
             }
 
             auto symbol = entry.documentationSymbol.value_or("");
+            rust::Vec<SourceLocation> declarations;
 
-            if (symbol.empty() && entry.kind == Luau::AutocompleteEntryKind::Binding && scope) {
+            if (const auto declaration = property_declaration(owner, label)) {
+                declarations.push_back(locate(host, declaration->identity, declaration->location));
+            }
+
+            if (entry.kind == Luau::AutocompleteEntryKind::Type && scope) {
+                if (const auto declaration =
+                        alias_declaration(frontend, prepared.module, position, label, type_namespace)) {
+                    declarations.push_back(locate(host, declaration->identity, declaration->location));
+                }
+            }
+
+            if (entry.kind == Luau::AutocompleteEntryKind::Binding && scope) {
                 if (const auto binding = scope->linearSearchForBindingPair(label, true);
                     binding && binding->first.local) {
-                    symbol =
-                        documentation(prepared.source, prepared.module, binding->first.local->location.begin, budget);
+                    declarations.push_back(locate(host, name, binding->first.local->location));
+
+                    if (symbol.empty()) {
+                        symbol = documentation(
+                            prepared.source,
+                            prepared.module,
+                            binding->first.local->location.begin,
+                            budget
+                        );
+                    }
                 }
             }
 
@@ -674,7 +720,7 @@ namespace instar::luau::query {
                     std::move(presentations),
                     is_complete,
                     equivalence,
-                    symbol,
+                    documentation(host, type, symbol, {}, std::move(declarations)),
                     entry.insertText.value_or(label),
                     parentheses,
                     locate(host, name, candidate_replacement),
@@ -688,7 +734,8 @@ namespace instar::luau::query {
     }
 
     rust::Vec<NativeSignature> signatures(
-        Luau::Frontend &, const Host &, const Prepared &prepared, Luau::Position position, PresentationBudget &budget
+        Luau::Frontend &, const Host &host, const Prepared &prepared, Luau::Position position,
+        PresentationBudget &budget
     ) {
         constexpr std::size_t maximum_length = 32768;
         rust::Vec<NativeSignature> result;
@@ -823,8 +870,12 @@ namespace instar::luau::query {
             result.push_back(
                 {label,
                     printer.finish(std::move(expanded)),
-                    documentation(source, *checked, call->func, budget),
-                    printer.signature(type),
+                    documentation(
+                        host,
+                        type,
+                        documentation(source, *checked, call->func, budget),
+                        printer.signature(type)
+                    ),
                     std::move(parameters),
                     active,
                     resolved && Luau::follow(*resolved, Luau::FollowOption::DisableLazyTypeThunks) == type}
@@ -1120,6 +1171,30 @@ namespace instar::luau::query {
         }
 
         return start + position.column;
+    }
+
+    Documentation documentation(
+        const Host &host, Luau::TypeId type, const std::string &symbol, const std::string &signature,
+        rust::Vec<SourceLocation> declarations
+    ) {
+        if (const auto declaration = definition(type)) {
+            const auto location = locate(host, declaration->identity, declaration->location);
+
+            const bool present =
+                std::any_of(declarations.begin(), declarations.end(), [&](const SourceLocation &candidate) {
+                    return candidate.identity == location.identity &&
+                           candidate.range.start.line == location.range.start.line &&
+                           candidate.range.start.column == location.range.start.column &&
+                           candidate.range.end.line == location.range.end.line &&
+                           candidate.range.end.column == location.range.end.column;
+                });
+
+            if (!present) {
+                declarations.push_back(location);
+            }
+        }
+
+        return {symbol, signature, std::move(declarations)};
     }
 
     std::string documentation(Luau::TypeId root, PresentationBudget &budget) {

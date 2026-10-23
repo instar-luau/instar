@@ -11,6 +11,7 @@ use tower_lsp_server::{
 };
 
 use crate::{
+    documentation as resolution,
     error::{failure, reason},
     output::documentation,
     project::Project,
@@ -47,12 +48,7 @@ pub(crate) fn signature_help(
             .active_parameter
             .min(u32::try_from(signature.parameters.len().saturating_sub(1)).map_err(failure)?);
 
-        let metadata = documentation::overload(
-            project,
-            &module,
-            &signature.documentation_symbol,
-            &signature.documentation_signature,
-        )?;
+        let metadata = resolution::resolve(project, &module, &signature.documentation)?;
 
         let documentation = documentation::render(
             project,
@@ -83,7 +79,7 @@ pub(crate) fn signature_help(
                     should_use_offsets,
                 )?;
 
-                let entry = documentation::parameter(
+                let entry = resolution::parameter(
                     metadata.as_deref(),
                     &parameter.name,
                     parameter.source_index,

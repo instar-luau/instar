@@ -41,7 +41,13 @@ namespace instar::luau {
     const Entry *at(const Index &index, Luau::Position position);
     bool is_same_declaration(const Declaration &left, const Declaration &right);
     std::optional<Declaration> definition(Luau::TypeId type, unsigned depth = 0);
+    std::optional<Declaration> property_declaration(Luau::TypeId type, const std::string &name);
     Luau::TypeId local_type(const Luau::Module &module, Luau::AstLocal *local);
+
+    std::optional<Declaration> alias_declaration(
+        Luau::Frontend &frontend, const Luau::Module &module, Luau::Position position, const std::string &name,
+        std::optional<Luau::AstName> prefix = std::nullopt
+    );
 
     std::optional<Declaration>
     annotation_declaration(Luau::Frontend &frontend, const Luau::Module &module, Luau::AstType *annotation);

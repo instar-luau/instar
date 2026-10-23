@@ -771,7 +771,7 @@ namespace instar::luau::query {
     }
 
     rust::Vec<NativeHover> hover(
-        Luau::Frontend &, const Host &host, const Prepared &prepared, Luau::Position position,
+        Luau::Frontend &frontend, const Host &host, const Prepared &prepared, Luau::Position position,
         PresentationBudget &budget
     ) {
         rust::Vec<NativeHover> result;
@@ -830,7 +830,7 @@ namespace instar::luau::query {
                             ? ": typeof(" + name + ")"
                             : "");
 
-                result.push_back({locate(host, prepared.module.name, target->location), binding, {}, {}, false, false});
+                result.push_back({locate(host, prepared.module.name, target->location), binding, {}, false, false});
             }
 
             budget.check();
@@ -868,8 +868,13 @@ namespace instar::luau::query {
                         (function->isCheckedFunction ? "@checked " : "") + prefix +
                         printer.function(*function, qualified, true)
                     ),
-                    target->documentation_symbol,
-                    printer.signature(callable),
+                    documentation(
+                        host,
+                        callable,
+                        target->documentation_symbol,
+                        printer.signature(callable),
+                        definitions(frontend, host, prepared, position, false)
+                    ),
                     false,
                     function->hasSelf && qualified.find(':') != std::string::npos}
             );
@@ -929,8 +934,13 @@ namespace instar::luau::query {
         result.push_back(
             {locate(host, prepared.module.name, target->location),
                 describe(),
-                target->documentation_symbol,
-                {},
+                documentation(
+                    host,
+                    type,
+                    target->documentation_symbol,
+                    {},
+                    definitions(frontend, host, prepared, position, false)
+                ),
                 is_namespace && !is_binding && !target->is_alias,
                 false}
         );

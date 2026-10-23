@@ -163,11 +163,8 @@ pub(crate) fn inlay_hint_resolve(
         return Err(Error::content_modified());
     }
 
-    parameters.tooltip = Some(hints::tooltip(
-        project,
-        &module,
-        &subjects(project, frontend, &module, &record)?,
-    )?);
+    let information = subjects(project, frontend, &module, &record)?;
+    parameters.tooltip = Some(hints::tooltip(project, &module, &information)?);
 
     parameters.data = Some(project.data(&module, record)?);
 

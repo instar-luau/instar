@@ -1,6 +1,7 @@
 //! Protocol-neutral, tolerant source analysis for editor services.
 
 mod color;
+mod documentation;
 mod error;
 mod model;
 mod rename;

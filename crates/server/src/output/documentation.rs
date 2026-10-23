@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, fmt::Write as _, sync::Arc};
+use std::{collections::BTreeSet, fmt::Write as _};
 
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use pulldown_cmark_to_cmark::cmark;
@@ -9,7 +9,7 @@ use tower_lsp_server::{
     jsonrpc::Result,
 };
 
-use crate::{error::failure, project::Project};
+use crate::{documentation, error::failure, project::Project};
 
 pub(crate) fn should_use_markdown(project: &Project, pointer: &str) -> bool {
     project
@@ -66,30 +66,22 @@ pub(crate) fn markup(value: String, should_use_markdown: bool) -> MarkupContent 
     }
 }
 
-pub(crate) fn documentation(
+pub(crate) fn completion(
     project: &Project,
     module: &str,
-    symbol: &str,
+    value: Option<&Value>,
+    hide_receiver: bool,
     should_use_markdown: bool,
 ) -> Result<String> {
-    let value = metadata(project, module, symbol)?;
-
     let mut sections = Vec::new();
 
-    let text = render(
-        project,
-        module,
-        value.as_deref(),
-        symbol.contains("/globaltype/"),
-        should_use_markdown,
-    )?;
+    let text = render(project, module, value, hide_receiver, should_use_markdown)?;
 
     if !text.is_empty() {
         sections.push(text);
     }
 
     if let Some(overloads) = value
-        .as_deref()
         .and_then(|value| value.get("overloads"))
         .and_then(Value::as_object)
     {
@@ -100,13 +92,13 @@ pub(crate) fn documentation(
                 continue;
             };
 
-            let metadata = metadata(project, module, reference)?;
+            let metadata = documentation::metadata(project, module, reference)?;
 
             let text = render(
                 project,
                 module,
                 metadata.as_deref(),
-                symbol.contains("/globaltype/"),
+                hide_receiver,
                 should_use_markdown,
             )?;
 
@@ -123,81 +115,6 @@ pub(crate) fn documentation(
     Ok(hover(&sections, should_use_markdown).value)
 }
 
-pub(crate) fn metadata(
-    project: &Project,
-    module: &str,
-    symbol: &str,
-) -> Result<Option<Arc<Value>>> {
-    let mut symbol = symbol.to_owned();
-    let mut visited = BTreeSet::new();
-
-    loop {
-        if symbol.is_empty() || !visited.insert(symbol.clone()) {
-            return Ok(None);
-        }
-
-        let value = project
-            .workspace
-            .documentation(module, &symbol)
-            .map_err(failure)?;
-
-        if let Some(reference) = value
-            .as_deref()
-            .and_then(body)
-            .filter(|text| is_alias(text))
-        {
-            reference.clone_into(&mut symbol);
-        } else {
-            return Ok(value);
-        }
-    }
-}
-
-pub(crate) fn overload(
-    project: &Project,
-    module: &str,
-    symbol: &str,
-    signature: &str,
-) -> Result<Option<Arc<Value>>> {
-    if signature.is_empty() {
-        return metadata(project, module, symbol);
-    }
-
-    let symbol = symbol
-        .split_once("/overload/")
-        .map_or(symbol, |(root, _)| root);
-
-    let value = metadata(project, module, symbol)?;
-
-    if let Some(reference) = value
-        .as_deref()
-        .and_then(|value| value.get("overloads"))
-        .and_then(|overloads| overloads.get(signature))
-        .and_then(Value::as_str)
-    {
-        return metadata(project, module, reference);
-    }
-
-    Ok(value)
-}
-
-pub(crate) fn parameter<'metadata>(
-    metadata: Option<&'metadata Value>,
-    name: &str,
-    source_index: u32,
-) -> Option<&'metadata Value> {
-    let parameters = metadata?.get("params")?.as_array()?;
-
-    parameters
-        .iter()
-        .find(|entry| entry.get("name").and_then(Value::as_str) == Some(name))
-        .or_else(|| {
-            usize::try_from(source_index)
-                .ok()
-                .and_then(|index| parameters.get(index))
-        })
-}
-
 pub(crate) fn render(
     project: &Project,
     module: &str,
@@ -207,15 +124,18 @@ pub(crate) fn render(
 ) -> Result<String> {
     let referenced;
 
-    let value = if let Some(reference) = value.and_then(body).filter(|text| is_alias(text)) {
-        referenced = metadata(project, module, reference)?;
+    let value = if let Some(reference) = value
+        .and_then(documentation::body)
+        .filter(|text| documentation::is_alias(text))
+    {
+        referenced = documentation::metadata(project, module, reference)?;
 
         referenced.as_deref()
     } else {
         value
     };
 
-    let description = value.and_then(body).unwrap_or_default();
+    let description = value.and_then(documentation::body).unwrap_or_default();
 
     let (description, link) = description
         .rsplit_once("\n\n[Learn more](")
@@ -285,29 +205,19 @@ pub(crate) fn render(
 }
 
 fn description_text(project: &Project, module: &str, value: &Value) -> Result<String> {
-    let text = body(value).unwrap_or_default();
+    let text = documentation::body(value).unwrap_or_default();
 
-    if is_alias(text) {
-        let value = metadata(project, module, text)?;
+    if documentation::is_alias(text) {
+        let value = documentation::metadata(project, module, text)?;
 
         Ok(value
             .as_deref()
-            .and_then(body)
+            .and_then(documentation::body)
             .unwrap_or_default()
             .to_owned())
     } else {
         Ok(text.to_owned())
     }
-}
-
-fn body(value: &Value) -> Option<&str> {
-    value
-        .as_str()
-        .or_else(|| value.get("documentation").and_then(Value::as_str))
-}
-
-fn is_alias(text: &str) -> bool {
-    text.starts_with('@') && text.contains('/') && !text.contains(['\n', '\r'])
 }
 
 fn plaintext(text: &str) -> String {

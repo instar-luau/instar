@@ -4,6 +4,7 @@ mod analysis;
 mod configuration;
 mod connection;
 mod document;
+mod documentation;
 mod editing;
 mod error;
 mod files;

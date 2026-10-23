@@ -52,6 +52,11 @@ namespace instar::luau::query {
     SourceLocation locate(const Host &host, const std::string &identity, const Luau::Location &location);
     std::size_t offset(const std::string &source, Luau::Position position);
 
+    Documentation documentation(
+        const Host &host, Luau::TypeId type, const std::string &symbol, const std::string &signature = {},
+        rust::Vec<SourceLocation> declarations = {}
+    );
+
     std::string documentation(Luau::TypeId type, PresentationBudget &budget);
 
     std::string documentation(

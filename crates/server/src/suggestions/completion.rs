@@ -21,8 +21,8 @@ use tower_lsp_server::{
 };
 
 use crate::{
-    configuration::Require, document::Document, error::failure, output::documentation,
-    project::Project,
+    configuration::Require, document::Document, documentation as resolution, error::failure,
+    output::documentation, project::Project,
 };
 
 #[derive(Deserialize, Serialize)]
@@ -551,7 +551,7 @@ fn can_resolve(project: &Project, property: &str) -> bool {
 }
 
 fn completion_documentation(
-    project: &Project,
+    project: &mut Project,
     module: &str,
     candidate: &Completion,
 ) -> Result<Option<Documentation>> {
@@ -560,10 +560,13 @@ fn completion_documentation(
         "/textDocument/completion/completionItem/documentationFormat",
     );
 
-    let text = documentation::documentation(
+    let metadata = resolution::resolve(project, module, &candidate.documentation)?;
+
+    let text = documentation::completion(
         project,
         module,
-        &candidate.documentation_symbol,
+        metadata.as_deref(),
+        candidate.documentation.symbol.contains("/globaltype/"),
         should_use_markdown,
     )?;
 
