@@ -15,7 +15,7 @@ pub struct Presentation {
     pub expanded: String,
 
     /// Whether the printer produced complete, valid type information.
-    pub complete: bool,
+    pub is_complete: bool,
 }
 
 /// Owned semantic hover information.
@@ -31,10 +31,10 @@ pub struct Hover {
     pub documentation: Documentation,
 
     /// Whether the presentation names a documented library or constructor namespace.
-    pub namespace: bool,
+    pub is_namespace: bool,
 
     /// Whether the method signature has an implicit receiver.
-    pub receiver: bool,
+    pub has_receiver: bool,
 }
 
 /// An owned native completion candidate.
@@ -74,7 +74,7 @@ pub struct Completion {
     pub operation: Option<Range>,
 
     /// Whether the candidate is deprecated.
-    pub deprecated: bool,
+    pub is_deprecated: bool,
 }
 
 /// One visible call parameter.
@@ -90,7 +90,7 @@ pub struct Parameter {
     pub source_index: u32,
 
     /// Whether this is the visible variadic tail.
-    pub variadic: bool,
+    pub is_variadic: bool,
 }
 
 /// One native overload with its visible parameter sequence.
@@ -112,7 +112,7 @@ pub struct Signature {
     pub active_parameter: u32,
 
     /// Whether native overload resolution selected this overload.
-    pub selected: bool,
+    pub is_selected: bool,
 }
 
 /// An inferred inlay subject and its printed type.
@@ -131,7 +131,7 @@ pub struct Hint {
     pub kind: HintKind,
 
     /// Whether the source makes the information obvious.
-    pub obvious: bool,
+    pub is_obvious: bool,
 
     /// Selected subject's catalog and declaration documentation references.
     pub documentation: Documentation,
@@ -156,7 +156,7 @@ impl TryFrom<bindings::NativePresentation> for Presentation {
         Ok(Self {
             compact: value.compact,
             expanded: value.expanded,
-            complete: value.is_complete,
+            is_complete: value.is_complete,
         })
     }
 }
@@ -179,8 +179,8 @@ impl TryFrom<bindings::NativeHover> for Hover {
             location: value.location,
             presentation: value.presentation,
             documentation: value.documentation,
-            namespace: value.is_namespace,
-            receiver: value.has_receiver,
+            is_namespace: value.is_namespace,
+            has_receiver: value.has_receiver,
         })
     }
 }
@@ -250,8 +250,8 @@ impl TryFrom<bindings::NativeCompletion> for Completion {
             insert_text: value.insert_text,
             parentheses: value.parentheses,
             replacement: value.replacement,
-            operation: value.replace_dot.then_some(value.operation),
-            deprecated: value.is_deprecated,
+            operation: value.should_replace_dot.then_some(value.operation),
+            is_deprecated: value.is_deprecated,
         })
     }
 }
@@ -285,7 +285,7 @@ impl TryFrom<bindings::NativeSignature> for Signature {
                     name: parameter.name,
                     range,
                     source_index: parameter.source_index,
-                    variadic: parameter.is_variadic,
+                    is_variadic: parameter.is_variadic,
                 })
             })
             .collect::<Result<Vec<_>, Error>>()?;
@@ -294,7 +294,7 @@ impl TryFrom<bindings::NativeSignature> for Signature {
             .first()
             .is_some_and(|parameter| parameter.source_index > 1)
             || parameters.windows(2).any(|pair| {
-                pair[0].variadic
+                pair[0].is_variadic
                     || pair[0].range.end > pair[1].range.start
                     || pair[0].source_index.checked_add(1) != Some(pair[1].source_index)
             })
@@ -310,7 +310,7 @@ impl TryFrom<bindings::NativeSignature> for Signature {
             documentation: value.documentation,
             parameters,
             active_parameter: value.active_parameter,
-            selected: value.is_selected,
+            is_selected: value.is_selected,
         })
     }
 }
@@ -350,7 +350,7 @@ impl TryFrom<bindings::NativeHint> for Hint {
             name: value.name,
             presentation: value.presentation.try_into()?,
             kind: value.kind,
-            obvious: value.is_obvious,
+            is_obvious: value.is_obvious,
             documentation: value.documentation,
             parameter_index: value.has_parameter_index.then_some(value.parameter_index),
         })

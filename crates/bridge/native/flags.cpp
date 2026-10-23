@@ -43,7 +43,7 @@ namespace instar::luau {
         Value value(const Flag &flag) {
             switch (flag.kind) {
             case FlagKind::Boolean:
-                return flag.boolean;
+                return flag.is_enabled;
 
             case FlagKind::Integer:
                 return flag.integer;

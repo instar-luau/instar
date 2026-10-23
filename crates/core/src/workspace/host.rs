@@ -82,7 +82,10 @@ impl Host for Workspace {
                 .map_err(|error| failure(module, Operation::Environment, error))?,
             flags: flags(configuration),
             locations,
-            type_errors: scope.language.as_ref().is_none_or(Language::type_errors),
+            should_report_type_errors: scope
+                .language
+                .as_ref()
+                .is_none_or(Language::should_report_type_errors),
         })
     }
 

@@ -22,8 +22,8 @@ namespace instar::luau {
 
         class Inspection final : public Luau::TypeVisitor {
         public:
-            Inspection(PresentationBudget &budget, bool exhaustive)
-                : Luau::TypeVisitor("Presentation", false), budget(budget), exhaustive(exhaustive) {}
+            Inspection(PresentationBudget &budget, bool is_exhaustive)
+                : Luau::TypeVisitor("Presentation", false), budget(budget), is_exhaustive(is_exhaustive) {}
 
             bool visit(Luau::TypeId value) override {
                 count();
@@ -32,8 +32,8 @@ namespace instar::luau {
                 if (const auto *bound = Luau::get<Luau::BoundType>(value)) {
                     check(bound->boundTo);
                 } else if (const auto *function = Luau::get<Luau::FunctionType>(value)) {
-                    structural &= function->generics.empty() && function->genericPacks.empty() &&
-                                  !function->isCheckedFunction && !function->hasSelf;
+                    is_structural &= function->generics.empty() && function->genericPacks.empty() &&
+                                     !function->isCheckedFunction && !function->hasSelf;
 
                     for (const auto &name : function->argNames) {
                         budget.check();
@@ -49,7 +49,7 @@ namespace instar::luau {
                         traverse(generic);
                     }
                 } else if (const auto *table = Luau::get<Luau::TableType>(value)) {
-                    structural &= !table->name && !table->syntheticName;
+                    is_structural &= !table->name && !table->syntheticName;
                     payload(table->name ? table->name->size() : 0);
                     payload(table->syntheticName ? table->syntheticName->size() : 0);
 
@@ -68,7 +68,7 @@ namespace instar::luau {
                         traverse(argument);
                     }
 
-                    if (!exhaustive && (table->name || table->syntheticName)) {
+                    if (!is_exhaustive && (table->name || table->syntheticName)) {
                         return false;
                     }
 
@@ -84,7 +84,7 @@ namespace instar::luau {
                         check(table->indexer->indexResultType);
                     }
                 } else if (const auto *external = Luau::get<Luau::ExternType>(value)) {
-                    structural = false;
+                    is_structural = false;
                     payload(external->name.size());
 
                     return false;
@@ -92,25 +92,25 @@ namespace instar::luau {
                     check(metatable->table);
                     check(metatable->metatable);
                 } else if (const auto *union_type = Luau::get<Luau::UnionType>(value)) {
-                    structural = false;
+                    is_structural = false;
 
                     for (const auto member : union_type->options) {
                         check(member);
                     }
                 } else if (const auto *intersection = Luau::get<Luau::IntersectionType>(value)) {
-                    structural = false;
+                    is_structural = false;
 
                     for (const auto member : intersection->parts) {
                         check(member);
                     }
                 } else if (const auto *singleton = Luau::get<Luau::SingletonType>(value)) {
-                    structural = false;
+                    is_structural = false;
 
                     if (const auto *string = Luau::get<Luau::StringSingleton>(singleton)) {
                         payload(string->value.size());
                     }
                 } else if (!Luau::get<Luau::PrimitiveType>(value) && !Luau::get<Luau::AnyType>(value)) {
-                    structural = false;
+                    is_structural = false;
                 }
 
                 return true;
@@ -134,7 +134,7 @@ namespace instar::luau {
                 } else if (const auto *variadic = Luau::get<Luau::VariadicTypePack>(value)) {
                     check(variadic->ty);
                 } else {
-                    structural = false;
+                    is_structural = false;
                 }
 
                 return true;
@@ -142,7 +142,7 @@ namespace instar::luau {
 
             void cycle(Luau::TypeId value) override {
                 count();
-                structural = false;
+                is_structural = false;
 
                 if (Luau::get<Luau::BoundType>(value)) {
                     throw Limit{};
@@ -161,7 +161,7 @@ namespace instar::luau {
                 }
             }
 
-            bool structural = true;
+            bool is_structural = true;
 
         private:
             void count() {
@@ -181,7 +181,7 @@ namespace instar::luau {
             }
 
             PresentationBudget &budget;
-            bool exhaustive;
+            bool is_exhaustive;
             std::size_t nodes = 0;
             std::size_t edges = 0;
             std::size_t bytes = 0;
@@ -197,7 +197,7 @@ namespace instar::luau {
             struct Part {
                 std::string text;
                 char separator = 0;
-                bool variadic = false;
+                bool is_variadic = false;
             };
 
             char opening = 0;
@@ -221,14 +221,14 @@ namespace instar::luau {
                         text = "…";
                     } else if (parts.size() > 1) {
                         std::string shortened;
-                        bool omitted = false;
+                        bool was_omitted = false;
 
                         for (std::size_t index = 0; index < parts.size(); ++index) {
                             budget.check();
                             const auto &part = parts[index];
-                            const bool retain = index == 0 || part.variadic;
+                            const bool should_retain = index == 0 || part.is_variadic;
 
-                            if (!retain && omitted) {
+                            if (!should_retain && was_omitted) {
                                 continue;
                             }
 
@@ -236,7 +236,7 @@ namespace instar::luau {
                                 shortened += part.separator == ',' ? ", " : std::string{" "} + part.separator + " ";
                             }
 
-                            if (retain) {
+                            if (should_retain) {
                                 const auto start = part.text.find_first_not_of(" \t\r\n");
 
                                 if (start != std::string::npos) {
@@ -247,7 +247,7 @@ namespace instar::luau {
                                 shortened += "…";
                             }
 
-                            omitted = !retain;
+                            was_omitted = !should_retain;
                         }
 
                         if (characters(shortened) < characters(text)) {
@@ -267,20 +267,20 @@ namespace instar::luau {
                 budget.check();
                 const auto byte = static_cast<unsigned char>(value[index]);
                 const std::size_t length = byte < 0x80 ? 1 : byte < 0xe0 ? 2 : byte < 0xf0 ? 3 : 4;
-                bool valid = false;
+                bool is_valid = false;
 
                 if (length <= value.size() - index) {
                     try {
                         const rust::Str checked(value.data() + index, length);
                         result.append(checked.data(), checked.size());
                         index += length;
-                        valid = true;
+                        is_valid = true;
                     } catch (const std::invalid_argument &) {
-                        valid = false;
+                        is_valid = false;
                     }
                 }
 
-                if (!valid) {
+                if (!is_valid) {
                     Luau::formatAppend(result, "\\%03u", static_cast<unsigned>(byte));
                     ++index;
                 }
@@ -320,15 +320,15 @@ namespace instar::luau {
 
             return unicode(value, budget);
         } catch (const Limit &) {
-            complete = false;
+            is_complete = false;
 
             return "<omitted>";
         }
     }
 
-    template <typename Formatter> std::string Printer::render(bool expanded, Formatter formatter) {
+    template <typename Formatter> std::string Printer::render(bool is_expanded, Formatter formatter) {
         auto rendering = options;
-        rendering.useLineBreaks = expanded;
+        rendering.useLineBreaks = is_expanded;
         rendering.hideTableAliasExpansions = true;
 
         rendering.maxTypeLength =
@@ -344,18 +344,18 @@ namespace instar::luau {
 
             rendering.maxTypeLength = maximum_bytes;
             result = formatter(rendering);
-            complete = false;
+            is_complete = false;
         }
 
-        complete &= !result.invalid && !result.error && !result.truncated &&
-                    result.name.size() <= rendering.maxTypeLength && rendering.maxTableLength == 0;
+        is_complete &= !result.invalid && !result.error && !result.truncated &&
+                       result.name.size() <= rendering.maxTypeLength && rendering.maxTableLength == 0;
 
         options.nameMap = std::move(rendering.nameMap);
 
         return finish(std::move(result.name));
     }
 
-    std::string Printer::type(Luau::TypeId value, bool expanded) {
+    std::string Printer::type(Luau::TypeId value, bool is_expanded) {
         try {
             if (!value) {
                 throw Limit{};
@@ -366,7 +366,7 @@ namespace instar::luau {
             const auto followed = Luau::follow(value, Luau::FollowOption::DisableLazyTypeThunks);
             std::optional<Luau::Type> declaration;
 
-            if (expanded && (Luau::get<Luau::TableType>(followed) || Luau::get<Luau::MetatableType>(followed))) {
+            if (is_expanded && (Luau::get<Luau::TableType>(followed) || Luau::get<Luau::MetatableType>(followed))) {
                 declaration.emplace(followed->clone());
 
                 if (auto *table = Luau::get_if<Luau::TableType>(&declaration->ty)) {
@@ -381,17 +381,17 @@ namespace instar::luau {
 
             inspection.traverse(value);
 
-            return render(expanded, [&](Luau::ToStringOptions &rendering) {
+            return render(is_expanded, [&](Luau::ToStringOptions &rendering) {
                 return Luau::toStringDetailed(value, rendering);
             });
         } catch (const Limit &) {
-            complete = false;
+            is_complete = false;
 
             return "<omitted>";
         }
     }
 
-    std::string Printer::pack(Luau::TypePackId value, bool expanded, bool returns) {
+    std::string Printer::pack(Luau::TypePackId value, bool is_expanded, bool is_return_pack) {
         try {
             if (!value) {
                 throw Limit{};
@@ -400,11 +400,11 @@ namespace instar::luau {
             Inspection inspection(budget, false);
             inspection.traverse(value);
 
-            auto text = render(expanded, [&](Luau::ToStringOptions &rendering) {
+            auto text = render(is_expanded, [&](Luau::ToStringOptions &rendering) {
                 return Luau::toStringDetailed(value, rendering);
             });
 
-            if (returns && Luau::get<Luau::TypePack>(Luau::follow(value))) {
+            if (is_return_pack && Luau::get<Luau::TypePack>(Luau::follow(value))) {
                 const auto size = Luau::size(value);
 
                 if (Luau::finite(value) ? size > 1 : size != 0) {
@@ -414,19 +414,19 @@ namespace instar::luau {
 
             return finish(std::move(text));
         } catch (const Limit &) {
-            complete = false;
+            is_complete = false;
 
             return "<omitted>";
         }
     }
 
-    std::string Printer::function(const Luau::FunctionType &value, const std::string &name, bool expanded) {
+    std::string Printer::function(const Luau::FunctionType &value, const std::string &name, bool is_expanded) {
         try {
             Inspection inspection(budget, false);
             inspection.traverse(value.argTypes);
             inspection.traverse(value.retTypes);
 
-            return render(expanded, [&](Luau::ToStringOptions &rendering) {
+            return render(is_expanded, [&](Luau::ToStringOptions &rendering) {
                 rendering.hideFunctionSelfArgument = name.find(':') != std::string::npos;
                 Luau::ToStringResult result;
                 result.name = Luau::toStringNamedFunction(name, value, rendering);
@@ -434,7 +434,7 @@ namespace instar::luau {
                 return result;
             });
         } catch (const Limit &) {
-            complete = false;
+            is_complete = false;
 
             return "<omitted>";
         }
@@ -453,24 +453,24 @@ namespace instar::luau {
 
             return finish(Luau::toStringDetailed(value, canonical).name);
         } catch (const Limit &) {
-            complete = false;
+            is_complete = false;
 
             return "<omitted>";
         }
     }
 
-    NativePresentation Printer::presentation(Luau::TypeId value, bool expanded) {
+    NativePresentation Printer::presentation(Luau::TypeId value, bool is_expanded) {
         const auto compact = type(value);
-        const auto detail = expanded ? type(value, true) : compact;
+        const auto detail = is_expanded ? type(value, true) : compact;
 
-        return {compact, detail, complete, false};
+        return {compact, detail, is_complete, false};
     }
 
-    NativePresentation Printer::presentation(Luau::TypePackId value, bool expanded) {
+    NativePresentation Printer::presentation(Luau::TypePackId value, bool is_expanded) {
         const auto compact = pack(value, false, true);
-        const auto detail = expanded ? pack(value, true, true) : compact;
+        const auto detail = is_expanded ? pack(value, true, true) : compact;
 
-        return {compact, detail, complete, true};
+        return {compact, detail, is_complete, true};
     }
 
     void Printer::abbreviate(NativePresentation &presentation) {
@@ -537,7 +537,7 @@ namespace instar::luau {
                         continue;
                     }
 
-                    part.variadic = true;
+                    part.is_variadic = true;
                 }
 
                 part.text.append(text, start, end - start);
@@ -557,7 +557,7 @@ namespace instar::luau {
     }
 
     std::size_t Printer::equivalence(Luau::TypeId value, const std::string &text, std::vector<CompletionType> &types) {
-        if (!complete) {
+        if (!is_complete) {
             return 0;
         }
 
@@ -583,12 +583,12 @@ namespace instar::luau {
             Luau::SeenSet seen;
 
             if (value == previous.type ||
-                (inspection.structural && previous.structural && Luau::areEqual(seen, *value, *previous.type))) {
+                (inspection.is_structural && previous.is_structural && Luau::areEqual(seen, *value, *previous.type))) {
                 return index + 1;
             }
         }
 
-        types.push_back({value, text, inspection.structural});
+        types.push_back({value, text, inspection.is_structural});
 
         return types.size();
     }

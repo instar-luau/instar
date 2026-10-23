@@ -319,7 +319,7 @@ fn semantic(
             CompletionKind::GeneratedFunction => CompletionItemKind::Function,
             _ => CompletionItemKind::Text,
         }),
-        tags: (candidate.deprecated
+        tags: (candidate.is_deprecated
             && project
                 .capabilities
                 .pointer("/textDocument/completion/completionItem/tagSupport")

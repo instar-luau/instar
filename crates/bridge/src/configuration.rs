@@ -21,7 +21,7 @@ pub struct Configuration {
     pub locations: Vec<Location>,
 
     /// Whether type errors are reported alongside syntax errors.
-    pub type_errors: bool,
+    pub should_report_type_errors: bool,
 }
 
 impl Default for Configuration {
@@ -32,7 +32,7 @@ impl Default for Configuration {
             environment: None,
             flags: BTreeMap::new(),
             locations: Vec::new(),
-            type_errors: true,
+            should_report_type_errors: true,
         }
     }
 }

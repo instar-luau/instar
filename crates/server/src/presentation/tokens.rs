@@ -207,7 +207,7 @@ fn classify(
             .entry((bytes.start, bytes.end))
             .or_insert((false, false, false));
 
-        *is_type |= occurrence.type_namespace;
+        *is_type |= occurrence.is_type_namespace;
         *is_declared |= occurrence.role == OccurrenceRole::Declaration;
 
         *is_written |= matches!(

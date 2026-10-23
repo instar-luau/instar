@@ -6,7 +6,7 @@
 namespace instar::luau {
     struct Language;
 
-    Language configure(rust::Slice<const Language> previous, rust::Str name, rust::Str source, bool executable);
+    Language configure(rust::Slice<const Language> previous, rust::Str name, rust::Str source, bool is_executable);
 }
 
 #endif

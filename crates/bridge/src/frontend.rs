@@ -21,8 +21,8 @@ impl<'host> Frontend<'host> {
     ///
     /// # Errors
     /// Returns host/native initialization errors or conflicting live frontend flag settings.
-    pub fn new(context: &'host Context<'host>, retain_types: bool) -> Result<Self, Error> {
-        let native = context.complete(bindings::create(context, retain_types))?;
+    pub fn new(context: &'host Context<'host>, should_retain_types: bool) -> Result<Self, Error> {
+        let native = context.complete(bindings::create(context, should_retain_types))?;
 
         Ok(Self { native, context })
     }
@@ -175,12 +175,12 @@ impl<'host> Frontend<'host> {
         module: &str,
         line: u32,
         column: u32,
-        resolve_types: bool,
+        should_resolve_types: bool,
     ) -> Result<Vec<SourceLocation>, Error> {
         let result = self
             .native
             .pin_mut()
-            .definitions(module, line, column, resolve_types);
+            .definitions(module, line, column, should_resolve_types);
 
         self.context.complete(result)
     }

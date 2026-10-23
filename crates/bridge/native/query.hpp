@@ -31,7 +31,7 @@ namespace instar::luau::query {
 
     rust::Vec<SourceLocation> definitions(
         Luau::Frontend &frontend, const Host &host, const Prepared &prepared, Luau::Position position,
-        bool resolve_types
+        bool should_resolve_types
     );
 
     Entry target(Luau::Frontend &frontend, const Prepared &prepared, Luau::Position position);

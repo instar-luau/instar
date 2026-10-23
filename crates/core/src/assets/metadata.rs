@@ -46,15 +46,15 @@ impl From<Capability> for instar_bridge::Class {
     fn from(capability: Capability) -> Self {
         Self {
             name: capability.name,
-            service: capability.is_service,
-            creatable: capability.is_creatable,
+            is_service: capability.is_service,
+            is_creatable: capability.is_creatable,
             properties: capability
                 .properties
                 .into_iter()
                 .map(|property| instar_bridge::Property {
                     name: property.name,
-                    read: property.can_read,
-                    write: property.can_write,
+                    can_read: property.can_read,
+                    can_write: property.can_write,
                 })
                 .collect(),
         }

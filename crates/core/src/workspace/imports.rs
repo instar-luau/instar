@@ -355,7 +355,7 @@ fn navigate(
         let is_service = expression == "game"
             && classes
                 .iter()
-                .any(|class| class.name == instance.class && class.service);
+                .any(|class| class.name == instance.class && class.is_service);
 
         if is_service {
             if instances

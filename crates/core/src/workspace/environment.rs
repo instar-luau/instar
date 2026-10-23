@@ -71,7 +71,7 @@ impl Workspace {
             .and_then(|environment| environment.classes.as_deref())
             .into_iter()
             .flatten()
-            .filter(|class| class.service)
+            .filter(|class| class.is_service)
             .map(|class| class.name.clone())
             .collect())
     }

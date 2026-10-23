@@ -51,7 +51,7 @@ namespace instar::luau {
         rust::Vec<NativeSignature> signatures(rust::Str module, std::uint32_t line, std::uint32_t column);
 
         rust::Vec<SourceLocation>
-        definitions(rust::Str module, std::uint32_t line, std::uint32_t column, bool resolve_types);
+        definitions(rust::Str module, std::uint32_t line, std::uint32_t column, bool should_resolve_types);
 
         rust::Vec<Occurrence> occurrences(rust::Str module, rust::Slice<const Occurrence> declarations);
 
@@ -91,7 +91,7 @@ namespace instar::luau {
         std::unordered_map<std::string, Occurrences> indexes;
     };
 
-    std::unique_ptr<Frontend> create(const Context &host, bool retain_types);
+    std::unique_ptr<Frontend> create(const Context &host, bool should_retain_types);
 }
 
 #endif

@@ -229,7 +229,7 @@ pub(super) fn document_highlight(
         if occurrence.location.module != module
             || !declarations.iter().any(|declaration| {
                 declaration.declaration == occurrence.declaration
-                    && declaration.type_namespace == occurrence.type_namespace
+                    && declaration.is_type_namespace == occurrence.is_type_namespace
             })
         {
             continue;

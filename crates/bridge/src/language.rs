@@ -21,15 +21,16 @@ impl Language {
         previous: Option<&Self>,
         name: &str,
         source: &str,
-        executable: bool,
+        is_executable: bool,
     ) -> Result<Self, Error> {
         let previous = previous.map_or(&[][..], |previous| slice::from_ref(&previous.native));
 
-        let native = bindings::configure(previous, name, source, executable).map_err(|error| {
-            Error::Native {
-                reason: error.what().to_owned(),
-            }
-        })?;
+        let native =
+            bindings::configure(previous, name, source, is_executable).map_err(|error| {
+                Error::Native {
+                    reason: error.what().to_owned(),
+                }
+            })?;
 
         Ok(Self { native })
     }
@@ -67,7 +68,7 @@ impl Language {
 
     /// Whether this scope reports type errors alongside syntax errors.
     #[must_use]
-    pub fn type_errors(&self) -> bool {
-        self.native.type_errors
+    pub fn should_report_type_errors(&self) -> bool {
+        self.native.should_report_type_errors
     }
 }

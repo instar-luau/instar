@@ -38,10 +38,10 @@ pub struct Class {
     pub name: String,
 
     /// Whether the class is available through `GetService`.
-    pub service: bool,
+    pub is_service: bool,
 
     /// Whether the class is available through `Instance.new`.
-    pub creatable: bool,
+    pub is_creatable: bool,
 
     /// Independent property permissions.
     pub properties: Vec<Property>,
@@ -54,10 +54,10 @@ pub struct Property {
     pub name: String,
 
     /// Whether reads are permitted.
-    pub read: bool,
+    pub can_read: bool,
 
     /// Whether writes are permitted.
-    pub write: bool,
+    pub can_write: bool,
 }
 
 /// Return registered builtin symbols using native registry defaults.

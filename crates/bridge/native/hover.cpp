@@ -948,12 +948,12 @@ namespace instar::luau::query {
                 std::string name =
                     target->qualifier.empty() ? target->symbol : target->qualifier + "." + target->symbol;
 
-                bool first = true;
+                bool is_first = true;
 
                 const auto argument = [&](const std::string &text) {
-                    name += first ? "<" : ", ";
+                    name += is_first ? "<" : ", ";
                     name += text;
-                    first = false;
+                    is_first = false;
                 };
 
                 for (const auto type : target->type_arguments) {
@@ -964,7 +964,7 @@ namespace instar::luau::query {
                     argument(printer.pack(pack));
                 }
 
-                if (!first) {
+                if (!is_first) {
                     name += '>';
                 }
 

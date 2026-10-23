@@ -333,7 +333,7 @@ namespace instar::luau {
     }
 
     rust::Vec<SourceLocation>
-    Frontend::definitions(rust::Str module, std::uint32_t line, std::uint32_t column, bool resolve_types) {
+    Frontend::definitions(rust::Str module, std::uint32_t line, std::uint32_t column, bool should_resolve_types) {
         rust::Vec<SourceLocation> result;
 
         for (const auto &name : prepare(module)) {
@@ -341,7 +341,7 @@ namespace instar::luau {
             const auto text = semantic_text(host, name);
 
             for (auto &value :
-                query::definitions(*frontend, host, {*checked, source, text}, {line, column}, resolve_types)) {
+                query::definitions(*frontend, host, {*checked, source, text}, {line, column}, should_resolve_types)) {
                 result.push_back(std::move(value));
             }
         }
@@ -382,7 +382,7 @@ namespace instar::luau {
             } else {
                 for (const auto &target : declarations) {
                     const auto selected =
-                        found->second.declarations.find(declaration(target.declaration, target.type_namespace));
+                        found->second.declarations.find(declaration(target.declaration, target.is_type_namespace));
 
                     if (selected != found->second.declarations.end()) {
                         for (const auto position : selected->second) {
@@ -702,10 +702,10 @@ namespace instar::luau {
         return result;
     }
 
-    std::unique_ptr<Frontend> create(const Context &host, bool retain_types) {
+    std::unique_ptr<Frontend> create(const Context &host, bool should_retain_types) {
         const auto flags = host.flags();
         Luau::FrontendOptions options;
-        options.retainFullTypeGraphs = retain_types;
+        options.retainFullTypeGraphs = should_retain_types;
         options.cancellationToken = std::make_shared<Luau::FrontendCancellationToken>();
         options.cancellationToken->cancelled.store(false);
 

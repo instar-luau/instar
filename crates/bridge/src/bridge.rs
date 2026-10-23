@@ -13,7 +13,7 @@ pub(crate) mod bindings {
         environment: Text,
         flags: Vec<Flag>,
         locations: Vec<Location>,
-        type_errors: bool,
+        should_report_type_errors: bool,
     }
 
     #[derive(Clone, Debug)]
@@ -21,7 +21,7 @@ pub(crate) mod bindings {
         mode: Mode,
         globals: Vec<String>,
         aliases: Vec<Alias>,
-        type_errors: bool,
+        should_report_type_errors: bool,
     }
 
     #[derive(Clone, Debug)]
@@ -39,7 +39,7 @@ pub(crate) mod bindings {
     struct Flag {
         name: String,
         kind: FlagKind,
-        boolean: bool,
+        is_enabled: bool,
         integer: i32,
     }
 
@@ -251,7 +251,7 @@ pub(crate) mod bindings {
         insert_text: String,
         parentheses: Parentheses,
         replacement: SourceLocation,
-        replace_dot: bool,
+        should_replace_dot: bool,
         operation: Range,
         is_deprecated: bool,
     }
@@ -305,7 +305,7 @@ pub(crate) mod bindings {
         role: OccurrenceRole,
 
         /// Whether the declaration belongs to the type namespace.
-        type_namespace: bool,
+        is_type_namespace: bool,
     }
 
     /// Inferred inlay hint category.
@@ -424,7 +424,7 @@ pub(crate) mod bindings {
             previous: &[Language],
             name: &str,
             source: &str,
-            executable: bool,
+            is_executable: bool,
         ) -> Result<Language>;
 
         type Frontend<'host>;
@@ -434,7 +434,7 @@ pub(crate) mod bindings {
 
         fn create<'host>(
             host: &'host Context<'host>,
-            retain_types: bool,
+            should_retain_types: bool,
         ) -> Result<UniquePtr<Frontend<'host>>>;
 
         fn check(self: Pin<&mut Frontend<'_>>, module: &str) -> Result<Vec<Diagnostic>>;
@@ -483,7 +483,7 @@ pub(crate) mod bindings {
             module: &str,
             line: u32,
             column: u32,
-            resolve_types: bool,
+            should_resolve_types: bool,
         ) -> Result<Vec<SourceLocation>>;
 
         fn occurrences(
@@ -545,7 +545,7 @@ impl From<Configuration> for bindings::Configuration {
             environment,
             flags: overrides,
             locations,
-            type_errors,
+            should_report_type_errors,
         } = configuration;
 
         let mode = match mode {
@@ -567,7 +567,7 @@ impl From<Configuration> for bindings::Configuration {
                     script: location.script.unwrap_or_default(),
                 })
                 .collect(),
-            type_errors,
+            should_report_type_errors,
         }
     }
 }
@@ -603,15 +603,15 @@ impl From<Environment> for bindings::Environment {
                 .iter()
                 .map(|class| bindings::Class {
                     name: class.name.clone(),
-                    is_service: class.service,
-                    is_creatable: class.creatable,
+                    is_service: class.is_service,
+                    is_creatable: class.is_creatable,
                     properties: class
                         .properties
                         .iter()
                         .map(|property| bindings::Property {
                             name: property.name.clone(),
-                            can_read: property.read,
-                            can_write: property.write,
+                            can_read: property.can_read,
+                            can_write: property.can_write,
                         })
                         .collect(),
                 })
@@ -645,17 +645,17 @@ pub(crate) fn flags(values: BTreeMap<String, Flag>) -> Vec<bindings::Flag> {
     values
         .into_iter()
         .map(|(name, value)| match value {
-            Flag::Boolean(boolean) => bindings::Flag {
+            Flag::Boolean(is_enabled) => bindings::Flag {
                 name,
                 kind: bindings::FlagKind::Boolean,
-                boolean,
+                is_enabled,
                 integer: 0,
             },
 
             Flag::Integer(integer) => bindings::Flag {
                 name,
                 kind: bindings::FlagKind::Integer,
-                boolean: false,
+                is_enabled: false,
                 integer,
             },
         })

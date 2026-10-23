@@ -34,7 +34,7 @@ pub(crate) fn hover(
             project,
             &module,
             metadata.as_deref(),
-            value.receiver,
+            value.has_receiver,
             should_use_markdown,
         )?;
 
@@ -44,7 +44,7 @@ pub(crate) fn hover(
             ""
         };
 
-        let section = if value.namespace {
+        let section = if value.is_namespace {
             let name = if should_use_markdown {
                 format!("**{}**", value.presentation)
             } else {

@@ -431,7 +431,7 @@ namespace instar::luau {
         Settings settings;
         auto &native = settings.configuration;
 
-        native.typeErrors = configuration.type_errors;
+        native.typeErrors = configuration.should_report_type_errors;
 
         native.parseOptions.allowDeclarationSyntax = true;
 

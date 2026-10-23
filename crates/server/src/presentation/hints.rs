@@ -231,7 +231,7 @@ fn is_configured(project: &Project, kind: &str) -> bool {
 fn is_enabled(project: &Project, hint: &Hint) -> bool {
     let settings = &project.configuration;
 
-    (!settings.is_hint_enabled(configuration::Hint::HideObvious) || !hint.obvious)
+    (!settings.is_hint_enabled(configuration::Hint::HideObvious) || !hint.is_obvious)
         && match hint.kind {
             HintKind::Type => settings.is_hint_enabled(configuration::Hint::VariableTypes),
             HintKind::Parameter => settings.is_hint_enabled(configuration::Hint::ParameterNames),

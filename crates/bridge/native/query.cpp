@@ -670,7 +670,7 @@ namespace instar::luau::query {
                 auto presentation = printer.type(*entry.type);
                 equivalence = printer.equivalence(*entry.type, presentation, types);
                 presentations.push_back(presentation);
-                is_complete = printer.complete;
+                is_complete = printer.is_complete;
             }
 
             auto symbol = entry.documentationSymbol.value_or("");
@@ -784,12 +784,12 @@ namespace instar::luau::query {
 
             Printer printer(budget, Luau::findScopeAtPosition(*checked, position));
             std::string header = function->isCheckedFunction ? "@checked " : "";
-            bool first_generic = true;
+            bool is_first_generic = true;
 
             const auto generic = [&](const std::string &text) {
-                header += first_generic ? "<" : ", ";
+                header += is_first_generic ? "<" : ", ";
                 header += text;
-                first_generic = false;
+                is_first_generic = false;
             };
 
             for (const auto type : function->generics) {
@@ -800,7 +800,7 @@ namespace instar::luau::query {
                 generic(printer.pack(pack));
             }
 
-            if (!first_generic) {
+            if (!is_first_generic) {
                 header += '>';
             }
 
@@ -811,7 +811,7 @@ namespace instar::luau::query {
             const std::size_t skip = call->self && !arguments.empty() ? 1 : 0;
 
             const auto parameter =
-                [&](std::size_t index, const std::string &name, const NativePresentation &text, bool variadic) {
+                [&](std::size_t index, const std::string &name, const NativePresentation &text, bool is_variadic) {
                     budget.check();
 
                     if (!parameters.empty()) {
@@ -820,7 +820,7 @@ namespace instar::luau::query {
                     }
 
                     const auto start = label.size();
-                    const auto prefix = !variadic && !name.empty() ? name + ": " : "";
+                    const auto prefix = !is_variadic && !name.empty() ? name + ": " : "";
                     label += prefix + std::string(text.compact);
                     expanded += prefix + std::string(text.expanded);
 
@@ -828,7 +828,7 @@ namespace instar::luau::query {
                         throw std::runtime_error("Signature exceeds presentation limits.");
                     }
 
-                    parameters.push_back({name, start, label.size(), static_cast<std::uint32_t>(index), variadic});
+                    parameters.push_back({name, start, label.size(), static_cast<std::uint32_t>(index), is_variadic});
                 };
 
             for (std::size_t index = skip; index < arguments.size(); ++index) {
@@ -878,7 +878,7 @@ namespace instar::luau::query {
 
     rust::Vec<SourceLocation> definitions(
         Luau::Frontend &frontend, const Host &host, const Prepared &prepared, Luau::Position position,
-        bool resolve_types
+        bool should_resolve_types
     ) {
         rust::Vec<SourceLocation> result;
         const auto *checked = &prepared.module;
@@ -889,14 +889,14 @@ namespace instar::luau::query {
         const auto indexed = index(frontend, *checked, source);
 
         if (const auto *entry = at(indexed, position)) {
-            if (!resolve_types || entry->is_type_namespace) {
+            if (!should_resolve_types || entry->is_type_namespace) {
                 result.push_back(locate(host, entry->declaration.identity, entry->declaration.location));
 
                 return result;
             }
         }
 
-        if (!resolve_types) {
+        if (!should_resolve_types) {
             const auto trace = frontend.requireTrace.find(name);
             bool has_import = false;
 
@@ -924,7 +924,7 @@ namespace instar::luau::query {
         if (auto *local = expression.getLocal()) {
             type = local_type(*checked, local);
 
-            if (resolve_types) {
+            if (should_resolve_types) {
                 if (const auto target = annotation_declaration(frontend, *checked, local->annotation)) {
                     result.push_back(locate(host, target->identity, target->location));
 
@@ -932,7 +932,7 @@ namespace instar::luau::query {
                 }
             }
         } else if (const auto *node = expression.getExpr()) {
-            if (resolve_types) {
+            if (should_resolve_types) {
                 if (const auto *reference = node->as<Luau::AstExprLocal>()) {
                     if (const auto target = annotation_declaration(frontend, *checked, reference->local->annotation)) {
                         result.push_back(locate(host, target->identity, target->location));
@@ -1171,7 +1171,7 @@ namespace instar::luau::query {
         if (const auto declaration = definition(type)) {
             const auto location = locate(host, declaration->identity, declaration->location);
 
-            const bool present =
+            const bool is_present =
                 std::any_of(declarations.begin(), declarations.end(), [&](const SourceLocation &candidate) {
                     return candidate.identity == location.identity &&
                            candidate.range.start.line == location.range.start.line &&
@@ -1180,7 +1180,7 @@ namespace instar::luau::query {
                            candidate.range.end.column == location.range.end.column;
                 });
 
-            if (!present) {
+            if (!is_present) {
                 declarations.push_back(location);
             }
         }

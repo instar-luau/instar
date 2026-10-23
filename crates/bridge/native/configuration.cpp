@@ -9,7 +9,7 @@
 #include <string>
 
 namespace instar::luau {
-    Language configure(rust::Slice<const Language> previous, rust::Str name, rust::Str source, bool executable) {
+    Language configure(rust::Slice<const Language> previous, rust::Str name, rust::Str source, bool is_executable) {
         const Flags flags;
         Luau::Config native;
 
@@ -28,14 +28,14 @@ namespace instar::luau {
                 native.setAlias(std::string(alias.name), std::string(alias.value), std::string(alias.configuration));
             }
 
-            native.typeErrors = language.type_errors;
+            native.typeErrors = language.should_report_type_errors;
         }
 
         Luau::ConfigOptions options;
         options.aliasOptions = Luau::ConfigOptions::AliasOptions{std::string(name), true};
         std::optional<std::string> error;
 
-        if (executable) {
+        if (is_executable) {
             error = Luau::extractLuauConfig(std::string(source), native, options.aliasOptions, {});
         } else {
             error = Luau::parseConfig(std::string(source), native, options);
@@ -59,7 +59,7 @@ namespace instar::luau {
             result.aliases.push_back({name, alias.value, std::string(alias.configLocation)});
         }
 
-        result.type_errors = native.typeErrors;
+        result.should_report_type_errors = native.typeErrors;
 
         return result;
     }

@@ -113,7 +113,7 @@ pub(crate) fn signature_help(
                 .then_some(ActiveParameter::Int(active)),
         };
 
-        if signature.selected || active_signature.is_none() {
+        if signature.is_selected || active_signature.is_none() {
             active_signature = Some(u32::try_from(signatures.len()).map_err(failure)?);
             active_parameter = Some(ActiveParameter::Int(active));
         }
