@@ -5,14 +5,14 @@ use std::{
 
 use tower_lsp_server::{
     gen_lsp_types::{ProgressToken, Uri},
-    jsonrpc::{Error, Result},
+    jsonrpc::Result,
 };
 
 use super::protocol::Service;
 
 use crate::{
     analysis,
-    connection::{Consistency, Target},
+    connection::{Consistency, Priority, Target},
     files,
     output::messages,
 };
@@ -32,66 +32,52 @@ impl Service {
             None
         };
 
-        self.perform(Consistency::Current, token, |operation| async move {
-            let (prepared, snapshot) = self
-                .connection
-                .source(uri, Arc::clone(&operation), |project| {
-                    let prepared = analysis::prepare(project)?;
+        self.perform(
+            Consistency::Current,
+            Priority::Background,
+            token,
+            |operation| async move {
+                let (batch, publications, snapshot) = self
+                    .connection
+                    .query(Target::Uri(uri), Arc::clone(&operation), |project, _| {
+                        let (batch, publications) = analysis::prepare(project)?;
 
-                    Ok((prepared, Box::new(project.capture())))
-                })
-                .await?;
+                        Ok((batch, publications, Box::new(project.capture())))
+                    })
+                    .await?;
 
-            let (batch, publications, snapshot) = match prepared {
-                Some((batch, publications)) => (batch, publications, snapshot),
-
-                None => {
-                    self.connection
-                        .query(
-                            Target::Snapshot(snapshot),
-                            Arc::clone(&operation),
-                            |project, _| {
-                                let (batch, publications) = analysis::prepare(project)?
-                                    .ok_or_else(Error::internal_error)?;
-
-                                Ok((batch, publications, Box::new(project.capture())))
-                            },
+                for publication in publications {
+                    self.client
+                        .publish_diagnostics(
+                            publication.uri,
+                            publication.diagnostics,
+                            publication.version,
                         )
-                        .await?
+                        .await;
                 }
-            };
 
-            for publication in publications {
-                self.client
-                    .publish_diagnostics(
-                        publication.uri,
-                        publication.diagnostics,
-                        publication.version,
+                let publications = self
+                    .connection
+                    .query(
+                        Target::Snapshot(snapshot),
+                        operation,
+                        move |project, frontend| analysis::check(project, frontend, batch),
                     )
-                    .await;
-            }
+                    .await?;
 
-            let publications = self
-                .connection
-                .query(
-                    Target::Snapshot(snapshot),
-                    operation,
-                    move |project, frontend| analysis::check(project, frontend, batch),
-                )
-                .await?;
+                for publication in publications {
+                    self.client
+                        .publish_diagnostics(
+                            publication.uri,
+                            publication.diagnostics,
+                            publication.version,
+                        )
+                        .await;
+                }
 
-            for publication in publications {
-                self.client
-                    .publish_diagnostics(
-                        publication.uri,
-                        publication.diagnostics,
-                        publication.version,
-                    )
-                    .await;
-            }
-
-            Ok(())
-        })
+                Ok(())
+            },
+        )
         .await
     }
 

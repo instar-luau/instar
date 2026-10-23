@@ -4,13 +4,11 @@ use std::{
     sync::Arc,
 };
 
-use instar_bridge::{
-    Error as BridgeError, Frontend, Position as NativePosition, Range as NativeRange,
-};
+use instar_bridge::{Frontend, Position as NativePosition, Range as NativeRange};
 
 use instar_core::{
     lint,
-    workspace::{Access, Error as WorkspaceError, InvalidSource, Origin, Purpose, SymbolOutcome},
+    workspace::{Access, InvalidSource, Origin, Purpose, SymbolOutcome},
 };
 
 use tower_lsp_server::{
@@ -37,9 +35,7 @@ pub(crate) struct Batch {
     should_check_workspace: bool,
 }
 
-pub(crate) fn prepare(
-    project: &mut Project,
-) -> Result<Option<(Batch, Vec<PublishDiagnosticsParams>)>> {
+pub(crate) fn prepare(project: &mut Project) -> Result<(Batch, Vec<PublishDiagnosticsParams>)> {
     let open: BTreeSet<_> = project
         .documents
         .iter()
@@ -94,10 +90,7 @@ pub(crate) fn prepare(
     let mut environments = BTreeMap::new();
 
     for module in checked.union(&linted) {
-        let symbols = match project.workspace.symbols(module) {
-            Err(WorkspaceError::Analysis(BridgeError::FlagsBusy)) => return Ok(None),
-            result => result.map_err(failure)?,
-        };
+        let symbols = project.workspace.symbols(module).map_err(failure)?;
 
         environments.insert(module.clone(), symbols);
     }
@@ -178,7 +171,7 @@ pub(crate) fn prepare(
             .map(|(module, _)| module.clone()),
     );
 
-    Ok(Some((
+    Ok((
         Batch {
             checked,
             open,
@@ -190,7 +183,7 @@ pub(crate) fn prepare(
             should_check_workspace,
         },
         publications,
-    )))
+    ))
 }
 
 pub(crate) fn check(

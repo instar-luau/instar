@@ -13,17 +13,29 @@ pub(crate) enum Consistency {
     Current,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Priority {
+    Interactive,
+    Background,
+}
+
 pub(crate) struct Operation {
     pub(super) consistency: Consistency,
+    pub(super) priority: Priority,
     pub(super) cancellation: CancellationToken,
     native: Mutex<Option<Cancellation>>,
     progress: Option<(Client, ProgressToken, Handle)>,
 }
 
 impl Operation {
-    pub(crate) fn new(consistency: Consistency, progress: Option<(Client, ProgressToken)>) -> Self {
+    pub(crate) fn new(
+        consistency: Consistency,
+        priority: Priority,
+        progress: Option<(Client, ProgressToken)>,
+    ) -> Self {
         Self {
             consistency,
+            priority,
             cancellation: CancellationToken::new(),
             native: Mutex::new(None),
             progress: progress.map(|(client, token)| (client, token, Handle::current())),

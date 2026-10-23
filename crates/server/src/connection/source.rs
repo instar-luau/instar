@@ -13,7 +13,7 @@ use tower_lsp_server::jsonrpc::Error;
 
 use super::{
     message::{Message, Target, Work},
-    operation::{Consistency, Operation},
+    operation::{Consistency, Operation, Priority},
 };
 
 use crate::{
@@ -291,7 +291,12 @@ pub(super) fn run(receiver: &Receiver<Message>, worker: &Sender<Work>) {
         }
 
         while active.is_none() {
-            let Some(mut work) = queued.pop_front() else {
+            let position = queued
+                .iter()
+                .position(|work| work.operation.priority == Priority::Interactive)
+                .unwrap_or(0);
+
+            let Some(mut work) = queued.remove(position) else {
                 break;
             };
 

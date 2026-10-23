@@ -36,7 +36,7 @@ use super::registration::Registrations;
 
 use crate::{
     configuration::Configuration,
-    connection::{Connection, Consistency, Target},
+    connection::{Connection, Consistency, Priority, Target},
     document::{self, Encoding},
     editing,
     error::{failure, reason},
@@ -658,27 +658,32 @@ impl LanguageServer for Service {
     ) -> Result<Option<WorkspaceSymbolResponse>> {
         let token = parameters.work_done_progress_params.work_done_token.clone();
 
-        self.perform(Consistency::Snapshot, token, |operation| async move {
-            let roots = self.connection.control(|state| state.roots()).await?;
-            let mut information = Vec::new();
+        self.perform(
+            Consistency::Snapshot,
+            Priority::Interactive,
+            token,
+            |operation| async move {
+                let roots = self.connection.control(|state| state.roots()).await?;
+                let mut information = Vec::new();
 
-            for root in roots {
-                let parameters = parameters.clone();
+                for root in roots {
+                    let parameters = parameters.clone();
 
-                let result = self
-                    .connection
-                    .source(root, Arc::clone(&operation), move |project| {
-                        navigation::symbol(project, &parameters)
-                    })
-                    .await?;
+                    let result = self
+                        .connection
+                        .source(root, Arc::clone(&operation), move |project| {
+                            navigation::symbol(project, &parameters)
+                        })
+                        .await?;
 
-                information.extend(result);
-            }
+                    information.extend(result);
+                }
 
-            Ok(Some(WorkspaceSymbolResponse::SymbolInformationList(
-                information,
-            )))
-        })
+                Ok(Some(WorkspaceSymbolResponse::SymbolInformationList(
+                    information,
+                )))
+            },
+        )
         .await
     }
 
@@ -816,12 +821,20 @@ impl LanguageServer for Service {
             let parameters = parameters.clone();
 
             if let Some(edit) = self
-                .perform(Consistency::Current, None, |operation| {
-                    self.connection
-                        .query(Target::Uri(root), operation, move |project, frontend| {
-                            files::will_rename(project, frontend, parameters)
-                        })
-                })
+                .perform(
+                    Consistency::Current,
+                    Priority::Interactive,
+                    None,
+                    |operation| {
+                        self.connection.query(
+                            Target::Uri(root),
+                            operation,
+                            move |project, frontend| {
+                                files::will_rename(project, frontend, parameters)
+                            },
+                        )
+                    },
+                )
                 .await?
             {
                 if let Some(changes) = edit.changes {
@@ -897,6 +910,7 @@ impl LanguageServer for Service {
         let edit = self
             .perform(
                 Consistency::Current,
+                Priority::Interactive,
                 parameters.work_done_progress_params.work_done_token,
                 |operation| {
                     self.connection.source(uri, operation, move |project| {

@@ -10,7 +10,7 @@ use tower_lsp_server::{
 use super::protocol::Service;
 
 use crate::{
-    connection::{Consistency, Operation, Target},
+    connection::{Consistency, Operation, Priority, Target},
     error::failure,
     output::{messages, progress::Progress},
     project::Project,
@@ -20,6 +20,7 @@ impl Service {
     pub(super) async fn perform<Output, Pending>(
         &self,
         consistency: Consistency,
+        priority: Priority,
         token: Option<ProgressToken>,
         execute: impl FnOnce(Arc<Operation>) -> Pending + Send,
     ) -> Result<Output>
@@ -29,6 +30,7 @@ impl Service {
     {
         let operation = Arc::new(Operation::new(
             consistency,
+            priority,
             token.clone().map(|token| (self.client.clone(), token)),
         ));
 
@@ -60,7 +62,7 @@ impl Service {
         Parameters: Send + 'static,
         Output: Send + 'static,
     {
-        self.perform(consistency, token, |operation| {
+        self.perform(consistency, Priority::Interactive, token, |operation| {
             self.connection
                 .query(Target::Uri(uri), operation, move |project, frontend| {
                     execute(project, frontend, parameters)
@@ -81,7 +83,7 @@ impl Service {
         Parameters: Send + 'static,
         Output: Send + 'static,
     {
-        self.perform(consistency, token, |operation| {
+        self.perform(consistency, Priority::Interactive, token, |operation| {
             self.connection
                 .source(uri, operation, move |project| execute(project, parameters))
         })
@@ -103,34 +105,48 @@ impl Service {
         Parameters: Send + 'static,
         Output: Send + 'static,
     {
-        self.perform(consistency, token, |operation| async move {
-            let prepared = self
-                .connection
-                .source(uri, Arc::clone(&operation), move |project| {
-                    match source(project, &parameters)? {
-                        ControlFlow::Break(output) => Ok(ControlFlow::Break(output)),
+        self.perform(
+            consistency,
+            Priority::Interactive,
+            token,
+            |operation| async move {
+                let prepared = self
+                    .connection
+                    .source(
+                        uri.clone(),
+                        Arc::clone(&operation),
+                        move |project| match source(project, &parameters)? {
+                            ControlFlow::Break(output) => Ok(ControlFlow::Break(output)),
 
-                        ControlFlow::Continue(()) => Ok(ControlFlow::Continue((
-                            parameters,
-                            Box::new(project.capture()),
-                        ))),
-                    }
-                })
-                .await?;
+                            ControlFlow::Continue(()) => {
+                                let module = project.module(&uri)?;
+                                let document = project.snapshot(&module)?;
+                                let mut snapshot = project.capture();
 
-            let (parameters, snapshot) = match prepared {
-                ControlFlow::Break(output) => return Ok(output),
-                ControlFlow::Continue(prepared) => prepared,
-            };
+                                if document.version.is_none() {
+                                    snapshot.borrowed.insert(module, document);
+                                }
 
-            self.connection
-                .query(
-                    Target::Snapshot(snapshot),
-                    operation,
-                    move |project, frontend| query(project, frontend, parameters),
-                )
-                .await
-        })
+                                Ok(ControlFlow::Continue((parameters, Box::new(snapshot))))
+                            }
+                        },
+                    )
+                    .await?;
+
+                let (parameters, snapshot) = match prepared {
+                    ControlFlow::Break(output) => return Ok(output),
+                    ControlFlow::Continue(prepared) => prepared,
+                };
+
+                self.connection
+                    .query(
+                        Target::Snapshot(snapshot),
+                        operation,
+                        move |project, frontend| query(project, frontend, parameters),
+                    )
+                    .await
+            },
+        )
         .await
     }
 
@@ -140,16 +156,21 @@ impl Service {
         token: Option<ProgressToken>,
         range: Option<Range>,
     ) -> Result<Option<Vec<TextEdit>>> {
-        self.perform(Consistency::Current, token, |operation| async move {
-            let permit = Arc::clone(&self.formatting)
-                .acquire_owned()
-                .await
-                .map_err(failure)?;
+        self.perform(
+            Consistency::Current,
+            Priority::Interactive,
+            token,
+            |operation| async move {
+                let permit = Arc::clone(&self.formatting)
+                    .acquire_owned()
+                    .await
+                    .map_err(failure)?;
 
-            self.connection
-                .formatting(uri, operation, permit, range)
-                .await
-        })
+                self.connection
+                    .formatting(uri, operation, permit, range)
+                    .await
+            },
+        )
         .await
     }
 

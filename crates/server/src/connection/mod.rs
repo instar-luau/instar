@@ -7,5 +7,5 @@ mod source;
 pub(crate) use self::{
     dispatch::Connection,
     message::Target,
-    operation::{Consistency, Operation},
+    operation::{Consistency, Operation, Priority},
 };
