@@ -196,7 +196,7 @@ fn classify(
 
     let mut roles = BTreeMap::new();
 
-    for occurrence in frontend.occurrences(module).map_err(failure)? {
+    for occurrence in frontend.occurrences(module, &[]).map_err(failure)? {
         if occurrence.location.module != module {
             continue;
         }

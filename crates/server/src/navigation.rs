@@ -118,7 +118,7 @@ pub(super) fn references(
     let document = project.snapshot(&module)?;
     let offset = document.offset(position.position, project.encoding)?;
     let (line, column) = document.native(position.position, project.encoding)?;
-    let occurrences = frontend.occurrences(&module).map_err(failure)?;
+    let occurrences = frontend.occurrences(&module, &[]).map_err(failure)?;
     let declarations = declarations(&occurrences, &module, line, column);
     let mut result = Vec::new();
 
@@ -141,8 +141,8 @@ pub(super) fn references(
         }
     } else {
         if parameters.context.include_declaration {
-            for (declaration, _) in &declarations {
-                let location = location(project, declaration)?;
+            for declaration in &declarations {
+                let location = location(project, &declaration.declaration)?;
 
                 if !result.contains(&location) {
                     result.push(location);
@@ -157,12 +157,12 @@ pub(super) fn references(
         }
 
         for module in modules {
-            for occurrence in frontend.occurrences(&module).map_err(failure)? {
-                if declarations.iter().any(|(declaration, is_type_namespace)| {
-                    declaration == &occurrence.declaration
-                        && *is_type_namespace == occurrence.type_namespace
-                }) && (parameters.context.include_declaration
-                    || occurrence.role != OccurrenceRole::Declaration)
+            for occurrence in frontend
+                .occurrences(&module, &declarations)
+                .map_err(failure)?
+            {
+                if parameters.context.include_declaration
+                    || occurrence.role != OccurrenceRole::Declaration
                 {
                     let location = location(project, &occurrence.location)?;
 
@@ -222,15 +222,15 @@ pub(super) fn document_highlight(
     let document = project.snapshot(&module)?;
 
     let (line, column) = document.native(position.position, project.encoding)?;
-    let occurrences = frontend.occurrences(&module).map_err(failure)?;
+    let occurrences = frontend.occurrences(&module, &[]).map_err(failure)?;
     let declarations = declarations(&occurrences, &module, line, column);
     let mut result = Vec::new();
 
     for occurrence in occurrences {
         if occurrence.location.module != module
-            || !declarations.iter().any(|(declaration, is_type_namespace)| {
-                declaration == &occurrence.declaration
-                    && *is_type_namespace == occurrence.type_namespace
+            || !declarations.iter().any(|declaration| {
+                declaration.declaration == occurrence.declaration
+                    && declaration.type_namespace == occurrence.type_namespace
             })
         {
             continue;
@@ -452,7 +452,7 @@ fn declarations(
     module: &str,
     line: u32,
     column: u32,
-) -> Vec<(SourceLocation, bool)> {
+) -> Vec<Occurrence> {
     occurrences
         .iter()
         .filter(|occurrence| {
@@ -462,7 +462,7 @@ fn declarations(
                 && (range.start.line, range.start.column) <= (line, column)
                 && (line, column) <= (range.end.line, range.end.column)
         })
-        .map(|occurrence| (occurrence.declaration.clone(), occurrence.type_namespace))
+        .cloned()
         .collect()
 }
 

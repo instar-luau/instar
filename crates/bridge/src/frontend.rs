@@ -185,12 +185,16 @@ impl<'host> Frontend<'host> {
         self.context.complete(result)
     }
 
-    /// Return all declaration-linked occurrences in every instance of a source.
+    /// Return declaration-linked occurrences, selecting all when declarations are empty.
     ///
     /// # Errors
     /// Returns host, checking, or unavailable type-graph errors.
-    pub fn occurrences(&mut self, module: &str) -> Result<Vec<Occurrence>, Error> {
-        let result = self.native.pin_mut().occurrences(module);
+    pub fn occurrences(
+        &mut self,
+        module: &str,
+        declarations: &[Occurrence],
+    ) -> Result<Vec<Occurrence>, Error> {
+        let result = self.native.pin_mut().occurrences(module, declarations);
 
         self.context.complete(result)
     }

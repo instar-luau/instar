@@ -142,17 +142,7 @@ pub(crate) fn completion(
     {
         let prefix = prefix.to_lowercase();
 
-        let modules = if let Some(modules) = &project.modules {
-            modules.clone()
-        } else {
-            let modules = project.index()?;
-
-            if project.has_capability("/workspace/didChangeWatchedFiles/dynamicRegistration") {
-                project.modules = Some(modules.clone());
-            }
-
-            modules
-        };
+        let modules = project.index()?;
 
         let targets = project
             .workspace

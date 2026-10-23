@@ -153,7 +153,11 @@ impl Project {
                     .is_some_and(|document| document.version.is_some()))
     }
 
-    pub(super) fn index(&self) -> Result<Vec<String>> {
+    pub(super) fn index(&mut self) -> Result<Vec<String>> {
+        if let Some(modules) = &self.modules {
+            return Ok(modules.clone());
+        }
+
         let mut modules: BTreeSet<_> =
             if self.should_index && self.workspace.directory().try_exists().map_err(failure)? {
                 self.workspace
@@ -172,10 +176,16 @@ impl Project {
                 .map(|(module, _)| module.clone()),
         );
 
-        Ok(modules
+        let modules: Vec<_> = modules
             .into_iter()
             .filter(|module| self.is_owner(module))
-            .collect())
+            .collect();
+
+        if self.has_capability("/workspace/didChangeWatchedFiles/dynamicRegistration") {
+            self.modules = Some(modules.clone());
+        }
+
+        Ok(modules)
     }
 
     pub(super) fn findings(
@@ -307,6 +317,7 @@ impl Project {
 
     pub(super) fn changed(&mut self) -> Result<()> {
         self.generation = generation()?;
+        self.modules = None;
 
         Ok(())
     }

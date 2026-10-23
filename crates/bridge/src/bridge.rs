@@ -457,7 +457,11 @@ pub(crate) mod bindings {
             resolve_types: bool,
         ) -> Result<Vec<SourceLocation>>;
 
-        fn occurrences(self: Pin<&mut Frontend<'_>>, module: &str) -> Result<Vec<Occurrence>>;
+        fn occurrences(
+            self: Pin<&mut Frontend<'_>>,
+            module: &str,
+            declarations: &[Occurrence],
+        ) -> Result<Vec<Occurrence>>;
 
         fn rename(
             self: Pin<&mut Frontend<'_>>,

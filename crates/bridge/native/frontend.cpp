@@ -112,6 +112,18 @@ namespace instar::luau {
             std::unordered_map<std::string, Luau::ScopePtr> scopes;
         };
 
+        auto declaration(const SourceLocation &source, bool is_type_namespace) {
+            const auto &range = source.range;
+
+            return std::make_tuple(
+                std::string(source.module),
+                std::string(source.identity),
+                Luau::Position{range.start.line, range.start.column},
+                Luau::Position{range.end.line, range.end.column},
+                is_type_namespace
+            );
+        }
+
         CheckedModule checked_module(Luau::Frontend &frontend, const std::string &name) {
             const auto module = frontend.moduleResolver.getModule(name);
             const auto *source = frontend.getSourceModule(name);
@@ -134,6 +146,8 @@ namespace instar::luau {
         : callbacks(context), flags(settings), host(context, flags, *this), options(options) {
         initialize();
     }
+
+    Frontend::~Frontend() = default;
 
     rust::Vec<Diagnostic> Frontend::check(rust::Str module) {
         try {
@@ -215,12 +229,10 @@ namespace instar::luau {
         const std::string name(module);
 
         for (const std::string &identity : host.modules(name)) {
-            frontend->markDirty(identity);
-            host.invalidate(identity);
+            dirty(identity);
         }
 
-        frontend->markDirty(name);
-        host.invalidate(name);
+        dirty(name);
     }
 
     void Frontend::refresh() {
@@ -241,8 +253,7 @@ namespace instar::luau {
         }
 
         for (const auto &name : changed) {
-            frontend->markDirty(name);
-            host.invalidate(name);
+            dirty(name);
         }
     }
 
@@ -250,6 +261,7 @@ namespace instar::luau {
         initialize();
         environments.clear();
         host.clear();
+        indexes.clear();
     }
 
     void Frontend::environment(const std::string &name) {
@@ -337,15 +349,47 @@ namespace instar::luau {
         return result;
     }
 
-    rust::Vec<Occurrence> Frontend::occurrences(rust::Str module) {
+    rust::Vec<Occurrence> Frontend::occurrences(rust::Str module, rust::Slice<const Occurrence> declarations) {
         rust::Vec<Occurrence> result;
 
-        for (const auto &name : prepare(module)) {
-            const auto [checked, source] = checked_module(*frontend, name);
-            const auto indexed = index(*frontend, *checked, source);
+        for (const auto &name : source_identities(module)) {
+            if (options.cancellationToken->requested()) {
+                throw std::runtime_error("Analysis interrupted.");
+            }
 
-            for (const auto &entry : indexed.entries) {
-                result.push_back(query::occurrence(host, name, entry));
+            auto found = indexes.find(name);
+
+            if (found == indexes.end()) {
+                prepare(module);
+                const auto [checked, source] = checked_module(*frontend, name);
+                Occurrences occurrences{index(*frontend, *checked, source).entries, {}};
+
+                for (std::size_t position = 0; position < occurrences.entries.size(); ++position) {
+                    const auto &entry = occurrences.entries[position];
+                    const auto location = query::locate(host, entry.declaration.identity, entry.declaration.location);
+                    occurrences.declarations[declaration(location, entry.is_type_namespace)].push_back(position);
+                }
+
+                found = indexes.try_emplace(name).first;
+                found->second.entries.swap(occurrences.entries);
+                found->second.declarations.swap(occurrences.declarations);
+            }
+
+            if (declarations.empty()) {
+                for (const auto &entry : found->second.entries) {
+                    result.push_back(query::occurrence(host, name, entry));
+                }
+            } else {
+                for (const auto &target : declarations) {
+                    const auto selected =
+                        found->second.declarations.find(declaration(target.declaration, target.type_namespace));
+
+                    if (selected != found->second.declarations.end()) {
+                        for (const auto position : selected->second) {
+                            result.push_back(query::occurrence(host, name, found->second.entries[position]));
+                        }
+                    }
+                }
             }
         }
 
@@ -555,6 +599,16 @@ namespace instar::luau {
         frontend = std::move(initialized);
     }
 
+    void Frontend::dirty(const std::string &name) {
+        std::vector<std::string> changed;
+        frontend->markDirty(name, &changed);
+        host.invalidate(name);
+
+        for (const auto &identity : changed) {
+            indexes.erase(identity);
+        }
+    }
+
     std::vector<std::string> Frontend::source_identities(rust::Str module) {
         const std::string physical(module);
         auto names = host.modules(physical);
@@ -563,8 +617,8 @@ namespace instar::luau {
             names.push_back(physical);
         }
 
-        for (const auto &[identity, source] : frontend->sourceModules) {
-            if (host.getHumanReadableModuleName(identity) == physical &&
+        for (const auto &identity : host.source_identities(physical)) {
+            if (frontend->sourceModules.count(identity) &&
                 std::find(names.begin(), names.end(), identity) == names.end()) {
                 names.push_back(identity);
             }
