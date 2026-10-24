@@ -10,7 +10,7 @@ use serde_json::{Map, Value};
 use vermis::token::{Keyword, Symbol};
 
 use super::{
-    Error, content,
+    Error, catalog, content,
     generation::interrupted,
     mapping::{
         self, Argument, Class, Corrections, Dump, HIERARCHY, Member, Signature, Types, invalid,
@@ -38,6 +38,7 @@ pub(super) fn render(
     dump: Value,
     source: &str,
     documentation: Value,
+    creator: BTreeMap<String, Vec<catalog::Document>>,
     references: reference::Catalog,
     builtins: &[Builtin],
     is_cancelled: &dyn Fn() -> bool,
@@ -165,8 +166,9 @@ pub(super) fn render(
         definitions.insert(name.to_owned(), formatted);
     }
 
-    let canonical = catalog(
+    let canonical = catalog::assemble(
         documentation,
+        creator,
         references,
         builtins,
         &definitions,
@@ -602,129 +604,6 @@ fn class_header(output: &mut Output, name: &str, parent: Option<&str>) {
 
     output.source("with");
     output.newline();
-}
-
-fn catalog(
-    documentation: Value,
-    references: reference::Catalog,
-    builtins: &[Builtin],
-    definitions: &BTreeMap<String, String>,
-    is_cancelled: &dyn Fn() -> bool,
-) -> Result<Map<String, Value>, Error> {
-    let mut roblox = BTreeSet::new();
-
-    for definition in definitions.values() {
-        for block in syntax::blocks(definition, is_cancelled)? {
-            roblox.insert((block.is_type, block.name));
-        }
-    }
-
-    let mut replacements = BTreeMap::new();
-
-    for builtin in builtins.iter().filter(|builtin| !builtin.is_member) {
-        interrupted(is_cancelled)?;
-
-        if !roblox.contains(&(builtin.is_type, builtin.name.clone()))
-            && let Some(symbol) = builtin.documentation.strip_prefix("@luau/")
-        {
-            replacements.insert(format!("@roblox/{symbol}"), builtin.documentation.clone());
-        }
-    }
-
-    let upstream = canonical(documentation, &replacements, is_cancelled)?;
-    let upstream: Map<String, Value> = mapping::decode(upstream, "documentation")?;
-
-    let required: BTreeSet<_> = builtins
-        .iter()
-        .map(|builtin| &builtin.documentation)
-        .filter(|symbol| !symbol.is_empty())
-        .cloned()
-        .collect();
-
-    for symbol in references
-        .documents
-        .keys()
-        .chain(references.additions.keys())
-        .chain(references.corrections.keys())
-    {
-        interrupted(is_cancelled)?;
-
-        if !required.contains(symbol) && !upstream.contains_key(symbol) {
-            return Err(invalid(format!("Unknown documentation symbol `{symbol}`.")));
-        }
-    }
-
-    let documents = references.merge(upstream, is_cancelled)?;
-
-    let missing: Vec<_> = required
-        .into_iter()
-        .filter(|symbol| !documents.contains_key(symbol))
-        .collect();
-
-    if !missing.is_empty() {
-        return Err(invalid(format!(
-            "Missing built-in documentation: {}.",
-            missing.join(", ")
-        )));
-    }
-
-    Ok(documents)
-}
-
-fn canonical(
-    value: Value,
-    replacements: &BTreeMap<String, String>,
-    is_cancelled: &dyn Fn() -> bool,
-) -> Result<Value, Error> {
-    interrupted(is_cancelled)?;
-
-    match value {
-        Value::Object(values) => {
-            let keys: BTreeSet<_> = values.keys().cloned().collect();
-            let mut result = Map::new();
-
-            for (key, value) in values {
-                interrupted(is_cancelled)?;
-                let replacement = canonical_symbol(&key, replacements);
-
-                if replacement != key && keys.contains(&replacement) {
-                    continue;
-                }
-
-                result.insert(replacement, canonical(value, replacements, is_cancelled)?);
-            }
-
-            Ok(Value::Object(result))
-        }
-
-        Value::Array(values) => {
-            let values: Result<Vec<_>, _> = values
-                .into_iter()
-                .map(|value| canonical(value, replacements, is_cancelled))
-                .collect();
-
-            Ok(Value::Array(values?))
-        }
-
-        Value::String(value) => Ok(Value::String(canonical_symbol(&value, replacements))),
-        value => Ok(value),
-    }
-}
-
-fn canonical_symbol(value: &str, replacements: &BTreeMap<String, String>) -> String {
-    let mut root = value;
-
-    loop {
-        if let Some(replacement) = replacements.get(root) {
-            return format!("{replacement}{}", &value[root.len()..]);
-        }
-
-        let Some(boundary) = root.rfind(['.', '/']) else {
-            return value.to_owned();
-        };
-
-        root = &root[..boundary];
-    }
 }
 
 fn serialize(value: &impl Serialize, input: &str) -> Result<String, Error> {

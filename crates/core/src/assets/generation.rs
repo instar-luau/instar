@@ -11,7 +11,7 @@ use serde_json::Value;
 use tokio::runtime::Builder;
 use tokio_util::sync::CancellationToken;
 
-use super::{Error, publication, reference, rendering};
+use super::{Error, catalog, creator, publication, reference, rendering};
 use crate::settings;
 
 /// A generated configuration or environment asset collection.
@@ -52,6 +52,7 @@ struct Inputs {
     dump: Value,
     source: String,
     documentation: Value,
+    creator: BTreeMap<String, Vec<catalog::Document>>,
     references: reference::Catalog,
 }
 
@@ -112,6 +113,7 @@ pub fn generate(
             inputs.dump,
             &inputs.source,
             inputs.documentation,
+            inputs.creator,
             inputs.references,
             &builtins,
             is_cancelled,
@@ -144,12 +146,14 @@ async fn acquire(builtins: &[Builtin]) -> Result<Inputs, Error> {
     })?;
 
     let documentation = document(&client, &format!("{tracker}/api-docs/en-us.json")).await?;
+    let creator = creator::acquire(&client).await?;
     let references = reference::acquire(&client, builtins).await?;
 
     Ok(Inputs {
         dump,
         source,
         documentation,
+        creator,
         references,
     })
 }

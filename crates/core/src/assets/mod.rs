@@ -1,7 +1,9 @@
 //! Configuration schema and Luau environment asset generation and caching.
 
 mod cache;
+mod catalog;
 mod content;
+mod creator;
 mod error;
 mod generation;
 mod mapping;

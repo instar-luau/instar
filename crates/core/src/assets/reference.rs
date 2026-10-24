@@ -8,7 +8,7 @@ use serde_json::{Map, Value, json};
 
 use super::{
     Error,
-    generation::{download, interrupted},
+    generation::download,
     mapping::{self, invalid},
 };
 
@@ -43,25 +43,6 @@ struct Section {
     range: Range<usize>,
     symbols: Vec<String>,
     link: String,
-}
-
-impl Catalog {
-    pub(super) fn merge(
-        mut self,
-        upstream: Map<String, Value>,
-        is_cancelled: &dyn Fn() -> bool,
-    ) -> Result<Map<String, Value>, Error> {
-        overlay(&mut self.documents, upstream, is_cancelled)?;
-
-        for (symbol, value) in self.additions {
-            interrupted(is_cancelled)?;
-            self.documents.entry(symbol).or_insert(value);
-        }
-
-        overlay(&mut self.documents, self.corrections, is_cancelled)?;
-
-        Ok(self.documents)
-    }
 }
 
 pub(super) async fn acquire(client: &Client, builtins: &[Builtin]) -> Result<Catalog, Error> {
@@ -312,24 +293,4 @@ fn symbol(signature: &str, aliases: &BTreeMap<String, String>) -> Option<String>
     }
 
     Some(name)
-}
-
-fn overlay(
-    documents: &mut Map<String, Value>,
-    patches: Map<String, Value>,
-    is_cancelled: &dyn Fn() -> bool,
-) -> Result<(), Error> {
-    for (symbol, patch) in patches {
-        interrupted(is_cancelled)?;
-
-        match (documents.get_mut(&symbol), patch) {
-            (Some(Value::Object(document)), Value::Object(patch)) => document.extend(patch),
-
-            (_, patch) => {
-                documents.insert(symbol, patch);
-            }
-        }
-    }
-
-    Ok(())
 }

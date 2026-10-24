@@ -32,6 +32,9 @@ struct Document {
 
     #[serde(rename = "learn_more_link", skip_serializing)]
     link: String,
+
+    #[serde(skip_serializing)]
+    base: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -51,7 +54,13 @@ pub(super) fn prepare(value: &Value, documents: &Map<String, Value>) -> Result<V
         return Ok(json!({ "documentation": document.documentation }));
     }
 
-    let base = Url::parse(&document.link).ok();
+    let base = Url::parse(if document.base.is_empty() {
+        &document.link
+    } else {
+        &document.base
+    })
+    .ok();
+
     let mut markdown = convert(&document.documentation, base.as_ref())?;
 
     for reference in &document.returns {
@@ -63,7 +72,10 @@ pub(super) fn prepare(value: &Value, documents: &Map<String, Value>) -> Result<V
         append(&mut markdown, &serialize(&events)?);
     }
 
-    if let Some(address) = base.filter(|url| matches!(url.scheme(), "http" | "https")) {
+    if let Some(address) = Url::parse(&document.link)
+        .ok()
+        .filter(|url| matches!(url.scheme(), "http" | "https"))
+    {
         let tag = Tag::Link {
             link_type: LinkType::Inline,
             dest_url: address.as_str().into(),
