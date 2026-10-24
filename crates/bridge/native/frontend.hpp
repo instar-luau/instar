@@ -76,7 +76,6 @@ namespace instar::luau {
 
         void initialize();
         void dirty(const std::string &name);
-        std::vector<std::string> source_identities(rust::Str module);
         std::vector<std::string> prepare(rust::Str module);
 
         rust::Vec<NativeCompletion>

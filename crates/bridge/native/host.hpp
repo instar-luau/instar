@@ -43,7 +43,6 @@ namespace instar::luau {
         void bind(Luau::Frontend &native, const Luau::ModuleName &name, const Luau::ScopePtr &scope) const;
 
         std::vector<std::string> modules(const Luau::ModuleName &name) const;
-        std::vector<std::string> source_identities(const Luau::ModuleName &name) const;
         void invalidate(const Luau::ModuleName &name);
         void clear();
 
@@ -72,7 +71,6 @@ namespace instar::luau {
         mutable std::unordered_map<Luau::ModuleName, Settings> configurations;
         mutable std::unordered_map<std::string, rust::Vec<Instance>> models;
         mutable std::unordered_map<Luau::ModuleName, Mapping> mappings;
-        std::unordered_map<std::string, std::vector<std::string>> sources;
         mutable std::map<std::pair<std::string, std::string>, std::unique_ptr<Instances>> hierarchies;
         const Instances *hierarchy = nullptr;
     };

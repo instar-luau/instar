@@ -352,7 +352,7 @@ namespace instar::luau {
     rust::Vec<Occurrence> Frontend::occurrences(rust::Str module, rust::Slice<const Occurrence> declarations) {
         rust::Vec<Occurrence> result;
 
-        for (const auto &name : source_identities(module)) {
+        for (const auto &name : host.modules(std::string(module))) {
             if (options.cancellationToken->requested()) {
                 throw std::runtime_error("Analysis interrupted.");
             }
@@ -527,7 +527,7 @@ namespace instar::luau {
                 throw std::runtime_error("Analysis interrupted.");
             }
 
-            for (const auto &name : source_identities(module)) {
+            for (const auto &name : host.modules(std::string(module))) {
                 if (options.cancellationToken->requested() ||
                     !callbacks.progress(host.getHumanReadableModuleName(name), false)) {
                     throw std::runtime_error("Analysis interrupted.");
@@ -617,30 +617,12 @@ namespace instar::luau {
         }
     }
 
-    std::vector<std::string> Frontend::source_identities(rust::Str module) {
-        const std::string physical(module);
-        auto names = host.modules(physical);
-
-        if (names.size() > 1 && std::find(names.begin(), names.end(), physical) == names.end()) {
-            names.push_back(physical);
-        }
-
-        for (const auto &identity : host.source_identities(physical)) {
-            if (frontend->sourceModules.count(identity) &&
-                std::find(names.begin(), names.end(), identity) == names.end()) {
-                names.push_back(identity);
-            }
-        }
-
-        return names;
-    }
-
     std::vector<std::string> Frontend::prepare(rust::Str module) {
         if (!options.retainFullTypeGraphs) {
             throw std::runtime_error("Semantic queries require retained full type graphs.");
         }
 
-        const auto names = source_identities(module);
+        const auto names = host.modules(std::string(module));
 
         frontend->queueModuleCheck(names);
         const auto diagnostics = check(module);

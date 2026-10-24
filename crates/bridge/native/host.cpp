@@ -206,12 +206,6 @@ namespace instar::luau {
             return std::nullopt;
         }
 
-        auto &identities = sources[source_name];
-
-        if (std::find(identities.begin(), identities.end(), name) == identities.end()) {
-            identities.push_back(name);
-        }
-
         std::string text(source.value);
 
         if (text.compare(0, 3, "\xef\xbb\xbf") == 0) {
@@ -377,12 +371,6 @@ namespace instar::luau {
         return resolve(name).modules;
     }
 
-    std::vector<std::string> Host::source_identities(const Luau::ModuleName &name) const {
-        const auto found = sources.find(name);
-
-        return found == sources.end() ? std::vector<std::string>{} : found->second;
-    }
-
     void Host::invalidate(const Luau::ModuleName &name) {
         configurations.erase(name);
     }
@@ -392,7 +380,6 @@ namespace instar::luau {
         hierarchies.clear();
         mappings.clear();
         models.clear();
-        sources.clear();
         hierarchy = nullptr;
     }
 
