@@ -1,7 +1,7 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, path::Path};
 
 use pulldown_cmark::{Event, LinkType, Options, Parser, Tag, TagEnd, html};
-use reqwest::{Client, Url};
+use reqwest::{Client, Url, header::USER_AGENT};
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::task::JoinSet;
@@ -16,7 +16,7 @@ use super::{
 const ROOT: &str = "content/en-us/reference/engine/";
 
 #[derive(Deserialize)]
-struct Tree {
+struct Listing {
     sha: String,
     truncated: bool,
     tree: Vec<File>,
@@ -62,7 +62,7 @@ pub(super) async fn acquire(client: &Client) -> Result<BTreeMap<String, Vec<Docu
 
     let response = client
         .get(address)
-        .header(reqwest::header::USER_AGENT, "instar")
+        .header(USER_AGENT, "instar")
         .send()
         .await
         .map_err(failure)?
@@ -71,7 +71,7 @@ pub(super) async fn acquire(client: &Client) -> Result<BTreeMap<String, Vec<Docu
 
     let contents = response.bytes().await.map_err(failure)?;
 
-    let tree: Tree = serde_json::from_slice(&contents)
+    let tree: Listing = serde_json::from_slice(&contents)
         .map_err(|error| invalid(format!("Invalid Creator Docs tree. {error}")))?;
 
     if tree.truncated {
@@ -93,7 +93,9 @@ pub(super) async fn acquire(client: &Client) -> Result<BTreeMap<String, Vec<Docu
         if !matches!(
             category,
             "classes" | "datatypes" | "enums" | "globals" | "libraries"
-        ) || !path.ends_with(".yaml")
+        ) || Path::new(path)
+            .extension()
+            .is_none_or(|extension| extension != "yaml")
         {
             continue;
         }
