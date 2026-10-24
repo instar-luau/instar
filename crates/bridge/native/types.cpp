@@ -68,7 +68,7 @@ namespace instar::luau {
                         traverse(argument);
                     }
 
-                    if (!is_exhaustive && (table->name || table->syntheticName)) {
+                    if (!is_exhaustive && table->name) {
                         return false;
                     }
 
@@ -307,6 +307,7 @@ namespace instar::luau {
         options.scope = std::move(scope);
         options.functionTypeArguments = true;
         options.hideTableKind = true;
+        options.ignoreSyntheticName = true;
     }
 
     std::string Printer::finish(std::string value) {
