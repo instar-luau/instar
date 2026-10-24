@@ -48,5 +48,9 @@ harness = false
 name = "lint"
 harness = false
 
+[[test]]
+name = "resolution"
+harness = false
+
 [lints]
 workspace = true

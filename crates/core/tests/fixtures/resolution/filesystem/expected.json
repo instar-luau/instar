@@ -1,0 +1,15 @@
+{
+  "is_roblox": false,
+  "imports": {
+    "1": [
+      "neighbor.luau"
+    ],
+    "2": [
+      "neighbor.luau"
+    ]
+  },
+  "suggestions": {
+    "neighbor.luau": "\"./neighbor\"",
+    "target.luau": null
+  }
+}

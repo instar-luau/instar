@@ -1,0 +1,26 @@
+{
+  "is_roblox": true,
+  "imports": {
+    "1": [
+      "target.luau"
+    ],
+    "3": [
+      "child.luau"
+    ],
+    "4": [
+      "shared.luau"
+    ],
+    "5": [
+      "target.luau"
+    ],
+    "6": [
+      "target.luau"
+    ]
+  },
+  "suggestions": {
+    "target.luau": "\"@game/Modules/neighbor\"",
+    "disk.luau": null,
+    "first.luau": null,
+    "child.luau": "\"@game/Modules/Entry/child\""
+  }
+}

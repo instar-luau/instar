@@ -1,0 +1,19 @@
+{
+  "name": "Game",
+  "className": "DataModel",
+  "children": [
+    {
+      "name": "Modules",
+      "className": "Folder",
+      "children": [
+        {
+          "name": "neighbor",
+          "className": "ModuleScript",
+          "filePaths": [
+            "target.luau"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+[resolve]
+sourcemaps = ["sourcemap.json"]
+
+[resolve.aliases]
+fixture = "."

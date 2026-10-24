@@ -1,0 +1,56 @@
+{
+  "name": "Game",
+  "className": "DataModel",
+  "children": [
+    {
+      "name": "Modules",
+      "className": "Folder",
+      "children": [
+        {
+          "name": "Entry",
+          "className": "ModuleScript",
+          "filePaths": [
+            "input.luau"
+          ],
+          "children": [
+            {
+              "name": "child",
+              "className": "ModuleScript",
+              "filePaths": [
+                "child.luau"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "neighbor",
+          "className": "ModuleScript",
+          "filePaths": [
+            "target.luau"
+          ]
+        },
+        {
+          "name": "duplicate",
+          "className": "ModuleScript",
+          "filePaths": [
+            "first.luau"
+          ]
+        },
+        {
+          "name": "duplicate",
+          "className": "ModuleScript",
+          "filePaths": [
+            "second.luau"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "shared",
+      "className": "ModuleScript",
+      "filePaths": [
+        "shared.luau"
+      ]
+    }
+  ]
+}

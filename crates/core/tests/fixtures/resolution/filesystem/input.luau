@@ -1,0 +1,6 @@
+require("./neighbor")
+require("@fixture/neighbor")
+require("@game/Modules/neighbor")
+require(game.Modules.neighbor)
+require("./missing")
+require("./target")

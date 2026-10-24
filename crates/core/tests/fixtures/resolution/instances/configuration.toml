@@ -1,0 +1,6 @@
+[resolve]
+sourcemaps = ["sourcemap.json"]
+
+[resolve.aliases]
+escape = "."
+game = "."

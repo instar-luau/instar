@@ -478,10 +478,7 @@ pub(super) fn will_rename(
 
             let is_instance = matches!(style.expression, ImportExpression::Instance(_));
 
-            if matches!(&style.expression, ImportExpression::Path(path)
-                if path.split('/').next().is_some_and(|alias| alias.eq_ignore_ascii_case("@game")))
-                && identity != target
-            {
+            if matches!(&style.expression, ImportExpression::Path(_)) && identity != target {
                 return Err(reason(
                     "An instance-backed string import cannot be updated safely before its sourcemap is updated.",
                 ));

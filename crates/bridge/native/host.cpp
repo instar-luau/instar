@@ -14,12 +14,15 @@ namespace instar::luau {
         class Navigation final : public Luau::Require::NavigationContext, public Luau::RequireNode {
         public:
             Navigation(const Context &context, Frontend &frontend, const Luau::ModuleInfo &requirer, std::string source)
-                : current(source), context(context), frontend(frontend), requirer(requirer), source(std::move(source)) {
+                : current(source), context(context), requirer(requirer), source(std::move(source)),
+                  hierarchy(frontend.hierarchy(requirer.name)) {
+                if (hierarchy) {
+                    current = requirer.name;
+                }
             }
 
             NavigateResult resetToRequirer() override {
-                current = source;
-                hierarchy = nullptr;
+                current = hierarchy ? requirer.name : source;
 
                 return NavigateResult::Success;
             }
@@ -29,14 +32,13 @@ namespace instar::luau {
             }
 
             NavigateResult toAliasOverride(const std::string &name) override {
+                if (hierarchy) {
+                    return name == "game" ? move(hierarchy->global(InstanceQuery::Game, std::nullopt))
+                                          : NavigateResult::NotFound;
+                }
+
                 rust::String destination;
                 const Status status = context.alias(source, name, destination);
-
-                if (status == Status::Missing && name == "game") {
-                    hierarchy = frontend.hierarchy(requirer.name);
-
-                    return move(hierarchy ? hierarchy->global(InstanceQuery::Game, std::nullopt) : std::nullopt);
-                }
 
                 return move(status, destination);
             }
@@ -109,15 +111,12 @@ namespace instar::luau {
             std::vector<Luau::RequireAlias> getAvailableAliases() const override {
                 std::vector<Luau::RequireAlias> aliases;
 
-                for (const auto &name : context.aliases(source)) {
-                    aliases.emplace_back(std::string(name));
-                }
-
-                if (frontend.hierarchy(requirer.name) &&
-                    std::none_of(aliases.begin(), aliases.end(), [](const auto &alias) {
-                        return alias.alias == "game";
-                    })) {
+                if (hierarchy) {
                     aliases.emplace_back("game");
+                } else {
+                    for (const auto &name : context.aliases(source)) {
+                        aliases.emplace_back(std::string(name));
+                    }
                 }
 
                 return aliases;
@@ -154,7 +153,6 @@ namespace instar::luau {
             }
 
             const Context &context;
-            Frontend &frontend;
             const Luau::ModuleInfo requirer;
             const std::string source;
             const Instances *hierarchy = nullptr;
@@ -246,6 +244,10 @@ namespace instar::luau {
             }
 
             const auto targets = modules(navigation.current);
+
+            if (!frontend.hierarchy(context->name) && (targets.size() != 1 || targets.front() != navigation.current)) {
+                return std::nullopt;
+            }
 
             return Luau::ModuleInfo{targets.size() == 1 ? targets.front() : navigation.current};
         }

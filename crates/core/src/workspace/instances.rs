@@ -336,13 +336,11 @@ pub(super) fn is_enabled(
     scope: &Scope,
     module: &Path,
 ) -> Result<bool, Error> {
-    if scope.configuration.environment.is_roblox == Some(false) {
-        return Ok(false);
+    if let Some(is_enabled) = scope.configuration.environment.is_roblox {
+        return Ok(is_enabled);
     }
 
-    Ok(!generators(workspace, scope)?.is_empty()
-        || scope.configuration.environment.is_roblox == Some(true)
-        || !inputs(workspace, scope, module)?.is_empty())
+    Ok(!configuration(workspace, scope, module)?.is_empty())
 }
 
 pub(super) fn configuration(
@@ -350,7 +348,7 @@ pub(super) fn configuration(
     scope: &Scope,
     module: &Path,
 ) -> Result<Vec<Location>, Error> {
-    if !is_enabled(workspace, scope, module)? {
+    if scope.configuration.environment.is_roblox == Some(false) {
         return Ok(Vec::new());
     }
 
@@ -411,17 +409,6 @@ pub(super) fn configuration(
                 script: Some(*instance),
             }));
         }
-    }
-
-    if locations.is_empty()
-        && registry.generators.values().all(Option::is_some)
-        && registry.inputs.values().all(Option::is_some)
-        && let Some(map) = maps.first().filter(|_| maps.len() == 1)
-    {
-        locations.push(Location {
-            hierarchy: map.to_string(),
-            script: None,
-        });
     }
 
     Ok(locations)

@@ -13,8 +13,8 @@ use super::{Error, Workspace, environment, host, instances, paths};
 impl Workspace {
     /// Generate a require argument for a source, using strings or instance navigation.
     ///
-    /// Existing string targets must resolve unambiguously through workspace navigation.
-    /// Future paths use lexical navigation beneath their nearest existing ancestor.
+    /// String targets use the requiring module's filesystem or instance context.
+    /// Future filesystem paths use lexical navigation beneath their nearest existing ancestor.
     /// Instance targets must identify one `ModuleScript` in the requiring source's hierarchy.
     ///
     /// # Errors
@@ -37,8 +37,20 @@ impl Workspace {
             return Ok(None);
         }
 
-        if is_instance {
-            return expression(self, &module, &target, true);
+        let scope = self.scope(&module)?;
+
+        if is_instance || !instances::configuration(self, &scope, &module)?.is_empty() {
+            let expression = expression(self, &module, &target, is_instance)?;
+            return Ok(if is_instance {
+                expression
+            } else {
+                expression.as_deref().map(quoted)
+            });
+        }
+
+        let target_scope = self.scope(&target)?;
+        if !instances::configuration(self, &target_scope, &target)?.is_empty() {
+            return Ok(None);
         }
 
         let source = host::logical(&module)?;
@@ -62,7 +74,7 @@ impl Workspace {
             candidates.insert(format!("@self/{}", paths::text(remainder)?));
         }
 
-        for (name, alias) in &self.scope(&module)?.configuration.resolve.aliases {
+        for (name, alias) in &scope.configuration.resolve.aliases {
             if name == "self" {
                 continue;
             }
@@ -100,11 +112,7 @@ impl Workspace {
             }
         }
 
-        Ok(
-            expression(self, Path::new(&module), Path::new(&target), false)?
-                .as_deref()
-                .map(quoted),
-        )
+        Ok(None)
     }
 }
 
@@ -224,17 +232,6 @@ fn expression(
     target: &Path,
     is_instance: bool,
 ) -> Result<Option<String>, Error> {
-    if !is_instance
-        && !matches!(
-            workspace
-                .alias(&paths::text(module)?, "game")
-                .map_err(failure)?,
-            Navigation::Missing
-        )
-    {
-        return Ok(None);
-    }
-
     let scope = workspace.scope(module)?;
     let locations = instances::configuration(workspace, &scope, module)?;
 
