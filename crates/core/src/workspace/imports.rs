@@ -41,6 +41,7 @@ impl Workspace {
 
         if is_instance || !instances::configuration(self, &scope, &module)?.is_empty() {
             let expression = expression(self, &module, &target, is_instance)?;
+
             return Ok(if is_instance {
                 expression
             } else {
@@ -49,6 +50,7 @@ impl Workspace {
         }
 
         let target_scope = self.scope(&target)?;
+
         if !instances::configuration(self, &target_scope, &target)?.is_empty() {
             return Ok(None);
         }
