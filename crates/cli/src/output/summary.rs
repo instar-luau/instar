@@ -175,6 +175,22 @@ pub(crate) fn generated(
     ));
 }
 
+pub(crate) fn associated(path: &Path, root: &Path, started: Instant) {
+    delivery::progress().finish_and_clear();
+
+    if delivery::mode() == Mode::Quiet {
+        return;
+    }
+
+    delivery::file("Associated", &relative(path, root), "Associated".len() + 2);
+
+    delivery::message(format_args!(
+        "{} schema in {:.2}s",
+        console::style("Associated").for_stderr().green().bold(),
+        started.elapsed().as_secs_f64(),
+    ));
+}
+
 pub(crate) fn refreshed(files: &[PathBuf], started: Instant) {
     delivery::progress().finish_and_clear();
 
@@ -210,7 +226,8 @@ pub(crate) fn interrupted(arguments: &Arguments) {
     } else {
         match &arguments.command {
             Command::Assets(options) if options.should_generate => "Generation interrupted.",
-            Command::Assets(_) => "Asset refresh interrupted.",
+            Command::Assets(options) if options.should_refresh => "Asset refresh interrupted.",
+            Command::Assets(_) => "Schema association interrupted.",
             Command::Server => "Server interrupted.",
 
             Command::Files(operation) => match operation.as_ref() {

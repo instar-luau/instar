@@ -76,7 +76,7 @@ impl Configuration {
 pub(super) fn prepare(
     directory: &Path,
     association: Association,
-    schema: &Path,
+    schema: Option<&Path>,
 ) -> Result<Configuration> {
     let (names, field): (&[&str], _) = match association {
         Association::Tombi => (
@@ -154,14 +154,18 @@ pub(super) fn prepare(
         break;
     }
 
-    let directory = normalize(directory);
-    let schema = normalize(schema);
-    let address = relative(&schema, &directory);
+    let address = if let Some(schema) = schema {
+        let directory = normalize(directory);
+        let schema = normalize(schema);
+        let address = relative(&schema, &directory);
 
-    let address = address
-        .to_str()
-        .ok_or_else(|| eyre!("The generated schema path must be valid UTF-8."))?
-        .replace(MAIN_SEPARATOR, "/");
+        address
+            .to_str()
+            .ok_or_else(|| eyre!("The generated schema path must be valid UTF-8."))?
+            .replace(MAIN_SEPARATOR, "/")
+    } else {
+        "https://instar-luau.github.io/instar/schema.json".to_owned()
+    };
 
     let configuration: &mut dyn TableLike = if path.ends_with("pyproject.toml") {
         document

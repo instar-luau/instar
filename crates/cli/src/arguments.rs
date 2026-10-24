@@ -94,7 +94,7 @@ pub(super) enum Command {
     #[command(flatten)]
     Files(Box<Operation>),
 
-    #[command(about = "Generate assets or refresh the downloaded asset cache")]
+    #[command(about = "Generate assets, associate schemas, or refresh the downloaded asset cache")]
     Assets(Assets),
 
     #[command(about = "Serve the Language Server Protocol over stdin and stdout")]
@@ -169,7 +169,7 @@ impl Operation {
 }
 
 #[derive(clap::Args)]
-#[command(group(clap::ArgGroup::new("action").required(true).args(["generate", "refresh"])))]
+#[command(group(clap::ArgGroup::new("action").required(true).multiple(true).args(["generate", "refresh", "associate"])))]
 pub(super) struct Assets {
     #[arg(
         id = "generate",
@@ -182,7 +182,7 @@ pub(super) struct Assets {
     #[arg(
         id = "refresh",
         long = "refresh",
-        conflicts_with_all = ["targets", "output", "root", "associate"],
+        conflicts_with_all = ["generate", "targets", "output", "root", "associate"],
         help = "Download fresh assets into the disk cache"
     )]
     pub(super) should_refresh: bool,
@@ -205,7 +205,6 @@ pub(super) struct Assets {
     #[arg(
         long,
         value_name = "PATH",
-        requires = "generate",
         help = "Resolve output and TOML tool configuration from this project directory"
     )]
     pub(super) root: Option<PathBuf>,
@@ -214,8 +213,7 @@ pub(super) struct Assets {
         long,
         value_enum,
         value_name = "TOOL",
-        requires = "generate",
-        help = "Associate the generated schema with the project's TOML tool configuration"
+        help = "Associate a generated or published schema with the project's TOML tool configuration"
     )]
     pub(super) associate: Option<Association>,
 }

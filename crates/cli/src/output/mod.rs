@@ -10,5 +10,5 @@ pub(crate) use self::{
     diagnostics::{Validation, failure, findings},
     progress::Progress,
     publication::publish,
-    summary::{generated, interrupted, refreshed, summary, unformatted},
+    summary::{associated, generated, interrupted, refreshed, summary, unformatted},
 };

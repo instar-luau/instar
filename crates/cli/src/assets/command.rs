@@ -47,6 +47,21 @@ pub(crate) fn run(options: &Assets) -> Result<u8> {
 
     output::root(&root);
 
+    if !options.should_generate
+        && let Some(tool) = options.associate
+    {
+        interrupt::check()?;
+        output::phase("Preparing association", None)?;
+        let association = association::prepare(&root, tool, None)?;
+        interrupt::check()?;
+        output::phase("Finalizing association", None)?;
+        association.apply()?;
+        interrupt::check()?;
+        output::associated(&association.path, &root, started);
+
+        return Ok(0);
+    }
+
     let output = options
         .output
         .as_deref()
@@ -60,7 +75,7 @@ pub(crate) fn run(options: &Assets) -> Result<u8> {
 
     let association = options
         .associate
-        .map(|tool| association::prepare(&root, tool, &output.join("schema.json")))
+        .map(|tool| association::prepare(&root, tool, Some(&output.join("schema.json"))))
         .transpose()?;
 
     interrupt::check()?;
