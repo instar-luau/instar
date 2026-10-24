@@ -1,4 +1,15 @@
 # Changelog
+## [0.1.6](https://github.com/instar-luau/instar/compare/v0.1.5...v0.1.6) - 2026-10-24
+
+### Added
+
+- **assets:** import Creator Docs documentation
+
+### Fixed
+
+- isolate filesystem and Roblox module resolution
+- **bridge:** expand synthetic table names in type presentations
+
 ## [0.1.5](https://github.com/instar-luau/instar/compare/v0.1.4...v0.1.5) - 2026-10-24
 
 ### Added
