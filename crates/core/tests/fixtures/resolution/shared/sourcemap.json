@@ -14,6 +14,13 @@
           ]
         },
         {
+          "name": "Server",
+          "className": "Script",
+          "filePaths": [
+            "input.luau"
+          ]
+        },
+        {
           "name": "neighbor",
           "className": "ModuleScript",
           "filePaths": [
@@ -29,6 +36,13 @@
         {
           "name": "Entry",
           "className": "ModuleScript",
+          "filePaths": [
+            "input.luau"
+          ]
+        },
+        {
+          "name": "Client",
+          "className": "LocalScript",
           "filePaths": [
             "input.luau"
           ]

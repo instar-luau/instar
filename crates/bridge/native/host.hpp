@@ -43,6 +43,7 @@ namespace instar::luau {
         void bind(Luau::Frontend &native, const Luau::ModuleName &name, const Luau::ScopePtr &scope) const;
 
         std::vector<std::string> modules(const Luau::ModuleName &name) const;
+        std::optional<std::string> instance(const Luau::ModuleName &name) const;
         void invalidate(const Luau::ModuleName &name);
         void clear();
 

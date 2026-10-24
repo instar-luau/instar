@@ -13,16 +13,20 @@ namespace instar::luau {
     namespace {
         class Navigation final : public Luau::Require::NavigationContext, public Luau::RequireNode {
         public:
-            Navigation(const Context &context, Frontend &frontend, const Luau::ModuleInfo &requirer, std::string source)
-                : current(source), context(context), requirer(requirer), source(std::move(source)),
-                  hierarchy(frontend.hierarchy(requirer.name)) {
-                if (hierarchy) {
-                    current = requirer.name;
+            Navigation(const Context &context, Frontend &frontend, const Host &host, const Luau::ModuleInfo &requirer)
+                : current(host.getHumanReadableModuleName(requirer.name)), context(context), source(current),
+                  instance(host.instance(requirer.name)), hierarchy(frontend.hierarchy(requirer.name)) {
+                if (instance) {
+                    current = *instance;
                 }
             }
 
             NavigateResult resetToRequirer() override {
-                current = hierarchy ? requirer.name : source;
+                if (hierarchy) {
+                    return move(instance);
+                }
+
+                current = source;
 
                 return NavigateResult::Success;
             }
@@ -153,8 +157,8 @@ namespace instar::luau {
             }
 
             const Context &context;
-            const Luau::ModuleInfo requirer;
             const std::string source;
+            const std::optional<std::string> instance;
             const Instances *hierarchy = nullptr;
             std::string component;
         };
@@ -166,12 +170,7 @@ namespace instar::luau {
 
         private:
             std::unique_ptr<Luau::RequireNode> getNode(const Luau::ModuleName &name) const override {
-                return std::make_unique<Navigation>(
-                    context,
-                    frontend,
-                    Luau::ModuleInfo{name},
-                    host.getHumanReadableModuleName(name)
-                );
+                return std::make_unique<Navigation>(context, frontend, host, Luau::ModuleInfo{name});
             }
 
             const Context &context;
@@ -228,7 +227,7 @@ namespace instar::luau {
         }
 
         if (const auto *literal = expression->as<Luau::AstExprConstantString>()) {
-            Navigation navigation(callbacks, frontend, *context, getHumanReadableModuleName(context->name));
+            Navigation navigation(callbacks, frontend, *this, *context);
             Luau::Require::ErrorHandler errors;
             Luau::Require::Navigator navigator(navigation, errors);
 
@@ -369,6 +368,16 @@ namespace instar::luau {
 
     std::vector<std::string> Host::modules(const Luau::ModuleName &name) const {
         return resolve(name).modules;
+    }
+
+    std::optional<std::string> Host::instance(const Luau::ModuleName &name) const {
+        const auto &settings = resolve(name);
+
+        if (!settings.hierarchy || !settings.script) {
+            return std::nullopt;
+        }
+
+        return instance_identity(*settings.hierarchy, *settings.script);
     }
 
     void Host::invalidate(const Luau::ModuleName &name) {

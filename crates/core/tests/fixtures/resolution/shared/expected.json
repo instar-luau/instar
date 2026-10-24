@@ -3,6 +3,8 @@
   "imports": {
     "1": [
       "first.luau",
+      "first.luau",
+      "second.luau",
       "second.luau"
     ]
   },
