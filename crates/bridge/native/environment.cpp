@@ -4,6 +4,7 @@
 #include "Luau/ConfigResolver.h"
 #include "Luau/Error.h"
 #include "Luau/FileResolver.h"
+#include "Luau/Instantiation2.h"
 #include "Luau/Module.h"
 #include "Luau/Scope.h"
 #include "Luau/Type.h"
@@ -16,10 +17,46 @@
 
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <utility>
 
 namespace instar::luau {
     namespace {
+        void bind_vectors(Luau::GlobalTypes &globals) {
+            const auto scope = globals.globalScope;
+            const auto native = scope->lookupType("vector");
+            const auto roblox = scope->lookupType("Vector3");
+            const auto library = scope->lookupEx(Luau::AstName("vector"));
+            auto *external = roblox ? Luau::getMutable<Luau::ExternType>(Luau::follow(roblox->type)) : nullptr;
+
+            if (!native || !external || !library) {
+                throw std::invalid_argument("Roblox vector compatibility requires vector and Vector3 declarations.");
+            }
+
+            for (auto &[name, property] : external->props) {
+                property.writeTy.reset();
+            }
+
+            Luau::DenseHashMap<Luau::TypeId, Luau::TypeId> types;
+            Luau::DenseHashMap<Luau::TypePackId, Luau::TypePackId> packs;
+            types[Luau::follow(native->type)] = Luau::follow(roblox->type);
+
+            Luau::Replacer replacement{Luau::NotNull{&globals.globalTypes},
+                Luau::NotNull{&types},
+                Luau::NotNull{&packs}};
+
+            const auto adapted = replacement.substitute(library->first->typeId);
+
+            if (!adapted) {
+                throw std::runtime_error("Roblox vector library type substitution exceeded its complexity limit.");
+            }
+
+            scope->exportedTypeBindings.insert_or_assign("vector", *roblox);
+            auto binding = *library->first;
+            binding.typeId = *adapted;
+            scope->bindings.insert_or_assign(Luau::AstName("vector"), std::move(binding));
+        }
+
         void rebase(std::optional<std::string> &symbol, const std::string &prefix, const std::string &replacement) {
             if (symbol && symbol->compare(0, prefix.size(), prefix) == 0) {
                 symbol = replacement + symbol->substr(prefix.size());
@@ -173,6 +210,10 @@ namespace instar::luau {
             }
 
             assign_documentation(scope, identity, std::string(definition.namespace_name));
+
+            if (environment.has_capabilities && definition.namespace_name == "@roblox") {
+                bind_vectors(frontend.globals);
+            }
         }
 
         if (environment.has_capabilities) {
