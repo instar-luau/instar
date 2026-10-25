@@ -1,4 +1,24 @@
 # Changelog
+## [0.1.6](https://github.com/instar-luau/instar/compare/v0.1.5...v0.1.6) - 2026-10-25
+
+### Added
+
+- **assets:** import Creator Docs documentation
+
+### Fixed
+
+- **bridge:** resolve relative imports from script instances
+- isolate filesystem and Roblox module resolution
+- **bridge:** unify Roblox vector type identities
+- **bridge:** use authoritative module identities for semantic queries
+- **bridge:** expand synthetic table names in type presentations
+
+### Other
+
+- **assets:** satisfy Creator Docs importer lints
+- **core:** format import generation
+- **bridge:** avoid temporary strings in builtin names
+
 ## [0.1.5](https://github.com/instar-luau/instar/compare/v0.1.4...v0.1.5) - 2026-10-24
 
 ### Added
