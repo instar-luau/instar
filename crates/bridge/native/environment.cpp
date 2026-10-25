@@ -104,7 +104,7 @@ namespace instar::luau {
             const auto properties = [&](const auto &members) {
                 for (const auto &[member, property] : members) {
                     symbols.push_back(
-                        {name + "." + member,
+                        {std::string(name).append(".").append(member),
                             property.documentationSymbol.value_or(""),
                             is_type,
                             true,

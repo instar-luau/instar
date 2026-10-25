@@ -88,7 +88,7 @@ namespace instar::luau::query {
                         budget.check();
 
                         if (property.documentationSymbol == symbol) {
-                            return {name + "." + member, is_type};
+                            return {std::string(name).append(".").append(member), is_type};
                         }
                     }
                 }
