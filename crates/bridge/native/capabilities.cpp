@@ -37,6 +37,7 @@ namespace instar::luau {
             AncestorType,
             ChildName,
             AncestorName,
+            Descendants,
         };
 
         struct Description {
@@ -137,10 +138,18 @@ namespace instar::luau {
                     return false;
                 }
 
+                if (kind == MagicKind::Descendants && !context.callSite->self) {
+                    return false;
+                }
+
                 const std::optional<std::string> name = argument(*context.callSite);
                 const std::optional<Luau::TypeId> type = name ? class_type(*metadata, *name, kind) : std::nullopt;
 
                 if (!type) {
+                    if (kind == MagicKind::Descendants) {
+                        return false;
+                    }
+
                     if (name) {
                         report_new(context, *context.callSite->args.data[0], invalid_message(kind, *name));
                         set_error(context);
@@ -187,6 +196,15 @@ namespace instar::luau {
 
                 if (returns_optional()) {
                     result = Luau::makeOption(context.solver->builtinTypes, *context.solver->arena, result);
+                }
+
+                if (kind == MagicKind::Descendants) {
+                    result = context.solver->arena->addType(
+                        Luau::TableType{{},
+                            Luau::TableIndexer{context.solver->builtinTypes->numberType, result},
+                            {},
+                            Luau::TableState::Sealed}
+                    );
                 }
 
                 Luau::asMutable(context.result)
@@ -505,5 +523,6 @@ namespace instar::luau {
         register_magic(globals, metadata, MagicKind::ChildName, "Instance", "FindFirstChild", false);
         attach_extern(globals, "Instance", nullptr, "WaitForChild", "instar.child");
         register_magic(globals, metadata, MagicKind::AncestorName, "Instance", "FindFirstAncestor", false);
+        register_magic(globals, metadata, MagicKind::Descendants, "Instance", "QueryDescendants", false);
     }
 }
