@@ -5,7 +5,7 @@ use std::{
     sync::Arc,
 };
 
-use instar_core::workspace::Generators;
+use instar_core::workspace::{GeneratorReporter, Generators};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
@@ -31,6 +31,7 @@ pub(super) struct State {
     pub(super) encoding: Encoding,
     pub(super) events: Vec<PathBuf>,
     pub(super) history: History,
+    pub(super) report: Option<GeneratorReporter>,
     documents: Arc<Documents>,
     topology: BTreeMap<PathBuf, bool>,
 }
@@ -45,6 +46,7 @@ impl State {
             encoding: Encoding::default(),
             events: Vec::new(),
             history: History::default(),
+            report: None,
             documents: Arc::default(),
             topology: BTreeMap::new(),
         }
@@ -163,9 +165,14 @@ impl State {
             self.configuration.clone(),
             Arc::clone(&self.capabilities),
             self.encoding,
-            Generators::new(&CancellationToken::new(), |executable, message| {
-                tracing::info!(executable, message, "Sourcemap generator");
-            }),
+            Generators::new(
+                &CancellationToken::new(),
+                Arc::clone(
+                    self.report
+                        .as_ref()
+                        .expect("Internal error: generator reporter is missing."),
+                ),
+            ),
         )?;
 
         let root = project.workspace.directory().to_owned();
@@ -531,9 +538,14 @@ impl State {
             self.configuration.clone(),
             Arc::clone(&self.capabilities),
             self.encoding,
-            Generators::new(&CancellationToken::new(), |executable, message| {
-                tracing::info!(executable, message, "Sourcemap generator");
-            }),
+            Generators::new(
+                &CancellationToken::new(),
+                Arc::clone(
+                    self.report
+                        .as_ref()
+                        .expect("Internal error: generator reporter is missing."),
+                ),
+            ),
         )?;
 
         project.should_index = false;

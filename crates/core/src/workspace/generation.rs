@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet, btree_map::Entry},
+    error::Error as _,
     fs,
     io::{self, Read as _, Seek as _, SeekFrom},
     mem,
@@ -7,6 +8,7 @@ use std::{
     process::Stdio,
     sync::{Arc, Mutex, MutexGuard},
     thread::{self, JoinHandle},
+    time::{Duration, Instant},
 };
 
 use process_wrap::tokio::{CommandWrap, KillOnDrop};
@@ -19,6 +21,7 @@ use tokio::{
     process as asynchronous,
     runtime::Builder,
     sync::watch,
+    time,
 };
 
 use tokio_util::sync::CancellationToken;
@@ -28,6 +31,11 @@ use crate::settings::resolution::Generator;
 
 const DIAGNOSTIC_LIMIT: usize = 8 * 1024;
 const SOURCE_LIMIT: usize = 64 * 1024 * 1024;
+const RESTART_DELAY: Duration = Duration::from_secs(1);
+const MAXIMUM_RESTART_DELAY: Duration = Duration::from_secs(30);
+
+/// Receives generator diagnostics and lifecycle messages.
+pub type GeneratorReporter = Arc<dyn Fn(tracing::Level, &str, &str) + Send + Sync>;
 
 impl Workspace {
     /// Return configured and automatically discovered sourcemap generators.
@@ -136,7 +144,7 @@ pub struct Generators {
 impl Generators {
     /// Create a session with cancellation and a source-labeled message callback.
     #[must_use]
-    pub fn new(cancellation: &CancellationToken, report: fn(&str, &str)) -> Self {
+    pub fn new(cancellation: &CancellationToken, report: GeneratorReporter) -> Self {
         Self {
             registry: Arc::new(Mutex::new(Registry {
                 streams: BTreeMap::new(),
@@ -144,6 +152,12 @@ impl Generators {
                 report,
             })),
         }
+    }
+
+    /// Create an empty session with the same message callback.
+    #[must_use]
+    pub fn fork(&self, cancellation: &CancellationToken) -> Self {
+        Self::new(cancellation, Arc::clone(&self.registry().report))
     }
 
     /// Adopt changed snapshots between analysis batches.
@@ -163,6 +177,7 @@ impl Generators {
                     });
 
                     stream.active = Some(source);
+                    stream.failed = false;
                 }
 
                 Ok(None) => {}
@@ -173,8 +188,6 @@ impl Generators {
                         stream.failed = true;
                         has_changed = true;
                     }
-
-                    stream.active = None;
                 }
             }
         }
@@ -235,7 +248,7 @@ impl Generators {
                 registry.check()?;
 
                 let shutdown = registry.cancellation.clone();
-                let report = registry.report;
+                let report = Arc::clone(&registry.report);
 
                 if let Entry::Vacant(entry) = registry.streams.entry(generator.clone()) {
                     entry.insert(Stream::new(generator, shutdown.clone(), report)?);
@@ -249,13 +262,11 @@ impl Generators {
                 let mut output = stream.output.clone();
                 output.borrow_and_update();
 
-                let latest = stream.latest()?;
-
                 if let Some(source) = &stream.active {
                     return Ok(Arc::clone(source));
                 }
 
-                if let Some(source) = latest {
+                if let Some(source) = stream.latest()? {
                     stream.active = Some(Arc::clone(&source));
 
                     return Ok(source);
@@ -292,7 +303,7 @@ impl Generators {
 struct Registry {
     streams: BTreeMap<Generator, Stream>,
     cancellation: CancellationToken,
-    report: fn(&str, &str),
+    report: GeneratorReporter,
 }
 
 impl Registry {
@@ -307,7 +318,11 @@ impl Drop for Registry {
 
         for stream in self.streams.values_mut() {
             if let Err(error) = stream.join() {
-                (self.report)(&stream.executable, &error.to_string());
+                (self.report)(
+                    tracing::Level::ERROR,
+                    &stream.executable,
+                    &diagnostic(&error),
+                );
             }
         }
     }
@@ -325,7 +340,7 @@ impl Stream {
     fn new(
         generator: &Generator,
         cancellation: CancellationToken,
-        report: fn(&str, &str),
+        report: GeneratorReporter,
     ) -> Result<Self, Error> {
         let mut command = command(generator)?;
 
@@ -342,11 +357,17 @@ impl Stream {
 
         let executable = generator.command[0].clone();
         let program = executable.clone();
-        let (sender, output) = watch::channel(Output::Pending);
+        let (sender, output) = watch::channel(Output::default());
 
         let thread = thread::Builder::new()
             .spawn(move || {
-                runtime.block_on(supervise(command, &program, &sender, &cancellation, report))
+                runtime.block_on(supervise(
+                    command,
+                    &program,
+                    &sender,
+                    &cancellation,
+                    &report,
+                ))
             })
             .map_err(|source| failure(&executable, source))?;
 
@@ -362,12 +383,6 @@ impl Stream {
     fn latest(&self) -> Result<Option<Arc<Sourcemap>>, Error> {
         let is_finished = self.thread.as_ref().is_none_or(JoinHandle::is_finished);
 
-        let source = match self.output.borrow().clone() {
-            Output::Pending => None,
-            Output::Snapshot(source) => Some(source),
-            Output::Failed(error) => return Err(Error::Generation(error)),
-        };
-
         if is_finished {
             return Err(failure(
                 &self.executable,
@@ -375,7 +390,17 @@ impl Stream {
             ));
         }
 
-        Ok(source)
+        let output = self.output.borrow();
+
+        if let Some(source) = &output.source {
+            return Ok(Some(Arc::clone(source)));
+        }
+
+        if let Some(error) = &output.error {
+            return Err(Error::Generation(Arc::clone(error)));
+        }
+
+        Ok(None)
     }
 
     fn join(&mut self) -> Result<(), Error> {
@@ -401,11 +426,15 @@ impl Stream {
     }
 }
 
-#[derive(Clone)]
-enum Output {
-    Pending,
-    Snapshot(Arc<Sourcemap>),
-    Failed(Arc<Error>),
+#[derive(Clone, Default)]
+struct Output {
+    source: Option<Arc<Sourcemap>>,
+    error: Option<Arc<Error>>,
+}
+
+enum Attempt {
+    Stopped,
+    Retry(Error),
 }
 
 async fn supervise(
@@ -413,18 +442,96 @@ async fn supervise(
     executable: &str,
     output: &watch::Sender<Output>,
     cancellation: &CancellationToken,
-    report: fn(&str, &str),
+    report: &GeneratorReporter,
 ) -> Result<(), Arc<Error>> {
+    let mut delay = RESTART_DELAY;
+    let mut is_recovering = false;
+
+    while !cancellation.is_cancelled() {
+        let started = Instant::now();
+
+        let error = match produce(
+            &mut command,
+            executable,
+            output,
+            cancellation,
+            report,
+            &mut is_recovering,
+        )
+        .await
+        {
+            Ok(Attempt::Stopped) => break,
+            Ok(Attempt::Retry(error)) => Arc::new(error),
+
+            Err(error) => {
+                let error = Arc::new(error);
+                output.send_modify(|output| output.error = Some(Arc::clone(&error)));
+                report(tracing::Level::ERROR, executable, &diagnostic(&error));
+
+                return Err(error);
+            }
+        };
+
+        output.send_modify(|output| output.error = Some(Arc::clone(&error)));
+
+        if cancellation.is_cancelled() {
+            break;
+        }
+
+        if started.elapsed() >= MAXIMUM_RESTART_DELAY {
+            delay = RESTART_DELAY;
+        }
+
+        let message = {
+            let output = output.borrow();
+            let diagnostic = diagnostic(&error);
+
+            let availability = if output.source.is_some() {
+                "Using the last valid sourcemap."
+            } else {
+                "No sourcemap is available."
+            };
+
+            format!(
+                "{diagnostic}\nRestarting in {:.2}s. {availability}",
+                delay.as_secs_f64()
+            )
+        };
+
+        let level = if is_recovering {
+            tracing::Level::INFO
+        } else {
+            tracing::Level::WARN
+        };
+
+        report(level, executable, &message);
+        is_recovering = true;
+
+        tokio::select! {
+            biased;
+            () = cancellation.cancelled() => break,
+            () = time::sleep(delay) => {},
+        }
+
+        delay = (delay * 2).min(MAXIMUM_RESTART_DELAY);
+    }
+
+    Ok(())
+}
+
+async fn produce(
+    command: &mut CommandWrap,
+    executable: &str,
+    output: &watch::Sender<Output>,
+    cancellation: &CancellationToken,
+    report: &GeneratorReporter,
+    is_recovering: &mut bool,
+) -> Result<Attempt, Error> {
     let child = command.spawn();
 
     let mut child = match child {
         Ok(child) => child,
-
-        Err(source) => {
-            output.send_replace(Output::Failed(Arc::new(failure(executable, source))));
-
-            return Ok(());
-        }
+        Err(source) => return Ok(Attempt::Retry(failure(executable, source))),
     };
 
     let stdout = child
@@ -439,7 +546,7 @@ async fn supervise(
 
     let diagnostics = messages(stderr, executable, report);
     tokio::pin!(diagnostics);
-    let snapshots = snapshots(stdout, executable, output);
+    let snapshots = snapshots(stdout, executable, output, report, is_recovering);
     tokio::pin!(snapshots);
     let mut is_drained = false;
     let mut diagnostic = String::new();
@@ -469,46 +576,35 @@ async fn supervise(
         }
     };
 
-    let cleanup = process::stop(child.as_mut()).await;
-
-    if let Err(source) = cleanup {
-        let error = Arc::new(failure(executable, source));
-        output.send_replace(Output::Failed(Arc::clone(&error)));
-
-        return Err(error);
-    }
+    process::stop(child.as_mut())
+        .await
+        .map_err(|source| failure(executable, source))?;
 
     if !is_drained {
         match diagnostics.await {
             Ok(message) => diagnostic = message,
-
-            Err(source) => {
-                output.send_replace(Output::Failed(Arc::new(failure(executable, source))));
-
-                return Ok(());
-            }
+            Err(source) => return Ok(Attempt::Retry(failure(executable, source))),
         }
     }
 
-    if let Err(mut error) = result
-        && !matches!(error, Error::Cancelled)
+    let mut error = match result {
+        Ok(()) | Err(Error::Cancelled) => return Ok(Attempt::Stopped),
+        Err(error) => error,
+    };
+
+    if !diagnostic.is_empty()
+        && let Error::Generate { details, .. } = &mut error
     {
-        if !diagnostic.is_empty()
-            && let Error::Generate { details, .. } = &mut error
-        {
-            *details = format!("\n{}", diagnostic.trim_end());
-        }
-
-        output.send_replace(Output::Failed(Arc::new(error)));
+        *details = format!("\n{}", diagnostic.trim_end());
     }
 
-    Ok(())
+    Ok(Attempt::Retry(error))
 }
 
 async fn messages(
     stderr: impl AsyncRead + Unpin,
     executable: &str,
-    report: fn(&str, &str),
+    report: &GeneratorReporter,
 ) -> io::Result<String> {
     let mut reader = BufReader::new(stderr);
     let mut line = Vec::new();
@@ -535,7 +631,12 @@ async fn messages(
                 }
             }
 
-            report(executable, &String::from_utf8_lossy(&line));
+            report(
+                tracing::Level::INFO,
+                executable,
+                &String::from_utf8_lossy(&line),
+            );
+
             retain(&mut diagnostic, &line);
             retain(&mut diagnostic, b"\n");
             line.clear();
@@ -558,6 +659,8 @@ async fn snapshots(
     stdout: impl AsyncRead + Unpin,
     executable: &str,
     output: &watch::Sender<Output>,
+    report: &GeneratorReporter,
+    is_recovering: &mut bool,
 ) -> Result<(), Error> {
     let mut reader = BufReader::new(stdout);
 
@@ -590,7 +693,22 @@ async fn snapshots(
         }
 
         if !line.trim().is_empty() {
-            output.send_replace(Output::Snapshot(parse(executable, &line)?));
+            let source = parse(executable, &line)?;
+
+            output.send_modify(|output| {
+                output.source = Some(source);
+                output.error = None;
+            });
+
+            if *is_recovering {
+                report(
+                    tracing::Level::INFO,
+                    executable,
+                    "Sourcemap generation recovered.",
+                );
+
+                *is_recovering = false;
+            }
         }
     }
 
@@ -652,6 +770,19 @@ fn parse(executable: &str, source: &str) -> Result<Arc<Sourcemap>, Error> {
             executable: executable.to_owned(),
             source,
         })
+}
+
+fn diagnostic(error: &Error) -> String {
+    let mut message = error.to_string();
+    let mut cause = error.source();
+
+    while let Some(error) = cause {
+        message.push('\n');
+        message.push_str(&error.to_string());
+        cause = error.source();
+    }
+
+    message
 }
 
 fn failure(executable: &str, source: io::Error) -> Error {

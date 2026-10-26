@@ -215,9 +215,7 @@ pub(super) fn renamed(state: &mut State, parameters: RenameFilesParams) -> Resul
 
             (Rc::clone(&project.workspace), project.generators.clone())
         } else {
-            let generators = Generators::new(&CancellationToken::new(), |executable, message| {
-                tracing::info!(executable, message, "Sourcemap generator");
-            });
+            let generators = project.generators.fork(&CancellationToken::new());
 
             let workspace = Workspace::new(&destination, &[], &[])
                 .map_err(failure)?

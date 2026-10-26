@@ -147,12 +147,14 @@ impl LanguageServer for Service {
             Arc::clone(&capabilities);
 
         let client = Arc::clone(&capabilities);
+        let report = messages::generator(&self.client);
 
         self.connection
             .control(move |state| {
                 state.capabilities = client;
                 state.configuration = configuration;
                 state.encoding = encoding;
+                state.report = Some(report);
 
                 for root in roots {
                     state.add(&root)?;

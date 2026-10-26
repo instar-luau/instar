@@ -19,7 +19,7 @@ mod write;
 pub use self::{
     discovery::{configuration_files, is_configuration},
     error::Error,
-    generation::Generators,
+    generation::{GeneratorReporter, Generators},
     instances::Sourcemap,
     model::Workspace,
     observations::Observations,

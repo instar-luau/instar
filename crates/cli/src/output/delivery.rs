@@ -140,12 +140,15 @@ pub(crate) fn watching() {
     }
 }
 
-pub(crate) fn generator(source: &str, line: &str) {
+pub(crate) fn generator(_: tracing::Level, source: &str, line: &str) {
     let name = source.rsplit(['/', '\\']).next().unwrap_or(source);
     let name = neutralize(name);
-    let line = neutralize(line);
     tracing::debug!(generator = source, "Received generator output");
-    message(format_args!("[{name}] {line}"));
+
+    for line in line.split('\n') {
+        let line = neutralize(line);
+        message(format_args!("[{name}] {line}"));
+    }
 }
 
 fn neutralize(text: &str) -> String {

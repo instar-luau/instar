@@ -342,12 +342,8 @@ impl Project {
 
         workspace.reload().map_err(failure)?;
 
-        let previous = mem::replace(
-            &mut self.generators,
-            Generators::new(&CancellationToken::new(), |executable, message| {
-                tracing::info!(executable, message, "Sourcemap generator");
-            }),
-        );
+        let generators = self.generators.fork(&CancellationToken::new());
+        let previous = mem::replace(&mut self.generators, generators);
 
         workspace.set_generators(self.generators.clone());
 

@@ -3,7 +3,10 @@ use std::{
     io::ErrorKind,
     iter, mem,
     path::{Component, Path, PathBuf},
-    sync::mpsc::{self, Receiver, RecvTimeoutError},
+    sync::{
+        Arc,
+        mpsc::{self, Receiver, RecvTimeoutError},
+    },
     time::{Duration, Instant},
 };
 
@@ -99,7 +102,7 @@ impl Watcher {
             roots,
             reload: BTreeMap::new(),
             observed: BTreeMap::new(),
-            generators: Generators::new(&interrupt::CANCELLATION, output::generator),
+            generators: Generators::new(&interrupt::CANCELLATION, Arc::new(output::generator)),
         };
 
         watcher.observe(configuration_files(root, &options.configuration), true)?;
@@ -117,10 +120,8 @@ impl Watcher {
     }
 
     pub(super) fn reset(&mut self) -> Result<()> {
-        let previous = mem::replace(
-            &mut self.generators,
-            Generators::new(&interrupt::CANCELLATION, output::generator),
-        );
+        let generators = self.generators.fork(&interrupt::CANCELLATION);
+        let previous = mem::replace(&mut self.generators, generators);
 
         project::shutdown(&previous)?;
 
