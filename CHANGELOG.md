@@ -1,4 +1,11 @@
 # Changelog
+## [0.1.7](https://github.com/instar-luau/instar/compare/v0.1.6...v0.1.7) - 2026-10-26
+
+### Fixed
+
+- **core:** restart failed sourcemap watch generators
+- **core:** filter auto-imports by script runtime
+
 ## [0.1.6](https://github.com/instar-luau/instar/compare/v0.1.5...v0.1.6) - 2026-10-25
 
 ### Added
