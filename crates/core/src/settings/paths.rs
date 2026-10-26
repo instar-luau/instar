@@ -53,7 +53,16 @@ pub(super) fn resolve(
     let resolution = source.field("resolve");
 
     for (name, target) in &mut configuration.resolve.aliases {
-        anchor(target, &resolution.field("aliases").field(name), base);
+        let field = resolution.field("aliases").field(name);
+
+        if let Ok(relative) = target.strip_prefix("~") {
+            let home = dirs::home_dir()
+                .ok_or_else(|| field.error("Could not locate the home directory."))?;
+
+            *target = home.join(relative);
+        }
+
+        anchor(target, &field, base);
     }
 
     if let Some(sourcemaps) = &mut configuration.resolve.sourcemaps {

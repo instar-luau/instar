@@ -51,7 +51,7 @@ impl Language {
         &self.native.globals
     }
 
-    /// Resolve aliases relative to their defining configuration files.
+    /// Resolve relative aliases against their defining configuration files.
     #[must_use]
     pub fn aliases(&self) -> BTreeMap<String, PathBuf> {
         self.native
@@ -61,7 +61,15 @@ impl Language {
                 let configuration = Path::new(&alias.configuration);
                 let directory = configuration.parent().unwrap_or(configuration);
 
-                (alias.name.clone(), directory.join(&alias.value))
+                let target = Path::new(&alias.value);
+
+                let target = if target.starts_with("~") {
+                    target.to_owned()
+                } else {
+                    directory.join(target)
+                };
+
+                (alias.name.clone(), target)
             })
             .collect()
     }
