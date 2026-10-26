@@ -401,10 +401,18 @@ fn imported(
             let expression = if should_defer && let Some(expression) = project.imports.get(&key) {
                 expression.clone()
             } else {
-                let expression = project
+                let expression = if project
                     .workspace
-                    .import(module, target, is_instance)
-                    .map_err(failure)?;
+                    .can_import(module, target)
+                    .map_err(failure)?
+                {
+                    project
+                        .workspace
+                        .import(module, target, is_instance)
+                        .map_err(failure)?
+                } else {
+                    None
+                };
 
                 if should_defer
                     && project

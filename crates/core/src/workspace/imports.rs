@@ -116,6 +116,93 @@ impl Workspace {
 
         Ok(None)
     }
+
+    /// Check an auto-import's client/server compatibility.
+    ///
+    /// # Errors
+    /// Returns path, configuration, or sourcemap errors.
+    pub fn can_import(&self, module: &str, target: &str) -> Result<bool, Error> {
+        let module = identity(&self.root.join(module))?;
+        let target = paths::text(&identity(&self.root.join(target))?)?;
+        let scope = self.scope(&module)?;
+        let locations = instances::configuration(self, &scope, &module)?;
+        let registry = self.instances.borrow();
+
+        for location in locations {
+            let Some(instances) = registry.get(&location.hierarchy) else {
+                continue;
+            };
+
+            let source = Runtime::for_instance(instances, location.script);
+
+            for (index, instance) in instances.iter().enumerate() {
+                if instance.module.as_deref() == Some(&target)
+                    && !source.can_import(Runtime::for_instance(instances, Some(index)))
+                {
+                    return Ok(false);
+                }
+            }
+        }
+
+        Ok(true)
+    }
+}
+
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum Runtime {
+    Shared,
+    Client,
+    Server,
+}
+
+impl Runtime {
+    fn for_instance(instances: &[Instance], script: Option<usize>) -> Self {
+        let Some(mut index) = script else {
+            return Self::Shared;
+        };
+
+        match instances[index].class.as_str() {
+            "LocalScript" => return Self::Client,
+
+            "Script" => {
+                // shortcut: missing RunContext metadata, use it when available.
+                return if instances[index].module.as_deref().is_some_and(|path| {
+                    path.ends_with(".client.lua") || path.ends_with(".client.luau")
+                }) {
+                    Self::Client
+                } else {
+                    Self::Server
+                };
+            }
+
+            _ => {}
+        }
+
+        loop {
+            match instances[index].class.as_str() {
+                "ServerScriptService" | "ServerStorage" => return Self::Server,
+
+                "StarterPlayer"
+                | "StarterPlayerScripts"
+                | "StarterCharacterScripts"
+                | "StarterGui"
+                | "StarterPack"
+                | "ReplicatedFirst" => return Self::Client,
+
+                _ => {}
+            }
+
+            let Some(parent) = instances[index].parent else {
+                return Self::Shared;
+            };
+
+            index = parent;
+        }
+    }
+
+    fn can_import(self, target: Self) -> bool {
+        self == Self::Shared || target == Self::Shared || self == target
+    }
 }
 
 fn identity(path: &Path) -> Result<PathBuf, Error> {
