@@ -410,8 +410,7 @@ pub(super) fn will_rename(
         let future_module = relocated(Path::new(&module), &mappings);
         let is_moved = future_module != Path::new(&module);
 
-        let mut imports: BTreeMap<(usize, usize), BTreeSet<(String, String, bool)>> =
-            BTreeMap::new();
+        let mut imports = BTreeMap::new();
 
         for import in frontend.imports(&module).map_err(failure)? {
             if import.location.module != module || !Path::new(&import.target).is_absolute() {
@@ -422,7 +421,7 @@ pub(super) fn will_rename(
 
             imports
                 .entry((range.start, range.end))
-                .or_default()
+                .or_insert_with(BTreeSet::new)
                 .insert((import.target, import.identity, import.is_instance));
         }
 
