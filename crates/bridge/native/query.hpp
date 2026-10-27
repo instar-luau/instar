@@ -38,7 +38,7 @@ namespace instar::luau::query {
 
     rust::Vec<Occurrence> rename(
         Luau::Frontend &frontend, const Host &host, const Prepared &prepared, const std::string &name,
-        const std::vector<Entry> &targets, std::vector<bool> &declared
+        const Entry &target, bool &declared
     );
 
     rust::Vec<NativeHint> hints(

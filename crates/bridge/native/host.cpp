@@ -185,6 +185,10 @@ namespace instar::luau {
     }
 
     std::optional<Luau::SourceCode> Host::readSource(const Luau::ModuleName &name) {
+        if (frontend.cancellation()->requested()) {
+            throw std::runtime_error("Analysis interrupted.");
+        }
+
         hierarchy = nullptr;
 
         auto type = Luau::SourceCode::Module;
@@ -236,13 +240,8 @@ namespace instar::luau {
                 return std::nullopt;
             }
 
-            const auto targets = modules(navigation.current);
-
-            if (!frontend.hierarchy(context->name) && (targets.size() != 1 || targets.front() != navigation.current)) {
-                return std::nullopt;
-            }
-
-            return Luau::ModuleInfo{targets.size() == 1 ? targets.front() : navigation.current};
+            return Luau::ModuleInfo{
+                frontend.hierarchy(context->name) ? navigation.current : filesystem(navigation.current)};
         }
 
         InstanceQuery query;
@@ -370,6 +369,23 @@ namespace instar::luau {
         return resolve(name).modules;
     }
 
+    std::vector<std::string> Host::contexts(const Luau::ModuleName &name) const {
+        auto result = modules(name);
+        const auto identity = "instar://filesystem/" + name;
+
+        if (mappings.count(identity) && std::find(result.begin(), result.end(), identity) == result.end()) {
+            result.push_back(identity);
+        }
+
+        return result;
+    }
+
+    bool Host::is_instance(const Luau::ModuleName &name) const {
+        const auto found = mappings.find(name);
+
+        return found != mappings.end() && found->second.hierarchy.has_value();
+    }
+
     std::optional<std::string> Host::instance(const Luau::ModuleName &name) const {
         const auto &settings = resolve(name);
 
@@ -408,7 +424,8 @@ namespace instar::luau {
 
             auto settings = resolve(*mapping.source);
 
-            if (std::find(settings.modules.begin(), settings.modules.end(), name) != settings.modules.end()) {
+            if (!mapping.hierarchy ||
+                std::find(settings.modules.begin(), settings.modules.end(), name) != settings.modules.end()) {
                 settings.hierarchy = mapping.hierarchy;
                 settings.script = mapping.script;
             }
@@ -502,10 +519,17 @@ namespace instar::luau {
         }
 
         if (settings.modules.empty()) {
-            settings.modules.push_back(name);
+            settings.modules.push_back(filesystem(name));
         }
 
         return configurations.emplace(name, std::move(settings)).first->second;
+    }
+
+    std::string Host::filesystem(const std::string &name) const {
+        const auto identity = "instar://filesystem/" + name;
+        mappings.try_emplace(identity, Mapping{name, std::nullopt, std::nullopt, Luau::SourceCode::Module});
+
+        return identity;
     }
 
     const rust::Vec<Instance> &Host::load(const std::string &name) const {

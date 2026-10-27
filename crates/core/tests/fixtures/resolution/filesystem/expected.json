@@ -6,10 +6,13 @@
     ],
     "2": [
       "neighbor.luau"
+    ],
+    "6": [
+      "target.luau"
     ]
   },
   "suggestions": {
     "neighbor.luau": "\"./neighbor\"",
-    "target.luau": null
+    "target.luau": "\"./target\""
   }
 }

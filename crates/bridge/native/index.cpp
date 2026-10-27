@@ -1,6 +1,7 @@
 #include "index.hpp"
 
 #include "Luau/AstQuery.h"
+#include "host.hpp"
 
 #include <algorithm>
 #include <map>
@@ -551,8 +552,9 @@ namespace instar::luau {
         };
     }
 
-    bool is_same_declaration(const Declaration &left, const Declaration &right) {
-        return left.identity == right.identity && left.location == right.location;
+    bool is_same_declaration(const Host &host, const Declaration &left, const Declaration &right) {
+        return host.getHumanReadableModuleName(left.identity) == host.getHumanReadableModuleName(right.identity) &&
+               left.location == right.location;
     }
 
     std::optional<Declaration> definition(Luau::TypeId type, unsigned depth) {

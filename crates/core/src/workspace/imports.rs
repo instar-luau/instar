@@ -10,10 +10,23 @@ use crate::syntax::literal::quoted;
 
 use super::{Error, Workspace, environment, host, instances, paths};
 
+/// Navigation and expression form for a generated require argument.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ImportStyle {
+    /// An instance expression in the source's hierarchy.
+    Instance,
+
+    /// A string using the source's default navigation context.
+    String,
+
+    /// A filesystem string regardless of the source's instance mappings.
+    Filesystem,
+}
+
 impl Workspace {
     /// Generate a require argument for a source, using strings or instance navigation.
     ///
-    /// String targets use the requiring module's filesystem or instance context.
+    /// String targets use the selected filesystem or instance context.
     /// Future filesystem paths use lexical navigation beneath their nearest existing ancestor.
     /// Instance targets must identify one `ModuleScript` in the requiring source's hierarchy.
     ///
@@ -23,7 +36,7 @@ impl Workspace {
         &self,
         module: &str,
         target: &str,
-        is_instance: bool,
+        style: ImportStyle,
     ) -> Result<Option<String>, Error> {
         let module = identity(&self.root.join(module))?;
         let target = identity(&self.root.join(target))?;
@@ -39,7 +52,12 @@ impl Workspace {
 
         let scope = self.scope(&module)?;
 
-        if is_instance || !instances::configuration(self, &scope, &module)?.is_empty() {
+        let is_instance = style == ImportStyle::Instance;
+
+        if is_instance
+            || (style == ImportStyle::String
+                && !instances::configuration(self, &scope, &module)?.is_empty())
+        {
             let expression = expression(self, &module, &target, is_instance)?;
 
             return Ok(if is_instance {
@@ -47,12 +65,6 @@ impl Workspace {
             } else {
                 expression.as_deref().map(quoted)
             });
-        }
-
-        let target_scope = self.scope(&target)?;
-
-        if !instances::configuration(self, &target_scope, &target)?.is_empty() {
-            return Ok(None);
         }
 
         let source = host::logical(&module)?;

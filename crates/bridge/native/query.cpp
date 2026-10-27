@@ -982,7 +982,7 @@ namespace instar::luau::query {
 
     rust::Vec<Occurrence> rename(
         Luau::Frontend &frontend, const Host &host, const Prepared &prepared, const std::string &name,
-        const std::vector<Entry> &targets, std::vector<bool> &declared
+        const Entry &target, bool &declared
     ) {
         const auto &module = prepared.module;
         const auto &source = prepared.source;
@@ -994,18 +994,17 @@ namespace instar::luau::query {
         }
 
         const auto indexed = index(frontend, module, source);
-        const auto kind = targets.front().kind;
-        const bool is_type_namespace = targets.front().is_type_namespace;
+        const auto kind = target.kind;
+        const bool is_type_namespace = target.is_type_namespace;
 
-        const bool is_affected = std::any_of(targets.begin(), targets.end(), [&](const Entry &target) {
-            return target.declaration.identity == module.name ||
-                   std::any_of(indexed.entries.begin(), indexed.entries.end(), [&](const Entry &entry) {
-                       return is_same_declaration(target.declaration, entry.declaration) &&
-                              target.is_type_namespace == entry.is_type_namespace;
-                   });
-        });
+        const bool is_affected = host.getHumanReadableModuleName(target.declaration.identity) ==
+                                     host.getHumanReadableModuleName(module.name) ||
+                                 std::any_of(indexed.entries.begin(), indexed.entries.end(), [&](const Entry &entry) {
+                                     return is_same_declaration(host, target.declaration, entry.declaration) &&
+                                            target.is_type_namespace == entry.is_type_namespace;
+                                 });
 
-        if ((is_affected || kind == BindingKind::Property) && name != targets.front().name) {
+        if ((is_affected || kind == BindingKind::Property) && name != target.name) {
             if (kind == BindingKind::Property) {
                 if (indexed.properties.count(name)) {
                     throw std::invalid_argument("Rename would conflict with an existing property.");
@@ -1028,55 +1027,46 @@ namespace instar::luau::query {
         std::vector<std::pair<std::size_t, std::size_t>> edits;
 
         for (const auto &entry : indexed.entries) {
-            for (std::size_t target = 0; target < targets.size(); ++target) {
-                if (!is_same_declaration(targets[target].declaration, entry.declaration) ||
-                    targets[target].is_type_namespace != entry.is_type_namespace) {
-                    continue;
-                }
-
-                if (!entry.is_editable) {
-                    throw std::invalid_argument(
-                        "Rename is unavailable for the source representation of an occurrence."
-                    );
-                }
-
-                if (entry.is_type_namespace && name != targets.front().name) {
-                    for (const auto *node : Luau::findAstAncestryOfPosition(source, entry.location.begin, true)) {
-                        if (const auto *global = node->as<Luau::AstExprGlobal>();
-                            global && global->location == entry.location) {
-                            const auto scope = Luau::findScopeAtPosition(module, entry.location.begin);
-
-                            if (scope && scope->linearSearchForBinding(name)) {
-                                throw std::invalid_argument(
-                                    "Rename would capture an existing type-function value binding."
-                                );
-                            }
-                        }
-                    }
-                }
-
-                if (name == "typeof" && entry.role == OccurrenceRole::Declaration && entry.is_type_namespace) {
-                    for (const auto *node : Luau::findAstAncestryOfPosition(source, entry.location.begin, true)) {
-                        const auto *alias = node->as<Luau::AstStatTypeAlias>();
-                        const auto *function = node->as<Luau::AstStatTypeFunction>();
-
-                        if ((alias && alias->nameLocation == entry.location) ||
-                            (function && function->nameLocation == entry.location)) {
-                            throw std::invalid_argument("Type declarations cannot be named `typeof`.");
-                        }
-                    }
-                }
-
-                declared[target] = declared[target] || entry.role == OccurrenceRole::Declaration;
-                result.push_back(occurrence(host, module.name, entry));
-
-                edits.emplace_back(
-                    offset(prepared.text, entry.location.begin),
-                    offset(prepared.text, entry.location.end)
-                );
-
-                break;
+            if (!is_same_declaration(host, target.declaration, entry.declaration) ||
+                target.is_type_namespace != entry.is_type_namespace) {
+                continue;
             }
+
+            if (!entry.is_editable) {
+                throw std::invalid_argument("Rename is unavailable for the source representation of an occurrence.");
+            }
+
+            if (entry.is_type_namespace && name != target.name) {
+                for (const auto *node : Luau::findAstAncestryOfPosition(source, entry.location.begin, true)) {
+                    if (const auto *global = node->as<Luau::AstExprGlobal>();
+                        global && global->location == entry.location) {
+                        const auto scope = Luau::findScopeAtPosition(module, entry.location.begin);
+
+                        if (scope && scope->linearSearchForBinding(name)) {
+                            throw std::invalid_argument(
+                                "Rename would capture an existing type-function value binding."
+                            );
+                        }
+                    }
+                }
+            }
+
+            if (name == "typeof" && entry.role == OccurrenceRole::Declaration && entry.is_type_namespace) {
+                for (const auto *node : Luau::findAstAncestryOfPosition(source, entry.location.begin, true)) {
+                    const auto *alias = node->as<Luau::AstStatTypeAlias>();
+                    const auto *function = node->as<Luau::AstStatTypeFunction>();
+
+                    if ((alias && alias->nameLocation == entry.location) ||
+                        (function && function->nameLocation == entry.location)) {
+                        throw std::invalid_argument("Type declarations cannot be named `typeof`.");
+                    }
+                }
+            }
+
+            declared = declared || entry.role == OccurrenceRole::Declaration;
+            result.push_back(occurrence(host, module.name, entry));
+
+            edits.emplace_back(offset(prepared.text, entry.location.begin), offset(prepared.text, entry.location.end));
         }
 
         if (!edits.empty()) {
@@ -1129,7 +1119,8 @@ namespace instar::luau::query {
                 result.push_back(
                     {locate(host, name, call->args.data[0]->location),
                         host.getHumanReadableModuleName(information.name),
-                        information.name}
+                        information.name,
+                        host.is_instance(information.name)}
                 );
             }
         }

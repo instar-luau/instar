@@ -117,6 +117,16 @@ pub(super) fn references(
     let document = project.snapshot(&module)?;
     let offset = document.offset(position.position, project.encoding)?;
     let (line, column) = document.native(position.position, project.encoding)?;
+    let mut modules = project.index()?;
+
+    if !modules.contains(&module) {
+        modules.push(module.clone());
+    }
+
+    for module in &modules {
+        frontend.imports(module).map_err(failure)?;
+    }
+
     let occurrences = frontend.occurrences(&module, &[]).map_err(failure)?;
     let declarations = declarations(&occurrences, &module, line, column);
     let mut result = Vec::new();
@@ -147,12 +157,6 @@ pub(super) fn references(
                     result.push(location);
                 }
             }
-        }
-
-        let mut modules = project.index()?;
-
-        if !modules.contains(&module) {
-            modules.push(module);
         }
 
         for module in modules {

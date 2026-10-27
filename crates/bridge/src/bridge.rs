@@ -363,6 +363,9 @@ pub(crate) mod bindings {
 
         /// Resolved native module identity.
         identity: String,
+
+        /// Whether the target uses instance navigation.
+        is_instance: bool,
     }
 
     struct Text {

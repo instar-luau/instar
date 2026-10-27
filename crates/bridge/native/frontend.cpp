@@ -2,9 +2,7 @@
 
 #include "Luau/BuiltinDefinitions.h"
 #include "Luau/Common.h"
-#include "Luau/Parser.h"
 #include "Luau/RequireTracer.h"
-#include "Luau/TypeCheckLimits.h"
 #include "diagnostic.hpp"
 #include "environment.hpp"
 #include "hover.hpp"
@@ -117,7 +115,6 @@ namespace instar::luau {
 
             return std::make_tuple(
                 std::string(source.module),
-                std::string(source.identity),
                 Luau::Position{range.start.line, range.start.column},
                 Luau::Position{range.end.line, range.end.column},
                 is_type_namespace
@@ -228,7 +225,7 @@ namespace instar::luau {
     void Frontend::invalidate(rust::Str module) {
         const std::string name(module);
 
-        for (const std::string &identity : host.modules(name)) {
+        for (const std::string &identity : host.contexts(name)) {
             dirty(identity);
         }
 
@@ -352,7 +349,7 @@ namespace instar::luau {
     rust::Vec<Occurrence> Frontend::occurrences(rust::Str module, rust::Slice<const Occurrence> declarations) {
         rust::Vec<Occurrence> result;
 
-        for (const auto &name : host.modules(std::string(module))) {
+        for (const auto &name : host.contexts(std::string(module))) {
             if (options.cancellationToken->requested()) {
                 throw std::runtime_error("Analysis interrupted.");
             }
@@ -360,7 +357,7 @@ namespace instar::luau {
             auto found = indexes.find(name);
 
             if (found == indexes.end()) {
-                prepare(module);
+                prepare(name);
                 const auto [checked, source] = checked_module(*frontend, name);
                 Occurrences occurrences{index(*frontend, *checked, source).entries, {}};
 
@@ -402,58 +399,72 @@ namespace instar::luau {
     ) {
         const std::string name(replacement);
         query::validate_identifier(name);
-        std::vector<Entry> targets;
+        std::optional<Entry> target;
         std::set<std::string> sources{std::string(module)};
 
         for (const auto &candidate : candidates) {
             sources.emplace(std::string(candidate));
         }
 
-        for (const auto &identity : prepare(module)) {
+        for (const auto &source : sources) {
+            imports(source);
+        }
+
+        for (const auto &identity : host.contexts(std::string(module))) {
+            prepare(identity);
             const auto [checked, source] = checked_module(*frontend, identity);
             const auto text = semantic_text(host, identity);
 
             auto entry = query::target(*frontend, {*checked, source, text}, {line, column});
 
-            if (!targets.empty()) {
-                const auto &previous = targets.front();
+            if (target) {
+                const auto &previous = *target;
 
                 if (previous.kind != entry.kind || previous.name != entry.name ||
                     previous.is_type_namespace != entry.is_type_namespace) {
-                    throw std::invalid_argument("Rename target differs between instance contexts.");
+                    throw std::invalid_argument("Rename target differs between module contexts.");
                 }
 
                 if (host.getHumanReadableModuleName(previous.declaration.identity) !=
                         host.getHumanReadableModuleName(entry.declaration.identity) ||
                     previous.declaration.location != entry.declaration.location) {
-                    throw std::invalid_argument("Rename declaration differs between instance contexts.");
+                    throw std::invalid_argument("Rename declaration differs between module contexts.");
                 }
             }
 
             sources.insert(host.getHumanReadableModuleName(entry.declaration.identity));
-            targets.push_back(std::move(entry));
+            target = std::move(entry);
         }
 
         rust::Vec<Occurrence> result;
 
-        if (targets.empty()) {
+        if (!target) {
             return result;
         }
 
-        std::vector<bool> declared(targets.size(), false);
+        bool declared = false;
 
         for (const auto &source : sources) {
-            for (const auto &identity : prepare(source)) {
+            for (const auto &identity : host.contexts(source)) {
+                prepare(identity);
                 const auto [checked, syntax] = checked_module(*frontend, identity);
                 const auto text = semantic_text(host, identity);
+                bool has_declaration = false;
 
-                for (auto &value : query::rename(*frontend, host, {*checked, syntax, text}, name, targets, declared)) {
+                for (auto &value :
+                    query::rename(*frontend, host, {*checked, syntax, text}, name, *target, has_declaration)) {
                     result.push_back(std::move(value));
                 }
+
+                if (source == host.getHumanReadableModuleName(target->declaration.identity) && !has_declaration) {
+                    throw std::invalid_argument("Native rename validation requires an editable source declaration.");
+                }
+
+                declared = declared || has_declaration;
             }
         }
 
-        if (std::find(declared.begin(), declared.end(), false) != declared.end()) {
+        if (!declared) {
             throw std::invalid_argument("Native rename validation requires an editable source declaration.");
         }
 
@@ -520,52 +531,27 @@ namespace instar::luau {
     rust::Vec<Import> Frontend::imports(rust::Str module) {
         try {
             rust::Vec<Import> result;
-            Luau::TypeCheckLimits limits;
-            limits.cancellationToken = options.cancellationToken;
 
             if (options.cancellationToken->requested()) {
                 throw std::runtime_error("Analysis interrupted.");
             }
 
-            for (const auto &name : host.modules(std::string(module))) {
+            for (const auto &name : host.contexts(std::string(module))) {
                 if (options.cancellationToken->requested() ||
                     !callbacks.progress(host.getHumanReadableModuleName(name), false)) {
                     throw std::runtime_error("Analysis interrupted.");
                 }
 
-                const auto cached = frontend->requireTrace.find(name);
+                frontend->parse(name);
+                const auto *source = frontend->getSourceModule(name);
 
-                if (cached != frontend->requireTrace.end() && !frontend->isDirty(name)) {
-                    for (auto &value : query::imports(host, name, cached->second)) {
+                if (!source) {
+                    throw std::runtime_error("Source is unavailable for import resolution.");
+                }
+
+                if (const auto trace = frontend->requireTrace.find(name); trace != frontend->requireTrace.end()) {
+                    for (auto &value : query::imports(host, name, trace->second)) {
                         result.push_back(std::move(value));
-                    }
-                } else {
-                    const auto text = host.readSource(name);
-
-                    if (!text) {
-                        throw std::runtime_error("Source is unavailable for import resolution.");
-                    }
-
-                    Luau::SourceModule source;
-
-                    const auto parsed = Luau::Parser::parse(
-                        text->source.data(),
-                        text->source.size(),
-                        *source.names,
-                        *source.allocator,
-                        host.getConfig(name, limits).parseOptions
-                    );
-
-                    if (options.cancellationToken->requested()) {
-                        throw std::runtime_error("Analysis interrupted.");
-                    }
-
-                    if (parsed.root) {
-                        const auto trace = Luau::traceRequires(&host, parsed.root, name, limits);
-
-                        for (auto &value : query::imports(host, name, trace)) {
-                            result.push_back(std::move(value));
-                        }
                     }
                 }
 
@@ -580,7 +566,11 @@ namespace instar::luau {
             const auto message =
                 failure.diagnostics.empty() ? "Import resolution failed." : std::string(failure.diagnostics[0].message);
 
+            clear();
             throw std::runtime_error(message);
+        } catch (...) {
+            clear();
+            throw;
         }
     }
 

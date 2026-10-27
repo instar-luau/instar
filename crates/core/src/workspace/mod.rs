@@ -20,6 +20,7 @@ pub use self::{
     discovery::{configuration_files, is_configuration},
     error::Error,
     generation::{GeneratorReporter, Generators},
+    imports::ImportStyle,
     instances::Sourcemap,
     model::Workspace,
     observations::Observations,

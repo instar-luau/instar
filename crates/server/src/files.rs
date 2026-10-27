@@ -13,7 +13,7 @@ use instar_bridge::Frontend;
 
 use instar_core::{
     analysis::{self, Edit, ImportExpression},
-    workspace::{Generators, Workspace, is_configuration},
+    workspace::{Generators, ImportStyle, Workspace, is_configuration},
 };
 
 use tokio_util::sync::CancellationToken;
@@ -399,11 +399,19 @@ pub(super) fn will_rename(
 
     let mut changes = BTreeMap::new();
 
-    for module in project.index()? {
+    let modules = project.index()?;
+
+    for module in &modules {
+        frontend.imports(module).map_err(failure)?;
+    }
+
+    for module in modules {
         let document = project.snapshot(&module)?;
         let future_module = relocated(Path::new(&module), &mappings);
         let is_moved = future_module != Path::new(&module);
-        let mut imports: BTreeMap<(usize, usize), BTreeSet<(String, String)>> = BTreeMap::new();
+
+        let mut imports: BTreeMap<(usize, usize), BTreeSet<(String, String, bool)>> =
+            BTreeMap::new();
 
         for import in frontend.imports(&module).map_err(failure)? {
             if import.location.module != module || !Path::new(&import.target).is_absolute() {
@@ -415,7 +423,7 @@ pub(super) fn will_rename(
             imports
                 .entry((range.start, range.end))
                 .or_default()
-                .insert((import.target, import.identity));
+                .insert((import.target, import.identity, import.is_instance));
         }
 
         if project.workspace.snapshot(&module).as_deref() != Some(document.text.as_ref()) {
@@ -438,9 +446,9 @@ pub(super) fn will_rename(
 
         for ((start, end), targets) in imports {
             if !is_moved
-                && targets
-                    .iter()
-                    .all(|(target, _)| relocated(Path::new(target), &mappings) == Path::new(target))
+                && targets.iter().all(|(target, _, _)| {
+                    relocated(Path::new(target), &mappings) == Path::new(target)
+                })
             {
                 continue;
             }
@@ -451,7 +459,7 @@ pub(super) fn will_rename(
                 ));
             }
 
-            let (target, identity) = targets
+            let (target, _, uses_instances) = targets
                 .into_iter()
                 .next()
                 .expect("Internal error: import target is missing.");
@@ -476,7 +484,7 @@ pub(super) fn will_rename(
 
             let is_instance = matches!(style.expression, ImportExpression::Instance(_));
 
-            if matches!(&style.expression, ImportExpression::Path(_)) && identity != target {
+            if matches!(&style.expression, ImportExpression::Path(_)) && uses_instances {
                 return Err(reason(
                     "An instance-backed string import cannot be updated safely before its sourcemap is updated.",
                 ));
@@ -494,7 +502,15 @@ pub(super) fn will_rename(
 
             let replacement = project
                 .workspace
-                .import(&future_module, &future_target, is_instance)
+                .import(
+                    &future_module,
+                    &future_target,
+                    if is_instance {
+                        ImportStyle::Instance
+                    } else {
+                        ImportStyle::Filesystem
+                    },
+                )
                 .map_err(failure)?
                 .ok_or_else(|| {
                     reason(if is_instance {

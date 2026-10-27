@@ -43,6 +43,8 @@ namespace instar::luau {
         void bind(Luau::Frontend &native, const Luau::ModuleName &name, const Luau::ScopePtr &scope) const;
 
         std::vector<std::string> modules(const Luau::ModuleName &name) const;
+        std::vector<std::string> contexts(const Luau::ModuleName &name) const;
+        bool is_instance(const Luau::ModuleName &name) const;
         std::optional<std::string> instance(const Luau::ModuleName &name) const;
         void invalidate(const Luau::ModuleName &name);
         void clear();
@@ -58,12 +60,13 @@ namespace instar::luau {
 
         struct Mapping {
             std::optional<std::string> source;
-            std::string hierarchy;
-            size_t script;
+            std::optional<std::string> hierarchy;
+            std::optional<size_t> script;
             Luau::SourceCode::Type type;
         };
 
         const Settings &resolve(const Luau::ModuleName &name) const;
+        std::string filesystem(const std::string &name) const;
         const rust::Vec<Instance> &load(const std::string &name) const;
 
         const Context &callbacks;

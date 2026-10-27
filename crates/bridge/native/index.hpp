@@ -12,6 +12,8 @@
 #include <vector>
 
 namespace instar::luau {
+    class Host;
+
     struct Declaration {
         std::string identity;
         Luau::Location location;
@@ -39,7 +41,7 @@ namespace instar::luau {
 
     Index index(Luau::Frontend &frontend, const Luau::Module &module, const Luau::SourceModule &source);
     const Entry *at(const Index &index, Luau::Position position);
-    bool is_same_declaration(const Declaration &left, const Declaration &right);
+    bool is_same_declaration(const Host &host, const Declaration &left, const Declaration &right);
     std::optional<Declaration> definition(Luau::TypeId type, unsigned depth = 0);
     std::optional<Declaration> property_declaration(Luau::TypeId type, const std::string &name);
     Luau::TypeId local_type(const Luau::Module &module, Luau::AstLocal *local);

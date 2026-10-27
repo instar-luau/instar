@@ -69,8 +69,7 @@ namespace instar::luau {
         struct Occurrences {
             std::vector<Entry> entries;
 
-            std::map<
-                std::tuple<std::string, std::string, Luau::Position, Luau::Position, bool>, std::vector<std::size_t>>
+            std::map<std::tuple<std::string, Luau::Position, Luau::Position, bool>, std::vector<std::size_t>>
                 declarations;
         };
 

@@ -5,7 +5,7 @@ use instar_bridge::{Completion, CompletionKind, Frontend, Parentheses};
 use instar_core::{
     analysis::{self, TokenKind, is_identifier},
     lint::Symbols,
-    workspace::{Purpose, SymbolOutcome},
+    workspace::{ImportStyle, Purpose, SymbolOutcome},
 };
 
 use serde::{Deserialize, Serialize};
@@ -396,6 +396,13 @@ fn imported(
             }
 
             let is_instance = project.configuration.imports.require == Require::Instance;
+
+            let style = if is_instance {
+                ImportStyle::Instance
+            } else {
+                ImportStyle::String
+            };
+
             let key = (module.to_owned(), target.clone(), is_instance);
 
             let expression = if should_defer && let Some(expression) = project.imports.get(&key) {
@@ -408,7 +415,7 @@ fn imported(
                 {
                     project
                         .workspace
-                        .import(module, target, is_instance)
+                        .import(module, target, style)
                         .map_err(failure)?
                 } else {
                     None

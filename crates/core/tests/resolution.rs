@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, fs, path::Path};
 
 use datatest_stable::{Result, harness};
 use instar_bridge::{Context, Frontend};
-use instar_core::workspace::Workspace;
+use instar_core::workspace::{ImportStyle, Workspace};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
@@ -53,7 +53,10 @@ fn fixtures(input: &Path) -> Result<()> {
     let mut suggestions = BTreeMap::new();
 
     for target in expected.suggestions.keys() {
-        suggestions.insert(target.clone(), workspace.import(&module, target, false)?);
+        suggestions.insert(
+            target.clone(),
+            workspace.import(&module, target, ImportStyle::String)?,
+        );
     }
 
     let actual = Expected {
