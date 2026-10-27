@@ -51,8 +51,6 @@ namespace instar::luau {
         std::unordered_map<std::string, Luau::TypeId> identities;
     };
 
-    std::string instance_identity(const std::string &hierarchy, size_t script);
-
     std::optional<Luau::TypeId> lookup_instance(Luau::TypeId type, InstanceQuery query, std::string_view name);
 }
 

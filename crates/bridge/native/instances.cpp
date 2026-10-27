@@ -4,6 +4,7 @@
 #include "Luau/Type.h"
 #include "Luau/TypePack.h"
 #include "Luau/TypeUtils.h"
+#include "identity.hpp"
 #include "instar-bridge/src/bridge.rs.h"
 
 #include <memory>
@@ -152,7 +153,7 @@ namespace instar::luau {
             data->name = std::string(node.name);
             data->class_name = std::string(node.class_name);
 
-            data->identity = instance_identity(hierarchy, index);
+            data->identity = encode(InstanceIdentity{hierarchy, index, std::nullopt});
 
             if (node.has_parent) {
                 data->parent = types[node.parent];
@@ -333,10 +334,6 @@ namespace instar::luau {
         }
 
         return std::nullopt;
-    }
-
-    std::string instance_identity(const std::string &hierarchy, size_t script) {
-        return "instar://" + hierarchy + "/" + std::to_string(script);
     }
 
     std::optional<Luau::TypeId> lookup_instance(Luau::TypeId type, InstanceQuery query, std::string_view name) {

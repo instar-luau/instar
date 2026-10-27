@@ -59,6 +59,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .file("native/types.cpp")
         .file("native/cancellation.cpp")
         .file("native/host.cpp")
+        .file("native/identity.cpp")
         .file("native/configuration.cpp")
         .file("native/environment.cpp")
         .file("native/enumerations.cpp")

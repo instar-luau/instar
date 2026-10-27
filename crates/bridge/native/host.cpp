@@ -371,7 +371,7 @@ namespace instar::luau {
 
     std::vector<std::string> Host::contexts(const Luau::ModuleName &name) const {
         auto result = modules(name);
-        const auto identity = "instar://filesystem/" + name;
+        const auto identity = encode(FilesystemIdentity{name});
 
         if (mappings.count(identity) && std::find(result.begin(), result.end(), identity) == result.end()) {
             result.push_back(identity);
@@ -383,7 +383,7 @@ namespace instar::luau {
     bool Host::is_instance(const Luau::ModuleName &name) const {
         const auto found = mappings.find(name);
 
-        return found != mappings.end() && found->second.hierarchy.has_value();
+        return found != mappings.end() && std::holds_alternative<InstanceIdentity>(found->second.identity);
     }
 
     std::optional<std::string> Host::instance(const Luau::ModuleName &name) const {
@@ -393,7 +393,7 @@ namespace instar::luau {
             return std::nullopt;
         }
 
-        return instance_identity(*settings.hierarchy, *settings.script);
+        return encode(InstanceIdentity{*settings.hierarchy, *settings.script, std::nullopt});
     }
 
     void Host::invalidate(const Luau::ModuleName &name) {
@@ -424,10 +424,14 @@ namespace instar::luau {
 
             auto settings = resolve(*mapping.source);
 
-            if (!mapping.hierarchy ||
-                std::find(settings.modules.begin(), settings.modules.end(), name) != settings.modules.end()) {
-                settings.hierarchy = mapping.hierarchy;
-                settings.script = mapping.script;
+            if (const auto *instance = std::get_if<InstanceIdentity>(&mapping.identity)) {
+                if (std::find(settings.modules.begin(), settings.modules.end(), name) != settings.modules.end()) {
+                    settings.hierarchy = instance->hierarchy;
+                    settings.script = instance->script;
+                }
+            } else {
+                settings.hierarchy.reset();
+                settings.script.reset();
             }
 
             settings.modules = {name};
@@ -503,12 +507,14 @@ namespace instar::luau {
                     throw std::invalid_argument("Script index is outside its instance hierarchy.");
                 }
 
-                auto identity = instance_identity(std::string(location.hierarchy), location.script);
+                auto identity =
+                    encode(InstanceIdentity{std::string(location.hierarchy), location.script, std::nullopt});
 
                 if (!mappings.at(identity).source) {
                     auto mapping = mappings.at(identity);
                     mapping.source = name;
-                    identity += ":" + name;
+                    std::get<InstanceIdentity>(mapping.identity).source = name;
+                    identity = encode(mapping.identity);
                     mappings.insert_or_assign(identity, std::move(mapping));
                 }
 
@@ -526,8 +532,9 @@ namespace instar::luau {
     }
 
     std::string Host::filesystem(const std::string &name) const {
-        const auto identity = "instar://filesystem/" + name;
-        mappings.try_emplace(identity, Mapping{name, std::nullopt, std::nullopt, Luau::SourceCode::Module});
+        const FilesystemIdentity context{name};
+        const auto identity = encode(context);
+        mappings.try_emplace(identity, Mapping{context, name, Luau::SourceCode::Module});
 
         return identity;
     }
@@ -541,14 +548,14 @@ namespace instar::luau {
 
         for (size_t script = 0; script < instances.size(); ++script) {
             const auto &instance = instances[script];
+            const InstanceIdentity context{name, script, std::nullopt};
 
             mappings.emplace(
-                instance_identity(name, script),
-                Mapping{instance.module.has_value && instance.class_name == "ModuleScript"
-                            ? std::optional<std::string>{std::string(instance.module.value)}
-                            : std::nullopt,
-                    name,
-                    script,
+                encode(context),
+                Mapping{context,
+                    instance.module.has_value && instance.class_name == "ModuleScript"
+                        ? std::optional<std::string>{std::string(instance.module.value)}
+                        : std::nullopt,
                     instance.class_name == "ModuleScript" ? Luau::SourceCode::Module : Luau::SourceCode::Script}
             );
         }

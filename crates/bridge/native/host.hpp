@@ -4,6 +4,7 @@
 #include "Luau/ConfigResolver.h"
 #include "Luau/FileResolver.h"
 #include "flags.hpp"
+#include "identity.hpp"
 #include "instances.hpp"
 
 #include <map>
@@ -59,9 +60,8 @@ namespace instar::luau {
         };
 
         struct Mapping {
+            Identity identity;
             std::optional<std::string> source;
-            std::optional<std::string> hierarchy;
-            std::optional<size_t> script;
             Luau::SourceCode::Type type;
         };
 
