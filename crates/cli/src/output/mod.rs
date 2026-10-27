@@ -1,6 +1,8 @@
 mod delivery;
 mod diagnostics;
+mod highlight;
 mod logging;
+mod preview;
 mod progress;
 mod publication;
 mod summary;

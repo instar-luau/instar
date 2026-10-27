@@ -4,9 +4,8 @@ use std::{
 };
 
 use eyre::{Report, Result, WrapErr as _};
-use similar::TextDiff;
 
-use super::summary::Summary;
+use super::{preview, summary::Summary};
 
 use crate::{
     arguments::Operation,
@@ -122,12 +121,17 @@ fn changes(
         if should_preview && is_different {
             let name = path.display().to_string();
 
-            write!(
-                output,
-                "{}",
-                TextDiff::from_lines(proposed.source.text.as_ref(), &proposed.text)
-                    .unified_diff()
-                    .header(&name, &name)
+            preview::write(
+                &mut output,
+                &name,
+                proposed.source.text.as_ref(),
+                &proposed.text,
+                project
+                    .workspace
+                    .formatting(&proposed.source.module)?
+                    .settings()
+                    .indent_width
+                    .get(),
             )
             .wrap_err("Could not write the preview to stdout.")?;
         } else if should_check {

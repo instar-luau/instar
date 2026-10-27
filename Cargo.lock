@@ -1121,6 +1121,7 @@ dependencies = [
  "miette",
  "notify",
  "notify-debouncer-full",
+ "owo-colors",
  "serde_json",
  "similar",
  "tempfile",

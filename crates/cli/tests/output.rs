@@ -9,12 +9,12 @@ use std::{
 
 const EXECUTABLE: &str = env!("CARGO_BIN_EXE_instar");
 
-fn format(flags: &[&str], source: &str) -> Result<Output, Box<dyn Error>> {
+fn format(flags: &[&str], color: &str, source: &str) -> Result<Output, Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
 
     let mut child = Command::new(EXECUTABLE)
+        .args(["--color", color, "format", "-"])
         .args(flags)
-        .args(["--color", "never", "format", "-"])
         .arg("--root")
         .arg(directory.path())
         .stdin(Stdio::piped())
@@ -40,7 +40,7 @@ fn modes() -> Result<(), Box<dyn Error>> {
         (vec!["--verbose", "--debug"], true, true, false),
         (vec!["--quiet"], false, false, true),
     ] {
-        let output = format(&flags, "return 1\n")?;
+        let output = format(&flags, "never", "return 1\n")?;
         let stderr = String::from_utf8(output.stderr)?;
         assert!(output.status.success(), "{flags:?}: {stderr}");
         assert_eq!(String::from_utf8(output.stdout)?, "return 1\n");
@@ -112,7 +112,7 @@ fn conflicts() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn diagnostics() -> Result<(), Box<dyn Error>> {
-    let output = format(&["--quiet"], "local =\n")?;
+    let output = format(&["--quiet"], "never", "local =\n")?;
     let stderr = String::from_utf8(output.stderr)?;
     assert_eq!(output.status.code(), Some(1), "{stderr}");
     assert!(stderr.lines().any(|line| line == "format"), "{stderr}");
@@ -156,6 +156,71 @@ fn required() -> Result<(), Box<dyn Error>> {
         stderr.contains("error: Could not resolve project root"),
         "{stderr}"
     );
+
+    Ok(())
+}
+
+#[test]
+fn highlighting() -> Result<(), Box<dyn Error>> {
+    for ending in ["\n", "\r\n"] {
+        let source = [
+            "local  value=[[",
+            "αβ",
+            "first",
+            "second",
+            "third",
+            "]]",
+            "return value",
+        ]
+        .join(ending);
+
+        let plain = format(&["--quiet", "--preview"], "never", &source)?;
+        let colored = format(&["--quiet", "--preview"], "always", &source)?;
+        assert!(plain.status.success());
+        assert!(colored.status.success());
+
+        let plain = String::from_utf8(plain.stdout)?;
+        let colored = String::from_utf8(colored.stdout)?;
+
+        assert!(
+            colored.contains("\u{1b}[35;48;2;61;28;32mlocal\u{1b}[0m"),
+            "{colored}"
+        );
+
+        assert!(colored.contains("48;2;102;39;46m"), "{colored}");
+        assert!(colored.contains("48;2;35;83;58m"), "{colored}");
+        assert!(!colored.contains("\u{1b}[K"), "{colored}");
+        assert!(plain.contains("\\ No newline at end of file"), "{plain}");
+        assert_eq!(console::strip_ansi_codes(&colored), plain);
+
+        let plain = format(&["--quiet"], "never", &source)?;
+        let colored = format(&["--quiet"], "always", &source)?;
+        assert!(plain.status.success());
+        assert!(colored.status.success());
+        assert_eq!(colored.stdout, plain.stdout);
+
+        let source = [
+            "local value = [[",
+            "first",
+            "second",
+            "αβ",
+            "third",
+            "]]",
+            "local =",
+        ]
+        .join(ending);
+
+        let plain = format(&["--quiet"], "never", &source)?;
+        let colored = format(&["--quiet"], "always", &source)?;
+        assert_eq!(plain.status.code(), Some(1));
+        assert_eq!(colored.status.code(), Some(1));
+        assert_eq!(colored.stdout, b"");
+
+        let plain = String::from_utf8(plain.stderr)?;
+        let colored = String::from_utf8(colored.stderr)?;
+        assert!(colored.contains("\u{1b}[32m]]\u{1b}[0m"), "{colored}");
+        assert_eq!(console::strip_ansi_codes(&colored), plain);
+    }
 
     Ok(())
 }

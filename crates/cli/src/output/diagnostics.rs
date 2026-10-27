@@ -16,6 +16,7 @@ use miette::{
 
 use super::{
     delivery::{self, HAS_DETAILS, Mode},
+    highlight::Highlighter,
     logging::Capture,
 };
 
@@ -214,7 +215,7 @@ pub(crate) fn findings(root: &Path, findings: Vec<Finding>) -> Result<()> {
     Ok(())
 }
 
-fn render(diagnostic: &dyn Diagnostic, severity: Severity) -> Result<()> {
+fn render(diagnostic: &View<'_>, severity: Severity) -> Result<()> {
     let mut theme = match (delivery::is_interactive(), console::colors_enabled_stderr()) {
         (true, true) => GraphicalTheme::unicode(),
         (true, false) => GraphicalTheme::unicode_nocolor(),
@@ -242,12 +243,25 @@ fn render(diagnostic: &dyn Diagnostic, severity: Severity) -> Result<()> {
 
     let mut output = String::new();
 
-    GraphicalReportHandler::new_themed(theme)
+    let handler = GraphicalReportHandler::new_themed(theme)
         .with_width(usize::from(console::Term::stderr().size().1).max(20))
         .with_links(false)
-        .with_wrap_lines(false)
-        .without_syntax_highlighting()
-        .render_report(&mut output, diagnostic)?;
+        .with_wrap_lines(false);
+
+    let handler = if console::colors_enabled_stderr() {
+        let sources = diagnostic.source.iter().chain(
+            diagnostic
+                .related
+                .iter()
+                .filter_map(|related| related.source.as_ref()),
+        );
+
+        handler.with_syntax_highlighting(Highlighter::new(sources))
+    } else {
+        handler.without_syntax_highlighting()
+    };
+
+    handler.render_report(&mut output, diagnostic)?;
 
     delivery::suspend(|| io::stderr().lock().write_all(output.as_bytes())).map_err(Report::from)
 }

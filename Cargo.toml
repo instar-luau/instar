@@ -34,6 +34,7 @@ line-index = "0.1"
 miette = { version = "7", default-features = false, features = ["derive", "fancy-no-syscall"] }
 notify = "9.0.0-rc.6"
 notify-debouncer-full = "0.8.0-rc.2"
+owo-colors = "4"
 process-wrap = { version = "10.0.1", default-features = false, features = ["job-object", "kill-on-drop", "tokio1"] }
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 pulldown-cmark-to-cmark = "23"

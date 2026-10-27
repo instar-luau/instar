@@ -41,8 +41,16 @@ struct Display {
 
 pub(crate) fn initialize(arguments: &Arguments) -> Result<()> {
     match arguments.color.unwrap_or_default() {
-        ColorChoice::Always => console::set_colors_enabled_stderr(true),
-        ColorChoice::Never => console::set_colors_enabled_stderr(false),
+        ColorChoice::Always => {
+            console::set_colors_enabled(true);
+            console::set_colors_enabled_stderr(true);
+        }
+
+        ColorChoice::Never => {
+            console::set_colors_enabled(false);
+            console::set_colors_enabled_stderr(false);
+        }
+
         ColorChoice::Auto => {}
     }
 

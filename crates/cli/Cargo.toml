@@ -26,8 +26,9 @@ indicatif.workspace = true
 miette.workspace = true
 notify.workspace = true
 notify-debouncer-full.workspace = true
+owo-colors.workspace = true
 serde_json.workspace = true
-similar.workspace = true
+similar = { workspace = true, features = ["inline"] }
 tempfile.workspace = true
 tokio-util.workspace = true
 toml_edit.workspace = true
