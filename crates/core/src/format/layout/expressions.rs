@@ -17,6 +17,34 @@ impl Builder<'_, '_> {
         operator: TokenIndex,
         right: NodeIndex,
     ) -> Vec<Document> {
+        if matches!(
+            self.tree.token(operator).kind,
+            TokenKind::Symbol(
+                Symbol::AddAssignment
+                    | Symbol::SubtractAssignment
+                    | Symbol::MultiplyAssignment
+                    | Symbol::DivideAssignment
+                    | Symbol::FloorDivideAssignment
+                    | Symbol::ModuloAssignment
+                    | Symbol::PowerAssignment
+                    | Symbol::ConcatenateAssignment
+            )
+        ) {
+            let mut content = self.node(left);
+            content.extend(self.gap(self.tree.node(left).tokens.end.get() - 1, operator.get()));
+            content.push(Document::Token(operator));
+
+            let node = self.tree.node(right);
+
+            content.extend(self.value(
+                operator,
+                node.tokens.start.get()..node.tokens.end.get(),
+                self.node(right),
+            ));
+
+            return content;
+        }
+
         let family = operator_family(self.tree.token(operator).kind);
         let mut pending = vec![(Some(operator), right), (None, left)];
         let mut terms = Vec::new();
@@ -455,7 +483,7 @@ impl Builder<'_, '_> {
             && !self.has_comments(node.tokens.end.get()..interior.end)
     }
 
-    fn breakpoint(&self, left: usize, right: usize, spaces: usize) -> Vec<Document> {
+    pub(super) fn breakpoint(&self, left: usize, right: usize, spaces: usize) -> Vec<Document> {
         if self.has_comments(left + 1..right) {
             self.gap(left, right)
         } else {

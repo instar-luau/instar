@@ -125,7 +125,7 @@ impl Builder<'_, '_> {
             previous = position;
         }
 
-        if previous != left {
+        if previous != left || self.tree.tokens[left].kind == TokenKind::Comment {
             let lines = self.lines(
                 self.tree.tokens[previous].span.end,
                 self.tree.tokens[right].span.start,
@@ -369,6 +369,14 @@ impl Builder<'_, '_> {
                     | TokenKind::Name
                     | TokenKind::Symbol(
                         Symbol::Assignment
+                            | Symbol::AddAssignment
+                            | Symbol::SubtractAssignment
+                            | Symbol::MultiplyAssignment
+                            | Symbol::DivideAssignment
+                            | Symbol::FloorDivideAssignment
+                            | Symbol::ModuloAssignment
+                            | Symbol::PowerAssignment
+                            | Symbol::ConcatenateAssignment
                             | Symbol::DoubleColon
                             | Symbol::Arrow
                             | Symbol::Add

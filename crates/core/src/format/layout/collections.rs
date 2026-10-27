@@ -179,50 +179,32 @@ impl Builder<'_, '_> {
                 prefix.extend(self.gap(previous, start));
             }
 
-            let bindings = self.list(start..end, bindings);
-            let values_list = self.list(value_start..value_end, values);
-            let mut connection = Vec::new();
+            let mut bindings = self.list(start..end, bindings);
+            let has_continuation = bindings.continuation < bindings.content.len();
             let mut previous = Some(end - 1);
-            self.tokens(end..value_start, &mut previous, &mut connection);
+            self.tokens(end..value_start, &mut previous, &mut bindings.content);
+
+            let separator = previous.expect("Internal error: assignment separator is missing.");
+            let mut content = self.list(value_start..value_end, values).content;
+            content.extend(self.sequence(value_end..range.end, &[]));
 
             let values = if values.len() > 1 {
-                connection.push(Document::Indent {
-                    nesting: Nesting::Broken,
-                    content: iter::once(Document::Soft(1))
-                        .chain(values_list.content)
-                        .collect(),
-                });
+                let mut connection = self.breakpoint(separator, value_start, 1);
 
-                connection.extend(self.sequence(value_end..range.end, &[]));
+                connection.extend(content);
 
                 vec![Document::Group {
                     layout: Layout::Fit,
-                    content: connection,
+                    content: vec![Document::Indent {
+                        nesting: Nesting::Broken,
+                        content: connection,
+                    }],
                 }]
             } else {
-                if let Some(previous) = previous {
-                    connection.extend(self.gap(previous, value_start));
-                }
-
-                connection.extend(values_list.content);
-                connection.extend(self.sequence(value_end..range.end, &[]));
-
-                let inline: Rc<[Document]> = connection.clone().into();
-
-                vec![Document::Choice(Box::new(Choice {
-                    range: end..range.end,
-                    has_prefix: true,
-                    probe: Rc::clone(&inline),
-                    inline,
-                    expanded: vec![Document::Indent {
-                        nesting: Nesting::Always,
-                        content: iter::once(Document::Line(1)).chain(connection).collect(),
-                    }]
-                    .into(),
-                }))]
+                self.value(TokenIndex::new(separator), value_start..range.end, content)
             };
 
-            if bindings.continuation == bindings.content.len() {
+            if !has_continuation {
                 prefix.extend(bindings.content);
 
                 return iter::once(Document::Group {
@@ -314,6 +296,51 @@ impl Builder<'_, '_> {
             },
             content,
         }]
+    }
+
+    pub(super) fn value(
+        &self,
+        separator: TokenIndex,
+        range: Range<usize>,
+        content: Vec<Document>,
+    ) -> Vec<Document> {
+        let tail = self.inline_end(separator.get() + 1, range.start);
+        let mut result = self.trivia(separator.get() + 1..tail, false);
+
+        let previous = self
+            .previous(separator.get(), tail)
+            .unwrap_or(separator.get());
+
+        let mut connection = self.gap(previous, range.start);
+
+        let has_line = connection
+            .iter()
+            .any(|document| matches!(document, Document::Line(_)));
+
+        connection.extend(content);
+
+        if has_line {
+            result.push(Document::Indent {
+                nesting: Nesting::Always,
+                content: connection,
+            });
+        } else {
+            let inline: Rc<[Document]> = connection.clone().into();
+
+            result.push(Document::Choice(Box::new(Choice {
+                range: tail..range.end,
+                has_prefix: true,
+                probe: Rc::clone(&inline),
+                inline,
+                expanded: vec![Document::Indent {
+                    nesting: Nesting::Always,
+                    content: iter::once(Document::Line(1)).chain(connection).collect(),
+                }]
+                .into(),
+            })));
+        }
+
+        result
     }
 
     fn list(&self, range: Range<usize>, entries: &[ListEntry]) -> List {
