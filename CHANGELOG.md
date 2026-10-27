@@ -1,4 +1,15 @@
 # Changelog
+## [0.1.12](https://github.com/instar-luau/instar/compare/v0.1.11...v0.1.12) - 2026-10-27
+
+### Added
+
+- **cli:** show whitespace in terminal previews
+- **cli:** highlight source snippets and preview changes
+
+### Other
+
+- **server:** infer import target collection types
+
 ## [0.1.11](https://github.com/instar-luau/instar/compare/v0.1.10...v0.1.11) - 2026-10-27
 
 ### Fixed
