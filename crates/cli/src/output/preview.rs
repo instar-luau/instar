@@ -152,11 +152,12 @@ fn expand(text: &str, column: &mut usize, width: usize) -> String {
     for (index, part) in text.split('\t').enumerate() {
         if index != 0 {
             let padding = width - *column % width;
-            expanded.extend(repeat_n(' ', padding));
+            expanded.push('→');
+            expanded.extend(repeat_n(' ', padding - 1));
             *column += padding;
         }
 
-        expanded.push_str(part);
+        expanded.push_str(&part.replace(' ', "·"));
         *column += console::measure_text_width(part);
     }
 
