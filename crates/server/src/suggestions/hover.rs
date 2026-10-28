@@ -54,7 +54,13 @@ pub(crate) fn hover(
             if description.is_empty() {
                 name
             } else {
-                format!("{name}\n\n{description}")
+                let separator = if should_use_markdown {
+                    "\n\n---\n\n"
+                } else {
+                    "\n\n"
+                };
+
+                format!("{name}{separator}{description}")
             }
         } else {
             documentation::presentation(&value.presentation, description, should_use_markdown)?

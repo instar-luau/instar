@@ -38,6 +38,10 @@ pub(crate) fn presentation(
     }
 
     if !documentation.is_empty() {
+        if should_use_markdown && !output.is_empty() {
+            append(&mut output, "---");
+        }
+
         append(&mut output, documentation);
     }
 
