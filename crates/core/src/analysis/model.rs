@@ -17,9 +17,6 @@ pub struct Analysis {
     /// Import arguments awaiting workspace resolution.
     pub imports: Vec<Import>,
 
-    /// Require argument ranges awaiting native target resolution.
-    pub requires: Vec<Range<usize>>,
-
     /// Explicit documentation addresses.
     pub links: Vec<Link>,
 

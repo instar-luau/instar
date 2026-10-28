@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     ops::{ControlFlow, Range},
     path::Path,
 };
@@ -15,12 +15,12 @@ use tower_lsp_server::{
         ReferenceParams, SymbolInformation, SymbolKind, TextDocumentPositionParams,
         TypeDefinitionParams, TypeDefinitionResponse, WorkspaceSymbolParams,
     },
-    jsonrpc::{Error, Result},
+    jsonrpc::Result,
 };
 
 use super::{
     document::{self, Document, Encoding},
-    error::{failure, reason},
+    error::failure,
     project::Project,
 };
 
@@ -333,19 +333,42 @@ pub(super) fn symbol(
 
 pub(super) fn document_link(
     project: &mut Project,
+    frontend: &mut Frontend<'_>,
     parameters: &DocumentLinkParams,
 ) -> Result<Option<Vec<DocumentLink>>> {
     let module = project.module(&parameters.text_document.uri)?;
     let document = project.snapshot(&module)?;
     let mut links = Vec::new();
 
-    for range in &document.analysis().requires {
-        links.push(DocumentLink {
-            range: document.range(range.clone(), project.encoding)?,
-            target: None,
-            tooltip: None,
-            data: Some(project.data(&module, range)?),
-        });
+    let mut imports = BTreeMap::new();
+
+    for import in frontend.imports(&module).map_err(failure)? {
+        if import.location.module != module {
+            continue;
+        }
+
+        let range = document.native_bytes(import.location.range)?;
+
+        imports
+            .entry((range.start, range.end))
+            .or_insert_with(BTreeSet::new)
+            .insert(import.target);
+    }
+
+    for ((start, end), targets) in imports {
+        let mut targets = targets.into_iter();
+
+        if let Some(target) = targets.next()
+            && targets.next().is_none()
+            && Path::new(&target).is_absolute()
+        {
+            links.push(DocumentLink {
+                range: document.range(start..end, project.encoding)?,
+                target: Some(document::uri(Path::new(&target))?),
+                tooltip: None,
+                data: None,
+            });
+        }
     }
 
     for link in &document.analysis().links {
@@ -358,57 +381,6 @@ pub(super) fn document_link(
     }
 
     Ok(Some(links))
-}
-
-pub(super) fn document_link_resolve_source(
-    project: &mut Project,
-    link: &DocumentLink,
-) -> Result<ControlFlow<DocumentLink>> {
-    project
-        .resolve::<Range<usize>>(link.data.clone())?
-        .ok_or_else(Error::content_modified)?;
-
-    Ok(ControlFlow::Continue(()))
-}
-
-pub(super) fn document_link_resolve(
-    project: &mut Project,
-    frontend: &mut Frontend<'_>,
-    mut link: DocumentLink,
-) -> Result<DocumentLink> {
-    let (module, range) = project
-        .resolve::<Range<usize>>(link.data.clone())?
-        .ok_or_else(Error::content_modified)?;
-
-    let document = project.snapshot(&module)?;
-
-    if !document.analysis().requires.contains(&range)
-        || document.range(range.clone(), project.encoding)? != link.range
-    {
-        return Err(Error::invalid_params("Document link range is invalid."));
-    }
-
-    let mut targets = BTreeSet::new();
-
-    for import in frontend.imports(&module).map_err(failure)? {
-        if document.native_bytes(import.location.range)? == range {
-            targets.insert(import.target);
-        }
-    }
-
-    if targets.len() > 1 {
-        return Err(reason("Import resolves to multiple targets."));
-    }
-
-    let target = targets
-        .into_iter()
-        .next()
-        .ok_or_else(|| reason("Import target is unavailable."))?;
-
-    link.target = Some(document::uri(Path::new(&target))?);
-    link.data = None;
-
-    Ok(link)
 }
 
 fn definitions(
