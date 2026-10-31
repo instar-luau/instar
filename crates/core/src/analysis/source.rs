@@ -256,9 +256,9 @@ pub fn analyze(source: impl Into<Arc<str>>) -> Analysis {
             }
         }
 
-        if is_foldable(&node.kind) && is_multiline(&tree, node.span.start..node.span.end) {
+        if let Some(range) = folding_range(&tree, identifier, prefix) {
             result.folds.push(Fold {
-                range: range(&tree, identifier, prefix),
+                range,
                 kind: FoldKind::Region,
             });
         }
@@ -647,25 +647,39 @@ fn outline(tree: &Tree<'_>, node: NodeIndex, prefix: usize) -> Vec<Symbol> {
     symbols
 }
 
-fn is_foldable(kind: &NodeKind) -> bool {
-    matches!(
-        kind,
-        NodeKind::Function { .. }
-            | NodeKind::If { .. }
-            | NodeKind::Branch { .. }
-            | NodeKind::Else { .. }
-            | NodeKind::While { .. }
-            | NodeKind::Repeat { .. }
-            | NodeKind::NumericFor { .. }
-            | NodeKind::GenericFor { .. }
-            | NodeKind::Do { .. }
-            | NodeKind::Table { .. }
-            | NodeKind::TypeTable { .. }
-            | NodeKind::Class { .. }
-            | NodeKind::Arguments { .. }
-            | NodeKind::Parameters { .. }
-            | NodeKind::TypePack { .. }
-    )
+fn folding_range(tree: &Tree<'_>, identifier: NodeIndex, prefix: usize) -> Option<Range<usize>> {
+    let node = tree.node(identifier);
+
+    let closing = match &node.kind {
+        NodeKind::Function { end, .. }
+        | NodeKind::If { end, .. }
+        | NodeKind::While { end, .. }
+        | NodeKind::GenericFor { end, .. }
+        | NodeKind::Do { end, .. }
+        | NodeKind::Class { end, .. } => *end,
+
+        NodeKind::NumericFor { end_keyword, .. } => *end_keyword,
+        NodeKind::Repeat { until, .. } => *until,
+
+        NodeKind::Table { closing, .. }
+        | NodeKind::TypeTable { closing, .. }
+        | NodeKind::Arguments { closing, .. }
+        | NodeKind::Parameters { closing, .. }
+        | NodeKind::TypePack { closing, .. } => *closing,
+
+        NodeKind::Branch { .. } | NodeKind::Else { .. } => None,
+        _ => return None,
+    };
+
+    let end = closing.map_or(node.span.end, |closing| {
+        tree.source[..tree.token(closing).span.start]
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map_or(0, |position| position + 1)
+    });
+
+    (node.span.start < end && is_multiline(tree, node.span.start..end))
+        .then_some(node.span.start + prefix..end + prefix)
 }
 
 fn import_folds(tree: &Tree<'_>, imports: &[Import], prefix: usize, folds: &mut Vec<Fold>) {
