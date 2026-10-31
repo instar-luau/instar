@@ -1,4 +1,17 @@
 # Changelog
+## [0.1.13](https://github.com/instar-luau/instar/compare/v0.1.12...v0.1.13) - 2026-10-31
+
+### Fixed
+
+- **core:** preserve closing lines in folding ranges
+- **server:** publish only resolved document links
+- **server:** refresh document links after dependency changes
+- **server:** separate hover signatures from documentation
+
+### Other
+
+- showcase Instar workflows and benefits
+
 ## [0.1.12](https://github.com/instar-luau/instar/compare/v0.1.11...v0.1.12) - 2026-10-27
 
 ### Added
