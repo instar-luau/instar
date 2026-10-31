@@ -176,7 +176,7 @@ impl LanguageServer for Service {
                 "definitionProvider":true,"typeDefinitionProvider":true,"referencesProvider":true,
                 "documentHighlightProvider":true,"documentSymbolProvider":true,
                 "workspaceSymbolProvider":{"workDoneProgress":true},
-                "documentLinkProvider":{},
+                "documentLinkProvider": (!self.has_capability("/textDocument/documentLink/dynamicRegistration")).then(|| json!({})),
                 "renameProvider":{"prepareProvider":true,"workDoneProgress":true},
                 "documentFormattingProvider":true,"documentRangeFormattingProvider":true,
                 "semanticTokensProvider":{"legend":presentation::legend(&capabilities),"full":{"delta":true},"range":true,"workDoneProgress":true},
@@ -215,7 +215,7 @@ impl LanguageServer for Service {
             }
 
             self.configuration(None).await?;
-            self.register().await?;
+            self.register(false).await?;
 
             self.revalidate(true).await
         }
@@ -238,7 +238,7 @@ impl LanguageServer for Service {
             })
             .await?;
 
-        if let Err(error) = registrations.unregister(&self.client).await {
+        if let Err(error) = registrations.unregister(&self.client, |_| true).await {
             messages::warning(&self.client, &error).await;
         }
 

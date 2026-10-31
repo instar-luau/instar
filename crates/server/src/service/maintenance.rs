@@ -114,7 +114,7 @@ impl Service {
     }
 
     pub(super) async fn maintain(&self, should_report_progress: bool) -> Result<()> {
-        self.register().await?;
+        self.register(true).await?;
         self.refresh().await;
         self.revalidate(should_report_progress).await?;
 
