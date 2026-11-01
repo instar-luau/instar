@@ -58,7 +58,7 @@ tracing = { version = "0.1", default-features = false, features = ["std"] }
 tracing-error = "0.2"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["ansi", "fmt", "registry"] }
 unicode-width = "0.2"
-vermis = "0.7"
+vermis = "0.8"
 yaml_serde = "0.10"
 
 [workspace.lints.clippy]
