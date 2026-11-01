@@ -743,8 +743,8 @@ impl Collector<'_, '_> {
             NodeKind::While {
                 condition, body, ..
             } => {
-                self.visit(*condition);
                 self.enter();
+                self.visit(*condition);
                 self.loop_block(*body);
                 self.leave();
             }
