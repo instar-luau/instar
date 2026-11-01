@@ -1,4 +1,14 @@
 # Changelog
+## [0.1.14](https://github.com/instar-luau/instar/compare/v0.1.13...v0.1.14) - 2026-11-01
+
+### Added
+
+- update Luau to 0.745
+
+### Other
+
+- update Cargo.lock dependencies
+
 ## [0.1.13](https://github.com/instar-luau/instar/compare/v0.1.12...v0.1.13) - 2026-10-31
 
 ### Fixed
