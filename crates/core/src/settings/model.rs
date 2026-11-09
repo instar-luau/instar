@@ -1,9 +1,9 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{Patterns, check, environment, format, lint, resolution, schema};
+use super::{Patterns, check, environment, format, imports, lint, resolution, schema};
 
 /// Project configuration; generate its JSON Schema with `schemars::schema_for!`.
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema, Serialize)]
@@ -24,6 +24,10 @@ pub struct Configuration {
 
     /// Workspace index file selection.
     pub index: Selection,
+
+    /// Automatic import discovery boundaries and filters.
+    #[serde(rename = "import")]
+    pub imports: Arc<imports::Configuration>,
 
     /// Module aliases and sourcemaps.
     pub resolve: resolution::Configuration,

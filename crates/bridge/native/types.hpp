@@ -27,7 +27,7 @@ namespace instar::luau {
 
     class Printer {
     public:
-        Printer(PresentationBudget &budget, Luau::ScopePtr scope);
+        Printer(PresentationBudget &budget, Luau::ScopePtr scope, bool is_exhaustive = false);
 
         std::string type(Luau::TypeId value, bool is_expanded = false);
         std::string pack(Luau::TypePackId value, bool is_expanded = false, bool is_return_pack = false);
@@ -48,6 +48,8 @@ namespace instar::luau {
         PresentationBudget &budget;
         Luau::ToStringOptions options;
     };
+
+    bool is_callable(Luau::TypeId root, PresentationBudget &budget, bool &has_receiver);
 }
 
 #endif

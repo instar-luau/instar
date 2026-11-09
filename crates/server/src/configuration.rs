@@ -1,6 +1,5 @@
-use std::{collections::BTreeMap, path::Path};
+use std::collections::BTreeMap;
 
-use globset::{Glob, GlobMatcher};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tower_lsp_server::jsonrpc::{Error, Result};
@@ -29,8 +28,6 @@ impl Configuration {
         };
 
         configuration.hints.retain(|_hint, is_enabled| !*is_enabled);
-        configuration.imports.inclusion = patterns(&configuration.imports.include)?;
-        configuration.imports.exclusion = patterns(&configuration.imports.exclude)?;
 
         Ok(configuration)
     }
@@ -66,25 +63,7 @@ pub(super) struct Imports {
 
     pub(super) require: Require,
     pub(super) binding: Binding,
-    pub(super) include: Vec<String>,
-    pub(super) exclude: Vec<String>,
-
-    #[serde(skip)]
-    inclusion: Vec<GlobMatcher>,
-
-    #[serde(skip)]
-    exclusion: Vec<GlobMatcher>,
-}
-
-impl Imports {
-    pub(super) fn can_import(&self, root: &Path, path: &Path) -> bool {
-        let path = path.strip_prefix(root).unwrap_or(path);
-
-        self.is_enabled
-            && (self.inclusion.is_empty()
-                || self.inclusion.iter().any(|pattern| pattern.is_match(path)))
-            && !self.exclusion.iter().any(|pattern| pattern.is_match(path))
-    }
+    pub(super) members: Members,
 }
 
 impl Default for Imports {
@@ -93,12 +72,18 @@ impl Default for Imports {
             is_enabled: true,
             require: Require::String,
             binding: Binding::Local,
-            include: Vec::new(),
-            exclude: Vec::new(),
-            inclusion: Vec::new(),
-            exclusion: Vec::new(),
+            members: Members::All,
         }
     }
+}
+
+#[derive(Copy, Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum Members {
+    All,
+    Project,
+    Imported,
+    None,
 }
 
 #[derive(Copy, Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -133,21 +118,4 @@ pub(super) enum Hint {
     ParameterNames,
     ReturnTypes,
     HideObvious,
-}
-
-fn patterns(values: &[String]) -> Result<Vec<GlobMatcher>> {
-    values
-        .iter()
-        .map(|value| {
-            if value.is_empty() || value.contains('\0') {
-                return Err(Error::invalid_params(
-                    "Import patterns must be nonempty and contain no null characters.",
-                ));
-            }
-
-            Glob::new(value)
-                .map(|pattern| pattern.compile_matcher())
-                .map_err(|error| Error::invalid_params(error.to_string()))
-        })
-        .collect()
 }

@@ -2,7 +2,7 @@ use cxx::UniquePtr;
 
 use crate::{
     bridge::bindings::{
-        self, Diagnostic, HintSelector, Import, Occurrence, Position, SourceLocation,
+        self, Diagnostic, Exports, HintSelector, Import, Occurrence, Position, SourceLocation,
     },
     cancellation::Cancellation,
     error::Error,
@@ -33,6 +33,16 @@ impl<'host> Frontend<'host> {
     /// Returns an operational host error or native analysis failure.
     pub fn check(&mut self, module: &str) -> Result<Vec<Diagnostic>, Error> {
         let result = self.native.pin_mut().check(module);
+
+        self.context.complete(result)
+    }
+
+    /// Check a module and collect its public members and source dependencies.
+    ///
+    /// # Errors
+    /// Returns host, checking, extraction, or cancellation errors.
+    pub fn exports(&mut self, module: &str) -> Result<Exports, Error> {
+        let result = self.native.pin_mut().exports(module);
 
         self.context.complete(result)
     }

@@ -25,108 +25,117 @@ impl Service {
             })
             .map_err(|_sequence| Error::internal_error())?;
 
-        let roots = self.connection.control(|state| state.roots()).await?;
+        let result = async {
+            let roots = self
+                .connection
+                .control(move |state| {
+                    state.configuration_revision = state.configuration_revision.max(sequence);
 
-        let configurations = if self.has_capability("/workspace/configuration") {
-            let items = if roots.is_empty() {
-                vec![ConfigurationItem {
-                    scope_uri: None,
-                    section: Some("instar".to_owned()),
-                }]
-            } else {
-                roots
-                    .iter()
-                    .map(|uri| ConfigurationItem {
-                        scope_uri: Some(uri.clone()),
-                        section: Some("instar".to_owned()),
-                    })
-                    .collect()
-            };
-
-            let expected = items.len();
-            let values = self.client.configuration(items).await?;
-
-            if values.len() != expected {
-                return Err(Error::invalid_params(
-                    "Client returned an incorrect number of configurations.",
-                ));
-            }
-
-            values
-                .into_iter()
-                .map(|value| {
-                    if value.is_null() {
-                        Ok(None)
-                    } else {
-                        Configuration::load(value).map(Some)
-                    }
+                    state.roots()
                 })
-                .collect::<Result<Vec<_>>>()?
-        } else {
-            vec![None; roots.len().max(1)]
-        };
+                .await?;
 
-        if settings.is_none() && configurations.iter().all(Option::is_none) {
-            return Ok(false);
-        }
-
-        self.connection
-            .control(move |state| {
-                if sequence < state.configuration_revision {
-                    return Ok(false);
-                }
-
-                let paths = roots
-                    .iter()
-                    .map(document::path)
-                    .collect::<Result<Vec<_>>>()?;
-
-                if paths.iter().any(|path| !state.projects.contains_key(path)) {
-                    return Err(Error::content_modified());
-                }
-
-                let mut has_changed = false;
-
-                let fallback = if roots.is_empty() {
-                    configurations
-                        .first()
-                        .and_then(Option::as_ref)
-                        .or(settings.as_ref())
+            let configurations = if self.has_capability("/workspace/configuration") {
+                let items = if roots.is_empty() {
+                    vec![ConfigurationItem {
+                        scope_uri: None,
+                        section: Some("instar".to_owned()),
+                    }]
                 } else {
-                    settings.as_ref()
+                    roots
+                        .iter()
+                        .map(|uri| ConfigurationItem {
+                            scope_uri: Some(uri.clone()),
+                            section: Some("instar".to_owned()),
+                        })
+                        .collect()
                 };
 
-                if let Some(configuration) = fallback
-                    && serde_json::to_value(&state.configuration).map_err(failure)?
-                        != serde_json::to_value(configuration).map_err(failure)?
-                {
-                    state.configuration = configuration.clone();
-                    has_changed = true;
+                let expected = items.len();
+                let values = self.client.configuration(items).await?;
+
+                if values.len() != expected {
+                    return Err(Error::invalid_params(
+                        "Client returned an incorrect number of configurations.",
+                    ));
                 }
 
-                for (path, configuration) in paths.into_iter().zip(configurations) {
-                    let Some(configuration) = configuration.or_else(|| settings.clone()) else {
-                        continue;
+                values
+                    .into_iter()
+                    .map(|value| {
+                        if value.is_null() {
+                            Ok(None)
+                        } else {
+                            Configuration::load(value).map(Some)
+                        }
+                    })
+                    .collect::<Result<Vec<_>>>()?
+            } else {
+                vec![None; roots.len().max(1)]
+            };
+
+            self.connection
+                .control(move |state| {
+                    if sequence < state.configuration_revision {
+                        return Ok(false);
+                    }
+
+                    let paths = roots
+                        .iter()
+                        .map(document::path)
+                        .collect::<Result<Vec<_>>>()?;
+
+                    if paths.iter().any(|path| !state.projects.contains_key(path)) {
+                        return Err(Error::content_modified());
+                    }
+
+                    let mut has_changed = false;
+
+                    let fallback = if roots.is_empty() {
+                        configurations
+                            .first()
+                            .and_then(Option::as_ref)
+                            .or(settings.as_ref())
+                    } else {
+                        settings.as_ref()
                     };
 
-                    let project = state
-                        .projects
-                        .get_mut(&path)
-                        .ok_or_else(Error::content_modified)?;
-
-                    if serde_json::to_value(&project.configuration).map_err(failure)?
-                        != serde_json::to_value(&configuration).map_err(failure)?
+                    if let Some(configuration) = fallback
+                        && serde_json::to_value(&state.configuration).map_err(failure)?
+                            != serde_json::to_value(configuration).map_err(failure)?
                     {
-                        project.changed()?;
-                        project.configuration = configuration;
+                        state.configuration = configuration.clone();
                         has_changed = true;
                     }
-                }
 
-                state.configuration_revision = sequence;
+                    for (path, configuration) in paths.into_iter().zip(configurations) {
+                        let Some(configuration) = configuration.or_else(|| settings.clone()) else {
+                            continue;
+                        };
 
-                Ok(has_changed)
-            })
-            .await
+                        let project = state
+                            .projects
+                            .get_mut(&path)
+                            .ok_or_else(Error::content_modified)?;
+
+                        if serde_json::to_value(&project.configuration).map_err(failure)?
+                            != serde_json::to_value(&configuration).map_err(failure)?
+                        {
+                            project.changed()?;
+                            project.configuration = configuration;
+                            has_changed = true;
+                        }
+                    }
+
+                    Ok(has_changed)
+                })
+                .await
+        }
+        .await;
+
+        self.configuration_completed
+            .fetch_max(sequence + 1, Ordering::Release);
+
+        result
     }
 }

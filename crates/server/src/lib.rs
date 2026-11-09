@@ -3,6 +3,7 @@
 mod analysis;
 mod configuration;
 mod connection;
+mod discovery;
 mod document;
 mod documentation;
 mod editing;

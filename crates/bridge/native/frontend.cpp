@@ -5,6 +5,7 @@
 #include "Luau/RequireTracer.h"
 #include "diagnostic.hpp"
 #include "environment.hpp"
+#include "exports.hpp"
 #include "hover.hpp"
 #include "index.hpp"
 #include "instar-bridge/src/bridge.rs.h"
@@ -572,6 +573,13 @@ namespace instar::luau {
             clear();
             throw;
         }
+    }
+
+    Exports Frontend::exports(rust::Str module) {
+        PresentationBudget budget{options.cancellationToken};
+        const auto names = prepare(module);
+
+        return instar::luau::exports(*frontend, host, names, budget);
     }
 
     std::shared_ptr<Luau::FrontendCancellationToken> Frontend::cancellation() const {

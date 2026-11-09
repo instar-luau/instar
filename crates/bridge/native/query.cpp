@@ -77,46 +77,6 @@ namespace instar::luau::query {
             return location;
         }
 
-        bool is_callable(Luau::TypeId root, PresentationBudget &budget, bool &has_receiver) {
-            std::vector<Luau::TypeId> pending{root};
-            std::unordered_set<Luau::TypeId> seen;
-
-            while (!pending.empty()) {
-                budget.check();
-                const auto type = pending.back();
-                pending.pop_back();
-
-                if (!seen.insert(type).second) {
-                    continue;
-                }
-
-                if (const auto *bound = Luau::get_if<Luau::BoundType>(&type->ty)) {
-                    pending.push_back(bound->boundTo);
-                } else if (const auto *intersection = Luau::get<Luau::IntersectionType>(type)) {
-                    for (const auto part : intersection->parts) {
-                        budget.check();
-                        pending.push_back(part);
-                    }
-                } else if (const auto *table = Luau::get<Luau::TableType>(type); table && table->boundTo) {
-                    pending.push_back(*table->boundTo);
-                } else if (const auto *lazy = Luau::get<Luau::LazyType>(type)) {
-                    const auto value = lazy->unwrapped.load();
-
-                    if (!value) {
-                        return false;
-                    }
-
-                    pending.push_back(value);
-                } else if (const auto *function = Luau::get<Luau::FunctionType>(type)) {
-                    has_receiver = has_receiver && function->hasSelf;
-                } else {
-                    return false;
-                }
-            }
-
-            return true;
-        }
-
         std::pair<std::vector<Luau::TypeId>, std::optional<Luau::TypePackId>>
         parameter_types(Luau::TypePackId current, PresentationBudget &budget) {
             std::vector<Luau::TypeId> head;
@@ -242,6 +202,36 @@ namespace instar::luau::query {
             }
 
             throw std::runtime_error("Unknown native completion kind.");
+        }
+
+        CompletionContext completion_context(Luau::AutocompleteContext context) {
+            switch (context) {
+            case Luau::AutocompleteContext::Unknown:
+                return CompletionContext::Unknown;
+
+            case Luau::AutocompleteContext::Expression:
+                return CompletionContext::Expression;
+
+            case Luau::AutocompleteContext::Statement:
+                return CompletionContext::Statement;
+
+            case Luau::AutocompleteContext::Property:
+                return CompletionContext::Property;
+
+            case Luau::AutocompleteContext::Type:
+                return CompletionContext::Type;
+
+            case Luau::AutocompleteContext::Keyword:
+                return CompletionContext::Keyword;
+
+            case Luau::AutocompleteContext::String:
+                return CompletionContext::String;
+
+            case Luau::AutocompleteContext::HotComment:
+                return CompletionContext::HotComment;
+            }
+
+            throw std::runtime_error("Unknown native completion context.");
         }
 
         class Collision final : public Luau::AstVisitor {
@@ -706,6 +696,7 @@ namespace instar::luau::query {
             result.push_back(
                 {label,
                     completion_kind(entry.kind),
+                    completion_context(native.context),
                     is_function,
                     is_function && has_receiver,
                     std::move(presentations),

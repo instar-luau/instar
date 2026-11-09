@@ -16,7 +16,7 @@ use super::{Error, Generators, Observations, discovery, environment::Registry, i
 use crate::{
     assets::Cache,
     format, lint,
-    settings::{Configuration, check, defaults, resolve},
+    settings::{Configuration, check, defaults, imports, resolve},
 };
 
 /// Filesystem sources with cached, automatically discovered configuration scopes.
@@ -204,6 +204,16 @@ impl Workspace {
     /// Returns inaccessible configuration or invalid scoped settings.
     pub fn formatting(&self, module: &str) -> Result<Arc<format::Prepared>, Error> {
         Ok(Arc::clone(&self.scope(Path::new(module))?.format))
+    }
+
+    /// Return the effective automatic import policy for a module.
+    ///
+    /// # Errors
+    /// Returns inaccessible configuration or invalid scoped settings.
+    pub fn imports(&self, module: &str) -> Result<Arc<imports::Configuration>, Error> {
+        Ok(Arc::clone(
+            &self.scope(Path::new(module))?.configuration.imports,
+        ))
     }
 
     /// Return the effective lint policies for a module.

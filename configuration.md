@@ -57,6 +57,24 @@ instar format --set format.width=100 --preview
 - Traversal includes hidden and gitignored `.luau` and `.lua` files, without following directory symlinks.
 - Explicit files bypass selection for check, format, and lint. Index selection always applies.
 
+## Automatic imports
+
+`[import]`
+
+| Field     | Type             | Default | Meaning                                                          |
+| --------- | ---------------- | ------- | ---------------------------------------------------------------- |
+| `roots`   | Array of strings | `[]`    | Dependency directory globs. Empty leaves discovery unrestricted. |
+| `include` | Array of strings | `[]`    | Allow modules matching any pattern. Empty allows all.            |
+| `exclude` | Array of strings | `[]`    | Exclude modules matching any pattern.                            |
+
+```toml
+[import]
+roots = ["places/*/packages"]
+exclude = ["src/internal/**"]
+```
+
+- Within dependency roots, `.`/`_`-prefixed directories are private, and `init.luau` or `init.lua` defines a module boundary.
+
 ## Type checking
 
 `[check]`
@@ -390,9 +408,6 @@ Send LSP settings in your client's `instar` section:
 {
   "instar": {
     "diagnostic_scope": "workspace",
-    "import": {
-      "exclude": ["src/internal/**"]
-    },
     "hints": {
       "parameter_names": false
     }
@@ -420,15 +435,17 @@ Send LSP settings in your client's `instar` section:
 
 ### `import`
 
-| Field     | Type             | Default    | Meaning                                                                              |
-| --------- | ---------------- | ---------- | ------------------------------------------------------------------------------------ |
-| `enabled` | Boolean          | `true`     | Offer automatic imports.                                                             |
-| `require` | String           | `"string"` | `"string"` for module-path requires or `"instance"` for Roblox instance expressions. |
-| `binding` | String           | `"local"`  | `"local"` or `"const"` for inserted bindings.                                        |
-| `include` | Array of strings | `[]`       | Allow modules matching any pattern. Empty allows all.                                |
-| `exclude` | Array of strings | `[]`       | Exclude modules matching any pattern.                                                |
+| Field     | Type    | Default    | Meaning                                                                              |
+| --------- | ------- | ---------- | ------------------------------------------------------------------------------------ |
+| `enabled` | Boolean | `true`     | Offer automatic imports.                                                             |
+| `require` | String  | `"string"` | `"string"` for module-path requires or `"instance"` for Roblox instance expressions. |
+| `binding` | String  | `"local"`  | `"local"` or `"const"` for inserted bindings.                                        |
+| `members` | String  | `"all"`    | Member suggestions, defined below.                                                   |
 
-Import globs match paths relative to the workspace root, without gitignore negation. Patterns must be nonempty. Exclusions override inclusions. Index exclusions also block module import suggestions. These filters apply only to modules, not Roblox services.
+- `"all"`: members from every eligible module.
+- `"project"`: members outside [dependency roots](#automatic-imports), plus members of modules imported in the current file.
+- `"imported"`: members of modules imported in the current file.
+- `"none"`: disable member auto-imports.
 
 ### `hints`
 

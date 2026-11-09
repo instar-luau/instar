@@ -226,6 +226,34 @@ pub(crate) mod bindings {
         HotComment,
     }
 
+    /// Native syntax context at the completion cursor.
+    #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+    pub enum CompletionContext {
+        /// No recognized completion context.
+        Unknown,
+
+        /// A value expression.
+        Expression,
+
+        /// A statement.
+        Statement,
+
+        /// A receiver property.
+        Property,
+
+        /// A type expression.
+        Type,
+
+        /// A language keyword.
+        Keyword,
+
+        /// A string literal.
+        String,
+
+        /// A hot comment.
+        HotComment,
+    }
+
     /// Recommended call parentheses for a completion insertion.
     #[derive(Copy, Clone, Debug, Eq, PartialEq)]
     pub enum Parentheses {
@@ -242,6 +270,7 @@ pub(crate) mod bindings {
     struct NativeCompletion {
         label: String,
         kind: CompletionKind,
+        context: CompletionContext,
         is_function: bool,
         has_receiver: bool,
         presentations: Vec<String>,
@@ -368,6 +397,42 @@ pub(crate) mod bindings {
         is_instance: bool,
     }
 
+    /// A readable member of a module's public return type.
+    #[derive(Clone, Debug)]
+    pub struct Export {
+        /// Exported property name.
+        name: String,
+
+        /// Whether the property is callable.
+        is_function: bool,
+    }
+
+    /// An exported type alias and its forwarding signature.
+    #[derive(Clone, Debug)]
+    pub struct ExportType {
+        /// Exported type name.
+        name: String,
+
+        /// Generic parameter declarations, including defaults and angle brackets.
+        parameters: String,
+
+        /// Forwarded generic arguments, including angle brackets.
+        arguments: String,
+    }
+
+    /// Owned exports and the sources contributing to their types.
+    #[derive(Clone, Debug)]
+    pub struct Exports {
+        /// Members shared by the module's analysis contexts.
+        members: Vec<Export>,
+
+        /// Type aliases shared by the module's analysis contexts.
+        types: Vec<ExportType>,
+
+        /// Physical source identifiers whose changes invalidate these exports.
+        dependencies: Vec<String>,
+    }
+
     struct Text {
         has_value: bool,
         value: String,
@@ -443,6 +508,8 @@ pub(crate) mod bindings {
         fn check(self: Pin<&mut Frontend<'_>>, module: &str) -> Result<Vec<Diagnostic>>;
 
         fn queue(self: Pin<&mut Frontend<'_>>, module: &str) -> Result<()>;
+
+        fn exports(self: Pin<&mut Frontend<'_>>, module: &str) -> Result<Exports>;
 
         fn checks(self: &Frontend<'_>) -> usize;
 
