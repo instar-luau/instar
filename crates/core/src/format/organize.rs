@@ -1,14 +1,11 @@
 use vermis::tree::{ListEntry, NodeKind, Tree};
 
-use crate::{
-    format::{
-        Edit, Error, Prepared,
-        directives::{self, Directives},
-        engine,
-        imports::{self, Imports, Require},
-        statements,
-    },
-    settings::format::{BlankLines, Order},
+use crate::format::{
+    Edit, Error, Prepared,
+    directives::{self, Directives},
+    engine,
+    imports::{self, Import, Imports},
+    statements,
 };
 
 /// Reorder recognized imports without formatting other source text.
@@ -47,12 +44,11 @@ fn organized(source: &str, configuration: &Prepared) -> Result<Vec<Edit>, Error>
         .regions()?
         .iter()
         .any(|directive| directive.scope == (0..source.len()))
-        || configuration.settings().require.order == Order::Preserve
     {
         return Ok(edits);
     }
 
-    let imports = Imports::instances(&tree);
+    let imports = Imports::new(&tree);
 
     for node in &tree.nodes {
         if let NodeKind::Block {
@@ -100,7 +96,7 @@ fn collect(
 ) {
     let requires: Vec<_> = entries
         .iter()
-        .map(|entry| imports.require(tree, entry.node, directives))
+        .map(|entry| imports.declaration(tree, entry.node, directives))
         .collect();
 
     let ranges = statements::ranges(tree, entries);
@@ -123,8 +119,8 @@ fn collect(
         order.sort_by(|left, right| {
             imports::compare(
                 configuration,
-                &required(&requires, *left).path,
-                &required(&requires, *right).path,
+                declaration(&requires, *left),
+                declaration(&requires, *right),
             )
         });
 
@@ -144,10 +140,11 @@ fn collect(
                 let has_blank_line = index > run.start
                     && tree.source[ranges[index - 1].end..ranges[index].start].contains(&b'\n');
 
-                let is_grouped = configuration.settings().require.order == Order::Grouped
-                    && configuration.settings().require.blank_lines == BlankLines::BetweenGroups
-                    && configuration.group(&required(&requires, previous).path)
-                        != configuration.group(&required(&requires, index).path);
+                let is_grouped = imports::separated(
+                    configuration,
+                    declaration(&requires, previous),
+                    declaration(&requires, index),
+                );
 
                 replacement.push_str(ending);
 
@@ -179,10 +176,10 @@ fn collect(
     }
 }
 
-fn required(requires: &[Option<Require>], index: usize) -> &Require {
+fn declaration(requires: &[Option<Import>], index: usize) -> &Import {
     requires[index]
         .as_ref()
-        .expect("Internal error: missing `require` in import run.")
+        .expect("Internal error: missing import in import run.")
 }
 
 fn without_ending(source: &str) -> &str {

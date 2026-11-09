@@ -118,7 +118,7 @@ pub(crate) fn validate(
         original,
         proposed,
         before: imports,
-        after: imports.map(|imports| imports.proposed(proposed)),
+        after: imports.map(|_| Imports::new(proposed)),
         original_directives,
         proposed_directives,
         nodes: vec![None; original.nodes.len()],
@@ -263,16 +263,23 @@ fn statements(
 
     let mut statements: Vec<_> = entries
         .iter()
-        .map(|entry| (entry.node, imports.require(tree, entry.node, directives)))
+        .map(|entry| {
+            (
+                entry.node,
+                imports.declaration(tree, entry.node, directives),
+            )
+        })
         .collect();
 
     for range in imports::runs(tree, statements.iter().map(|(_, require)| require.as_ref())) {
         statements[range].sort_by_key(|(_, require)| {
-            tree.text(
-                require
-                    .as_ref()
-                    .expect("Internal error: missing `require` in import run.")
-                    .binding,
+            let require = require
+                .as_ref()
+                .expect("Internal error: missing import in import run.");
+
+            (
+                require.kind == imports::Kind::Type,
+                tree.text(require.binding),
             )
         });
     }

@@ -96,7 +96,7 @@ Modes are `"strict"`, `"nonstrict"`, and `"nocheck"`. `"nocheck"` disables ordin
 | `groups`      | Array of strings or tables | `["alias", "relative", "other"]` | Require groups, checked in order. First match wins. |
 | `blank_lines` | String                     | `"between_groups"`               | `"between_groups"` or `"none"`.                     |
 
-`"grouped"` sorts alphabetically within each group.
+Imports form service, module, and member blocks. `"preserve"` retains order within each block; `"alphabetical"` sorts by path; `"grouped"` sorts by configured group, then path. Member paths come from their originating modules.
 
 Standard groups are `"alias"` for paths starting with `@`, `"relative"` for paths starting with `./` or `../`, and `"other"` for any remaining path. Unmatched requires form a trailing group.
 

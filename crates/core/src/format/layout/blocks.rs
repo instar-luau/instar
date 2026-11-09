@@ -10,16 +10,13 @@ use super::{
     plan::Builder,
 };
 
-use crate::{
-    format::imports::{self, Require},
-    settings::format::{BlankLines, Order},
-};
+use crate::format::imports::{self, Import};
 
 struct Statement {
     content: Vec<Document>,
     has_blank_line: bool,
     is_inline: bool,
-    require: Option<Require>,
+    import: Option<Import>,
 }
 
 impl Builder<'_, '_> {
@@ -266,7 +263,7 @@ impl Builder<'_, '_> {
                     has_blank_line: position > range.start
                         && self.has_blank_line(position, node.tokens.start.get()),
                     is_inline,
-                    require: None,
+                    import: None,
                 });
 
                 position = boundary;
@@ -290,9 +287,9 @@ impl Builder<'_, '_> {
                 content,
                 has_blank_line,
                 is_inline,
-                require: self
-                    .imports
-                    .and_then(|imports| imports.require(self.tree, entry.node, self.directives)),
+                import: self.imports.and_then(|imports| {
+                    imports.declaration(self.tree, entry.node, self.directives)
+                }),
             });
 
             position = tail;
@@ -300,7 +297,7 @@ impl Builder<'_, '_> {
         }
 
         self.order(&mut units);
-        let mut previous_path = None;
+        let mut previous = None;
 
         for (
             offset,
@@ -308,18 +305,15 @@ impl Builder<'_, '_> {
                 content,
                 has_blank_line,
                 is_inline,
-                require,
+                import: require,
             },
         ) in units.into_iter().enumerate()
         {
-            let path = require.map(|require| require.path);
-
             if offset > 0 {
-                let is_grouped = self.configuration.require.order == Order::Grouped
-                    && self.configuration.require.blank_lines == BlankLines::BetweenGroups
-                    && previous_path.as_deref().zip(path.as_deref()).is_some_and(
-                        |(left, right)| self.prepared.group(left) != self.prepared.group(right),
-                    );
+                let is_grouped = previous
+                    .as_ref()
+                    .zip(require.as_ref())
+                    .is_some_and(|(left, right)| imports::separated(self.prepared, left, right));
 
                 result.push(if is_inline {
                     Document::Space
@@ -329,7 +323,7 @@ impl Builder<'_, '_> {
             }
 
             result.extend(content);
-            previous_path = path;
+            previous = require;
         }
 
         if self.has_comments(position..range.end) {
@@ -478,22 +472,18 @@ impl Builder<'_, '_> {
     fn order(&self, statements: &mut [Statement]) {
         for range in imports::runs(
             self.tree,
-            statements
-                .iter()
-                .map(|statement| statement.require.as_ref()),
+            statements.iter().map(|statement| statement.import.as_ref()),
         ) {
             statements[range].sort_by(|left, right| {
-                let left = &left
-                    .require
+                let left = left
+                    .import
                     .as_ref()
-                    .expect("Internal error: missing `require` in import run.")
-                    .path;
+                    .expect("Internal error: missing import in import run.");
 
-                let right = &right
-                    .require
+                let right = right
+                    .import
                     .as_ref()
-                    .expect("Internal error: missing `require` in import run.")
-                    .path;
+                    .expect("Internal error: missing import in import run.");
 
                 imports::compare(self.prepared, left, right)
             });

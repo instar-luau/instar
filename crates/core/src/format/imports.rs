@@ -7,53 +7,65 @@ use vermis::{
 
 use crate::{
     format::{Prepared, directives::Directives},
-    settings::format::Order,
+    settings::format::{BlankLines, Order},
     syntax::{bindings::Bindings, literal},
 };
 
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum Kind {
+    Service,
+    Module,
+    Member,
+    Type,
+}
+
 #[derive(Clone)]
-pub(crate) struct Require {
+pub(crate) struct Import {
+    pub(crate) kind: Kind,
     pub(crate) path: String,
     pub(crate) binding: NodeIndex,
     is_boundary: bool,
 }
 
 pub(crate) struct Imports {
-    bindings: Bindings,
-    has_instances: bool,
+    pub(super) bindings: Bindings,
 }
 
 impl Imports {
     pub(crate) fn new(tree: &Tree<'_>) -> Self {
         Self {
             bindings: Bindings::new(tree),
-            has_instances: false,
         }
     }
 
-    pub(crate) fn instances(tree: &Tree<'_>) -> Self {
-        Self {
-            bindings: Bindings::new(tree),
-            has_instances: true,
-        }
-    }
-
-    pub(crate) fn proposed(&self, tree: &Tree<'_>) -> Self {
-        if self.has_instances {
-            Self::instances(tree)
-        } else {
-            Self::new(tree)
-        }
-    }
-
-    pub(crate) fn require(
+    pub(crate) fn declaration(
         &self,
         tree: &Tree<'_>,
         index: NodeIndex,
         directives: &Directives,
-    ) -> Option<Require> {
+    ) -> Option<Import> {
         if directives.is_blocked(tree, index) {
             return None;
+        }
+
+        if let NodeKind::TypeAlias {
+            name, annotation, ..
+        } = tree.node(index).kind
+        {
+            let NodeKind::TypeName {
+                namespace: Some(namespace),
+                ..
+            } = tree.node(annotation).kind
+            else {
+                return None;
+            };
+
+            return Some(Import {
+                kind: Kind::Type,
+                path: self.origin(tree, namespace)?,
+                binding: name,
+                is_boundary: directives.boundary(tree, index).is_some(),
+            });
         }
 
         let (NodeKind::Local {
@@ -79,41 +91,77 @@ impl Imports {
             return None;
         };
 
-        if tree.text(*name) == b"require"
-            || self.has_instances && matches!(tree.text(*name), b"script" | b"game" | b"workspace")
-        {
+        if matches!(
+            tree.text(*name),
+            b"require" | b"script" | b"game" | b"workspace"
+        ) {
             return None;
         }
 
-        let NodeKind::Call { callee, arguments } = &tree.node(value.node).kind else {
-            return None;
+        let (kind, path) = match tree.node(value.node).kind {
+            NodeKind::MethodCall {
+                receiver,
+                method,
+                arguments,
+                ..
+            } if self.bindings.is_global(tree, receiver, "game")
+                && tree.text(method) == b"GetService" =>
+            {
+                (Kind::Service, string(tree, argument(tree, arguments)?)?)
+            }
+
+            NodeKind::Call { .. } => (Kind::Module, self.module(tree, value.node)?),
+            NodeKind::Field { receiver, .. } => (Kind::Member, self.origin(tree, receiver)?),
+
+            NodeKind::Index { receiver, key, .. } => {
+                string(tree, key)?;
+
+                (Kind::Member, self.origin(tree, receiver)?)
+            }
+
+            _ => return None,
         };
 
-        if !self.bindings.is_global(tree, *callee, "require") {
-            return None;
-        }
-
-        let NodeKind::Arguments { values, .. } = &tree.node(*arguments).kind else {
-            return None;
-        };
-
-        let [value] = tree.list(values) else {
-            return None;
-        };
-
-        let path = string(tree, value.node).or_else(|| self.instance(tree, value.node))?;
-
-        Some(Require {
+        Some(Import {
+            kind,
             path,
             binding: *name,
             is_boundary: directives.boundary(tree, index).is_some(),
         })
     }
 
-    fn instance(&self, tree: &Tree<'_>, node: NodeIndex) -> Option<String> {
-        if !self.has_instances {
+    fn module(&self, tree: &Tree<'_>, node: NodeIndex) -> Option<String> {
+        let NodeKind::Call { callee, arguments } = tree.node(node).kind else {
+            return None;
+        };
+
+        if !self.bindings.is_global(tree, callee, "require") {
             return None;
         }
+
+        let value = argument(tree, arguments)?;
+
+        string(tree, value).or_else(|| self.instance(tree, value))
+    }
+
+    fn origin(&self, tree: &Tree<'_>, node: NodeIndex) -> Option<String> {
+        let node = self.bindings.value(tree, node);
+
+        match tree.node(node).kind {
+            NodeKind::Field { receiver, .. } => self.origin(tree, receiver),
+
+            NodeKind::Index { receiver, key, .. } => {
+                string(tree, key)?;
+
+                self.origin(tree, receiver)
+            }
+
+            _ => self.module(tree, node),
+        }
+    }
+
+    fn instance(&self, tree: &Tree<'_>, node: NodeIndex) -> Option<String> {
+        let node = self.bindings.value(tree, node);
 
         match tree.node(node).kind {
             NodeKind::Name { .. } => {
@@ -148,16 +196,7 @@ impl Imports {
                 ..
             } => {
                 let path = self.instance(tree, receiver)?;
-
-                let NodeKind::Arguments { values, .. } = &tree.node(arguments).kind else {
-                    return None;
-                };
-
-                let [value] = tree.list(values) else {
-                    return None;
-                };
-
-                let name = string(tree, value.node)?;
+                let name = string(tree, argument(tree, arguments)?)?;
 
                 if tree.text(method) == b"WaitForChild"
                     || path == "game" && tree.text(method) == b"GetService"
@@ -173,32 +212,33 @@ impl Imports {
     }
 }
 
-pub(crate) fn runs<'require>(
+pub(crate) fn runs<'import>(
     tree: &Tree<'_>,
-    requires: impl IntoIterator<Item = Option<&'require Require>>,
+    imports: impl IntoIterator<Item = Option<&'import Import>>,
 ) -> Vec<Range<usize>> {
-    let requires: Vec<_> = requires.into_iter().collect();
+    let imports: Vec<_> = imports.into_iter().collect();
     let mut result = Vec::new();
     let mut start = 0;
 
-    while start < requires.len() {
-        if requires[start].is_none() {
+    while start < imports.len() {
+        if imports[start].is_none() {
             start += 1;
             continue;
         }
 
         let mut end = start + 1;
 
-        while end < requires.len() && requires[end].is_some_and(|require| !require.is_boundary) {
+        while end < imports.len() && imports[end].is_some_and(|import| !import.is_boundary) {
             end += 1;
         }
 
         let mut names = BTreeSet::new();
 
-        if requires[start..end]
-            .iter()
-            .all(|require| require.is_some_and(|require| names.insert(tree.text(require.binding))))
-        {
+        if imports[start..end].iter().all(|import| {
+            import.is_some_and(|import| {
+                names.insert((import.kind == Kind::Type, tree.text(import.binding)))
+            })
+        }) {
             result.push(start..end);
         }
 
@@ -208,15 +248,41 @@ pub(crate) fn runs<'require>(
     result
 }
 
-pub(crate) fn compare(configuration: &Prepared, left: &str, right: &str) -> Ordering {
-    if configuration.settings().require.order == Order::Grouped {
-        configuration
-            .group(left)
-            .cmp(&configuration.group(right))
-            .then_with(|| left.cmp(right))
-    } else {
-        left.cmp(right)
-    }
+pub(crate) fn compare(configuration: &Prepared, left: &Import, right: &Import) -> Ordering {
+    left.kind.cmp(&right.kind).then_with(|| {
+        if configuration.settings().require.order == Order::Preserve {
+            Ordering::Equal
+        } else if configuration.settings().require.order == Order::Grouped
+            && left.kind != Kind::Service
+        {
+            configuration
+                .group(&left.path)
+                .cmp(&configuration.group(&right.path))
+                .then_with(|| left.path.cmp(&right.path))
+        } else {
+            left.path.cmp(&right.path)
+        }
+    })
+}
+
+pub(crate) fn separated(configuration: &Prepared, left: &Import, right: &Import) -> bool {
+    left.kind != right.kind
+        || left.kind != Kind::Service
+            && configuration.settings().require.order == Order::Grouped
+            && configuration.settings().require.blank_lines == BlankLines::BetweenGroups
+            && configuration.group(&left.path) != configuration.group(&right.path)
+}
+
+fn argument(tree: &Tree<'_>, node: NodeIndex) -> Option<NodeIndex> {
+    let NodeKind::Arguments { values, .. } = &tree.node(node).kind else {
+        return None;
+    };
+
+    let [value] = tree.list(values) else {
+        return None;
+    };
+
+    Some(value.node)
 }
 
 fn string(tree: &Tree<'_>, node: NodeIndex) -> Option<String> {

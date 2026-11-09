@@ -7,7 +7,6 @@ use crate::{
         imports::Imports,
         layout, preservation,
     },
-    settings::format::Order,
     syntax,
 };
 
@@ -50,8 +49,7 @@ fn formatted(source: &str, configuration: &Prepared) -> Result<String, Error> {
         return Ok(source.to_owned());
     }
 
-    let imports =
-        (configuration.settings().require.order != Order::Preserve).then(|| Imports::new(&tree));
+    let imports = Some(Imports::new(&tree));
 
     let output = render(&tree, configuration, imports.as_ref(), &directives)?;
     validate(&tree, &output, configuration, imports.as_ref(), &directives)?;
