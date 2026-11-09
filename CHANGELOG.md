@@ -1,4 +1,11 @@
 # Changelog
+## [0.2.0](https://github.com/instar-luau/instar/compare/v0.1.14...v0.2.0) - 2026-11-09
+
+### Added
+
+- **server:** [**breaking**] add scoped member and type auto-imports
+- **format:** [**breaking**] group and insert module member imports
+
 ## [0.1.14](https://github.com/instar-luau/instar/compare/v0.1.13...v0.1.14) - 2026-11-01
 
 ### Added
