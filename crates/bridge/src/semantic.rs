@@ -1,8 +1,8 @@
 use std::ops;
 
 use crate::{
-    CompletionKind, Documentation, HintKind, Parentheses, Range, SourceLocation, bridge::bindings,
-    error::Error,
+    CompletionContext, CompletionKind, Documentation, HintKind, Parentheses, Range, SourceLocation,
+    bridge::bindings, error::Error,
 };
 
 /// Luau-printed type or declaration text.
@@ -45,6 +45,9 @@ pub struct Completion {
 
     /// Candidate category.
     pub kind: CompletionKind,
+
+    /// Native syntax context at the completion cursor.
+    pub context: CompletionContext,
 
     /// Whether the candidate is callable.
     pub is_function: bool,
@@ -213,6 +216,22 @@ impl TryFrom<bindings::NativeCompletion> for Completion {
         }
 
         if !matches!(
+            value.context,
+            CompletionContext::Unknown
+                | CompletionContext::Expression
+                | CompletionContext::Statement
+                | CompletionContext::Property
+                | CompletionContext::Type
+                | CompletionContext::Keyword
+                | CompletionContext::String
+                | CompletionContext::HotComment
+        ) {
+            return Err(Error::Native {
+                reason: "Invalid completion context.".into(),
+            });
+        }
+
+        if !matches!(
             value.parentheses,
             Parentheses::None | Parentheses::CursorAfter | Parentheses::CursorInside
         ) {
@@ -242,6 +261,7 @@ impl TryFrom<bindings::NativeCompletion> for Completion {
         Ok(Self {
             label: value.label,
             kind: value.kind,
+            context: value.context,
             is_function: value.is_function,
             has_receiver: value.has_receiver,
             presentation,

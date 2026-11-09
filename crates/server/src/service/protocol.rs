@@ -57,6 +57,7 @@ pub(crate) struct Service {
     pub(super) progress: Registry,
     pub(super) sequence: AtomicU64,
     pub(super) configuration_sequence: AtomicU64,
+    pub(super) configuration_completed: AtomicU64,
 }
 
 impl Service {
@@ -75,6 +76,7 @@ impl Service {
             progress: Arc::new(Mutex::new(HashMap::new())),
             sequence: AtomicU64::new(0),
             configuration_sequence: AtomicU64::new(0),
+            configuration_completed: AtomicU64::new(0),
         }
     }
 
@@ -97,6 +99,11 @@ impl Service {
             .pointer(pointer)
             .and_then(Value::as_bool)
             == Some(true)
+    }
+
+    pub(super) fn configuration_ready(&self) -> bool {
+        self.configuration_completed.load(Ordering::Acquire)
+            == self.configuration_sequence.load(Ordering::Acquire)
     }
 }
 
@@ -148,6 +155,10 @@ impl LanguageServer for Service {
 
         let client = Arc::clone(&capabilities);
         let report = messages::generator(&self.client);
+
+        if self.has_capability("/workspace/configuration") {
+            self.configuration_sequence.store(1, Ordering::Release);
+        }
 
         self.connection
             .control(move |state| {
@@ -303,31 +314,55 @@ impl LanguageServer for Service {
     }
 
     async fn completion(&self, parameters: CompletionParams) -> Result<Option<CompletionResponse>> {
-        self.query(
-            Consistency::Snapshot,
-            parameters
-                .text_document_position_params
-                .text_document
-                .uri
-                .clone(),
-            parameters.work_done_progress_params.work_done_token.clone(),
-            parameters,
-            suggestions::completion,
-        )
-        .await
+        let sequence = self.configuration_sequence.load(Ordering::Acquire);
+        let is_ready = self.configuration_ready();
+
+        let result = self
+            .query(
+                Consistency::Snapshot,
+                parameters
+                    .text_document_position_params
+                    .text_document
+                    .uri
+                    .clone(),
+                parameters.work_done_progress_params.work_done_token.clone(),
+                parameters,
+                move |project, frontend, parameters| {
+                    suggestions::completion(project, frontend, parameters, is_ready)
+                },
+            )
+            .await?;
+
+        if is_ready && sequence != self.configuration_sequence.load(Ordering::Acquire) {
+            return Err(Error::content_modified());
+        }
+
+        Ok(result)
     }
 
     async fn completion_resolve(&self, parameters: CompletionItem) -> Result<CompletionItem> {
         let uri = resolved_uri(parameters.data.as_ref())?;
 
-        self.query(
-            Consistency::Snapshot,
-            uri,
-            None,
-            parameters,
-            suggestions::completion_resolve,
-        )
-        .await
+        let sequence = self.configuration_sequence.load(Ordering::Acquire);
+        let is_ready = self.configuration_ready();
+
+        let result = self
+            .query(
+                Consistency::Snapshot,
+                uri,
+                None,
+                parameters,
+                move |project, frontend, parameters| {
+                    suggestions::completion_resolve(project, frontend, parameters, is_ready)
+                },
+            )
+            .await?;
+
+        if is_ready && sequence != self.configuration_sequence.load(Ordering::Acquire) {
+            return Err(Error::content_modified());
+        }
+
+        Ok(result)
     }
 
     async fn signature_help(

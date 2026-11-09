@@ -13,7 +13,7 @@ use super::protocol::Service;
 use crate::{
     analysis,
     connection::{Consistency, Priority, Target},
-    files,
+    discovery, files,
     output::messages,
 };
 
@@ -39,11 +39,15 @@ impl Service {
             |operation| async move {
                 let (batch, publications, snapshot) = self
                     .connection
-                    .query(Target::Uri(uri), Arc::clone(&operation), |project, _| {
-                        let (batch, publications) = analysis::prepare(project)?;
+                    .query(
+                        Target::Uri(uri.clone()),
+                        Arc::clone(&operation),
+                        move |project, _| {
+                            let (batch, publications) = analysis::prepare(project)?;
 
-                        Ok((batch, publications, Box::new(project.capture())))
-                    })
+                            Ok((batch, publications, Box::new(project.capture())))
+                        },
+                    )
                     .await?;
 
                 for publication in publications {
@@ -60,7 +64,7 @@ impl Service {
                     .connection
                     .query(
                         Target::Snapshot(snapshot),
-                        operation,
+                        Arc::clone(&operation),
                         move |project, frontend| analysis::check(project, frontend, batch),
                     )
                     .await?;
@@ -73,6 +77,42 @@ impl Service {
                             publication.version,
                         )
                         .await;
+                }
+
+                if !self.configuration_ready() {
+                    return Ok(());
+                }
+
+                let indexing = Arc::clone(&operation);
+
+                let modules = self
+                    .connection
+                    .query(
+                        Target::Uri(uri.clone()),
+                        Arc::clone(&operation),
+                        move |project, frontend| discovery::pending(project, frontend, &indexing),
+                    )
+                    .await?;
+
+                for (module, is_imported) in modules {
+                    let result = self
+                        .connection
+                        .query(
+                            Target::Uri(uri.clone()),
+                            Arc::clone(&operation),
+                            move |project, frontend| {
+                                discovery::collect(project, frontend, module, is_imported)
+                            },
+                        )
+                        .await;
+
+                    if let Err(error) = result {
+                        if operation.is_cancelled() {
+                            return Err(error);
+                        }
+
+                        messages::report(&self.client, error).await;
+                    }
                 }
 
                 Ok(())

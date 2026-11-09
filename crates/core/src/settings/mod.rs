@@ -3,6 +3,7 @@
 pub mod check;
 pub mod environment;
 pub mod format;
+pub mod imports;
 pub mod lint;
 pub mod resolution;
 

@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use figment::Error;
 
@@ -49,6 +52,8 @@ pub(super) fn resolve(
             patterns.resolve(&field, base)?;
         }
     }
+
+    Arc::make_mut(&mut configuration.imports).resolve(&source.field("import"), base)?;
 
     let resolution = source.field("resolve");
 

@@ -1,5 +1,6 @@
 mod completion;
 mod hover;
+mod imports;
 mod signature;
 
 pub(crate) use self::{

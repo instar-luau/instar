@@ -54,6 +54,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     bridge
         .file("native/frontend.cpp")
         .file("native/index.cpp")
+        .file("native/exports.cpp")
         .file("native/query.cpp")
         .file("native/hover.cpp")
         .file("native/types.cpp")

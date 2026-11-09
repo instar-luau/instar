@@ -257,7 +257,9 @@ fn invalidate(
         .ok_or_else(Error::content_modified)?;
 
     project.modules = None;
+    project.discovery = None;
     project.imports.clear();
+    project.exports.clear();
 
     for change in changes {
         let modules: BTreeSet<_> = project

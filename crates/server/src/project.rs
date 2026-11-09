@@ -9,7 +9,7 @@ use std::{
     },
 };
 
-use instar_bridge::Frontend;
+use instar_bridge::{Exports, Frontend};
 
 use instar_core::{
     analysis::Edit as SourceEdit,
@@ -47,7 +47,9 @@ pub(super) struct Project {
     pub(super) documents: BTreeMap<String, Document>,
     pub(super) borrowed: BTreeMap<String, Document>,
     pub(super) modules: Option<Vec<String>>,
+    pub(super) discovery: Option<BTreeMap<String, Option<PathBuf>>>,
     pub(super) imports: BTreeMap<(String, String, bool), Option<String>>,
+    pub(super) exports: BTreeMap<String, Exports>,
     pub(super) configuration: Configuration,
     pub(super) capabilities: Arc<Value>,
     pub(super) encoding: Encoding,
@@ -84,7 +86,9 @@ impl Project {
             documents: BTreeMap::new(),
             borrowed: BTreeMap::new(),
             modules: None,
+            discovery: None,
             imports: BTreeMap::new(),
+            exports: BTreeMap::new(),
             configuration,
             capabilities,
             encoding,
@@ -318,6 +322,7 @@ impl Project {
     pub(super) fn changed(&mut self) -> Result<()> {
         self.generation = generation()?;
         self.modules = None;
+        self.discovery = None;
 
         Ok(())
     }
@@ -326,6 +331,7 @@ impl Project {
         self.workspace.invalidate(module);
         self.observed.remove(module);
         self.native_observations = None;
+        self.invalidate_exports(module);
 
         if self
             .documents
@@ -334,6 +340,16 @@ impl Project {
         {
             self.documents.remove(module);
         }
+    }
+
+    pub(super) fn invalidate_exports(&mut self, module: &str) {
+        self.exports.retain(|target, exports| {
+            target != module
+                && !exports
+                    .dependencies
+                    .iter()
+                    .any(|dependency| dependency == module)
+        });
     }
 
     pub(super) fn reload(&mut self) -> Result<()> {
@@ -353,6 +369,7 @@ impl Project {
         self.tokens.clear();
         self.modules = None;
         self.imports.clear();
+        self.exports.clear();
 
         self.changed()?;
         self.invalidation = self.generation;
@@ -439,6 +456,7 @@ impl Project {
         {
             self.workspace.remove_source(module);
             self.documents.remove(module);
+            self.invalidate_exports(module);
             frontend.invalidate(module).map_err(failure)?;
         }
 
@@ -461,6 +479,7 @@ impl Project {
             self.documents.remove(module);
 
             if has_changed {
+                self.invalidate_exports(module);
                 frontend.invalidate(module).map_err(failure)?;
             }
         }
@@ -471,6 +490,7 @@ impl Project {
 
         self.documents.extend(snapshot.documents);
         self.borrowed = snapshot.borrowed;
+
         self.configuration = snapshot.configuration;
         self.capabilities = snapshot.capabilities;
         self.encoding = snapshot.encoding;
@@ -484,7 +504,9 @@ impl Project {
 
         if should_refresh {
             self.modules = None;
+            self.discovery = None;
             self.imports.clear();
+            self.exports.clear();
             frontend.refresh().map_err(failure)?;
         }
 

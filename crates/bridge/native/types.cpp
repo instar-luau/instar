@@ -10,6 +10,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 
 namespace instar::luau {
@@ -303,8 +304,9 @@ namespace instar::luau {
         }
     }
 
-    Printer::Printer(PresentationBudget &budget, Luau::ScopePtr scope) : budget(budget) {
+    Printer::Printer(PresentationBudget &budget, Luau::ScopePtr scope, bool is_exhaustive) : budget(budget) {
         options.scope = std::move(scope);
+        options.exhaustive = is_exhaustive;
         options.functionTypeArguments = true;
         options.hideTableKind = true;
         options.ignoreSyntheticName = true;
@@ -330,7 +332,7 @@ namespace instar::luau {
     template <typename Formatter> std::string Printer::render(bool is_expanded, Formatter formatter) {
         auto rendering = options;
         rendering.useLineBreaks = is_expanded;
-        rendering.hideTableAliasExpansions = true;
+        rendering.hideTableAliasExpansions = !rendering.exhaustive;
 
         rendering.maxTypeLength =
             rendering.maxTypeLength ? std::min(rendering.maxTypeLength, maximum_bytes) : maximum_bytes;
@@ -349,7 +351,8 @@ namespace instar::luau {
         }
 
         is_complete &= !result.invalid && !result.error && !result.truncated &&
-                       result.name.size() <= rendering.maxTypeLength && rendering.maxTableLength == 0;
+                       (!rendering.exhaustive || !result.cycle) && result.name.size() <= rendering.maxTypeLength &&
+                       rendering.maxTableLength == 0;
 
         options.nameMap = std::move(rendering.nameMap);
 
@@ -362,7 +365,7 @@ namespace instar::luau {
                 throw Limit{};
             }
 
-            Inspection inspection(budget, false);
+            Inspection inspection(budget, options.exhaustive);
             inspection.check(value);
             const auto followed = Luau::follow(value, Luau::FollowOption::DisableLazyTypeThunks);
             std::optional<Luau::Type> declaration;
@@ -398,7 +401,7 @@ namespace instar::luau {
                 throw Limit{};
             }
 
-            Inspection inspection(budget, false);
+            Inspection inspection(budget, options.exhaustive);
             inspection.traverse(value);
 
             auto text = render(is_expanded, [&](Luau::ToStringOptions &rendering) {
@@ -592,5 +595,45 @@ namespace instar::luau {
         types.push_back({value, text, inspection.is_structural});
 
         return types.size();
+    }
+
+    bool is_callable(Luau::TypeId root, PresentationBudget &budget, bool &has_receiver) {
+        std::vector<Luau::TypeId> pending{root};
+        std::unordered_set<Luau::TypeId> seen;
+
+        while (!pending.empty()) {
+            budget.check();
+            const auto type = pending.back();
+            pending.pop_back();
+
+            if (!seen.insert(type).second) {
+                continue;
+            }
+
+            if (const auto *bound = Luau::get_if<Luau::BoundType>(&type->ty)) {
+                pending.push_back(bound->boundTo);
+            } else if (const auto *intersection = Luau::get<Luau::IntersectionType>(type)) {
+                for (const auto part : intersection->parts) {
+                    budget.check();
+                    pending.push_back(part);
+                }
+            } else if (const auto *table = Luau::get<Luau::TableType>(type); table && table->boundTo) {
+                pending.push_back(*table->boundTo);
+            } else if (const auto *lazy = Luau::get<Luau::LazyType>(type)) {
+                const auto value = lazy->unwrapped.load();
+
+                if (!value) {
+                    return false;
+                }
+
+                pending.push_back(value);
+            } else if (const auto *function = Luau::get<Luau::FunctionType>(type)) {
+                has_receiver = has_receiver && function->hasSelf;
+            } else {
+                return false;
+            }
+        }
+
+        return true;
     }
 }

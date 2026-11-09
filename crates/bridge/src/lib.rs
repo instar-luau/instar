@@ -22,8 +22,9 @@ mod semantic;
 
 pub use self::{
     bridge::bindings::{
-        Builtin, CompletionKind, Diagnostic, Documentation, HintKind, HintSelector, Import,
-        Occurrence, OccurrenceRole, Parentheses, Position, Range, SourceLocation,
+        Builtin, CompletionContext, CompletionKind, Diagnostic, Documentation, Export, ExportType,
+        Exports, HintKind, HintSelector, Import, Occurrence, OccurrenceRole, Parentheses, Position,
+        Range, SourceLocation,
     },
     cancellation::Cancellation,
     configuration::{Configuration, Mode},

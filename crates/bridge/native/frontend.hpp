@@ -28,6 +28,7 @@ namespace instar::luau {
     struct HintSelector;
     struct Position;
     struct Import;
+    struct Exports;
 
     class Frontend {
     public:
@@ -63,6 +64,7 @@ namespace instar::luau {
         rust::Vec<NativeHint> hints_range(rust::Str module, Position start, Position end, bool is_expanded);
         rust::Vec<NativeHint> hint_subjects(rust::Slice<const HintSelector> selectors);
         rust::Vec<Import> imports(rust::Str module);
+        Exports exports(rust::Str module);
         std::shared_ptr<Luau::FrontendCancellationToken> cancellation() const;
 
     private:
