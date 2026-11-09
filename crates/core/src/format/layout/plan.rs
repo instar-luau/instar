@@ -9,13 +9,10 @@ use super::{
     quotes::quote,
 };
 
-use crate::{
-    format::{
-        Error, Prepared,
-        directives::{Directives, Kind},
-        imports::Imports,
-    },
-    settings::format::Configuration,
+use crate::format::{
+    Error, Prepared,
+    directives::{Directives, Kind},
+    imports::Imports,
 };
 
 pub(crate) struct Plan {
@@ -26,7 +23,6 @@ pub(crate) struct Plan {
 
 pub(crate) struct Builder<'tree, 'source> {
     pub(super) tree: &'tree Tree<'source>,
-    pub(super) configuration: &'tree Configuration,
     pub(super) spacing: Vec<Option<usize>>,
     pub(super) has_inline_attributes: Vec<bool>,
     pub(super) imports: Option<&'tree Imports>,
@@ -80,7 +76,6 @@ impl<'tree, 'source> Builder<'tree, 'source> {
 
         let mut builder = Self {
             tree,
-            configuration,
             spacing: vec![None; tree.tokens.len()],
             has_inline_attributes,
             imports,
