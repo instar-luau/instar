@@ -29,6 +29,17 @@ impl Builder<'_, '_> {
                     self.spacing[tree.node(*method).tokens.start.get()] = Some(0);
                 }
 
+                NodeKind::Function {
+                    generics: Some(generics),
+                    ..
+                }
+                | NodeKind::TypeAlias {
+                    generics: Some(generics),
+                    ..
+                } => {
+                    self.spacing[tree.node(*generics).tokens.start.get()] = Some(0);
+                }
+
                 NodeKind::Generics {
                     opening, closing, ..
                 }
@@ -38,7 +49,9 @@ impl Builder<'_, '_> {
                 | NodeKind::InstantiationArguments {
                     opening, closing, ..
                 } => {
-                    self.spacing[opening.get()] = Some(0);
+                    if !matches!(node.kind, NodeKind::Generics { .. }) {
+                        self.spacing[opening.get()] = Some(0);
+                    }
 
                     if let Some(next) = self.next(opening.get() + 1, node.tokens.end.get()) {
                         self.spacing[next] = Some(0);
