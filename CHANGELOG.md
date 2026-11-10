@@ -1,4 +1,11 @@
 # Changelog
+## [0.2.1](https://github.com/instar-luau/instar/compare/v0.2.0...v0.2.1) - 2026-11-10
+
+### Fixed
+
+- **format:** wrap parameters before compact return types
+- **format:** preserve spacing before generic function types
+
 ## [0.2.0](https://github.com/instar-luau/instar/compare/v0.1.14...v0.2.0) - 2026-11-09
 
 ### Added
