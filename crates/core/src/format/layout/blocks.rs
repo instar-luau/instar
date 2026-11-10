@@ -70,6 +70,12 @@ impl Builder<'_, '_> {
                 );
             }
 
+            NodeKind::Function {
+                returns: Some(returns),
+                ..
+            }
+            | NodeKind::TypeFunction { returns, .. } => return self.signature(index, *returns),
+
             NodeKind::While {
                 do_keyword: Some(keyword),
                 body,
@@ -433,6 +439,11 @@ impl Builder<'_, '_> {
                     self.separated(interior, &[&binding, &values]),
                 )
             }
+
+            NodeKind::Function {
+                returns: Some(returns),
+                ..
+            } => self.signature(index, *returns),
 
             _ => self.sequence(header.clone(), &children),
         };

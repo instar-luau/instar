@@ -299,8 +299,18 @@ impl Renderer<'_, '_> {
                     }
                 }
 
-                Document::Group { content, .. } => {
-                    if !self.measure_suffix(content, None) {
+                Document::Group { layout, content } => {
+                    let mode = (matches!(mode, Some(Layout::Return))
+                        || matches!(layout, Layout::Return)
+                            && self.can_fit(
+                                content,
+                                self.indentation * self.configuration.indent_width.get(),
+                                Layout::Fit,
+                                None,
+                            ))
+                    .then_some(Layout::Return);
+
+                    if !self.measure_suffix(content, mode) {
                         return false;
                     }
                 }

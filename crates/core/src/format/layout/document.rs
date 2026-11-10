@@ -9,6 +9,7 @@ pub(super) enum Layout {
     Table,
     Vertical,
     Arguments,
+    Return,
 }
 
 #[derive(Copy, Clone)]

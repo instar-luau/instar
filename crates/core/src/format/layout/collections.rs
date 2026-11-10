@@ -17,6 +17,23 @@ struct List {
 }
 
 impl Builder<'_, '_> {
+    pub(super) fn signature(&self, index: NodeIndex, returns: NodeIndex) -> Vec<Document> {
+        let start = self.tree.node(index).tokens.start.get();
+        let end = self.tree.node(returns).tokens.start.get();
+        let mut content = self.sequence(start..end, &self.tree.children(index));
+
+        if let Some(previous) = self.previous(start, end) {
+            content.extend(self.gap(previous, end));
+        }
+
+        content.push(Document::Group {
+            layout: Layout::Return,
+            content: self.node(returns),
+        });
+
+        content
+    }
+
     pub(super) fn table(
         &self,
         opening: TokenIndex,
