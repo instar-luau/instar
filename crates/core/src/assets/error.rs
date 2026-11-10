@@ -36,8 +36,8 @@ pub enum Error {
         source: serde_json::Error,
     },
 
-    /// An input does not meet the generation contract.
-    #[error("Could not generate assets. {reason}")]
+    /// An asset input is invalid.
+    #[error("Invalid asset input. {reason}")]
     Invalid {
         /// The invalid input or output condition.
         reason: String,

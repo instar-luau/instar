@@ -213,6 +213,8 @@ pub(super) fn render(
             .into(),
     };
 
+    metadata.validate(&definitions)?;
+
     for (name, source) in definitions {
         result.insert(PathBuf::from(format!("roblox/{name}.d.luau")), source);
     }

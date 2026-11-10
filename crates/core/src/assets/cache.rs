@@ -1,8 +1,9 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, btree_map::Entry},
     fs::{self, File},
     io::{self, Write as _},
     path::{Path, PathBuf},
+    slice,
     sync::{Arc, Mutex, Weak},
     thread,
     time::{Duration, SystemTime},
@@ -12,13 +13,21 @@ use reqwest::Client;
 use tokio::{runtime::Builder, sync::oneshot};
 use tokio_util::sync::CancellationToken;
 
-use super::Error;
+use super::{Error, mapping, metadata::Metadata};
 
 const ADDRESS: &str = "https://instar-luau.github.io/instar";
 
+const ROBLOX: &[&str] = &[
+    "metadata.json",
+    "none.d.luau",
+    "local.d.luau",
+    "plugin.d.luau",
+    "roblox.d.luau",
+];
+
 static SHARED: Mutex<Weak<Shared>> = Mutex::new(Weak::new());
 
-type Files = Mutex<BTreeMap<(Namespace, &'static str), Cached>>;
+type Files = Mutex<BTreeMap<(Namespace, &'static str), Arc<Cached>>>;
 
 pub(crate) struct Cache(Arc<Shared>);
 
@@ -28,7 +37,7 @@ struct Shared {
 }
 
 struct Cached {
-    source: Arc<str>,
+    sources: BTreeMap<&'static str, Arc<str>>,
     checked: SystemTime,
 }
 
@@ -60,10 +69,31 @@ impl Cache {
         filename: &'static str,
         cancellation: &CancellationToken,
     ) -> Result<(PathBuf, Arc<str>), Error> {
-        let path = directory()?.join(namespace.name()).join(filename);
-        let source = acquire(&path, (namespace, filename), &self.0, cancellation)?;
+        let directory = directory()?.join(namespace.name());
+        let cached = acquire(&directory, (namespace, filename), &self.0, cancellation)?;
 
-        Ok((path, source))
+        Ok((
+            directory.join(filename),
+            Arc::clone(&cached.sources[filename]),
+        ))
+    }
+
+    pub(crate) fn environment(
+        &self,
+        filename: &'static str,
+        cancellation: &CancellationToken,
+    ) -> Result<[(PathBuf, Arc<str>); 2], Error> {
+        let directory = directory()?.join(Namespace::Roblox.name());
+
+        let cached = acquire(
+            &directory,
+            (Namespace::Roblox, "metadata.json"),
+            &self.0,
+            cancellation,
+        )?;
+
+        Ok(["metadata.json", filename]
+            .map(|name| (directory.join(name), Arc::clone(&cached.sources[name]))))
     }
 }
 
@@ -122,21 +152,17 @@ pub fn refresh(cancellation: &CancellationToken) -> Result<Vec<PathBuf>, Error> 
         for key in [
             (Namespace::Luau, "documentation.json"),
             (Namespace::Roblox, "documentation.json"),
-            (Namespace::Roblox, "none.d.luau"),
-            (Namespace::Roblox, "local.d.luau"),
-            (Namespace::Roblox, "plugin.d.luau"),
-            (Namespace::Roblox, "roblox.d.luau"),
             (Namespace::Roblox, "metadata.json"),
         ] {
-            let path = directory.join(key.0.name()).join(key.1);
+            let directory = directory.join(key.0.name());
 
             tokio::select! {
                 biased;
                 () = cancellation.cancelled() => return Err(Error::Cancelled),
-                result = download(&files, &path, key) => { result?; },
+                result = download(&files, &directory, key) => { result?; },
             }
 
-            refreshed.push(path);
+            refreshed.extend(filenames(&key).iter().map(|name| directory.join(name)));
         }
 
         Ok(refreshed)
@@ -158,11 +184,11 @@ fn directory() -> Result<PathBuf, Error> {
 }
 
 fn acquire(
-    path: &Path,
+    directory: &Path,
     key: (Namespace, &'static str),
     shared: &Shared,
     cancellation: &CancellationToken,
-) -> Result<Arc<str>, Error> {
+) -> Result<Arc<Cached>, Error> {
     if cancellation.is_cancelled() {
         return Err(Error::Cancelled);
     }
@@ -172,14 +198,29 @@ fn acquire(
         .lock()
         .expect("Internal error: asset cache mutex is poisoned.");
 
-    if !files.contains_key(&key)
-        && let Some(cached) = read(path)?
-    {
-        files.insert(key, cached);
+    if let Entry::Vacant(entry) = files.entry(key) {
+        match read(directory, key) {
+            Ok(Some(cached)) => {
+                entry.insert(Arc::new(cached));
+            }
+
+            Ok(None) => {}
+
+            Err(error)
+                if matches!(&error, Error::Data { .. } | Error::Invalid { .. })
+                    || (key == (Namespace::Roblox, "metadata.json")
+                        && matches!(&error, Error::Filesystem { source, .. }
+                            if source.kind() == io::ErrorKind::InvalidData)) =>
+            {
+                tracing::warn!(%error, "Could not validate cached assets; downloading replacements.");
+            }
+
+            Err(error) => return Err(error),
+        }
     }
 
     if let Some(cached) = files.get(&key) {
-        let source = Arc::clone(&cached.source);
+        let cached = Arc::clone(cached);
 
         let expired = cached
             .checked
@@ -200,7 +241,7 @@ fn acquire(
                     .as_ref()
                     .is_none_or(thread::JoinHandle::is_finished)
             }) {
-                match update(path.to_owned(), key, Arc::clone(&shared.files)) {
+                match update(directory.to_owned(), key, Arc::clone(&shared.files)) {
                     Ok(refresh) => {
                         refreshes.insert(key, refresh);
                     }
@@ -210,7 +251,7 @@ fn acquire(
             }
         }
 
-        return Ok(source);
+        return Ok(cached);
     }
 
     drop(files);
@@ -224,12 +265,16 @@ fn acquire(
         tokio::select! {
             biased;
             () = cancellation.cancelled() => Err(Error::Cancelled),
-            result = download(&shared.files, path, key) => result,
+            result = download(&shared.files, directory, key) => result,
         }
     })
 }
 
-fn update(path: PathBuf, key: (Namespace, &'static str), files: Arc<Files>) -> io::Result<Refresh> {
+fn update(
+    directory: PathBuf,
+    key: (Namespace, &'static str),
+    files: Arc<Files>,
+) -> io::Result<Refresh> {
     let (cancellation, cancelled) = oneshot::channel();
 
     let thread = thread::Builder::new()
@@ -244,7 +289,7 @@ fn update(path: PathBuf, key: (Namespace, &'static str), files: Arc<Files>) -> i
                         tokio::select! {
                             biased;
                             _ = cancelled => Ok(()),
-                            result = download(&files, &path, key) => result.map(|_| ()),
+                            result = download(&files, &directory, key) => result.map(|_| ()),
                         }
                     })
                 });
@@ -262,96 +307,148 @@ fn update(path: PathBuf, key: (Namespace, &'static str), files: Arc<Files>) -> i
 
 async fn download(
     files: &Files,
-    path: &Path,
+    directory: &Path,
     key: (Namespace, &'static str),
-) -> Result<Arc<str>, Error> {
-    let parent = path
-        .parent()
-        .expect("Internal error: asset has no parent directory.");
-
-    fs::create_dir_all(parent).map_err(|source| filesystem(parent, source))?;
-
-    let mut staged =
-        tempfile::NamedTempFile::new_in(parent).map_err(|source| filesystem(parent, source))?;
-
-    let url = format!("{ADDRESS}/{}/{}", key.0.name(), key.1);
-
-    let failure = |source| Error::Download {
-        address: url.clone(),
-        source,
-    };
+) -> Result<Arc<Cached>, Error> {
+    fs::create_dir_all(directory).map_err(|source| filesystem(directory, source))?;
 
     let client = Client::builder()
         .https_only(true)
         .connect_timeout(Duration::from_secs(30))
         .timeout(Duration::from_secs(300))
         .build()
-        .map_err(failure)?;
+        .map_err(|source| Error::Download {
+            address: ADDRESS.to_owned(),
+            source,
+        })?;
 
-    let mut response = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(failure)?
-        .error_for_status()
-        .map_err(failure)?;
+    let mut staged = Vec::new();
+    let mut sources = BTreeMap::new();
 
-    while let Some(chunk) = response.chunk().await.map_err(failure)? {
-        staged
-            .write_all(&chunk)
-            .map_err(|source| filesystem(path, source))?;
+    for &name in filenames(&key) {
+        let path = directory.join(name);
+
+        let mut file = tempfile::NamedTempFile::new_in(directory)
+            .map_err(|source| filesystem(&path, source))?;
+
+        let url = format!("{ADDRESS}/{}/{name}", key.0.name());
+
+        let failure = |source| Error::Download {
+            address: url.clone(),
+            source,
+        };
+
+        let mut response = client
+            .get(&url)
+            .send()
+            .await
+            .map_err(failure)?
+            .error_for_status()
+            .map_err(failure)?;
+
+        while let Some(chunk) = response.chunk().await.map_err(failure)? {
+            file.write_all(&chunk)
+                .map_err(|source| filesystem(&path, source))?;
+        }
+
+        let source = fs::read_to_string(file.path()).map_err(|source| filesystem(&path, source))?;
+
+        sources.insert(name, Arc::from(source));
+        staged.push((path, file));
     }
 
-    let source = fs::read_to_string(staged.path()).map_err(|source| filesystem(path, source))?;
+    validate(key, &sources)?;
 
     let mut files = files
         .lock()
         .expect("Internal error: asset cache mutex is poisoned.");
 
-    let source = files
-        .get(&key)
-        .filter(|cached| *cached.source == source)
-        .map_or_else(|| Arc::from(source), |cached| Arc::clone(&cached.source));
+    if let Some(previous) = files.get(&key) {
+        for (name, source) in &mut sources {
+            if let Some(cached) = previous.sources.get(name)
+                && cached == source
+            {
+                *source = Arc::clone(cached);
+            }
+        }
+    }
 
     let checked = SystemTime::now();
 
-    staged
-        .as_file()
-        .set_modified(checked)
-        .map_err(|source| filesystem(path, source))?;
+    for (path, file) in staged {
+        file.as_file()
+            .set_modified(checked)
+            .and_then(|()| file.as_file().sync_all())
+            .map_err(|source| filesystem(&path, source))?;
 
-    staged
-        .persist(path)
-        .map_err(|error| filesystem(path, error.error))?;
+        file.persist(&path)
+            .map_err(|error| filesystem(&path, error.error))?;
+    }
 
-    files.insert(
-        key,
-        Cached {
-            source: Arc::clone(&source),
-            checked,
-        },
-    );
+    let cached = Arc::new(Cached { sources, checked });
+    files.insert(key, Arc::clone(&cached));
 
-    Ok(source)
+    Ok(cached)
 }
 
-fn read(path: &Path) -> Result<Option<Cached>, Error> {
-    let file = match File::open(path) {
-        Ok(file) => file,
-        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(source) => return Err(filesystem(path, source)),
-    };
+fn filenames<'key>(key: &'key (Namespace, &'static str)) -> &'key [&'static str] {
+    if *key == (Namespace::Roblox, "metadata.json") {
+        ROBLOX
+    } else {
+        slice::from_ref(&key.1)
+    }
+}
 
-    let checked = file
-        .metadata()
-        .and_then(|metadata| metadata.modified())
-        .map_err(|source| filesystem(path, source))?;
+fn validate(
+    key: (Namespace, &'static str),
+    sources: &BTreeMap<&'static str, Arc<str>>,
+) -> Result<(), Error> {
+    if key != (Namespace::Roblox, "metadata.json") {
+        return Ok(());
+    }
 
-    let source = io::read_to_string(file).map_err(|source| filesystem(path, source))?;
+    let metadata: Metadata = mapping::parse(&sources["metadata.json"], "Roblox metadata")?;
+
+    let definitions = sources
+        .iter()
+        .filter_map(|(name, source)| {
+            name.strip_suffix(".d.luau")
+                .map(|name| (name.to_owned(), source.as_ref()))
+        })
+        .collect();
+
+    metadata.validate(&definitions)
+}
+
+fn read(directory: &Path, key: (Namespace, &'static str)) -> Result<Option<Cached>, Error> {
+    let mut sources = BTreeMap::new();
+    let mut checked: Option<SystemTime> = None;
+
+    for &name in filenames(&key) {
+        let path = directory.join(name);
+
+        let file = match File::open(&path) {
+            Ok(file) => file,
+            Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(source) => return Err(filesystem(&path, source)),
+        };
+
+        let modified = file
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .map_err(|source| filesystem(&path, source))?;
+
+        let source = io::read_to_string(file).map_err(|source| filesystem(&path, source))?;
+
+        sources.insert(name, Arc::from(source));
+        checked = Some(checked.map_or(modified, |checked| checked.min(modified)));
+    }
+
+    validate(key, &sources)?;
 
     Ok(Some(Cached {
-        source: source.into(),
-        checked,
+        sources,
+        checked: checked.expect("Internal error: asset group is empty."),
     }))
 }
 

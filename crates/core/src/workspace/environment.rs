@@ -378,18 +378,14 @@ pub(super) fn identity(
                     Security::Roblox => ("roblox", "roblox.d.luau"),
                 };
 
+                let [metadata, declarations] = workspace
+                    .assets
+                    .environment(filename, &workspace.cancellation.borrow())?;
+
                 Some(Profile {
                     name,
-                    metadata: workspace.assets.load(
-                        assets::Namespace::Roblox,
-                        "metadata.json",
-                        &workspace.cancellation.borrow(),
-                    )?,
-                    declarations: workspace.assets.load(
-                        assets::Namespace::Roblox,
-                        filename,
-                        &workspace.cancellation.borrow(),
-                    )?,
+                    metadata,
+                    declarations,
                 })
             } else {
                 None

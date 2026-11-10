@@ -1,6 +1,9 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use serde::{Deserialize, Serialize};
+use vermis::tree::NodeKind;
+
+use super::{Error, mapping::invalid, syntax};
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -40,6 +43,43 @@ pub(crate) struct Permission {
 
     #[serde(rename = "write")]
     pub(crate) can_write: bool,
+}
+
+impl Metadata {
+    pub(super) fn validate(
+        &self,
+        definitions: &BTreeMap<String, impl AsRef<str>>,
+    ) -> Result<(), Error> {
+        if self.profiles.keys().ne(definitions.keys()) {
+            return Err(invalid(
+                "Roblox declarations and metadata have different security profiles.",
+            ));
+        }
+
+        for (profile, source) in definitions {
+            let tree = syntax::parse(source.as_ref())?;
+
+            for node in &tree.nodes {
+                if let NodeKind::TypeName {
+                    namespace: Some(namespace),
+                    name,
+                    ..
+                } = node.kind
+                    && tree.text(namespace) == b"Enum"
+                {
+                    let name = syntax::text(&tree, name)?;
+
+                    if !self.enumerations.contains_key(name) {
+                        return Err(invalid(format!(
+                            "Roblox `{profile}` declarations reference unknown enum `{name}`."
+                        )));
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl From<Capability> for instar_bridge::Class {

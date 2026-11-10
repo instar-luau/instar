@@ -327,6 +327,11 @@ pub(super) fn injected(
     output.finish(is_cancelled)
 }
 
+pub(super) fn text<'source>(tree: &Tree<'source>, index: NodeIndex) -> Result<&'source str, Error> {
+    from_utf8(tree.text(index))
+        .map_err(|error| invalid(format!("Declaration text is not valid UTF-8. {error}")))
+}
+
 fn statements(tree: &Tree<'_>) -> Result<Vec<NodeIndex>, Error> {
     let NodeKind::Root { block, .. } = tree.node(tree.root).kind else {
         return Err(invalid("Missing declaration root."));
@@ -351,9 +356,4 @@ fn declaration(tree: &Tree<'_>, mut index: NodeIndex) -> NodeIndex {
     }
 
     index
-}
-
-fn text<'source>(tree: &Tree<'source>, index: NodeIndex) -> Result<&'source str, Error> {
-    from_utf8(tree.text(index))
-        .map_err(|error| invalid(format!("Declaration text is not valid UTF-8. {error}")))
 }
