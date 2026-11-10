@@ -186,7 +186,6 @@ impl Generators {
                     if !stream.failed {
                         tracing::warn!(directory = %generator.directory.display(), %error, "Sourcemap generation failed");
                         stream.failed = true;
-                        has_changed = true;
                     }
                 }
             }
