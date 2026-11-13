@@ -415,6 +415,14 @@ fn semantic(
         label: candidate.label.clone(),
         sort_text,
         kind: Some(match candidate.kind {
+            CompletionKind::Property if candidate.is_function => {
+                if candidate.has_receiver {
+                    CompletionItemKind::Method
+                } else {
+                    CompletionItemKind::Function
+                }
+            }
+
             CompletionKind::Property => CompletionItemKind::Property,
 
             CompletionKind::Binding => {

@@ -611,7 +611,10 @@ namespace instar::luau::query {
 
         for (const auto &[label, entry] : native.entryMap) {
             budget.check();
-            labels.push_back(label);
+
+            if (!entry.wrongIndexType) {
+                labels.push_back(label);
+            }
         }
 
         std::sort(labels.begin(), labels.end());
