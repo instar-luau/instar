@@ -1,69 +1,134 @@
 declare extern type Vector3 with
+	read X: number
+	read Y: number
+	read Z: number
+	read Magnitude: number
+	read Unit: Vector3
+	function Max(self, ...: Vector3): Vector3
+	function Min(self, ...: Vector3): Vector3
+	function Angle(self, other: Vector3): number
+	function Angle(self, other: Vector3, axis: Vector3): number
 	function __unm(self): Vector3
-	x: number
-	y: number
-	z: number
-	unit: Vector3
-	magnitude: number
+	read x: number
+	read y: number
+	read z: number
+	read unit: Vector3
+	read magnitude: number
 	function lerp(self, goal: Vector3, alpha: number): Vector3
 end
 
 declare extern type Vector2 with
+	read X: number
+	read Y: number
+	read Magnitude: number
+	read Unit: Vector2
+	function Max(self, ...: Vector2): Vector2
+	function Min(self, ...: Vector2): Vector2
+	function Angle(self, other: Vector2): number
+	function Angle(self, other: Vector2, signed: boolean): number
+	function FuzzyEq(self, other: Vector2): boolean
+	function FuzzyEq(self, other: Vector2, epsilon: number): boolean
 	function __idiv(self, other: Vector2 | number): Vector2
 	function __unm(self): Vector2
-	x: number
-	y: number
-	unit: Vector2
-	magnitude: number
+	read x: number
+	read y: number
+	read unit: Vector2
+	read magnitude: number
 	function lerp(self, other: Vector2, alpha: number): Vector2
 end
 
 declare extern type Vector3int16 with
+	read X: number
+	read Y: number
+	read Z: number
 	function __unm(self): Vector3int16
 end
 
 declare extern type Vector2int16 with
+	read X: number
+	read Y: number
 	function __unm(self): Vector2int16
 end
 
 declare extern type UDim2 with
+	read X: UDim
+	read Y: UDim
+	read Width: UDim
+	read Height: UDim
 	function __unm(self): UDim2
 end
 
 declare extern type UDim with
+	read Scale: number
+	read Offset: number
 	function __unm(self): UDim
 end
 
 declare extern type CFrame with
-	x: number
-	y: number
-	z: number
-	p: Vector3
-	rightVector: Vector3
-	upVector: Vector3
-	lookVector: Vector3
+	read Position: Vector3
+	read Rotation: CFrame
+	read X: number
+	read Y: number
+	read Z: number
+	read LookVector: Vector3
+	read RightVector: Vector3
+	read UpVector: Vector3
+	read XVector: Vector3
+	read YVector: Vector3
+	read ZVector: Vector3
+	function ToEulerAngles(self): (number, number, number)
+	function ToEulerAngles(self, order: Enum.RotationOrder): (number, number, number)
+	function FuzzyEq(self, other: CFrame): boolean
+	function FuzzyEq(self, other: CFrame, epsilon: number): boolean
+	function GetComponents(
+		self
+	): (number, number, number, number, number, number, number, number, number, number, number, number)
+	function components(
+		self
+	): (number, number, number, number, number, number, number, number, number, number, number, number)
+	read x: number
+	read y: number
+	read z: number
+	read p: Vector3
+	read rightVector: Vector3
+	read upVector: Vector3
+	read lookVector: Vector3
+	function pointToObjectSpace(self): Vector3
 	function pointToObjectSpace(self, value: Vector3): Vector3
+	function vectorToWorldSpace(self): Vector3
 	function vectorToWorldSpace(self, value: Vector3): Vector3
 	function toAxisAngle(self): (Vector3, number)
 	function inverse(self): CFrame
 	function lerp(self, goal: CFrame, alpha: number): CFrame
+	function vectorToObjectSpace(self): Vector3
 	function vectorToObjectSpace(self, value: Vector3): Vector3
+	function pointToWorldSpace(self): Vector3
 	function pointToWorldSpace(self, value: Vector3): Vector3
+	function toWorldSpace(self): CFrame
 	function toWorldSpace(self, value: CFrame): CFrame
+	function toObjectSpace(self): CFrame
 	function toObjectSpace(self, value: CFrame): CFrame
 	function toEulerAnglesXYZ(self): (number, number, number)
 end
 
 declare extern type Color3 with
-	r: number
-	g: number
-	b: number
+	read R: number
+	read G: number
+	read B: number
+	read r: number
+	read g: number
+	read b: number
 	function lerp(self, color: Color3, alpha: number): Color3
 end
 
+declare extern type Font with
+	Family: string
+end
+
 declare extern type RBXScriptConnection with
-	connected: boolean
-	function disconnect(self): nil
+	read Connected: boolean
+	read connected: boolean
+	function disconnect(self): ()
 end
 
 declare extern type UserSettings with
@@ -518,19 +583,152 @@ declare extern type AudioListener with
 end
 
 declare extern type ColorSequence with
-	Keypoints: { ColorSequenceKeypoint }
+	read Keypoints: { ColorSequenceKeypoint }
 end
 
 declare extern type NumberSequence with
-	Keypoints: { NumberSequenceKeypoint }
+	read Keypoints: { NumberSequenceKeypoint }
 end
 
 declare extern type RaycastParams with
 	ExcludeInstances: { Instance }?
 	IncludeInstances: { Instance }?
+	FilterDescendantsInstances: { Instance }
+	function AddToFilter(self, instances: Instance | { Instance }): ()
 end
 
 declare extern type OverlapParams with
 	ExcludeInstances: { Instance }?
 	IncludeInstances: { Instance }?
+	FilterDescendantsInstances: { Instance }
+	function AddToFilter(self, instances: Instance | { Instance }): ()
+end
+
+declare extern type Axes with
+	read X: boolean
+	read Y: boolean
+	read Z: boolean
+	read Top: boolean
+	read Bottom: boolean
+	read Left: boolean
+	read Right: boolean
+	read Back: boolean
+	read Front: boolean
+end
+
+declare extern type BrickColor with
+	read Number: number
+	read r: number
+	read g: number
+	read b: number
+	read Name: string
+	read Color: Color3
+end
+
+declare extern type ColorSequenceKeypoint with
+	read Time: number
+	read Value: Color3
+end
+
+declare extern type Content with
+	read SourceType: Enum.ContentSourceType
+	read Uri: string?
+	read Object: Object?
+end
+
+declare extern type DateTime with
+	read UnixTimestamp: number
+	read UnixTimestampMillis: number
+end
+
+declare extern type Faces with
+	read Top: boolean
+	read Bottom: boolean
+	read Left: boolean
+	read Right: boolean
+	read Back: boolean
+	read Front: boolean
+end
+
+declare extern type NumberRange with
+	read Min: number
+	read Max: number
+end
+
+declare extern type NumberSequenceKeypoint with
+	read Envelope: number
+	read Time: number
+	read Value: number
+end
+
+declare extern type PathWaypoint with
+	read Action: Enum.PathWaypointAction
+	read Position: Vector3
+	read Label: string
+end
+
+declare extern type PhysicalProperties with
+	read AcousticAbsorption: number
+	read Density: number
+	read Friction: number
+	read Elasticity: number
+	read FrictionWeight: number
+	read ElasticityWeight: number
+end
+
+declare extern type Ray with
+	read Unit: Ray
+	read Origin: Vector3
+	read Direction: Vector3
+end
+
+declare extern type Rect with
+	read Width: number
+	read Height: number
+	read Min: Vector2
+	read Max: Vector2
+end
+
+declare extern type Region3 with
+	read CFrame: CFrame
+	read Size: Vector3
+end
+
+declare extern type Region3int16 with
+	read Min: Vector3int16
+	read Max: Vector3int16
+end
+
+declare extern type TweenInfo with
+	read EasingDirection: Enum.EasingDirection
+	read Time: number
+	read DelayTime: number
+	read RepeatCount: number
+	read EasingStyle: Enum.EasingStyle
+	read Reverses: boolean
+end
+
+declare extern type User with
+	read Id: number
+	read DomainType: Enum.DomainType
+	read DomainId: number
+end
+
+declare extern type FloatCurveKey with
+	Time: number?
+	Value: number?
+	RightTangent: number?
+	LeftTangent: number?
+end
+
+declare extern type RotationCurveKey with
+	Time: number?
+	RightTangent: number?
+	LeftTangent: number?
+end
+
+declare extern type ValueCurveKey with
+	Time: number?
+	RightTangent: number?
+	LeftTangent: number?
 end

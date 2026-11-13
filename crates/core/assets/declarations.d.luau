@@ -105,15 +105,14 @@ declare function Stats(): Stats
 declare function Version(): string
 
 type ReflectedClassOrNil = ReflectedClass?
-
 type ReflectedClasses = { ReflectedClass }
-
 type ReflectedProperties = { ReflectedProperty }
-
 type ProductIdentifierArray = { ProductIdentifier }
 type InfoTypeArray = { Enum.InfoType }
 type RankedItemArray = { RankedItem }
 
+declare extern type DockWidgetPluginGuiInfo with
+end
 declare extern type ClipEvaluator with
 end
 declare extern type OpenCloudModel with
