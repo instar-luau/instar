@@ -1,4 +1,10 @@
 # Changelog
+## [0.2.4](https://github.com/instar-luau/instar/compare/v0.2.3...v0.2.4) - 2026-11-13
+
+### Fixed
+
+- **assets:** refine Roblox datatype contracts from runtime observations
+
 ## [0.2.3](https://github.com/instar-luau/instar/compare/v0.2.2...v0.2.3) - 2026-11-13
 
 ### Added
