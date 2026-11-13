@@ -5,32 +5,6 @@ type QDir = string
 type QFont = string
 type TeleportData = boolean | buffer | number | string | { [number]: TeleportData } | { [string]: TeleportData }
 
-declare debug: {
-	info: (<R...>(thread, number, string) -> R...)
-		& (<R...>(number, string) -> R...)
-		& (<A..., R1..., R2...>((A...) -> R1..., string) -> R2...),
-	traceback: ((string?, number?) -> string) & ((thread, string?, number?) -> string),
-	profilebegin: (label: string) -> (),
-	profileend: () -> (),
-	getmemorycategory: () -> string,
-	setmemorycategory: (tag: string) -> (),
-	resetmemorycategory: () -> (),
-}
-
-declare utf8: {
-	char: (...number) -> string,
-	charpattern: string,
-	codepoint: (string, number?, number?) -> (...number),
-	codes: (string) -> ((string, number) -> (number, number), string, number),
-	graphemes: (string, number?, number?) -> (() -> (number, number)),
-	len: (string, number?, number?) -> (number?, number?),
-	nfcnormalize: (string) -> string,
-	nfdnormalize: (string) -> string,
-	offset: (string, number, number?) -> number?,
-}
-
-declare function warn<T...>(...: T...)
-
 @[deprecated { use = "task.spawn" }]
 declare function spawn(callback: (dt: number, gt: number) -> ())
 
@@ -70,16 +44,8 @@ type HumanoidDescriptionAccessory = {
 	Puffiness: number?,
 }
 
-declare extern type ValueCurveKey with
-	Interpolation: Enum.KeyInterpolationMode
-	Time: number
-	Value: any
-	RightTangent: number
-	LeftTangent: number
-end
-
-declare ValueCurveKey: {
-	new: (time: number, value: any, interpolation: Enum.KeyInterpolationMode) -> ValueCurveKey,
+declare CatalogSearchParams: {
+	new: () -> CatalogSearchParams,
 }
 
 export type RaycastResult<T = BasePart> = {
@@ -102,21 +68,6 @@ declare extern type GlobalSettings extends GenericSettings with
 	function GetFVariable(self, name: string): string
 end
 
-declare SharedTable: {
-	new: () -> SharedTable,
-	new: (t: { [any]: any }?) -> SharedTable,
-	clear: (st: SharedTable) -> (),
-	clone: (st: SharedTable, deep: boolean?) -> SharedTable,
-	cloneAndFreeze: (st: SharedTable, deep: boolean?) -> SharedTable,
-	increment: (st: SharedTable, key: string | number, delta: number) -> number,
-	isFrozen: (st: SharedTable) -> boolean,
-	size: (st: SharedTable) -> number,
-	update: (st: SharedTable, key: string | number, f: (any) -> any) -> (),
-}
-
-declare function settings(): GlobalSettings
-declare function UserSettings(): UserSettings
-
 @[deprecated { use = "plugin" }]
 declare function PluginManager(): PluginManager
 
@@ -134,18 +85,6 @@ declare function stats(): Stats
 
 @[deprecated { use = "task.wait" }]
 declare function wait(delay: number?): (number, number)
-
-@deprecated
-declare function printidentity(prefix: string?)
-
-@deprecated
-declare function version(): string
-
-declare game: DataModel
-
-declare workspace: Workspace
-
-declare script: LuaSourceContainer
 
 @[deprecated { use = "task.delay" }]
 declare function Delay(delay: number?, callback: (dt: number, gt: number) -> ())
@@ -172,8 +111,6 @@ type ProductIdentifierArray = { ProductIdentifier }
 type InfoTypeArray = { Enum.InfoType }
 type RankedItemArray = { RankedItem }
 
-declare extern type AdReward with
-end
 declare extern type ClipEvaluator with
 end
 declare extern type OpenCloudModel with

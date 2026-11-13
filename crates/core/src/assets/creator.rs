@@ -15,6 +15,11 @@ use super::{
 
 const ROOT: &str = "content/en-us/reference/engine/";
 
+pub(super) struct Catalog {
+    pub(super) documents: BTreeMap<String, Vec<Document>>,
+    pub(super) definitions: BTreeMap<String, Entry>,
+}
+
 #[derive(Deserialize)]
 struct Listing {
     sha: String,
@@ -28,17 +33,17 @@ struct File {
 }
 
 #[derive(Deserialize)]
-struct Entry {
+pub(super) struct Entry {
     #[serde(default)]
-    name: String,
+    pub(super) name: String,
 
     description: Option<String>,
     summary: Option<String>,
-    parameters: Option<Vec<Self>>,
-    returns: Option<Vec<Self>>,
+    pub(super) parameters: Option<Vec<Self>>,
+    pub(super) returns: Option<Vec<Self>>,
 
     #[serde(flatten)]
-    fields: BTreeMap<String, Value>,
+    pub(super) fields: BTreeMap<String, Value>,
 }
 
 impl Entry {
@@ -52,7 +57,7 @@ impl Entry {
     }
 }
 
-pub(super) async fn acquire(client: &Client) -> Result<BTreeMap<String, Vec<Document>>, Error> {
+pub(super) async fn acquire(client: &Client) -> Result<Catalog, Error> {
     let address = "https://api.github.com/repos/Roblox/creator-docs/git/trees/main?recursive=1";
 
     let failure = |source| Error::Download {
@@ -137,15 +142,26 @@ pub(super) async fn acquire(client: &Client) -> Result<BTreeMap<String, Vec<Docu
     }
 
     let mut documents = BTreeMap::new();
+    let mut definitions = BTreeMap::new();
 
     for (path, source) in sources {
         let entry: Entry = yaml_serde::from_slice(&source)
             .map_err(|error| invalid(format!("Invalid Creator Docs `{path}`. {error}")))?;
 
         import(&path, &entry, &mut documents)?;
+
+        if path.starts_with("datatypes/")
+            || path.starts_with("globals/")
+            || path.starts_with("libraries/")
+        {
+            definitions.insert(path, entry);
+        }
     }
 
-    Ok(documents)
+    Ok(Catalog {
+        documents,
+        definitions,
+    })
 }
 
 fn import(

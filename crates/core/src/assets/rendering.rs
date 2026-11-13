@@ -10,11 +10,9 @@ use serde_json::{Map, Value};
 use vermis::token::{Keyword, Symbol};
 
 use super::{
-    Error, catalog, content,
+    Error, catalog, content, creator, definitions,
     generation::interrupted,
-    mapping::{
-        self, Argument, Class, Corrections, Dump, HIERARCHY, Member, Signature, Types, invalid,
-    },
+    mapping::{self, Argument, Class, Corrections, Dump, HIERARCHY, Member, Signature, invalid},
     metadata::{Capability, Metadata, Permission, Profile},
     reference,
     syntax::{self, Output, Replacement},
@@ -30,6 +28,7 @@ struct Context<'context> {
     classes: &'context [Class],
     corrections: &'context Corrections,
     replacements: &'context BTreeMap<String, Vec<Replacement>>,
+    constructors: &'context BTreeMap<String, Vec<Replacement>>,
     labels: &'context [&'context str],
     is_cancelled: &'context dyn Fn() -> bool,
 }
@@ -38,7 +37,7 @@ pub(super) fn render(
     dump: Value,
     source: &str,
     documentation: Value,
-    creator: BTreeMap<String, Vec<catalog::Document>>,
+    creator: creator::Catalog,
     references: reference::Catalog,
     builtins: &[Builtin],
     is_cancelled: &dyn Fn() -> bool,
@@ -50,10 +49,6 @@ pub(super) fn render(
     let corrections: Corrections =
         mapping::parse(include_str!("../../assets/corrections.json"), "corrections")?;
 
-    let types: Types = mapping::parse(include_str!("../../assets/types.json"), "types")?;
-    let classes = mapping::corrected(dump.classes, &corrections.classes, is_cancelled)?;
-    let data_types = mapping::corrected(types.data_types, &corrections.classes, is_cancelled)?;
-    let constructors = mapping::corrected(types.constructors, &corrections.classes, is_cancelled)?;
     let declarations = include_str!("../../assets/declarations.d.luau");
 
     let replacements =
@@ -61,7 +56,59 @@ pub(super) fn render(
             .into_iter()
             .collect();
 
-    let declared = syntax::blocks(declarations, is_cancelled)?;
+    let mut declared = syntax::blocks(declarations, is_cancelled)?;
+    let imported = syntax::blocks(source, is_cancelled)?;
+
+    let generated = definitions::collect(
+        &creator.definitions,
+        &dump,
+        &corrections,
+        &declared,
+        &imported,
+        builtins,
+        is_cancelled,
+    )?;
+
+    let classes = mapping::corrected(dump.classes, &corrections.classes, is_cancelled)?;
+    let data_types = mapping::corrected(generated.data_types, &corrections.classes, is_cancelled)?;
+
+    let constructors =
+        mapping::corrected(generated.constructors, &corrections.classes, is_cancelled)?;
+
+    let mut globals = Output::default();
+
+    for value in generated.globals {
+        interrupted(is_cancelled)?;
+        let member: Member = mapping::decode(value, "Creator Docs global")?;
+
+        if mapping::has_tag(member.tags.as_deref(), "Deprecated") {
+            globals.source("@deprecated");
+        }
+
+        globals.source("declare");
+
+        match member.signature(&corrections.types)? {
+            Signature::Callback {
+                parameters: values,
+                returns: result,
+            } => {
+                globals.keyword(Keyword::Function);
+                globals.source(&member.name);
+                globals.symbol(Symbol::LeftParenthesis);
+                parameters(&mut globals, values, false);
+                globals.symbol(Symbol::RightParenthesis);
+                globals.symbol(Symbol::Colon);
+                returns(&mut globals, result);
+            }
+
+            signature_value => globals.append(signature(&member.name, signature_value)),
+        }
+
+        globals.newline();
+    }
+
+    let globals = globals.finish(is_cancelled)?;
+    declared.extend(syntax::blocks(&globals, is_cancelled)?);
 
     let injections = syntax::injected(
         source,
@@ -86,11 +133,14 @@ pub(super) fn render(
             classes: &classes,
             corrections: &corrections,
             replacements: &replacements,
+            constructors: &generated.replacements,
             labels,
             is_cancelled,
         };
 
         let mut output = Output::default();
+        output.source(&globals);
+        output.newline();
         output.source(declarations);
         output.newline();
 
@@ -168,7 +218,7 @@ pub(super) fn render(
 
     let canonical = catalog::assemble(
         documentation,
-        creator,
+        creator.documents,
         references,
         builtins,
         &definitions,
@@ -472,10 +522,6 @@ fn returns(output: &mut Output, values: &[String]) {
 fn constructor(class: &Class, context: &Context<'_>) -> Result<Output, Error> {
     let mut output = Output::default();
 
-    if context.corrections.exclusions.types.contains(&class.name) {
-        return Ok(output);
-    }
-
     output.source("declare");
     output.source(&class.name);
     output.symbol(Symbol::Colon);
@@ -483,8 +529,30 @@ fn constructor(class: &Class, context: &Context<'_>) -> Result<Output, Error> {
     output.newline();
     let mut fields = 0;
 
+    let replacements = context
+        .constructors
+        .get(&class.name)
+        .map_or(&[][..], Vec::as_slice);
+
+    for replacement in replacements {
+        if fields > 0 {
+            output.symbol(Symbol::Comma);
+            output.newline();
+        }
+
+        fields += 1;
+        output.source(&replacement.source);
+    }
+
     for member in &class.members {
         interrupted(context.is_cancelled)?;
+
+        if replacements
+            .iter()
+            .any(|replacement| replacement.name == member.name)
+        {
+            continue;
+        }
 
         if member.kind == "Property" {
             if fields > 0 {
@@ -505,6 +573,13 @@ fn constructor(class: &Class, context: &Context<'_>) -> Result<Output, Error> {
 
     for member in &class.members {
         interrupted(context.is_cancelled)?;
+
+        if replacements
+            .iter()
+            .any(|replacement| replacement.name == member.name)
+        {
+            continue;
+        }
 
         if member.kind != "Function" || !emitted.insert(&member.name) {
             continue;

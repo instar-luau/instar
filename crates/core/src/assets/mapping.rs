@@ -25,13 +25,6 @@ pub(super) struct Dump {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
-pub(super) struct Types {
-    pub(super) data_types: Vec<Value>,
-    pub(super) constructors: Vec<Value>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
 pub(super) struct Corrections {
     pub(super) classes: Vec<Value>,
     pub(super) types: BTreeMap<String, String>,

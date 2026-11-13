@@ -4,6 +4,7 @@ mod cache;
 mod catalog;
 mod content;
 mod creator;
+mod definitions;
 mod error;
 mod generation;
 mod mapping;

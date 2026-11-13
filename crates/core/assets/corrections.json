@@ -2195,7 +2195,7 @@
   "Exclusions": {
     "Types": ["RBXScriptSignal", "GlobalSettings", "SharedTable", "RaycastResult"],
     "Sections": ["TestEZ", "BehaviorScript"],
-    "Globals": ["Game", "Workspace"]
+    "Globals": ["Game", "Workspace", "debug.dumpcodesize"]
   },
   "Exports": [
     "ReflectionClassFilter",

@@ -11,7 +11,7 @@ use serde_json::Value;
 use tokio::runtime::Builder;
 use tokio_util::sync::CancellationToken;
 
-use super::{Error, catalog, creator, publication, reference, rendering};
+use super::{Error, creator, publication, reference, rendering};
 use crate::settings;
 
 /// A generated configuration or environment asset collection.
@@ -52,7 +52,7 @@ struct Inputs {
     dump: Value,
     source: String,
     documentation: Value,
-    creator: BTreeMap<String, Vec<catalog::Document>>,
+    creator: creator::Catalog,
     references: reference::Catalog,
 }
 

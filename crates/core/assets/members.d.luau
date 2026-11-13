@@ -1,66 +1,69 @@
 declare extern type Vector3 with
-	function Angle(self, other: Vector3, axis: Vector3?): number
-	function __add(self, other: Vector3): Vector3
-	function __sub(self, other: Vector3): Vector3
-	function __mul(self, other: Vector3 | number): Vector3
-	function __div(self, other: Vector3 | number): Vector3
 	function __unm(self): Vector3
-	function __idiv(self, other: Vector3 | number): Vector3
+	x: number
+	y: number
+	z: number
+	unit: Vector3
+	magnitude: number
+	function lerp(self, goal: Vector3, alpha: number): Vector3
 end
 
 declare extern type Vector2 with
-	function FuzzyEq(self, other: Vector2, epsilon: number?): boolean
-	function __add(self, other: Vector2): Vector2
-	function __sub(self, other: Vector2): Vector2
-	function __mul(self, other: Vector2 | number): Vector2
-	function __div(self, other: Vector2 | number): Vector2
 	function __idiv(self, other: Vector2 | number): Vector2
 	function __unm(self): Vector2
+	x: number
+	y: number
+	unit: Vector2
+	magnitude: number
+	function lerp(self, other: Vector2, alpha: number): Vector2
 end
 
 declare extern type Vector3int16 with
-	function __add(self, other: Vector3int16): Vector3int16
-	function __sub(self, other: Vector3int16): Vector3int16
-	function __mul(self, other: Vector3int16 | number): Vector3int16
-	function __div(self, other: Vector3int16 | number): Vector3int16
 	function __unm(self): Vector3int16
 end
 
 declare extern type Vector2int16 with
-	function __add(self, other: Vector2int16): Vector2int16
-	function __sub(self, other: Vector2int16): Vector2int16
-	function __mul(self, other: Vector2int16 | number): Vector2int16
-	function __div(self, other: Vector2int16 | number): Vector2int16
 	function __unm(self): Vector2int16
 end
 
 declare extern type UDim2 with
-	function __add(self, other: UDim2): UDim2
-	function __sub(self, other: UDim2): UDim2
 	function __unm(self): UDim2
 end
 
 declare extern type UDim with
-	function __add(self, other: UDim): UDim
-	function __sub(self, other: UDim): UDim
 	function __unm(self): UDim
 end
 
 declare extern type CFrame with
-	function ToWorldSpace(self, ...: CFrame): ...CFrame
-	function ToObjectSpace(self, ...: CFrame): ...CFrame
-	function PointToWorldSpace(self, ...: Vector3): ...Vector3
-	function PointToObjectSpace(self, ...: Vector3): ...Vector3
-	function VectorToWorldSpace(self, ...: Vector3): ...Vector3
-	function VectorToObjectSpace(self, ...: Vector3): ...Vector3
-	function __add(self, other: Vector3): CFrame
-	function __sub(self, other: Vector3): CFrame
-	function __mul(self, other: CFrame): CFrame
-	function __mul(self, other: Vector3): Vector3
+	x: number
+	y: number
+	z: number
+	p: Vector3
+	rightVector: Vector3
+	upVector: Vector3
+	lookVector: Vector3
+	function pointToObjectSpace(self, value: Vector3): Vector3
+	function vectorToWorldSpace(self, value: Vector3): Vector3
+	function toAxisAngle(self): (Vector3, number)
+	function inverse(self): CFrame
+	function lerp(self, goal: CFrame, alpha: number): CFrame
+	function vectorToObjectSpace(self, value: Vector3): Vector3
+	function pointToWorldSpace(self, value: Vector3): Vector3
+	function toWorldSpace(self, value: CFrame): CFrame
+	function toObjectSpace(self, value: CFrame): CFrame
+	function toEulerAnglesXYZ(self): (number, number, number)
 end
 
-declare extern type Random with
-	function Shuffle(self, table: { any })
+declare extern type Color3 with
+	r: number
+	g: number
+	b: number
+	function lerp(self, color: Color3, alpha: number): Color3
+end
+
+declare extern type RBXScriptConnection with
+	connected: boolean
+	function disconnect(self): nil
 end
 
 declare extern type UserSettings with
@@ -249,9 +252,10 @@ declare extern type TeleportOptions with
 end
 
 declare extern type UserService with
-	function GetUserInfosByUserIdsAsync(self, userIds: { number }): {
-		{ Id: number, Username: string, DisplayName: string }
-	}
+	function GetUserInfosByUserIdsAsync(
+		self,
+		userIds: { number }
+	): { { Id: number, Username: string, DisplayName: string } }
 end
 
 declare extern type Studio with
@@ -364,10 +368,11 @@ declare extern type GlobalDataStore with
 	): (number, DataStoreKeyInfo)
 	function RemoveAsync(self, key: string): (any, DataStoreKeyInfo)
 	function SetAsync(self, key: string, value: any, userIds: { number }?, options: DataStoreSetOptions?): string
-	function UpdateAsync(self, key: string, transformFunction: ((any, DataStoreKeyInfo) -> (any, { number }?, {}?))): (
-		any,
-		DataStoreKeyInfo
-	)
+	function UpdateAsync(
+		self,
+		key: string,
+		transformFunction: ((any, DataStoreKeyInfo) -> (any, { number }?, {}?))
+	): (any, DataStoreKeyInfo)
 end
 
 declare extern type OrderedDataStore with
@@ -447,9 +452,12 @@ declare extern type Sound with
 end
 
 declare extern type StudioService with
-	function GizmoRaycast(self, origin: Vector3, direction: Vector3, raycastParams: RaycastParams?): RaycastResult<
-		Attachment | Constraint | NoCollisionConstraint | WeldConstraint
-	>?
+	function GizmoRaycast(
+		self,
+		origin: Vector3,
+		direction: Vector3,
+		raycastParams: RaycastParams?
+	): RaycastResult<Attachment | Constraint | NoCollisionConstraint | WeldConstraint>?
 end
 
 declare extern type ControllerManager with
