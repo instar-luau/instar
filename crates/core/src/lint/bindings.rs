@@ -61,6 +61,7 @@ pub(super) fn finish(context: &mut Context<'_, '_>) {
             }
 
             if context.is_active(&["LocalUnused", "FunctionUnused", "ImportUnused"])
+                && !is_exported
                 && !is_used
                 && binding.category == Category::Local
                 && !binding.name.starts_with('_')
