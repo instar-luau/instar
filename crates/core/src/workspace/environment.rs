@@ -304,14 +304,7 @@ impl Profile {
             environment: Environment {
                 definitions: vec![definition],
                 enumerations: Some(metadata.enumerations),
-                classes: Some(
-                    profile
-                        .classes
-                        .into_iter()
-                        .map(Class::from)
-                        .collect::<Vec<_>>()
-                        .into(),
-                ),
+                ..profile.into()
             },
             symbols: symbols.into(),
             bundled: 1,

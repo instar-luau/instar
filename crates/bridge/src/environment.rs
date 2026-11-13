@@ -16,6 +16,9 @@ pub struct Environment {
 
     /// Optional class permissions; an empty list grants no construction or service capabilities.
     pub classes: Option<Arc<[Class]>>,
+
+    /// Deprecated type members and their optional suggested replacements.
+    pub deprecations: Arc<[Deprecation]>,
 }
 
 /// A declaration source with its diagnostic identity and documentation namespace.
@@ -58,6 +61,19 @@ pub struct Property {
 
     /// Whether writes are permitted.
     pub can_write: bool,
+}
+
+/// A deprecated member of a declared type.
+#[derive(Clone, Debug)]
+pub struct Deprecation {
+    /// Declared type name.
+    pub owner: String,
+
+    /// Declared member name.
+    pub name: String,
+
+    /// Suggested replacement, when available.
+    pub replacement: Option<String>,
 }
 
 /// Return registered builtin symbols using native registry defaults.

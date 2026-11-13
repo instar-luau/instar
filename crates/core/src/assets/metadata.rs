@@ -16,6 +16,19 @@ pub(crate) struct Metadata {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Profile {
     pub(crate) classes: Vec<Capability>,
+
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) deprecations: BTreeMap<String, BTreeMap<String, Deprecation>>,
+}
+
+#[derive(Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Deprecation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) replacement: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) reason: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -79,6 +92,36 @@ impl Metadata {
         }
 
         Ok(())
+    }
+}
+
+impl From<Profile> for instar_bridge::Environment {
+    fn from(profile: Profile) -> Self {
+        Self {
+            classes: Some(
+                profile
+                    .classes
+                    .into_iter()
+                    .map(instar_bridge::Class::from)
+                    .collect::<Vec<_>>()
+                    .into(),
+            ),
+            deprecations: profile
+                .deprecations
+                .into_iter()
+                .flat_map(|(owner, members)| {
+                    members
+                        .into_iter()
+                        .map(move |(name, details)| instar_bridge::Deprecation {
+                            owner: owner.clone(),
+                            name,
+                            replacement: details.replacement,
+                        })
+                })
+                .collect::<Vec<_>>()
+                .into(),
+            ..Self::default()
+        }
     }
 }
 

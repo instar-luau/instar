@@ -94,12 +94,19 @@ pub(crate) mod bindings {
         items: Vec<String>,
     }
 
+    struct Deprecation {
+        owner: String,
+        name: String,
+        replacement: String,
+    }
+
     struct Environment {
         definitions: Vec<Definition>,
         has_enumerations: bool,
         enumerations: Vec<Enumeration>,
         has_capabilities: bool,
         classes: Vec<Class>,
+        deprecations: Vec<Deprecation>,
     }
 
     struct Instance {
@@ -684,6 +691,15 @@ impl From<Environment> for bindings::Environment {
                             can_write: property.can_write,
                         })
                         .collect(),
+                })
+                .collect(),
+            deprecations: environment
+                .deprecations
+                .iter()
+                .map(|deprecation| bindings::Deprecation {
+                    owner: deprecation.owner.clone(),
+                    name: deprecation.name.clone(),
+                    replacement: deprecation.replacement.clone().unwrap_or_default(),
                 })
                 .collect(),
         }

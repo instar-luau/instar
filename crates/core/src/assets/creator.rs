@@ -47,6 +47,24 @@ pub(super) struct Entry {
 }
 
 impl Entry {
+    pub(super) fn deprecation(&self, name: &str) -> Option<&str> {
+        ["properties", "methods", "events", "callbacks"]
+            .into_iter()
+            .filter_map(|group| self.fields.get(group).and_then(Value::as_array))
+            .flatten()
+            .find(|member| {
+                member
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .and_then(|name| name.rsplit(['.', ':']).next())
+                    == Some(name)
+            })
+            .and_then(|member| member.get("deprecation_message"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|reason| !reason.is_empty())
+    }
+
     fn prose(&self) -> &str {
         self.description
             .as_deref()
@@ -150,7 +168,8 @@ pub(super) async fn acquire(client: &Client) -> Result<Catalog, Error> {
 
         import(&path, &entry, &mut documents)?;
 
-        if path.starts_with("datatypes/")
+        if path.starts_with("classes/")
+            || path.starts_with("datatypes/")
             || path.starts_with("globals/")
             || path.starts_with("libraries/")
         {

@@ -28,7 +28,7 @@ pub use self::{
     },
     cancellation::Cancellation,
     configuration::{Configuration, Mode},
-    environment::{Class, Definition, Environment, Property, builtins},
+    environment::{Class, Definition, Deprecation, Environment, Property, builtins},
     error::{Error, HostError, Operation},
     flags::Flag,
     frontend::Frontend,

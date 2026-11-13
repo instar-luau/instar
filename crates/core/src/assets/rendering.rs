@@ -166,6 +166,42 @@ pub(super) fn render(
         let formatted = format::format(&ordered, &configuration)?;
         interrupted(is_cancelled)?;
         let mut capabilities = BTreeMap::new();
+        let mut deprecations = corrections.deprecations.clone();
+
+        for class in classes.iter().chain(&data_types) {
+            interrupted(is_cancelled)?;
+
+            if corrections.exclusions.types.contains(&class.name) {
+                continue;
+            }
+
+            let documentation = creator
+                .definitions
+                .get(&format!("classes/{}.yaml", class.name))
+                .or_else(|| {
+                    creator
+                        .definitions
+                        .get(&format!("datatypes/{}.yaml", class.name))
+                });
+
+            for member in &class.members {
+                if mapping::has_tag(member.tags.as_deref(), "Deprecated")
+                    && member.can_access(labels)?
+                {
+                    let details = deprecations
+                        .entry(class.name.clone())
+                        .or_default()
+                        .entry(member.name.clone())
+                        .or_default();
+
+                    if details.reason.is_none() {
+                        details.reason = documentation
+                            .and_then(|entry| entry.deprecation(&member.name))
+                            .map(str::to_owned);
+                    }
+                }
+            }
+        }
 
         for class in &classes {
             interrupted(is_cancelled)?;
@@ -210,6 +246,7 @@ pub(super) fn render(
             name.to_owned(),
             Profile {
                 classes: capabilities.into_values().collect(),
+                deprecations,
             },
         );
 

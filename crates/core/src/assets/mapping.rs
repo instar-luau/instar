@@ -4,7 +4,7 @@ use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
 use vermis::token::Symbol;
 
-use super::{Error, syntax::Output};
+use super::{Error, metadata::Deprecation, syntax::Output};
 
 pub(super) const HIERARCHY: [&str; 5] = [
     "None",
@@ -30,6 +30,7 @@ pub(super) struct Corrections {
     pub(super) types: BTreeMap<String, String>,
     pub(super) exclusions: Exclusions,
     pub(super) exports: Vec<String>,
+    pub(super) deprecations: BTreeMap<String, BTreeMap<String, Deprecation>>,
 }
 
 #[derive(Deserialize)]

@@ -89,6 +89,9 @@ declare function wait(delay: number?): (number, number)
 @[deprecated { use = "task.delay" }]
 declare function Delay(delay: number?, callback: (dt: number, gt: number) -> ())
 
+@[deprecated { use = "task.spawn" }]
+declare function Spawn(callback: (dt: number, gt: number) -> ())
+
 @[deprecated { use = "task.wait" }]
 declare function Wait(delay: number?): (number, number)
 

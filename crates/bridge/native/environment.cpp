@@ -29,7 +29,7 @@ namespace instar::luau {
             const auto library = scope->lookupEx(Luau::AstName("vector"));
             auto *external = roblox ? Luau::getMutable<Luau::ExternType>(Luau::follow(roblox->type)) : nullptr;
 
-            if (!native || !external || !library) {
+            if (!native || !roblox || !external || !library) {
                 throw std::invalid_argument("Roblox vector compatibility requires vector and Vector3 declarations.");
             }
 
@@ -218,6 +218,23 @@ namespace instar::luau {
 
         if (environment.has_capabilities) {
             apply(frontend.globals, {environment.classes.data(), environment.classes.size()});
+        }
+
+        for (const auto &deprecation : environment.deprecations) {
+            const std::string owner(deprecation.owner);
+            const std::string member(deprecation.name);
+            const auto binding = scope->lookupType(owner);
+            auto *external = binding ? Luau::getMutable<Luau::ExternType>(Luau::follow(binding->type)) : nullptr;
+
+            if (!external || external->props.find(member) == external->props.end()) {
+                throw std::invalid_argument(
+                    std::string("Unknown deprecated member `").append(owner).append(".").append(member).append("`.")
+                );
+            }
+
+            auto &property = external->props.at(member);
+            property.deprecated = true;
+            property.deprecatedSuggestion = std::string(deprecation.replacement);
         }
 
         frontend.addEnvironment(name);

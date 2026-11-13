@@ -1,4 +1,50 @@
 {
+  "Deprecations": {
+    "Vector3": {
+      "x": { "replacement": "X" },
+      "y": { "replacement": "Y" },
+      "z": { "replacement": "Z" },
+      "unit": { "replacement": "Unit" },
+      "magnitude": { "replacement": "Magnitude" },
+      "lerp": { "replacement": "Lerp" }
+    },
+    "Vector2": {
+      "x": { "replacement": "X" },
+      "y": { "replacement": "Y" },
+      "unit": { "replacement": "Unit" },
+      "magnitude": { "replacement": "Magnitude" },
+      "lerp": { "replacement": "Lerp" }
+    },
+    "CFrame": {
+      "x": { "replacement": "X" },
+      "y": { "replacement": "Y" },
+      "z": { "replacement": "Z" },
+      "p": { "replacement": "Position" },
+      "rightVector": { "replacement": "RightVector" },
+      "upVector": { "replacement": "UpVector" },
+      "lookVector": { "replacement": "LookVector" },
+      "pointToObjectSpace": { "replacement": "PointToObjectSpace" },
+      "vectorToWorldSpace": { "replacement": "VectorToWorldSpace" },
+      "toAxisAngle": { "replacement": "ToAxisAngle" },
+      "inverse": { "replacement": "Inverse" },
+      "lerp": { "replacement": "Lerp" },
+      "vectorToObjectSpace": { "replacement": "VectorToObjectSpace" },
+      "pointToWorldSpace": { "replacement": "PointToWorldSpace" },
+      "toWorldSpace": { "replacement": "ToWorldSpace" },
+      "toObjectSpace": { "replacement": "ToObjectSpace" },
+      "toEulerAnglesXYZ": { "replacement": "ToEulerAnglesXYZ" }
+    },
+    "Color3": {
+      "r": { "replacement": "R" },
+      "g": { "replacement": "G" },
+      "b": { "replacement": "B" },
+      "lerp": { "replacement": "Lerp" }
+    },
+    "RBXScriptConnection": {
+      "connected": { "replacement": "Connected" },
+      "disconnect": { "replacement": "Disconnect" }
+    }
+  },
   "Classes": [
     {
       "Name": "Instance",
