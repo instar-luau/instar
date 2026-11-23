@@ -470,6 +470,7 @@ fn classify(tree: &Tree<'_>, node: NodeIndex, tokens: &mut BTreeMap<usize, Seman
 
         NodeKind::Class {
             name,
+            prefix,
             keyword,
             open,
             ..
@@ -478,7 +479,7 @@ fn classify(tree: &Tree<'_>, node: NodeIndex, tokens: &mut BTreeMap<usize, Seman
                 token.is_declaration = true;
             }
 
-            for keyword in [keyword, open].into_iter().flatten() {
+            for keyword in [prefix, open, keyword].into_iter().flatten() {
                 if let Some(token) = tokens.get_mut(&tree.token(*keyword).span.start) {
                     token.kind = TokenKind::Keyword;
                 }
