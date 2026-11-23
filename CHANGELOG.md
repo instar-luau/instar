@@ -1,4 +1,20 @@
 # Changelog
+## [0.2.5](https://github.com/instar-luau/instar/compare/v0.2.4...v0.2.5) - 2026-11-23
+
+### Added
+
+- update Luau to 0.748
+- **bridge:** infer QueryDescendants selector result types
+
+### Fixed
+
+- **lint:** resolve names inside type functions
+
+### Other
+
+- update Cargo.lock dependencies
+- **deps:** update vermis to 0.9
+
 ## [0.2.4](https://github.com/instar-luau/instar/compare/v0.2.3...v0.2.4) - 2026-11-13
 
 ### Fixed
