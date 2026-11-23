@@ -66,6 +66,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .file("native/enumerations.cpp")
         .file("native/diagnostic.cpp")
         .file("native/capabilities.cpp")
+        .file("native/selectors.cpp")
         .file("native/flags.cpp")
         .file("native/instances.cpp")
         .include(".")

@@ -12,7 +12,9 @@
 #include "Luau/TypeUtils.h"
 #include "instances.hpp"
 #include "instar-bridge/src/bridge.rs.h"
+#include "selectors.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -70,6 +72,49 @@ namespace instar::luau {
             }
 
             return found->second.type;
+        }
+
+        std::optional<Luau::TypeId>
+        descendant_type(const Metadata &metadata, Luau::TypeArena &arena, std::string_view selector) {
+            const auto classes = selector_classes(selector);
+
+            if (!classes || classes->empty()) {
+                return std::nullopt;
+            }
+
+            std::vector<Luau::TypeId> alternatives;
+
+            for (const auto &branch : *classes) {
+                Luau::TypeId narrowest = nullptr;
+
+                for (const auto name : branch) {
+                    const auto type = class_type(metadata, std::string(name));
+
+                    if (!type) {
+                        return std::nullopt;
+                    }
+
+                    const auto *candidate = Luau::get<Luau::ExternType>(*type);
+                    const auto *previous = narrowest ? Luau::get<Luau::ExternType>(narrowest) : nullptr;
+
+                    if (!previous || Luau::isSubclass(candidate, previous)) {
+                        narrowest = *type;
+                    } else if (!Luau::isSubclass(previous, candidate)) {
+                        return std::nullopt;
+                    }
+                }
+
+                if (!narrowest) {
+                    return std::nullopt;
+                }
+
+                if (std::find(alternatives.begin(), alternatives.end(), narrowest) == alternatives.end()) {
+                    alternatives.push_back(narrowest);
+                }
+            }
+
+            return alternatives.size() == 1 ? alternatives.front()
+                                            : arena.addType(Luau::UnionType{std::move(alternatives)});
         }
 
         std::string invalid_message(MagicKind kind, std::string_view name) {
@@ -143,7 +188,11 @@ namespace instar::luau {
                 }
 
                 const std::optional<std::string> name = argument(*context.callSite);
-                const std::optional<Luau::TypeId> type = name ? class_type(*metadata, *name, kind) : std::nullopt;
+
+                const std::optional<Luau::TypeId> type = !name ? std::nullopt
+                                                         : kind == MagicKind::Descendants
+                                                             ? descendant_type(*metadata, *context.solver->arena, *name)
+                                                             : class_type(*metadata, *name, kind);
 
                 if (!type) {
                     if (kind == MagicKind::Descendants) {
