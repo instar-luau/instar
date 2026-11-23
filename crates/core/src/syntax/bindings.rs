@@ -371,17 +371,12 @@ impl Collector<'_, '_> {
             matches!(self.tree.node(*function).kind, NodeKind::Function { prefix: Some(prefix), .. }
                     if self.tree.token(prefix).bytes(self.tree.source) == b"type")
         })
-            && self
-                .type_scopes
-                .iter()
-                .rev()
-                .find_map(|scope| scope.get(&name).copied())
-                .is_some_and(|index| {
-                    matches!(
-                        self.tree.node(self.bindings.types[index].statement).kind,
-                        NodeKind::Function { .. }
-                    )
-                })
+            && (name == "types"
+                || self
+                    .type_scopes
+                    .iter()
+                    .rev()
+                    .any(|scope| scope.contains_key(&name)))
         {
             self.reference_type(node);
         } else if self.is_annotation {
