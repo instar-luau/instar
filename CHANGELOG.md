@@ -1,4 +1,10 @@
 # Changelog
+## [0.2.6](https://github.com/instar-luau/instar/compare/v0.2.5...v0.2.6) - 2026-11-23
+
+### Fixed
+
+- **assets:** remove retired integer documentation
+
 ## [0.2.5](https://github.com/instar-luau/instar/compare/v0.2.4...v0.2.5) - 2026-11-23
 
 ### Added
