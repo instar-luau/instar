@@ -316,8 +316,7 @@ namespace instar::luau::query {
 
                 if (node->is<Luau::AstExprLocal>() || node->is<Luau::AstExprGlobal>() ||
                     node->is<Luau::AstExprConstantNil>() || node->is<Luau::AstExprConstantBool>() ||
-                    node->is<Luau::AstExprConstantNumber>() || node->is<Luau::AstExprConstantInteger>() ||
-                    node->is<Luau::AstExprConstantString>()) {
+                    node->is<Luau::AstExprConstantNumber>() || node->is<Luau::AstExprConstantString>()) {
                     const auto *found = module.astTypes.find(node);
                     const auto name = Luau::getIdentifier(node);
 

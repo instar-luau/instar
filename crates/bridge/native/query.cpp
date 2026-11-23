@@ -340,8 +340,7 @@ namespace instar::luau::query {
                     const bool is_obvious =
                         value &&
                         (value->is<Luau::AstExprConstantNil>() || value->is<Luau::AstExprConstantBool>() ||
-                            value->is<Luau::AstExprConstantNumber>() || value->is<Luau::AstExprConstantInteger>() ||
-                            value->is<Luau::AstExprConstantString>());
+                            value->is<Luau::AstExprConstantNumber>() || value->is<Luau::AstExprConstantString>());
 
                     binding(node->vars.data[index], is_obvious);
                 }

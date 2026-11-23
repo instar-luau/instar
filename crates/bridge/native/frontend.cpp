@@ -22,7 +22,6 @@
 #include <utility>
 #include <vector>
 
-LUAU_FASTFLAG(LuauSplitIceHandler)
 LUAU_FASTFLAG(DebugLuauLogSolverToJson)
 
 namespace instar::luau {
@@ -72,7 +71,7 @@ namespace instar::luau {
                 }
 
                 const auto count =
-                    FFlag::LuauSplitIceHandler && !FFlag::DebugLuauLogSolverToJson
+                    !FFlag::DebugLuauLogSolverToJson
                         ? std::min<std::size_t>(tasks.size(), std::max(1u, std::thread::hardware_concurrency()))
                         : 1;
 
