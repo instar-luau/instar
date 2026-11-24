@@ -300,9 +300,13 @@ impl Builder<'_, '_> {
                         callee = *expression;
                     }
 
+                    let start = self.tree.node(*arguments).tokens.start.get();
+
                     (
-                        self.tree.node(*arguments).tokens.start.get(),
+                        start,
                         is_invoked
+                            && self.tree.tokens[start].kind
+                                != TokenKind::Symbol(Symbol::LeftParenthesis)
                             && !matches!(self.tree.node(callee).kind, NodeKind::Field { .. }),
                     )
                 }
