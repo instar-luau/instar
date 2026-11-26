@@ -221,7 +221,7 @@ namespace instar::luau::query {
             }
         }
 
-        class Declaration final : public Luau::AstVisitor {
+        class Declaration final : public TypeArgumentVisitor {
         public:
             Declaration(const Luau::AstLocal *local, PresentationBudget &budget) : local(local), budget(budget) {}
 
@@ -282,7 +282,7 @@ namespace instar::luau::query {
             PresentationBudget &budget;
         };
 
-        class Selection final : public Luau::AstVisitor {
+        class Selection final : public TypeArgumentVisitor {
         public:
             Selection(const Prepared &prepared, Luau::Position position, PresentationBudget &budget)
                 : prepared(prepared), module(prepared.module), position(position), budget(budget) {}

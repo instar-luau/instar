@@ -774,11 +774,17 @@ impl Collector<'_, '_> {
 
             NodeKind::MethodCall {
                 receiver,
+                instantiation,
                 arguments,
                 ..
             } => {
                 self.visit(*receiver);
                 self.mutate(*receiver);
+
+                if let Some(instantiation) = instantiation {
+                    self.annotation(*instantiation);
+                }
+
                 self.visit(*arguments);
             }
 

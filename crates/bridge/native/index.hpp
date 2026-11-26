@@ -14,6 +14,11 @@
 namespace instar::luau {
     class Host;
 
+    class TypeArgumentVisitor : public Luau::AstVisitor {
+    public:
+        bool visit(Luau::AstExprCall *node) override;
+    };
+
     struct Declaration {
         std::string identity;
         Luau::Location location;

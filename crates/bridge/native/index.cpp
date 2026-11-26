@@ -77,7 +77,7 @@ namespace instar::luau {
             return std::nullopt;
         }
 
-        class Types final : public Luau::AstVisitor {
+        class Types final : public TypeArgumentVisitor {
         public:
             bool visit(Luau::AstStatTypeAlias *node) override {
                 declarations.push_back({node->name.value, node->location, node->nameLocation, node->exported});
@@ -135,7 +135,7 @@ namespace instar::luau {
             return identifier ? std::optional<Declaration>{{identity, *identifier}} : std::nullopt;
         }
 
-        class Indexer final : public Luau::AstVisitor {
+        class Indexer final : public TypeArgumentVisitor {
         public:
             Indexer(
                 Index &result, Luau::Frontend &frontend, const Luau::Module &module, const Luau::SourceModule &source
@@ -550,6 +550,22 @@ namespace instar::luau {
             std::unordered_set<const Luau::AstExpr *> updates;
             std::map<std::pair<Luau::Scope *, std::string>, Luau::Location> generic_locations;
         };
+    }
+
+    bool TypeArgumentVisitor::visit(Luau::AstExprCall *node) {
+        if (!Luau::AstVisitor::visit(node)) {
+            return false;
+        }
+
+        for (const auto &argument : node->typeArguments) {
+            if (argument.type) {
+                argument.type->visit(this);
+            } else {
+                argument.typePack->visit(this);
+            }
+        }
+
+        return true;
     }
 
     bool is_same_declaration(const Host &host, const Declaration &left, const Declaration &right) {

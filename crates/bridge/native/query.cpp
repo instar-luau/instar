@@ -234,7 +234,7 @@ namespace instar::luau::query {
             throw std::runtime_error("Unknown native completion context.");
         }
 
-        class Collision final : public Luau::AstVisitor {
+        class Collision final : public TypeArgumentVisitor {
         public:
             explicit Collision(const std::string &name) : name(name) {}
 
