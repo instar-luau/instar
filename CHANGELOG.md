@@ -1,4 +1,11 @@
 # Changelog
+## [0.2.7](https://github.com/instar-luau/instar/compare/v0.2.6...v0.2.7) - 2026-11-26
+
+### Fixed
+
+- **lsp:** resolve explicit method type arguments
+- **format:** keep chained call parentheses attached
+
 ## [0.2.6](https://github.com/instar-luau/instar/compare/v0.2.5...v0.2.6) - 2026-11-23
 
 ### Fixed
